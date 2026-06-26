@@ -24,7 +24,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from .configuration_qwen3_5 import Qwen3_5Config, Qwen3_5TextConfig, Qwen3_5VisionConfig
+from configuration_qwen3_5 import Qwen3_5Config, Qwen3_5TextConfig, Qwen3_5VisionConfig
 
 
 # ============================================================

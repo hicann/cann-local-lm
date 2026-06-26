@@ -13,7 +13,7 @@
 # limitations under the License.
 """PyTorch Qwen3.5 model (modular)."""
 
-from .modeling_qwen3_5 import (
+from modeling_qwen3_5 import (
     Qwen3_5PreTrainedModel,
     Qwen3_5VisionModel,
     Qwen3_5TextModel,
@@ -24,7 +24,7 @@ from .modeling_qwen3_5 import (
     Qwen3_5ForSequenceClassification,
     Qwen3_5ForTokenClassification,
 )
-from .configuration_qwen3_5 import Qwen3_5Config, Qwen3_5TextConfig, Qwen3_5VisionConfig
+from configuration_qwen3_5 import Qwen3_5Config, Qwen3_5TextConfig, Qwen3_5VisionConfig
 
 
 __all__ = [

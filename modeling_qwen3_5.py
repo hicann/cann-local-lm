@@ -59,6 +59,11 @@ class Cache:
     def __init__(self):
         self.layers = []
 
+    def to(self, device):
+        for layer in self.layers:
+            layer.to(device)
+        return self
+
     def has_previous_state(self, layer_idx=None):
         if layer_idx is None:
             return len(self.layers) > 0
@@ -94,6 +99,13 @@ class CacheLayer:
         self.value_states = None
         self.conv_states = None
         self.recurrent_states = None
+
+    def to(self, device):
+        for attr in ("key_states", "value_states", "conv_states", "recurrent_states"):
+            t = getattr(self, attr, None)
+            if t is not None:
+                setattr(self, attr, t.to(device))
+        return self
 
 
 class DynamicCache(Cache):

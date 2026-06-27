@@ -1073,6 +1073,12 @@ class Qwen3_5TextModel(Qwen3_5PreTrainedModel):
         self.gradient_checkpointing = False
         self.post_init()
 
+    def get_input_embeddings(self):
+        return self.embed_tokens
+
+    def set_input_embeddings(self, value):
+        self.embed_tokens = value
+
     def forward(
         self,
         input_ids: torch.LongTensor | None = None,
@@ -1148,6 +1154,12 @@ class Qwen3_5Model(Qwen3_5PreTrainedModel):
         self.language_model = Qwen3_5TextModel(config.text_config)
         self.rope_deltas = None
         self.post_init()
+
+    def get_input_embeddings(self):
+        return self.language_model.embed_tokens
+
+    def set_input_embeddings(self, value):
+        self.language_model.embed_tokens = value
 
     def get_vision_position_ids(
         self, start_position: int, grid_thw: list[int, int, int] | torch.Tensor,
@@ -1416,6 +1428,12 @@ class Qwen3_5ForCausalLM(Qwen3_5PreTrainedModel, GenerationMixin):
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
         self.post_init()
 
+    def get_input_embeddings(self):
+        return self.model.embed_tokens
+
+    def set_input_embeddings(self, value):
+        self.model.embed_tokens = value
+
     def forward(
         self,
         input_ids: torch.LongTensor | None = None,
@@ -1481,6 +1499,12 @@ class Qwen3_5ForConditionalGeneration(Qwen3_5PreTrainedModel, GenerationMixin):
         self.model = Qwen3_5Model(config)
         self.lm_head = nn.Linear(config.text_config.hidden_size, config.text_config.vocab_size, bias=False)
         self.post_init()
+
+    def get_input_embeddings(self):
+        return self.model.language_model.embed_tokens
+
+    def set_input_embeddings(self, value):
+        self.model.language_model.embed_tokens = value
 
     def get_video_features(
         self,

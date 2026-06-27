@@ -1,4 +1,4 @@
-# Copyright 2024 The Qwen team, Alibaba Group and The HuggingFace Inc. team. All rights reserved.
+﻿# Copyright 2024 The Qwen team, Alibaba Group and The HuggingFace Inc. team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -16,8 +16,8 @@
 from tokenizers import Regex, Tokenizer, decoders, normalizers, pre_tokenizers
 from tokenizers.models import BPE
 
-from ...tokenization_utils_tokenizers import TokenizersBackend
-from ...utils import logging
+from transformers.tokenization_utils_tokenizers import TokenizersBackend
+from transformers.utils import logging
 
 
 logger = logging.get_logger(__name__)

@@ -1,26 +1,59 @@
-"""Qwen3.5 inference – uses local model definition only (no transformers imports)."""
+"""Qwen3.5 inference using M:\codehub\PC_LLM\models\qwen3_5\ model definition."""
 
 import json
 import os
+import shutil
 import sys
-from typing import Optional
 
 import torch
-import torch.nn.functional as F
 
-# ── local model files ──────────────────────────────────────
 THIS_DIR = os.path.dirname(os.path.abspath(__file__))
-if THIS_DIR not in sys.path:
-    sys.path.insert(0, THIS_DIR)
+MODELS_DIR = os.path.join(THIS_DIR, "models")
+TRANSFORMERS_SRC = os.path.normpath(
+    r"M:\transformers-main\transformers-main\src"
+)
 
-from configuration_qwen3_5 import Qwen3_5TextConfig, Qwen3_5Config, Qwen3_5VisionConfig
-from modeling_qwen3_5 import (
+# ── deploy local model files into transformers source tree ─────
+FILES_TO_COPY = [
+    "__init__.py", "configuration_qwen3_5.py", "modeling_qwen3_5.py",
+    "modular_qwen3_5.py", "tokenization_qwen3_5.py",
+]
+
+
+def _deploy():
+    target = os.path.join(TRANSFORMERS_SRC, "transformers", "models", "qwen3_5")
+    os.makedirs(target, exist_ok=True)
+    src_dir = os.path.join(MODELS_DIR, "qwen3_5")
+    for f in FILES_TO_COPY:
+        src = os.path.join(src_dir, f)
+        if os.path.isfile(src):
+            shutil.copy2(src, os.path.join(target, f))
+    next_src = os.path.join(MODELS_DIR, "qwen3_next")
+    next_dst = os.path.join(TRANSFORMERS_SRC, "transformers", "models", "qwen3_next")
+    if os.path.isdir(next_src):
+        os.makedirs(next_dst, exist_ok=True)
+        for f in os.listdir(next_src):
+            if f.endswith(".py"):
+                shutil.copy2(os.path.join(next_src, f), os.path.join(next_dst, f))
+    if TRANSFORMERS_SRC not in sys.path:
+        sys.path.insert(0, TRANSFORMERS_SRC)
+
+
+_deploy()
+
+# ── imports (via transformers package) ───────────────────────
+from transformers.models.qwen3_5.modeling_qwen3_5 import (
     Qwen3_5ForCausalLM,
     Qwen3_5ForConditionalGeneration,
 )
+from transformers.models.qwen3_5.configuration_qwen3_5 import (
+    Qwen3_5Config,
+    Qwen3_5TextConfig,
+)
+from transformers import AutoTokenizer
 
 
-# ── weight loader ──────────────────────────────────────────
+# ── weight loading ───────────────────────────────────────────
 
 def load_weights(model, model_path: str, device: str,
                  dtype: torch.dtype = torch.bfloat16):
@@ -58,14 +91,13 @@ def load_weights(model, model_path: str, device: str,
         print(f"[WARN] {len(missing)} keys missing (e.g. {list(missing)[:3]})")
 
 
-# ── model loader ───────────────────────────────────────────
+# ── model loading ────────────────────────────────────────────
 
 def load_model(model_name_or_path: str, device: str = "auto",
                dtype: torch.dtype = torch.bfloat16):
     if device == "auto":
         device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    # read config.json to determine model type
     if os.path.isdir(model_name_or_path):
         config_path = os.path.join(model_name_or_path, "config.json")
     else:
@@ -78,10 +110,10 @@ def load_model(model_name_or_path: str, device: str = "auto",
     is_vlm = cfg.get("model_type") == "qwen3_5"
 
     if is_vlm:
-        config = Qwen3_5Config(**cfg)
+        config = Qwen3_5Config.from_pretrained(model_name_or_path)
         model = Qwen3_5ForConditionalGeneration(config)
     else:
-        config = Qwen3_5TextConfig(**cfg)
+        config = Qwen3_5TextConfig.from_pretrained(model_name_or_path)
         model = Qwen3_5ForCausalLM(config)
 
     model.to(device=device, dtype=dtype)
@@ -89,78 +121,33 @@ def load_model(model_name_or_path: str, device: str = "auto",
     return model
 
 
-# ── tokenizer wrapper (separate, uses transformers) ────────
-
-def load_tokenizer(model_name_or_path: str):
-    from transformers import AutoTokenizer
-    return AutoTokenizer.from_pretrained(model_name_or_path, trust_remote_code=True)
-
-
-# ── generation loop ────────────────────────────────────────
+# ── generation (uses transformers' GenerationMixin) ──────────
 
 @torch.no_grad()
-def generate(model, tokenizer, prompt: str,
-             max_new_tokens: int = 512,
-             temperature: float = 0.7,
-             top_p: float = 0.9,
-             top_k: int = 50,
-             eos_token_id: Optional[int] = None,
-             device: Optional[str] = None) -> str:
-    if device is None:
-        device = next(model.parameters()).device
-    if eos_token_id is None:
-        eos_token_id = tokenizer.eos_token_id or 151645
-
-    input_ids = tokenizer(prompt, return_tensors="pt").input_ids.to(device)
-    generated = []
-    past_key_values = None
-
-    for _ in range(max_new_tokens):
-        outputs = model(
-            input_ids=input_ids,
-            past_key_values=past_key_values,
-            use_cache=True,
-        )
-        logits = outputs.logits[:, -1, :]
-
-        if temperature > 0:
-            scaled = logits / temperature
-            if top_k > 0:
-                v, _ = torch.topk(scaled, min(top_k, scaled.size(-1)))
-                scaled[scaled < v[:, -1:]] = float("-inf")
-            probs = F.softmax(scaled, dim=-1)
-            if top_p < 1.0:
-                sorted_p, sorted_idx = probs.sort(descending=True, dim=-1)
-                cumsum = sorted_p.cumsum(dim=-1)
-                mask = cumsum - sorted_p > (1 - top_p)
-                sorted_p[mask] = 0.0
-                probs = sorted_p / sorted_p.sum(dim=-1, keepdim=True)
-                next_id = torch.multinomial(probs, 1).gather(1, sorted_idx)
-            else:
-                next_id = torch.multinomial(probs, 1)
-        else:
-            next_id = logits.argmax(dim=-1, keepdim=True)
-
-        past_key_values = outputs.past_key_values
-        generated.append(next_id)
-        input_ids = next_id
-
-        if next_id.item() == eos_token_id:
-            break
-
-    all_ids = torch.cat(generated, dim=1)
-    return tokenizer.decode(all_ids[0], skip_special_tokens=True)
+def generate(model, tokenizer, prompt: str, **gen_kwargs) -> str:
+    device = next(model.parameters()).device
+    inputs = tokenizer(prompt, return_tensors="pt").to(device)
+    input_len = inputs["input_ids"].shape[1]
+    outputs = model.generate(
+        **inputs,
+        pad_token_id=tokenizer.pad_token_id,
+        eos_token_id=tokenizer.eos_token_id,
+        **gen_kwargs,
+    )
+    generated = outputs[0, input_len:]
+    return tokenizer.decode(generated, skip_special_tokens=True)
 
 
-# ── CLI ────────────────────────────────────────────────────
+# ── CLI ──────────────────────────────────────────────────────
 
 def main():
     import argparse
-    parser = argparse.ArgumentParser(description="Qwen3.5 inference (standalone)")
+    parser = argparse.ArgumentParser(description="Qwen3.5 inference")
     parser.add_argument("--model", type=str, default="Qwen/Qwen3.5-27B")
     parser.add_argument("--prompt", type=str, default="Hello! Tell me about yourself.")
-    parser.add_argument("--max-tokens", type=int, default=512)
+    parser.add_argument("--max-new-tokens", type=int, default=512)
     parser.add_argument("--temperature", type=float, default=0.7)
+    parser.add_argument("--do-sample", action="store_true", default=True)
     parser.add_argument("--device", type=str, default="auto")
     args = parser.parse_args()
 
@@ -169,11 +156,12 @@ def main():
     print("Loading weights ...")
     load_weights(model, args.model, args.device, torch.bfloat16)
     print("Loading tokenizer ...")
-    tokenizer = load_tokenizer(args.model)
-    print(f"Generating (max_tokens={args.max_tokens}) ...")
+    tokenizer = AutoTokenizer.from_pretrained(args.model, trust_remote_code=True)
+    print(f"Generating ...")
     out = generate(model, tokenizer, args.prompt,
-                   max_new_tokens=args.max_tokens,
-                   temperature=args.temperature)
+                   max_new_tokens=args.max_new_tokens,
+                   temperature=args.temperature,
+                   do_sample=args.do_sample)
     print(f"\n=== Output ===\n{out}")
 
 

@@ -1392,7 +1392,7 @@ class Qwen3_5Model(Qwen3_5PreTrainedModel):
             past_key_values=past_key_values, inputs_embeds=inputs_embeds, **kwargs,
         )
 
-        return Qwen3_5ModelOutputWithPast(**outputs, rope_deltas=self.rope_deltas)
+        return Qwen3_5ModelOutputWithPast(**outputs.__dict__, rope_deltas=self.rope_deltas)
 
 
 # ============================================================

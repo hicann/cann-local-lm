@@ -316,12 +316,12 @@ def test_truncation():
 # ──────────────────────────────────────────────
 
 def test_weight_loading(model_path: str):
+    global SKIP
     print(f"\n=== Weight Loading ({model_path}) ===")
     try:
         import safetensors  # noqa: F401
     except ImportError:
         print("  [SKIP] safetensors not installed (pip install safetensors)")
-        global SKIP
         SKIP += 1
         return
 
@@ -330,7 +330,6 @@ def test_weight_loading(model_path: str):
     config_path = os.path.join(model_path, "config.json")
     if not os.path.isfile(config_path):
         print(f"  [SKIP] config.json not found in {model_path}")
-        global SKIP
         SKIP += 1
         return
 

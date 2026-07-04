@@ -79,13 +79,17 @@ CANN-LM/cann_lm/models/qwen3/
 
 ### 第 2 步：创建目录结构
 
-在 `CANN-LM/cann_lm/models/skills/qwen3-5-pure-torch/` 下创建实现文件：
+在 `CANN-LM/cann_lm/models/qwen3_5/` 下创建实现文件，仿照 gemma4 的标准 Python 包结构：
 
 ```
-CANN-LM/cann_lm/models/skills/qwen3-5-pure-torch/
-├── SKILL.md                       # 本文件
+CANN-LM/cann_lm/models/qwen3_5/
+├── __init__.py                    # 包导出
 ├── configuration_qwen3_5.py       # 模型配置（纯 dataclass，不继承 PreTrainedConfig）
 ├── modeling_qwen3_5.py            # 纯 PyTorch 模型实现（文本 CausalLM）
+├── test_modeling_qwen3_5.py       # 测试脚本
+
+CANN-LM/cann_lm/models/skills/qwen3-5-pure-torch/
+├── SKILL.md                       # 本文件（技能描述，不含 Python 代码）
 ```
 
 ### 第 3 步：实现 Configuration

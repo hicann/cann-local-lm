@@ -5,10 +5,8 @@ import os
 import torch
 import torch.nn.functional as F
 
-sys.path.insert(0, os.path.dirname(__file__))
-
-from configuration_qwen3_5 import Qwen3_5TextConfig
-from modeling_qwen3_5 import (
+from cann_lm.models.qwen3_5.configuration_qwen3_5 import Qwen3_5TextConfig
+from cann_lm.models.qwen3_5.modeling_qwen3_5 import (
     Qwen3_5RMSNorm,
     Qwen3_5RMSNormGated,
     Qwen3_5TextRotaryEmbedding,

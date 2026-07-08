@@ -21,7 +21,7 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[3]
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-from cann_lm.converter.export.epair_utils import extract_epair, pack_weights
+from cann_lm.converter.export.epair_utils import consolidate_epair, extract_epair, pack_weights
 from cann_lm.converter.export.simple_transformer import SimpleTransformer
 
 VOCAB_SIZE = 256
@@ -63,7 +63,8 @@ def compile_ep_to_epair(pt2_path: str | Path, epair_path: str | Path) -> Path:
     exported_program = torch.export.load(pt2_path)
     epair = torch_delegate.export_to_epair(exported_program)
     torch_delegate.epair_save(epair, epair_path)
-    print(f"Compiled: {epair_path}")
+
+    consolidate_epair(epair_path, epair_path)
     return epair_path
 
 

@@ -59,4 +59,4 @@ export LD_PRELOAD="${STUBS_DIR}/libacl_stub.so:${STUBS_DIR}/libge_local_stub.so:
 export PYTHONPATH="${PROJECT_ROOT}${PYTHONPATH:+:$PYTHONPATH}"
 
 cd "$PROJECT_ROOT"
-"$PYTHON_BIN" -m cann_lm.converter.export.export_to_epair "${FLAGS[@]}"
+"$PYTHON_BIN" -m cann_lm.converter.export.export_to_epair export "${FLAGS[@]}"

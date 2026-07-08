@@ -1,12 +1,13 @@
 #include <gtest/gtest.h>
 
+#include <fstream>
+#include <sstream>
 #include <string>
 
 #include "backend/epair_model_parser.h"
 #include "common/abi_compat_utils.h"
 #include "common/epair_archive_constants.h"
 #include "common/logging/logging.h"
-#include "backend/epair_archive.h"
 
 #ifndef FIXTURES_DIR
 #define FIXTURES_DIR "fixtures"
@@ -14,9 +15,15 @@
 
 namespace {
 
-const std::string kAnnotated = std::string(FIXTURES_DIR) + "/annotated_mm_add.epair";
-const std::string kMissingGraphSource = std::string(FIXTURES_DIR) + "/missing_graph_source.epair";
-const std::string kGraphSource = td::epair_spec::kAnnotatedModelJson;
+const std::string kAnnotated = std::string(FIXTURES_DIR) + "/annotated_mm_add";
+
+std::string ReadFile(const std::string &path) {
+  std::ifstream file(path);
+  if (!file) return {};
+  std::ostringstream ss;
+  ss << file.rdbuf();
+  return ss.str();
+}
 
 }  // namespace
 
@@ -25,10 +32,9 @@ namespace td {
 class EpairModelParserTest : public ::testing::Test {};
 
 TEST_F(EpairModelParserTest, ParsesAnnotatedFixture) {
-  EpairArchive archive(kAnnotated.c_str());
   ValidationResult result{true, {}};
-  const RecordData model_record = archive.ReadRecord(kGraphSource.c_str());
-  const std::string model_json = model_record.AsString();
+  const std::string model_json = ReadFile(kAnnotated + "/extra/ep_json_with_ascend_ir.json");
+  ASSERT_FALSE(model_json.empty());
   const td::OrderedJson root = td::EpairModelParser::ParseRootJson(model_json, result);
   const td::ParsedModel parsed_model = td::EpairModelParser::ParseModelJson(root, result);
   td::EpairModelParser parser = td::EpairModelParser::Parse(model_json, result);
@@ -43,11 +49,6 @@ TEST_F(EpairModelParserTest, ParsesAnnotatedFixture) {
   EXPECT_EQ(parser.LogicalNameOfPlaceholder("p_weight"), "weight");
   EXPECT_EQ(parser.PlaceholderKindOf("b_bias"), td::PlaceholderKind::Buffer);
   ASSERT_NE(parser.FindTensorValue("mm"), nullptr);
-}
-
-TEST_F(EpairModelParserTest, MissingGraphSourceDetectedByArchive) {
-  EpairArchive archive(kMissingGraphSource.c_str());
-  EXPECT_FALSE(archive.HasRecord(kGraphSource.c_str()));
 }
 
 TEST_F(EpairModelParserTest, ParsesSymIntUserInput) {

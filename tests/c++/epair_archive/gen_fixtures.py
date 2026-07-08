@@ -1,28 +1,38 @@
 #!/usr/bin/env python3
-"""Generate .epair test fixtures for consolidated weights C++ tests."""
+"""Generate directory-based test fixtures for consolidated weights C++ tests."""
 
 import argparse
 import base64
 import json
 import os
 import struct
-import sys
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "..", "cann_lm", "converter", "export"))
-
-from torch.export.pt2_archive import PT2ArchiveWriter
 
 FIXTURES_DIR = os.path.join(os.path.dirname(__file__), "fixtures")
-ArchiveWriter = PT2ArchiveWriter
+
+
+def _make_dir(out_dir: str) -> None:
+    os.makedirs(out_dir, exist_ok=True)
+
+
+def _write_json(path: str, data) -> None:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f:
+        json.dump(data, f, indent=2)
+
+
+def _write_bytes(path: str, data: bytes) -> None:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "wb") as f:
+        f.write(data)
 
 
 def _manifest_json(total_nodes=0, converted=0):
-    return json.dumps({
+    return {
         "version": 1,
         "backend_name": "ascend_ge",
         "total_nodes": total_nodes,
         "converted_nodes": converted,
-    })
+    }
 
 
 def _as_tensor(name):
@@ -69,7 +79,57 @@ def _common_model_json(graph, signature):
 
 
 # ---------------------------------------------------------------------------
-# Fixture: annotated_mm_add.epair  (legacy format — separate weight files)
+# Helper: write a full fixture directory
+# ---------------------------------------------------------------------------
+def _write_fixture(fixture_name: str, model_json: dict, bin_data: bytes = b"",
+                   index_data: list | None = None,
+                   legacy_weights: dict | None = None) -> str:
+    """Write a fixture directory.
+
+    Args:
+        fixture_name: directory name (without .epair)
+        model_json: the full model JSON to write to extra/ep_json_with_ascend_ir.json
+        bin_data: consolidated weights.bin content
+        index_data: consolidated weights_index.json list
+        legacy_weights: optional dict of {logical_name: (path_name, bytes, meta)}
+    """
+    out = os.path.join(FIXTURES_DIR, fixture_name)
+    _make_dir(out)
+
+    # Model JSON
+    _write_json(os.path.join(out, "extra", "ep_json_with_ascend_ir.json"), model_json)
+
+    # Manifest
+    _write_json(os.path.join(out, "extra", "epair_manifest.json"),
+                _manifest_json(total_nodes=len(model_json.get("graph_module", {}).get("graph", {}).get("nodes", [])),
+                              converted=len(model_json.get("graph_module", {}).get("graph", {}).get("nodes", []))))
+
+    # Consolidated weights
+    if bin_data:
+        _write_bytes(os.path.join(out, "data", "weights.bin"), bin_data)
+    if index_data is not None:
+        _write_json(os.path.join(out, "data", "weights_index.json"), index_data)
+
+    # Legacy weights
+    if legacy_weights:
+        config = {"config": {}}
+        for logical_name, (path_name, data, meta) in legacy_weights.items():
+            config["config"][logical_name] = {
+                "path_name": path_name,
+                "is_param": meta.get("requires_grad", False),
+                "use_pickle": False,
+                "tensor_meta": meta,
+            }
+            _write_bytes(os.path.join(out, "data", "weights", path_name), data)
+        _write_json(os.path.join(out, "data", "weights", "model_weights_config.json"), config)
+        _write_json(os.path.join(out, "data", "constants", "model_constants_config.json"), {"config": {}})
+
+    print(f"Generated: {fixture_name}/")
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Fixture: annotated_mm_add  (legacy format — separate weight files)
 # ---------------------------------------------------------------------------
 def gen_annotated_mm_add():
     graph = {
@@ -121,36 +181,18 @@ def gen_annotated_mm_add():
         ],
     }
     model_json = _common_model_json(graph, signature)
-
     w_data = _float_bytes([1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0])
     b_data = _float_bytes([0.5, 1.5, 2.5])
 
-    out = os.path.join(FIXTURES_DIR, "annotated_mm_add.epair")
-    with ArchiveWriter(out) as writer:
-        writer.write_string("models/model.json", json.dumps(model_json))
-        writer.write_string("extra/ep_json_with_ascend_ir.json", json.dumps(model_json))
-        writer.write_string("data/weights/model_weights_config.json", json.dumps({
-            "config": {
-                "weight": {
-                    "path_name": "weight_0", "is_param": True,
-                    "use_pickle": False, "tensor_meta": _tensor_meta([3, 3], True),
-                },
-                "bias": {
-                    "path_name": "weight_1", "is_param": False,
-                    "use_pickle": False, "tensor_meta": _tensor_meta([3], False),
-                },
-            }
-        }))
-        writer.write_bytes("data/weights/weight_0", w_data)
-        writer.write_bytes("data/weights/weight_1", b_data)
-        writer.write_string("data/constants/model_constants_config.json", json.dumps({"config": {}}))
-        writer.write_string("extra/epair_manifest.json", _manifest_json(total_nodes=2, converted=2))
-    print("Generated: annotated_mm_add.epair (legacy)")
+    _write_fixture("annotated_mm_add", model_json,
+                   legacy_weights={
+                       "weight": ("weight_0", w_data, _tensor_meta([3, 3], True)),
+                       "bias": ("weight_1", b_data, _tensor_meta([3], False)),
+                   })
 
 
 # ---------------------------------------------------------------------------
-# Fixture: annotated_consolidated_mm_add.epair  (consolidated format)
-# Same model but weights in data/weights.bin + data/weights_index.json
+# Fixture: annotated_consolidated_mm_add  (consolidated format)
 # ---------------------------------------------------------------------------
 def gen_annotated_consolidated_mm_add():
     graph = {
@@ -202,30 +244,18 @@ def gen_annotated_consolidated_mm_add():
         ],
     }
     model_json = _common_model_json(graph, signature)
-
     w_data = _float_bytes([1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0])
     b_data = _float_bytes([0.5, 1.5, 2.5])
-
-    # Consolidated: single bin + index
     bin_data = w_data + b_data
     index = [
         {"name": "weight", "offset": 0, "size": len(w_data)},
         {"name": "bias", "offset": len(w_data), "size": len(b_data)},
     ]
-
-    out = os.path.join(FIXTURES_DIR, "annotated_consolidated_mm_add.epair")
-    with ArchiveWriter(out) as writer:
-        writer.write_string("models/model.json", json.dumps(model_json))
-        writer.write_string("extra/ep_json_with_ascend_ir.json", json.dumps(model_json))
-        writer.write_bytes("data/weights.bin", bin_data)
-        writer.write_string("data/weights_index.json", json.dumps(index))
-        writer.write_string("extra/epair_manifest.json", _manifest_json(total_nodes=2, converted=2))
-    print("Generated: annotated_consolidated_mm_add.epair (consolidated)")
+    _write_fixture("annotated_consolidated_mm_add", model_json, bin_data, index)
 
 
 # ---------------------------------------------------------------------------
-# Fixture: annotated_consolidated_missing_meta.epair
-# Consolidated index entry "unknown_weight" has no matching tensor_values key
+# Fixture: annotated_consolidated_missing_meta
 # ---------------------------------------------------------------------------
 def gen_annotated_consolidated_missing_meta():
     graph = {
@@ -248,23 +278,13 @@ def gen_annotated_consolidated_missing_meta():
         "output_specs": [],
     }
     model_json = _common_model_json(graph, signature)
-
     bin_data = _float_bytes([1.0, 2.0, 3.0])
     index = [{"name": "unknown_weight", "offset": 0, "size": len(bin_data)}]
-
-    out = os.path.join(FIXTURES_DIR, "annotated_consolidated_missing_meta.epair")
-    with ArchiveWriter(out) as writer:
-        writer.write_string("models/model.json", json.dumps(model_json))
-        writer.write_string("extra/ep_json_with_ascend_ir.json", json.dumps(model_json))
-        writer.write_bytes("data/weights.bin", bin_data)
-        writer.write_string("data/weights_index.json", json.dumps(index))
-        writer.write_string("extra/epair_manifest.json", _manifest_json(total_nodes=0, converted=0))
-    print("Generated: annotated_consolidated_missing_meta.epair")
+    _write_fixture("annotated_consolidated_missing_meta", model_json, bin_data, index)
 
 
 # ---------------------------------------------------------------------------
-# Fixture: annotated_consolidated_no_index.epair  (no consolidated index)
-# Should fall back to legacy; no legacy config → MISSING_PLACEHOLDER_RECORD
+# Fixture: annotated_consolidated_no_index  (no consolidated index)
 # ---------------------------------------------------------------------------
 def gen_annotated_consolidated_no_index():
     graph = {
@@ -287,30 +307,12 @@ def gen_annotated_consolidated_no_index():
         "output_specs": [],
     }
     model_json = _common_model_json(graph, signature)
-
-    out = os.path.join(FIXTURES_DIR, "annotated_consolidated_no_index.epair")
-    with ArchiveWriter(out) as writer:
-        writer.write_string("models/model.json", json.dumps(model_json))
-        writer.write_string("extra/ep_json_with_ascend_ir.json", json.dumps(model_json))
-        writer.write_bytes("data/weights.bin", b"dummy")
-        writer.write_string("extra/epair_manifest.json", _manifest_json(total_nodes=0, converted=0))
-    print("Generated: annotated_consolidated_no_index.epair")
+    _write_fixture("annotated_consolidated_no_index", model_json,
+                   bin_data=b"dummy")
 
 
 # ---------------------------------------------------------------------------
-# Fixture: missing_graph_source.epair  (no model.json / no ep_json_with_ir)
-# ---------------------------------------------------------------------------
-def gen_missing_graph_source():
-    out = os.path.join(FIXTURES_DIR, "missing_graph_source.epair")
-    with ArchiveWriter(out) as writer:
-        writer.write_string("extra/epair_manifest.json", _manifest_json())
-        writer.write_bytes("data/dummy", b"x")
-    print("Generated: missing_graph_source.epair")
-
-
-# ---------------------------------------------------------------------------
-# Fixture: annotated_missing_weight_record.epair
-# Model references "p_weight" but no weight record / config exists
+# Fixture: annotated_missing_weight_record
 # ---------------------------------------------------------------------------
 def gen_annotated_missing_weight_record():
     graph = {
@@ -345,19 +347,11 @@ def gen_annotated_missing_weight_record():
         "output_specs": [{"user_output": {"arg": _as_tensor("out")}}],
     }
     model_json = _common_model_json(graph, signature)
-    out = os.path.join(FIXTURES_DIR, "annotated_missing_weight_record.epair")
-    with ArchiveWriter(out) as writer:
-        writer.write_string("models/model.json", json.dumps(model_json))
-        writer.write_string("extra/ep_json_with_ascend_ir.json", json.dumps(model_json))
-        # No data/weights/ directory → triggers MISSING_PLACEHOLDER_RECORD
-        writer.write_string("data/constants/model_constants_config.json", json.dumps({"config": {}}))
-        writer.write_string("extra/epair_manifest.json", _manifest_json(total_nodes=1, converted=1))
-    print("Generated: annotated_missing_weight_record.epair")
+    _write_fixture("annotated_missing_weight_record", model_json)
 
 
 # ---------------------------------------------------------------------------
-# Fixture: annotated_bad_weight_size.epair
-# Config says shape [3,3] float but payload is only 4 bytes
+# Fixture: annotated_bad_weight_size
 # ---------------------------------------------------------------------------
 def gen_annotated_bad_weight_size():
     graph = {
@@ -382,23 +376,10 @@ def gen_annotated_bad_weight_size():
         "output_specs": [],
     }
     model_json = _common_model_json(graph, signature)
-    out = os.path.join(FIXTURES_DIR, "annotated_bad_weight_size.epair")
-    with ArchiveWriter(out) as writer:
-        writer.write_string("models/model.json", json.dumps(model_json))
-        writer.write_string("extra/ep_json_with_ascend_ir.json", json.dumps(model_json))
-        writer.write_string("data/weights/model_weights_config.json", json.dumps({
-            "config": {
-                "weight": {
-                    "path_name": "weight_0", "is_param": True,
-                    "use_pickle": False, "tensor_meta": _tensor_meta([3, 3], True),
-                },
-            }
-        }))
-        # Payload is only 1 float (4 bytes), but meta says 9 floats (36 bytes)
-        writer.write_bytes("data/weights/weight_0", _float_bytes([42.0]))
-        writer.write_string("data/constants/model_constants_config.json", json.dumps({"config": {}}))
-        writer.write_string("extra/epair_manifest.json", _manifest_json(total_nodes=0, converted=0))
-    print("Generated: annotated_bad_weight_size.epair")
+    _write_fixture("annotated_bad_weight_size", model_json,
+                   legacy_weights={
+                       "weight": ("weight_0", _float_bytes([42.0]), _tensor_meta([3, 3], True)),
+                   })
 
 
 # ---------------------------------------------------------------------------
@@ -413,14 +394,13 @@ def generate(output_dir=None):
     gen_annotated_consolidated_mm_add()
     gen_annotated_consolidated_missing_meta()
     gen_annotated_consolidated_no_index()
-    gen_missing_graph_source()
     gen_annotated_missing_weight_record()
     gen_annotated_bad_weight_size()
     print("Done.")
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Generate .epair test fixtures")
+    parser = argparse.ArgumentParser(description="Generate directory-based test fixtures")
     parser.add_argument("--output-dir", default=FIXTURES_DIR)
     args = parser.parse_args()
     generate(args.output_dir)

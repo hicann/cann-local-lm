@@ -1,5 +1,7 @@
 #include <gtest/gtest.h>
 
+#include <fstream>
+#include <sstream>
 #include <string>
 
 #include <nlohmann/json.hpp>
@@ -16,10 +18,17 @@
 
 namespace {
 
-const std::string kConsolidated = std::string(FIXTURES_DIR) + "/annotated_consolidated_mm_add.epair";
-const std::string kConsolidatedMissingMeta = std::string(FIXTURES_DIR) + "/annotated_consolidated_missing_meta.epair";
-const std::string kConsolidatedNoIndex = std::string(FIXTURES_DIR) + "/annotated_consolidated_no_index.epair";
-const std::string kGraphSource = td::epair_spec::kAnnotatedModelJson;
+const std::string kConsolidated = std::string(FIXTURES_DIR) + "/annotated_consolidated_mm_add";
+const std::string kConsolidatedMissingMeta = std::string(FIXTURES_DIR) + "/annotated_consolidated_missing_meta";
+const std::string kConsolidatedNoIndex = std::string(FIXTURES_DIR) + "/annotated_consolidated_no_index";
+
+std::string ReadFile(const std::string &path) {
+  std::ifstream file(path);
+  if (!file) return {};
+  std::ostringstream ss;
+  ss << file.rdbuf();
+  return ss.str();
+}
 
 void AssertWeightMatches(const td::TensorHolder &holder, const std::vector<int64_t> &expected_dims,
                           int64_t expected_dtype, int64_t expected_format, size_t expected_bytes,
@@ -35,21 +44,17 @@ void AssertWeightMatches(const td::TensorHolder &holder, const std::vector<int64
   EXPECT_EQ(holder.requires_grad, expected_requires_grad);
 }
 
-td::GeWeightLoader CreateLoader(const std::string &epair_path, td::ValidationResult &result) {
-  td::EpairArchive epair_archive(epair_path.c_str());
-  const td::RecordData graph_record = epair_archive.ReadRecord(kGraphSource.c_str());
-  td::EpairModelParser parser = td::EpairModelParser::Parse(graph_record.AsString(), result);
+td::GeWeightLoader CreateLoader(const std::string &dir_path, td::ValidationResult &result) {
+  const std::string model_json = ReadFile(dir_path + "/extra/ep_json_with_ascend_ir.json");
+  td::EpairModelParser parser = td::EpairModelParser::Parse(model_json, result);
   if (!result.ok) return {};
-  return td::GeWeightLoader::Create(epair_archive, parser.Model(), result);
+  return td::GeWeightLoader::CreateFromDirectory(dir_path, parser.Model(), result);
 }
 
 }  // namespace
 
 namespace td {
 
-// ---------------------------------------------------------------------------
-// Consolidated: loads and produces identical results to legacy
-// ---------------------------------------------------------------------------
 TEST(GeWeightLoaderConsolidatedTest, LoadsTensorHolderCorrectly) {
   ValidationResult result{true, {}};
   GeWeightLoader loader = CreateLoader(kConsolidated, result);
@@ -71,9 +76,6 @@ TEST(GeWeightLoaderConsolidatedTest, LoadsTensorHolderCorrectly) {
   AssertWeightMatches(bias, {3}, 7, 7, 12, false);
 }
 
-// ---------------------------------------------------------------------------
-// Consolidated: missing tensor name reports error
-// ---------------------------------------------------------------------------
 TEST(GeWeightLoaderConsolidatedTest, MissingTensorNameReportsError) {
   ValidationResult result{true, {}};
   GeWeightLoader loader = CreateLoader(kConsolidated, result);
@@ -85,13 +87,8 @@ TEST(GeWeightLoaderConsolidatedTest, MissingTensorNameReportsError) {
   EXPECT_FALSE(holder.HasValue());
 }
 
-// ---------------------------------------------------------------------------
-// Consolidated: tensor_values has no matching entry for weight name
-// ---------------------------------------------------------------------------
 TEST(GeWeightLoaderConsolidatedTest, MissingTensorMetaReportsError) {
   ValidationResult result{true, {}};
-  // This epair has a consolidated index entry "unknown_weight" that doesn't
-  // exist in tensor_values → LoadConsolidated should emit MISSING_TENSOR_META
   GeWeightLoader loader = CreateLoader(kConsolidatedMissingMeta, result);
   EXPECT_FALSE(result.ok);
   const bool found =
@@ -100,24 +97,16 @@ TEST(GeWeightLoaderConsolidatedTest, MissingTensorMetaReportsError) {
   EXPECT_TRUE(found);
 }
 
-// ---------------------------------------------------------------------------
-// Consolidated: no index → falls back to legacy → error since no legacy config
-// ---------------------------------------------------------------------------
-TEST(GeWeightLoaderConsolidatedTest, NoIndexFallsBackToLegacy) {
+TEST(GeWeightLoaderConsolidatedTest, NoIndexReportsError) {
   ValidationResult result{true, {}};
-  // This epair has weights.bin but no weights_index.json → Create() picks
-  // legacy path; no legacy config → MISSING_PLACEHOLDER_RECORD error
   GeWeightLoader loader = CreateLoader(kConsolidatedNoIndex, result);
   EXPECT_FALSE(result.ok);
   const bool found =
       std::any_of(result.issues.begin(), result.issues.end(),
-                   [](const auto &issue) { return issue.code == "MISSING_PLACEHOLDER_RECORD"; });
+                   [](const auto &issue) { return issue.code == "MISSING_WEIGHTS_INDEX"; });
   EXPECT_TRUE(found);
 }
 
-// ---------------------------------------------------------------------------
-// Consolidated: verifies tensor binary values are correct
-// ---------------------------------------------------------------------------
 TEST(GeWeightLoaderConsolidatedTest, TensorBinaryValuesCorrect) {
   ValidationResult result{true, {}};
   GeWeightLoader loader = CreateLoader(kConsolidated, result);
@@ -130,7 +119,6 @@ TEST(GeWeightLoaderConsolidatedTest, TensorBinaryValuesCorrect) {
   const auto *values = std::get_if<std::vector<float>>(&holder.value);
   ASSERT_NE(values, nullptr);
   ASSERT_EQ(values->size(), 9u);
-  // p_weight = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0]
   EXPECT_FLOAT_EQ((*values)[0], 1.0f);
   EXPECT_FLOAT_EQ((*values)[4], 5.0f);
   EXPECT_FLOAT_EQ((*values)[8], 9.0f);
@@ -140,15 +128,11 @@ TEST(GeWeightLoaderConsolidatedTest, TensorBinaryValuesCorrect) {
   const auto *bias_values = std::get_if<std::vector<float>>(&bias.value);
   ASSERT_NE(bias_values, nullptr);
   ASSERT_EQ(bias_values->size(), 3u);
-  // b_bias = [0.5, 1.5, 2.5]
   EXPECT_FLOAT_EQ((*bias_values)[0], 0.5f);
   EXPECT_FLOAT_EQ((*bias_values)[1], 1.5f);
   EXPECT_FLOAT_EQ((*bias_values)[2], 2.5f);
 }
 
-// ---------------------------------------------------------------------------
-// Consolidated: is_parameter is true for Parameter kind, false for Buffer
-// ---------------------------------------------------------------------------
 TEST(GeWeightLoaderConsolidatedTest, IsParameterCorrectForKind) {
   ValidationResult result{true, {}};
   GeWeightLoader loader = CreateLoader(kConsolidated, result);
@@ -163,9 +147,6 @@ TEST(GeWeightLoaderConsolidatedTest, IsParameterCorrectForKind) {
   EXPECT_FALSE(bias_info->is_parameter);
 }
 
-// ---------------------------------------------------------------------------
-// Consolidated: GetTensorRecordInfo returns correct offset/data_size
-// ---------------------------------------------------------------------------
 TEST(GeWeightLoaderConsolidatedTest, RecordInfoHasOffsetAndSize) {
   ValidationResult result{true, {}};
   GeWeightLoader loader = CreateLoader(kConsolidated, result);
@@ -173,22 +154,15 @@ TEST(GeWeightLoaderConsolidatedTest, RecordInfoHasOffsetAndSize) {
 
   const TensorRecordInfo *weight_info = loader.GetTensorRecordInfo("p_weight");
   ASSERT_NE(weight_info, nullptr);
-  // weight is first in the index, offset=0, size=36 (3x3 float)
   EXPECT_EQ(weight_info->offset, 0u);
   EXPECT_EQ(weight_info->data_size, 36u);
-  EXPECT_EQ(weight_info->record_path, td::epair_spec::kConsolidatedWeightsBin);
 
   const TensorRecordInfo *bias_info = loader.GetTensorRecordInfo("b_bias");
   ASSERT_NE(bias_info, nullptr);
-  // bias is second, offset=36, size=12 (3 float)
   EXPECT_EQ(bias_info->offset, 36u);
   EXPECT_EQ(bias_info->data_size, 12u);
-  EXPECT_EQ(bias_info->record_path, td::epair_spec::kConsolidatedWeightsBin);
 }
 
-// ---------------------------------------------------------------------------
-// Consolidated: GetTensorMeta returns tensor metadata from model.tensor_values
-// ---------------------------------------------------------------------------
 TEST(GeWeightLoaderConsolidatedTest, GetTensorMetaWorks) {
   ValidationResult result{true, {}};
   GeWeightLoader loader = CreateLoader(kConsolidated, result);
@@ -199,7 +173,7 @@ TEST(GeWeightLoaderConsolidatedTest, GetTensorMetaWorks) {
   ASSERT_EQ(meta->sizes.size(), 2u);
   EXPECT_EQ(meta->sizes[0], 3);
   EXPECT_EQ(meta->sizes[1], 3);
-  EXPECT_EQ(meta->dtype, 7);  // float
+  EXPECT_EQ(meta->dtype, 7);
   EXPECT_TRUE(meta->requires_grad);
 
   const ParsedTensorMeta *bias_meta = loader.GetTensorMeta("b_bias");
@@ -210,9 +184,6 @@ TEST(GeWeightLoaderConsolidatedTest, GetTensorMetaWorks) {
   EXPECT_FALSE(bias_meta->requires_grad);
 }
 
-// ---------------------------------------------------------------------------
-// Consolidated: HasTensor returns correct values
-// ---------------------------------------------------------------------------
 TEST(GeWeightLoaderConsolidatedTest, HasTensorReturnsCorrectly) {
   ValidationResult result{true, {}};
   GeWeightLoader loader = CreateLoader(kConsolidated, result);

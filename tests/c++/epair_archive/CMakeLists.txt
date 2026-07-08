@@ -69,24 +69,17 @@ list(APPEND RPATH_LINK_FLAGS "-Wl,-rpath-link,${TORCH_INSTALL_PREFIX}/lib")
 list(APPEND RPATH_LINK_FLAGS "-Wl,-rpath-link,${TORCH_INSTALL_PREFIX}/../torch.libs")
 list(APPEND RPATH_LINK_FLAGS "-Wl,-rpath-link,/usr/lib/aarch64-linux-gnu")
 
-# ── generate fixtures ──
-set(FIXTURE_OUTPUTS
-    "${FIXTURES_DIR}/annotated_mm_add.epair"
-    "${FIXTURES_DIR}/annotated_consolidated_mm_add.epair"
-    "${FIXTURES_DIR}/annotated_consolidated_missing_meta.epair"
-    "${FIXTURES_DIR}/annotated_consolidated_no_index.epair"
-    "${FIXTURES_DIR}/missing_graph_source.epair"
-    "${FIXTURES_DIR}/annotated_missing_weight_record.epair"
-    "${FIXTURES_DIR}/annotated_bad_weight_size.epair"
-)
+# ── generate fixtures (directory-based, use stamp file) ──
+set(FIXTURE_STAMP "${FIXTURES_DIR}/.fixtures_generated.stamp")
 add_custom_command(
-    OUTPUT ${FIXTURE_OUTPUTS}
+    OUTPUT ${FIXTURE_STAMP}
     COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/gen_fixtures.py"
             "--output-dir" "${FIXTURES_DIR}"
+    COMMAND ${CMAKE_COMMAND} -E touch ${FIXTURE_STAMP}
     DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/gen_fixtures.py"
     COMMENT "Generating test fixtures → ${FIXTURES_DIR}"
 )
-add_custom_target(generate_fixtures ALL DEPENDS ${FIXTURE_OUTPUTS})
+add_custom_target(generate_fixtures ALL DEPENDS ${FIXTURE_STAMP})
 
 # ── helper function to create a test executable ──
 function(add_cann_lm_test TEST_NAME SOURCE_FILE)

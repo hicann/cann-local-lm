@@ -12,13 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Export-only torch.library op schemas and meta registrations."""
+"""Export-only torch.library op schemas, meta registrations, and GE converters."""
 
-import os
-
-os.environ.setdefault("TORCH_DEVICE_BACKEND_AUTOLOAD", "0")
-
-import torch
-
-
-_LIBRARY = torch.library.Library("cann_llm", "DEF")
+from .ops import *
+from .ge_converter import register_ge_converters

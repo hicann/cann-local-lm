@@ -1,0 +1,157 @@
+# Copyright 2026 The xLLM Authors. All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""TorchAir converters for the three demo custom ops."""
+
+from __future__ import annotations
+
+from typing import Any
+
+import torch
+
+from . import ops as _backend_ops  # Registers cann_lm ops.
+
+
+def register_ge_converters() -> None:
+    from torchair import register_fx_node_ge_converter
+    from torchair.ge import custom_op
+    from torchair._ge_concrete_graph import ge_apis as ge
+
+    @register_fx_node_ge_converter(torch.ops.cann_lm.rope_in_place.default)
+    def _convert_rope_in_place(
+        input: Any,
+        sin_cache: Any,
+        cos_cache: Any,
+        meta_outputs: Any = None,
+    ) -> Any:
+        del meta_outputs
+        return custom_op(
+            "RopeInPlace",
+            inputs={"input": input, "sin_cache": sin_cache, "cos_cache": cos_cache},
+            outputs=["output"],
+        )
+
+    @register_fx_node_ge_converter(torch.ops.cann_lm.beam_search.default)
+    def _convert_beam_search(
+        log_probs: Any,
+        top_tokens: Any,
+        top_probs: Any,
+        meta_outputs: Any = None,
+    ) -> Any:
+        del meta_outputs
+        return custom_op(
+            "BeamSearch",
+            inputs={
+                "log_probs": log_probs,
+                "top_tokens": top_tokens,
+                "top_probs": top_probs,
+            },
+            outputs=["out_token_ids", "out_token_index", "out_log_probs"],
+        )
+
+    @register_fx_node_ge_converter(torch.ops.cann_lm.fused_infer_attention_score.default)
+    def _convert_fused_infer_attention_score(
+        query: Any,
+        key: Any,
+        value: Any,
+        *,
+        pse_shift: Any = None,
+        atten_mask: Any = None,
+        actual_seq_lengths: Any = None,
+        actual_seq_lengths_kv: Any = None,
+        dequant_scale1: Any = None,
+        quant_scale1: Any = None,
+        dequant_scale2: Any = None,
+        quant_scale2: Any = None,
+        quant_offset2: Any = None,
+        antiquant_scale: Any = None,
+        antiquant_offset: Any = None,
+        block_table: Any = None,
+        query_padding_size: Any = None,
+        kv_padding_size: Any = None,
+        key_antiquant_scale: Any = None,
+        key_antiquant_offset: Any = None,
+        value_antiquant_scale: Any = None,
+        value_antiquant_offset: Any = None,
+        key_shared_prefix: Any = None,
+        value_shared_prefix: Any = None,
+        actual_shared_prefix_len: Any = None,
+        query_rope: Any = None,
+        key_rope: Any = None,
+        key_rope_antiquant_scale: Any = None,
+        num_heads: int = 1,
+        scale: float = 1.0,
+        pre_tokens: int = 2147483647,
+        next_tokens: int = 2147483647,
+        input_layout: str = "BSH",
+        num_key_value_heads: int = 0,
+        sparse_mode: int = 0,
+        inner_precise: int = 0,
+        block_size: int = 0,
+        antiquant_mode: int = 0,
+        softmax_lse_flag: bool = False,
+        key_antiquant_mode: int = 0,
+        value_antiquant_mode: int = 0,
+        meta_outputs: Any = None,
+    ) -> Any:
+        del meta_outputs
+        key_list = [key]
+        value_list = [value]
+        return ge.FusedInferAttentionScore(
+            query, key_list, value_list,
+            pse_shift=pse_shift,
+            atten_mask=atten_mask,
+            actual_seq_lengths=actual_seq_lengths,
+            actual_seq_lengths_kv=actual_seq_lengths_kv,
+            dequant_scale1=dequant_scale1,
+            quant_scale1=quant_scale1,
+            dequant_scale2=dequant_scale2,
+            quant_scale2=quant_scale2,
+            quant_offset2=quant_offset2,
+            antiquant_scale=antiquant_scale,
+            antiquant_offset=antiquant_offset,
+            block_table=block_table,
+            query_padding_size=query_padding_size,
+            kv_padding_size=kv_padding_size,
+            key_antiquant_scale=key_antiquant_scale,
+            key_antiquant_offset=key_antiquant_offset,
+            value_antiquant_scale=value_antiquant_scale,
+            value_antiquant_offset=value_antiquant_offset,
+            key_shared_prefix=key_shared_prefix,
+            value_shared_prefix=value_shared_prefix,
+            actual_shared_prefix_len=actual_shared_prefix_len,
+            query_rope=query_rope,
+            key_rope=key_rope,
+            key_rope_antiquant_scale=key_rope_antiquant_scale,
+            num_heads=num_heads,
+            scale=scale,
+            pre_tokens=pre_tokens,
+            next_tokens=next_tokens,
+            input_layout=input_layout,
+            num_key_value_heads=num_key_value_heads,
+            sparse_mode=sparse_mode,
+            inner_precise=inner_precise,
+            block_size=block_size,
+            antiquant_mode=antiquant_mode,
+            softmax_lse_flag=softmax_lse_flag,
+            key_antiquant_mode=key_antiquant_mode,
+            value_antiquant_mode=value_antiquant_mode,
+            dequant_scale_query=None,
+            learnable_sink=None,
+            q_start_idx=None,
+            kv_start_idx=None,
+            query_quant_mode=0,
+            pse_type=0,
+            out_dtype=0,
+        )

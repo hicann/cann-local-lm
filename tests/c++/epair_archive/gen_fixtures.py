@@ -26,15 +26,6 @@ def _write_bytes(path: str, data: bytes) -> None:
         f.write(data)
 
 
-def _manifest_json(total_nodes=0, converted=0):
-    return {
-        "version": 1,
-        "backend_name": "ascend_ge",
-        "total_nodes": total_nodes,
-        "converted_nodes": converted,
-    }
-
-
 def _as_tensor(name):
     return {"as_tensor": {"name": name}}
 
@@ -96,11 +87,6 @@ def _write_fixture(fixture_name: str, model_json: dict, bin_data: bytes = b"",
 
     # Model JSON
     _write_json(os.path.join(out, "extra", "ep_json_with_ascend_ir.json"), model_json)
-
-    # Manifest
-    _write_json(os.path.join(out, "extra", "epair_manifest.json"),
-                _manifest_json(total_nodes=len(model_json.get("graph_module", {}).get("graph", {}).get("nodes", [])),
-                              converted=len(model_json.get("graph_module", {}).get("graph", {}).get("nodes", []))))
 
     # Consolidated weights
     if bin_data:

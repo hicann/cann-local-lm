@@ -24,8 +24,6 @@ TORCH_DELEGATE_HOME="${TORCH_DELEGATE_HOME:-/mnt/workspace/torch-delegate-harmon
 PHASE=0
 TOTAL=5
 
-export PYTHONPATH=""
-
 phase() {
   PHASE=$((PHASE + 1))
   echo ""
@@ -118,7 +116,7 @@ cd "${ROOT_DIR}"
 "${PYTHON}" "${ROOT_DIR}/export_and_save_epair.py"
 
 EPDIR="${ROOT_DIR}/epair_model"
-if [[ -f "${EPDIR}/data/ep_json_with_ascend_ir.json" ]]; then
+if [[ -f "${EPDIR}/ep_json_with_ascend_ir.json" ]]; then
   check "epair_model 目录已生成 (含 ascend IR 标注)"
 else
   fail "epair_model 未正确生成"

@@ -28,5 +28,8 @@ epair_model/
 input_*.bin
 *.pbtxt
 *.onnx
+*.om
+fusion_result.json
+weight_info.json
 examples/*/data/
 examples/*/epair_model/

@@ -1,29 +1,17 @@
 #include "torch_delegate/epair_model_loader.h"
 
 #include <atomic>
-#include <filesystem>
 #include <fstream>
-#include <map>
 #include <memory>
 #include <sstream>
 #include <string>
-#include <utility>
-#include <vector>
 
-#include <ge/ge_api_v2.h>
-
-#include "backend/epair_archive.h"
 #include "backend/ge_graph_builder.h"
-#include "common/epair_archive_constants.h"
 #include "common/logging/assert_macros.h"
 #include "common/memory_utils.h"
 
 namespace td {
 namespace {
-
-Status ToTdStatus(const ge::Status status) {
-  return status == ge::SUCCESS ? SUCCESS : FAILED;
-}
 
 std::atomic<uint32_t> g_next_graph_id{0};
 
@@ -31,88 +19,8 @@ std::atomic<uint32_t> g_next_graph_id{0};
 
 class EpairModelLoader::Impl {
  public:
-  explicit Impl(const char *archive_path) {
-    Initialize(archive_path);
-  }
-
-  Status Compile(const std::map<ge::AscendString, ge::AscendString> &options) {
-    if (init_status_ != SUCCESS) {
-      TDLOGE("Compile failed: EpairModelLoader is not initialized, status=%s", td::StatusName(init_status_));
-      return init_status_;
-    }
-    if (compiled_flag_) {
-      TDLOGW("Graph is already compiled, graph_id=%u, session_id=%zu", graph_id_, session_id_);
-      return SUCCESS;
-    }
-    session_ = MakeShared<ge::GeSession>(options);
-    if (session_ == nullptr) {
-      TDLOGE("Compile failed: GeSession creation failed");
-      return FAILED;
-    }
-    session_id_ = session_->GetSessionId();
-
-    ge::Status ge_status = session_->AddGraph(graph_id_, *graph_, options);
-    if (ge_status != ge::SUCCESS) {
-      TDLOGE("Compile failed: AddGraph error, return ge_status=%u, graph_id=%u, session_id=%zu", ge_status, graph_id_,
-             session_id_);
-      return ToTdStatus(ge_status);
-    }
-
-    ge_status = session_->CompileGraph(graph_id_);
-    if (ge_status != ge::SUCCESS) {
-      TDLOGE("Compile failed: CompileGraph return ge_status=%u, graph_id=%u, session_id=%zu", ge_status, graph_id_,
-             session_id_);
-      return ToTdStatus(ge_status);
-    }
-
-    compiled_flag_ = true;
-    return SUCCESS;
-  }
-
-  Status Load(const std::map<ge::AscendString, ge::AscendString> &options, void *stream) {
-    if (init_status_ != SUCCESS) {
-      return init_status_;
-    }
-    if (!compiled_flag_ || session_ == nullptr) {
-      TDLOGE("Load failed: model is not compiled (compiled_flag=%s) or GeSession is null",
-             compiled_flag_ ? "true" : "false");
-      return FAILED;
-    }
-
-    const ge::Status ge_status = session_->LoadGraph(graph_id_, options, stream);
-    if (ge_status != ge::SUCCESS) {
-      TDLOGE("Load failed: LoadGraph return ge_status=%u, graph_id=%u, session_id=%zu", ge_status, graph_id_,
-             session_id_);
-      return ToTdStatus(ge_status);
-    }
-
-    loaded_flag_ = true;
-    return SUCCESS;
-  }
-
-  Status CompileAndLoad(const std::map<ge::AscendString, ge::AscendString> &options, void *stream) {
-    const Status compile_status = Compile(options);
-    if (compile_status != SUCCESS) {
-      return compile_status;
-    }
-    return Load(options, stream);
-  }
-
-  Status RunModelWithStreamAsync(void *stream, const std::vector<gert::Tensor> &inputs,
-                                 std::vector<gert::Tensor> &outputs) {
-    if (init_status_ != SUCCESS) {
-      return init_status_;
-    }
-    if (!loaded_flag_ || session_ == nullptr) {
-      TDLOGE("RunModelWithStreamAsync failed: model is not loaded");
-      return FAILED;
-    }
-    const ge::Status ge_status = session_->RunGraphWithStreamAsync(graph_id_, stream, inputs, outputs);
-    if (ge_status != ge::SUCCESS) {
-      TDLOGE("RunModelWithStreamAsync failed: RunGraphWithStreamAsync error, return ge_status=%u, graph_id=%u", ge_status, graph_id_);
-      return ToTdStatus(ge_status);
-    }
-    return SUCCESS;
+  Impl(const char *model_json_path, const char *weights_index_path) {
+    Initialize(model_json_path, weights_index_path);
   }
 
   Status GetGEGraph(ge::Graph *out_graph) {
@@ -138,33 +46,21 @@ class EpairModelLoader::Impl {
   }
 
  private:
-  void Initialize(const char *archive_path) {
-    TDLOGI("Initialize enter: path=%s", archive_path ? archive_path : "(null)");
+  void Initialize(const char *model_json_path, const char *weights_index_path) {
+    TDLOGI("Initialize enter: model_json=%s, weights_index=%s",
+           model_json_path ? model_json_path : "(null)",
+           weights_index_path ? weights_index_path : "(null)");
 
-    if (archive_path == nullptr) {
-      TDLOGE("Initialize failed: path is null");
+    if (model_json_path == nullptr || weights_index_path == nullptr) {
+      TDLOGE("Initialize failed: one or more paths are null");
       init_status_ = INVALID_PARAM;
       return;
     }
 
-    const std::filesystem::path path(archive_path);
-
-    if (std::filesystem::is_directory(path)) {
-      InitializeFromDirectory(path);
-    } else {
-      InitializeFromArchive(path);
-    }
-  }
-
-  void InitializeFromDirectory(const std::filesystem::path &dir_path) {
-    TDLOGI("InitializeFromDirectory enter: path=%s", dir_path.c_str());
-
-    const std::string model_json_path =
-        (dir_path / epair_spec::kAnnotatedModelJson).string();
-
+    // Read model JSON
     std::ifstream file(model_json_path);
     if (!file) {
-      TDLOGE("InitializeFromDirectory failed: cannot open %s", model_json_path.c_str());
+      TDLOGE("Initialize failed: cannot open %s", model_json_path);
       init_status_ = FAILED;
       return;
     }
@@ -173,70 +69,34 @@ class EpairModelLoader::Impl {
     const std::string model_json = ss.str();
 
     ValidationResult result{true, {}};
-    GeGraphBuilder builder(model_json, dir_path.string(), result);
+    GeGraphBuilder builder(model_json, weights_index_path, result);
     if (!result.ok) {
-      TDLOGE("InitializeFromDirectory failed: builder init failed, issues=%zu", result.issues.size());
+      TDLOGE("Initialize failed: builder init failed, issues=%zu", result.issues.size());
       init_status_ = FAILED;
       return;
     }
-    TDLOGI("InitializeFromDirectory step: builder initialized");
+    TDLOGI("Initialize step: builder initialized");
 
     graph_ = builder.Build(result);
     if (!result.ok || graph_ == nullptr) {
-      TDLOGE("InitializeFromDirectory failed: graph build failed, issues=%zu", result.issues.size());
+      TDLOGE("Initialize failed: graph build failed, issues=%zu", result.issues.size());
       init_status_ = FAILED;
       return;
     }
-    TDLOGI("InitializeFromDirectory step: graph built");
+    TDLOGI("Initialize step: graph built");
 
     graph_id_ = g_next_graph_id.fetch_add(1, std::memory_order_relaxed);
     init_status_ = SUCCESS;
-    TDLOGI("InitializeFromDirectory exit: success, graph_id=%u", graph_id_);
-  }
-
-  void InitializeFromArchive(const std::filesystem::path &archive_path) {
-    TDLOGI("InitializeFromArchive enter: path=%s", archive_path.c_str());
-
-    const auto archive = EpairArchive::TryCreate(archive_path.c_str());
-    if (archive == nullptr) {
-      TDLOGE("InitializeFromArchive failed: archive creation error, path=%s", archive_path.c_str());
-      init_status_ = FAILED;
-      return;
-    }
-    TDLOGI("InitializeFromArchive step: archive created, path=%s", archive->Path());
-
-    ValidationResult result{true, {}};
-    GeGraphBuilder builder(*archive, result);
-    if (!result.ok) {
-      TDLOGE("InitializeFromArchive failed: builder init failed, issues=%zu", result.issues.size());
-      init_status_ = FAILED;
-      return;
-    }
-    TDLOGI("InitializeFromArchive step: builder initialized");
-
-    graph_ = builder.Build(result);
-    if (!result.ok || graph_ == nullptr) {
-      TDLOGE("InitializeFromArchive failed: graph build failed, issues=%zu", result.issues.size());
-      init_status_ = FAILED;
-      return;
-    }
-    TDLOGI("InitializeFromArchive step: graph built");
-
-    graph_id_ = g_next_graph_id.fetch_add(1, std::memory_order_relaxed);
-    init_status_ = SUCCESS;
-    TDLOGI("InitializeFromArchive exit: success, graph_id=%u", graph_id_);
+    TDLOGI("Initialize exit: success, graph_id=%u", graph_id_);
   }
 
   Status init_status_ = FAILED;
   uint32_t graph_id_ = 0;
-  uint64_t session_id_ = 0;
-  bool compiled_flag_ = false;
-  bool loaded_flag_ = false;
   std::unique_ptr<ge::Graph> graph_;
-  std::shared_ptr<ge::GeSession> session_;
 };
 
-EpairModelLoader::EpairModelLoader(const char *archive_path) : impl_(MakeShared<Impl>(archive_path)) {
+EpairModelLoader::EpairModelLoader(const char *model_json_path, const char *weights_index_path)
+    : impl_(MakeShared<Impl>(model_json_path, weights_index_path)) {
   if (impl_ == nullptr) {
     TDLOGE("EpairModelLoader construction failed: Impl allocation failed");
     return;
@@ -249,17 +109,6 @@ EpairModelLoader::EpairModelLoader(const char *archive_path) : impl_(MakeShared<
 }
 
 EpairModelLoader::~EpairModelLoader() = default;
-
-Status EpairModelLoader::CompileAndLoad(const std::map<ge::AscendString, ge::AscendString> &options, void *stream) {
-  TD_ASSERT_NOTNULL(impl_, "EpairModelLoader construction failed: Impl allocation failed");
-  return impl_->CompileAndLoad(options, stream);
-}
-
-Status EpairModelLoader::RunModelWithStreamAsync(void *stream, const std::vector<gert::Tensor> &inputs,
-                                                 std::vector<gert::Tensor> &outputs) {
-  TD_ASSERT_NOTNULL(impl_, "EpairModelLoader construction failed: Impl allocation failed");
-  return impl_->RunModelWithStreamAsync(stream, inputs, outputs);
-}
 
 Status EpairModelLoader::GetGEGraph(ge::Graph *graph) const {
   TD_ASSERT_NOTNULL(impl_, "EpairModelLoader construction failed: Impl allocation failed");

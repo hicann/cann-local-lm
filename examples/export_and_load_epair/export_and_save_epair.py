@@ -25,6 +25,7 @@ class MyModel(torch.nn.Module):
 
 ROOT = Path(__file__).resolve().parent
 
+torch.manual_seed(43)
 device = torch.device("cpu")
 model = MyModel().eval().to(device)
 sample_inputs = (torch.randn(3, 4, device=device),)

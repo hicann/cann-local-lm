@@ -117,19 +117,22 @@ std::map<ge::AscendString, ge::AscendString> GlobalOptionsWithSoc(const std::str
 } // namespace
 
 int main(int argc, char *argv[]) {
-  if (argc < 2) {
-    std::cerr << "[ERROR] Usage: " << argv[0] << " <epair_dir_or_file>" << std::endl;
+  if (argc < 3) {
+    std::cerr << "[ERROR] Usage: " << argv[0]
+              << " <model_json_path> <weights_index_path>" << std::endl;
     return -1;
   }
 
   constexpr size_t kTotalStages = 4;
-  const char *epair_input = argv[1];
+  const char *model_json_path = argv[1];
+  const char *weights_index_path = argv[2];
 
   // [1/4] Load epair and build GE Graph
   PrintStage(1, kTotalStages, "Load epair and build GE Graph");
-  std::cout << "  input: " << epair_input << std::endl;
+  std::cout << "  model_json: " << model_json_path << std::endl;
+  std::cout << "  weights_index: " << weights_index_path << std::endl;
 
-  td::EpairModelLoader loader(epair_input);
+  td::EpairModelLoader loader(model_json_path, weights_index_path);
   std::cout << "[PASS] EpairModelLoader constructed" << std::endl;
 
   // [2/4] Extract GE Graph (also validates initialization)
@@ -157,13 +160,35 @@ int main(int argc, char *argv[]) {
   PrintStage(4, kTotalStages, "Compile graph");
 
   std::map<ge::AscendString, ge::AscendString> init_options = GlobalOptionsWithSoc("Ascend950DT_950x");
-  ge::graphStatus compile_status = aclgrphBuildInitialize(init_options);
-  if (compile_status != ge::GRAPH_SUCCESS) {
-    std::cerr << "[ERROR] aclgrphBuildInitialize failed, status: " << compile_status << std::endl;
+  ge::graphStatus init_status = aclgrphBuildInitialize(init_options);
+  if (init_status != ge::GRAPH_SUCCESS) {
+    std::cerr << "[ERROR] aclgrphBuildInitialize failed, status: " << init_status << std::endl;
     return -1;
   }
+  std::cout << "[PASS] aclgrphBuildInitialize succeeded" << std::endl;
+
+  ge::ModelBufferData model;
+  std::map<ge::AscendString, ge::AscendString> build_options;
+  build_options.emplace(ge::AscendString("input_format"), ge::AscendString("ND"));
+  ge::graphStatus build_status = aclgrphBuildModel(graph, build_options, model);
+  if (build_status != ge::GRAPH_SUCCESS) {
+    std::cerr << "[ERROR] aclgrphBuildModel failed, status: " << build_status << std::endl;
+    ge::aclgrphBuildFinalize();
+    return -1;
+  }
+  std::cout << "[PASS] aclgrphBuildModel succeeded, model size: " << model.length << " bytes" << std::endl;
+
+  const char *const output_file = "cann_lm_graph";
+  ge::graphStatus save_status = ge::aclgrphSaveModel(output_file, model);
+  if (save_status != ge::GRAPH_SUCCESS) {
+    std::cerr << "[ERROR] aclgrphSaveModel failed, status: " << save_status << std::endl;
+    ge::aclgrphBuildFinalize();
+    return -1;
+  }
+  std::cout << "[PASS] aclgrphSaveModel succeeded, " << output_file << ".om generated" << std::endl;
+
   ge::aclgrphBuildFinalize();
-  std::cout << "[PASS] Graph compiled successfully" << std::endl;
+  std::cout << "[PASS] aclgrphBuildFinalize succeeded" << std::endl;
 
   std::cout << std::endl;
   std::cout << kStageSep << std::endl;

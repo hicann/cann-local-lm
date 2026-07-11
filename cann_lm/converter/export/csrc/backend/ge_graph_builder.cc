@@ -22,7 +22,6 @@
 
 #include "common/abi_compat_utils.h"
 #include "common/base64.h"
-#include "common/epair_archive_constants.h"
 #include "common/logging/assert_macros.h"
 #include "common/memory_utils.h"
 #include "fallback_codegen/fallback_codegen.h"
@@ -60,6 +59,7 @@ struct GraphBuildContext {
 
 struct GraphPlanningDeps {
   const EpairModelParser &parser;
+  const td::GeWeightLoader &weight_loader;
   const td::AtenSchemaResolver &schema_resolver;
   const td::AtenTensorDescMapper &tensor_desc_mapper;
 };
@@ -1303,7 +1303,7 @@ bool PlanConverterNode(GraphBuildContext &ctx, const ParsedNode &node, const Gra
         AddError(result, "MISSING_CONST_VALUE", "Inline const op missing value attr", op.name);
         return false;
       }
-      TensorHolder holder = GeWeightLoader::RestoreInlineConstTensor(op.attrs["value"], result, op.name);
+      TensorHolder holder = deps.weight_loader.RestoreInlineConstTensor(op.attrs["value"], result, op.name);
       if (!result.ok || !ValidateConstOutputDesc(op, holder, deps.tensor_desc_mapper, result)) {
         if (!result.ok) {
           TDLOGE("%s",
@@ -1632,9 +1632,9 @@ bool PlanFallbackNode(GraphBuildContext &ctx, const ParsedNode &node, const Grap
   return result.ok;
 }
 
-bool PlanNodes(GraphBuildContext &ctx, const EpairModelParser &parser, const td::AtenSchemaResolver &resolver,
-               const td::AtenTensorDescMapper &mapper, ValidationResult &result) {
-  const GraphPlanningDeps deps{parser, resolver, mapper};
+bool PlanNodes(GraphBuildContext &ctx, const EpairModelParser &parser, const td::GeWeightLoader &weight_loader,
+               const td::AtenSchemaResolver &resolver, const td::AtenTensorDescMapper &mapper, ValidationResult &result) {
+  const GraphPlanningDeps deps{parser, weight_loader, resolver, mapper};
   for (const auto &node : parser.Nodes()) {
     TDLOGI("PlanNodes visiting: node=%s, target=%s, source=%s, outputs=%zu", node.name.c_str(), node.target.c_str(),
            node.source_info.source.c_str(), node.outputs.size());
@@ -1743,79 +1743,10 @@ bool FinalizeGraph(GraphBuildContext &ctx, const EpairModelParser &parser, Valid
 
 }  // namespace
 
-GeGraphBuilder::GeGraphBuilder(const EpairArchive &archive, ValidationResult &result) : archive_(&archive) {
-  TDLOGI("GeGraphBuilder enter: path=%s", archive.Path());
-
-  if (!archive.HasRecord(epair_spec::kAnnotatedModelJson)) {
-    AddError(result, "INVALID_EPAIR_KIND", "Annotated archive payload is required", archive.Path());
-    return;
-  }
-
-  TDLOGI("GeGraphBuilder step: reading model json");
-  const RecordData graph_record = archive.ReadRecord(epair_spec::kAnnotatedModelJson);
-  const std::string graph_json = graph_record.AsString();
-  TDLOGI("GeGraphBuilder step: model json loaded, size=%zu", graph_json.size());
-
-  const char *enable_codegen_env = std::getenv("TORCH_DELEGATE_ENABLE_FALLBACK_CODEGEN");
-  bool enable_codegen = true;
-  if (enable_codegen_env != nullptr) {
-    std::string val(enable_codegen_env);
-    enable_codegen = (val == "1" || val == "true" || val == "TRUE");
-  }
-
-  if (enable_codegen) {
-    TDLOGI("GeGraphBuilder step: running fallback codegen");
-    auto codegen_result = torch_delegate::fallback::FallbackCodegen::GenerateFromModelJson(graph_json);
-
-    ValidationIssue issue;
-    issue.code = codegen_result.skipped ? "FALLBACK_CODEGEN_SKIPPED" : "FALLBACK_CODEGEN_FAILED";
-    issue.message = codegen_result.error_message;
-    issue.context = "";
-
-    if (!codegen_result.success) {
-      issue.severity = IssueSeverity::Error;
-      result.issues.push_back(issue);
-      result.ok = false;
-      TDLOGE("GeGraphBuilder failed: codegen error, %s", codegen_result.error_message.c_str());
-      return;
-    } else if (codegen_result.skipped) {
-      issue.severity = IssueSeverity::Warning;
-      result.issues.push_back(issue);
-      TDLOGI("GeGraphBuilder step: codegen skipped, %s", codegen_result.error_message.c_str());
-    } else {
-      TDLOGI("GeGraphBuilder step: codegen success, ops=%zu", codegen_result.generated_op_names.size());
-    }
-  }
-
-  TDLOGI("GeGraphBuilder step: parsing model");
-  parser_ = EpairModelParser::Parse(graph_json, result);
-  if (!result.ok) {
-    TDLOGE("GeGraphBuilder failed: parse error, issues=%zu", result.issues.size());
-    for (const auto &issue : result.issues) {
-      if (issue.severity == IssueSeverity::Error) {
-        TDLOGE("  parse issue: [%s] %s", issue.code.c_str(), issue.message.c_str());
-      }
-    }
-    return;
-  }
-  TDLOGI("GeGraphBuilder step: parsed, nodes=%zu, inputs=%zu, outputs=%zu",
-         parser_.Nodes().size(), parser_.GraphInputs().size(), parser_.GraphOutputs().size());
-
-  TDLOGI("GeGraphBuilder step: loading weights");
-  loader_ = GeWeightLoader::Create(archive, parser_.Model(), result);
-  if (!result.ok) {
-    TDLOGE("GeGraphBuilder failed: weight load error");
-    return;
-  }
-  TDLOGI("GeGraphBuilder step: weights loaded");
-
-  initialized_ = result.ok;
-  TDLOGI("GeGraphBuilder exit: success, initialized=%s", initialized_ ? "true" : "false");
-}
-
-GeGraphBuilder::GeGraphBuilder(const std::string &model_json, const std::string &dir_path,
-                                ValidationResult &result) : dir_path_(dir_path) {
-  TDLOGI("GeGraphBuilder (directory) enter: dir_path=%s", dir_path.c_str());
+GeGraphBuilder::GeGraphBuilder(const std::string &model_json, const std::string &weights_index_path,
+                                ValidationResult &result)
+    : weights_index_path_(weights_index_path) {
+  TDLOGI("GeGraphBuilder enter: weights_index=%s", weights_index_path.c_str());
 
   const char *enable_codegen_env = std::getenv("TORCH_DELEGATE_ENABLE_FALLBACK_CODEGEN");
   bool enable_codegen = true;
@@ -1862,8 +1793,8 @@ GeGraphBuilder::GeGraphBuilder(const std::string &model_json, const std::string 
   TDLOGI("GeGraphBuilder step: parsed, nodes=%zu, inputs=%zu, outputs=%zu",
          parser_.Nodes().size(), parser_.GraphInputs().size(), parser_.GraphOutputs().size());
 
-  TDLOGI("GeGraphBuilder step: loading weights from directory");
-  loader_ = GeWeightLoader::CreateFromDirectory(dir_path, parser_.Model(), result);
+  TDLOGI("GeGraphBuilder step: loading weights");
+  loader_ = GeWeightLoader::Create(weights_index_path_, parser_.Model(), result);
   if (!result.ok) {
     TDLOGE("GeGraphBuilder failed: weight load error");
     return;
@@ -1871,7 +1802,7 @@ GeGraphBuilder::GeGraphBuilder(const std::string &model_json, const std::string 
   TDLOGI("GeGraphBuilder step: weights loaded");
 
   initialized_ = result.ok;
-  TDLOGI("GeGraphBuilder (directory) exit: success, initialized=%s", initialized_ ? "true" : "false");
+  TDLOGI("GeGraphBuilder exit: success, initialized=%s", initialized_ ? "true" : "false");
 }
 
 bool GeGraphBuilder::IsFullyOffloaded() const noexcept {
@@ -1884,8 +1815,7 @@ bool GeGraphBuilder::IsFullyOffloaded() const noexcept {
 }
 
 std::unique_ptr<ge::Graph> GeGraphBuilder::Build(ValidationResult &result) {
-  const char *build_path = archive_ != nullptr ? archive_->Path() : dir_path_.c_str();
-  TDLOGI("Build enter: path=%s", build_path);
+  TDLOGI("Build enter: weights_index=%s", weights_index_path_.c_str());
 
   if (!initialized_) {
     TDLOGE("Build failed: builder not initialized");
@@ -1908,7 +1838,7 @@ std::unique_ptr<ge::Graph> GeGraphBuilder::Build(ValidationResult &result) {
   }
 
   TDLOGI("Build stage: PlanNodes, nodes=%zu", parser_.Nodes().size());
-  if (!PlanNodes(ctx, parser_, schema_resolver_, tensor_desc_mapper_, result)) {
+  if (!PlanNodes(ctx, parser_, loader_, schema_resolver_, tensor_desc_mapper_, result)) {
     TDLOGE("Build failed at PlanNodes");
     return nullptr;
   }

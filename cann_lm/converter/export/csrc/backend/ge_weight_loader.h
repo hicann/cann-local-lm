@@ -2,40 +2,31 @@
 
 #include <string>
 #include <unordered_map>
-#include <vector>
-
-#include <nlohmann/json.hpp>
 
 #include "backend/model_types.h"
-#include "epair_archive.h"
 #include "common/logging/logging.h"
 
 namespace td {
 
 class GeWeightLoader {
  public:
-  static GeWeightLoader Create(const EpairArchive &archive, const ParsedModel &model, ValidationResult &result);
+  static GeWeightLoader Create(const std::string &weights_index_path, const ParsedModel &model,
+                               ValidationResult &result);
 
-  static GeWeightLoader CreateFromDirectory(const std::string &dir_path, const ParsedModel &model,
-                                            ValidationResult &result);
-
-  bool HasTensor(const std::string &name) const;
-  const TensorRecordInfo *GetTensorRecordInfo(const std::string &name) const;
-  const ParsedTensorMeta *GetTensorMeta(const std::string &name) const;
-
+  bool HasTensor(const std::string &name) const noexcept;
+  const ParsedTensorMeta *GetTensorMeta(const std::string &name) const noexcept;
+  const TensorRecordInfo *GetTensorRecordInfo(const std::string &name) const noexcept;
   TensorHolder ReadTensorData(const std::string &name, ValidationResult &result) const;
-
-  static TensorHolder RestoreInlineConstTensor(const OrderedJson &value_attr, ValidationResult &result,
-                                               const std::string &context);
+  TensorHolder RestoreInlineConstTensor(const OrderedJson &value_ref, ValidationResult &result,
+                                         const std::string &context) const;
 
  private:
-  void LoadConsolidated(const EpairArchive &archive, const ParsedModel &model, ValidationResult &result);
-  void LoadConsolidatedFromDir(const std::string &dir_path, const ParsedModel &model, ValidationResult &result);
+  void LoadConsolidated(const std::string &weights_index_path, const ParsedModel &model,
+                        ValidationResult &result);
 
-  std::string dir_path_;
   std::unordered_map<std::string, std::string> placeholder_to_logical_name_;
   std::unordered_map<std::string, TensorRecordInfo> logical_name_to_record_;
-  mutable std::vector<uint8_t> consolidated_data_;
+  mutable std::unordered_map<std::string, std::vector<uint8_t>> bin_files_cache_;
 };
 
 }  // namespace td

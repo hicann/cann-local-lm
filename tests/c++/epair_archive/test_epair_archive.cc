@@ -30,12 +30,6 @@ TEST(EpairArchiveDirectoryTest, ModelJsonExists) {
   EXPECT_TRUE(file.good());
 }
 
-TEST(EpairArchiveDirectoryTest, ManifestJsonExists) {
-  const std::string path = kConsolidated + "/extra/epair_manifest.json";
-  std::ifstream file(path);
-  EXPECT_TRUE(file.good());
-}
-
 TEST(EpairArchiveDirectoryTest, WeightsBinExists) {
   const std::string path = kConsolidated + "/data/weights.bin";
   std::ifstream file(path, std::ios::binary);

@@ -32,7 +32,7 @@ def validate_export_and_eager():
 
 def validate_cpp_loading():
     print("  Loading epair via C++ binary...")
-    epair_path = str(ROOT / "epair_model")
+    epair_dir = ROOT / "epair_model"
 
     binary = ROOT / "build" / "export_and_load_example"
     if not binary.exists():
@@ -40,8 +40,11 @@ def validate_cpp_loading():
         print("  Run 'cd {ROOT} && cmake -B build && cmake --build build -j$nproc' first.")
         sys.exit(1)
 
+    model_json = str(epair_dir / "ep_json_with_ascend_ir.json")
+    weights_index = str(epair_dir / "weight_info.json")
+
     result = subprocess.run(
-        [str(binary), epair_path],
+        [str(binary), model_json, weights_index],
         capture_output=True, text=True, cwd=ROOT,
     )
     print(result.stdout)

@@ -31,10 +31,7 @@ class GeWeightLoader {
  private:
   void LoadConsolidated(const EpairArchive &archive, const ParsedModel &model, ValidationResult &result);
   void LoadConsolidatedFromDir(const std::string &dir_path, const ParsedModel &model, ValidationResult &result);
-  void LoadLegacy(const EpairArchive &archive, const ParsedModel &model, ValidationResult &result);
 
-  const EpairArchive *archive_ = nullptr;
-  bool consolidated_ = false;
   std::string dir_path_;
   std::unordered_map<std::string, std::string> placeholder_to_logical_name_;
   std::unordered_map<std::string, TensorRecordInfo> logical_name_to_record_;

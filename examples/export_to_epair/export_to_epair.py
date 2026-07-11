@@ -2,7 +2,7 @@
 
 Subcommands:
   export   Export and compile to .epair, then pack weights into ``data/``
-  pack     Pack an already-extracted model directory into consolidated format
+  pack     Load .epair file and pack weights into consolidated format
 
 Environment setup (PYTHONPATH, LD_PRELOAD, which Python) must be done
 by the caller — use scripts/export_epair.sh.
@@ -20,7 +20,7 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[3]
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-from cann_lm.converter.export.epair_utils import pack_weights
+from cann_lm.converter.export.epair_utils import pack_weights, consolidated_weights_save
 from cann_lm.converter.export.simple_transformer import SimpleTransformer
 
 VOCAB_SIZE = 256
@@ -52,76 +52,68 @@ def export(output_dir: str | Path) -> Path:
     return pt2_path
 
 
-def compile_model(pt2_path: str | Path, epair_path: str | Path) -> Path:
+def compile_and_pack(pt2_path: str | Path, output_dir: str | Path) -> None:
     import torch_delegate
 
     pt2_path = Path(pt2_path).resolve()
-    epair_path = Path(epair_path).resolve()
-    epair_path.parent.mkdir(parents=True, exist_ok=True)
-
-    exported_program = torch.export.load(pt2_path)
-    epair = torch_delegate.export_to_epair(exported_program)
-    torch_delegate.epair_save(epair, epair_path)
-    return epair_path
-
-
-def extract_and_pack(epair_path: str | Path, output_dir: str | Path) -> Path:
-    import zipfile
-
-    epair_path = Path(epair_path).resolve()
     output_dir = Path(output_dir).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    with zipfile.ZipFile(epair_path) as z:
-        z.extractall(output_dir)
-
-    # The ZIP root is a subdirectory named after the model
-    model_dir = output_dir / "simple_transformer" if (output_dir / "simple_transformer").is_dir() else output_dir
-    pack_weights(model_dir)
-    return model_dir
+    exported_program = torch.export.load(pt2_path)
+    contents = torch_delegate.export_to_epair(exported_program)
+    cw = pack_weights(contents)
+    consolidated_weights_save(cw, output_dir)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Export SimpleTransformer → .pt2 → .epair, then pack weights."
+        description="Export SimpleTransformer → .pt2 → consolidated weights."
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    # --- export ---
     export_parser = subparsers.add_parser("export", help="Export .pt2, compile to .epair, pack weights")
     export_parser.add_argument("--output-dir", default="generate", help="Output directory")
     export_parser.add_argument("--export-only", action="store_true")
     export_parser.add_argument("--compile-only", action="store_true")
 
-    # --- pack ---
-    pack_parser = subparsers.add_parser("pack", help="Pack an extracted model directory into consolidated format")
-    pack_parser.add_argument("model_dir", help="Model directory containing data/")
-    pack_parser.add_argument("--output-bin", default=None, help="Output binary file (default: data/weights.bin)")
-    pack_parser.add_argument("--output-json", default=None, help="Output JSON index (default: data/weights_index.json)")
+    pack_parser = subparsers.add_parser("pack", help="Load .epair / .pt2 file and pack consolidated weights")
+    pack_parser.add_argument("epair_path", help="Path to .epair or .pt2 file")
+    pack_parser.add_argument("--output-dir", default=".", help="Output directory (default: current dir)")
 
     args = parser.parse_args()
 
     if args.command == "export":
         output_dir = Path(args.output_dir).resolve()
         pt2_path = output_dir / "simple_transformer.pt2"
-        epair_path = output_dir / "simple_transformer.epair"
 
         if not args.compile_only:
             export(output_dir)
             print()
 
         if not args.export_only:
-            compile_model(pt2_path, epair_path)
+            compile_and_pack(pt2_path, output_dir)
             print()
-            extract_and_pack(epair_path, output_dir)
 
-        for p in (pt2_path, epair_path, output_dir / "simple_transformer"):
+        for p in (pt2_path, output_dir / "data"):
             if p.is_file() or p.is_dir():
                 size = p.stat().st_size if p.is_file() else sum(f.stat().st_size for f in p.rglob("*") if f.is_file())
                 print(f"  {p} ({size / 1024:.0f} KB)")
 
     elif args.command == "pack":
-        pack_weights(args.model_dir, args.output_bin, args.output_json)
+        import torch_delegate
+
+        epair_path = Path(args.epair_path).resolve()
+        output_dir = Path(args.output_dir).resolve()
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        if epair_path.suffix == ".epair":
+            contents = torch_delegate.epair_load(epair_path)
+        else:
+            exported_program = torch.export.load(epair_path)
+            contents = torch_delegate.export_to_epair(exported_program)
+
+        cw = pack_weights(contents)
+        consolidated_weights_save(cw, output_dir)
 
 
 if __name__ == "__main__":

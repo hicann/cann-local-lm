@@ -82,8 +82,7 @@ def _common_model_json(graph, signature):
 # Helper: write a full fixture directory
 # ---------------------------------------------------------------------------
 def _write_fixture(fixture_name: str, model_json: dict, bin_data: bytes = b"",
-                   index_data: list | None = None,
-                   legacy_weights: dict | None = None) -> str:
+                   index_data: list | None = None) -> str:
     """Write a fixture directory.
 
     Args:
@@ -91,7 +90,6 @@ def _write_fixture(fixture_name: str, model_json: dict, bin_data: bytes = b"",
         model_json: the full model JSON to write to extra/ep_json_with_ascend_ir.json
         bin_data: consolidated weights.bin content
         index_data: consolidated weights_index.json list
-        legacy_weights: optional dict of {logical_name: (path_name, bytes, meta)}
     """
     out = os.path.join(FIXTURES_DIR, fixture_name)
     _make_dir(out)
@@ -110,26 +108,12 @@ def _write_fixture(fixture_name: str, model_json: dict, bin_data: bytes = b"",
     if index_data is not None:
         _write_json(os.path.join(out, "data", "weights_index.json"), index_data)
 
-    # Legacy weights
-    if legacy_weights:
-        config = {"config": {}}
-        for logical_name, (path_name, data, meta) in legacy_weights.items():
-            config["config"][logical_name] = {
-                "path_name": path_name,
-                "is_param": meta.get("requires_grad", False),
-                "use_pickle": False,
-                "tensor_meta": meta,
-            }
-            _write_bytes(os.path.join(out, "data", "weights", path_name), data)
-        _write_json(os.path.join(out, "data", "weights", "model_weights_config.json"), config)
-        _write_json(os.path.join(out, "data", "constants", "model_constants_config.json"), {"config": {}})
-
     print(f"Generated: {fixture_name}/")
     return out
 
 
 # ---------------------------------------------------------------------------
-# Fixture: annotated_mm_add  (legacy format — separate weight files)
+# Fixture: annotated_mm_add  (consolidated format)
 # ---------------------------------------------------------------------------
 def gen_annotated_mm_add():
     graph = {
@@ -183,12 +167,12 @@ def gen_annotated_mm_add():
     model_json = _common_model_json(graph, signature)
     w_data = _float_bytes([1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0])
     b_data = _float_bytes([0.5, 1.5, 2.5])
-
-    _write_fixture("annotated_mm_add", model_json,
-                   legacy_weights={
-                       "weight": ("weight_0", w_data, _tensor_meta([3, 3], True)),
-                       "bias": ("weight_1", b_data, _tensor_meta([3], False)),
-                   })
+    bin_data = w_data + b_data
+    index = [
+        {"name": "weight", "offset": 0, "size": len(w_data)},
+        {"name": "bias", "offset": len(w_data), "size": len(b_data)},
+    ]
+    _write_fixture("annotated_mm_add", model_json, bin_data, index)
 
 
 # ---------------------------------------------------------------------------
@@ -376,10 +360,9 @@ def gen_annotated_bad_weight_size():
         "output_specs": [],
     }
     model_json = _common_model_json(graph, signature)
-    _write_fixture("annotated_bad_weight_size", model_json,
-                   legacy_weights={
-                       "weight": ("weight_0", _float_bytes([42.0]), _tensor_meta([3, 3], True)),
-                   })
+    bin_data = _float_bytes([42.0])
+    index = [{"name": "weight", "offset": 0, "size": len(bin_data)}]
+    _write_fixture("annotated_bad_weight_size", model_json, bin_data, index)
 
 
 # ---------------------------------------------------------------------------

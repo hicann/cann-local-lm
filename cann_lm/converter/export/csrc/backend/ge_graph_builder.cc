@@ -1813,6 +1813,67 @@ GeGraphBuilder::GeGraphBuilder(const EpairArchive &archive, ValidationResult &re
   TDLOGI("GeGraphBuilder exit: success, initialized=%s", initialized_ ? "true" : "false");
 }
 
+GeGraphBuilder::GeGraphBuilder(const std::string &model_json, const std::string &dir_path,
+                                ValidationResult &result) : dir_path_(dir_path) {
+  TDLOGI("GeGraphBuilder (directory) enter: dir_path=%s", dir_path.c_str());
+
+  const char *enable_codegen_env = std::getenv("TORCH_DELEGATE_ENABLE_FALLBACK_CODEGEN");
+  bool enable_codegen = true;
+  if (enable_codegen_env != nullptr) {
+    std::string val(enable_codegen_env);
+    enable_codegen = (val == "1" || val == "true" || val == "TRUE");
+  }
+
+  if (enable_codegen) {
+    TDLOGI("GeGraphBuilder step: running fallback codegen");
+    auto codegen_result = torch_delegate::fallback::FallbackCodegen::GenerateFromModelJson(model_json);
+
+    ValidationIssue issue;
+    issue.code = codegen_result.skipped ? "FALLBACK_CODEGEN_SKIPPED" : "FALLBACK_CODEGEN_FAILED";
+    issue.message = codegen_result.error_message;
+    issue.context = "";
+
+    if (!codegen_result.success) {
+      issue.severity = IssueSeverity::Error;
+      result.issues.push_back(issue);
+      result.ok = false;
+      TDLOGE("GeGraphBuilder failed: codegen error, %s", codegen_result.error_message.c_str());
+      return;
+    } else if (codegen_result.skipped) {
+      issue.severity = IssueSeverity::Warning;
+      result.issues.push_back(issue);
+      TDLOGI("GeGraphBuilder step: codegen skipped, %s", codegen_result.error_message.c_str());
+    } else {
+      TDLOGI("GeGraphBuilder step: codegen success, ops=%zu", codegen_result.generated_op_names.size());
+    }
+  }
+
+  TDLOGI("GeGraphBuilder step: parsing model");
+  parser_ = EpairModelParser::Parse(model_json, result);
+  if (!result.ok) {
+    TDLOGE("GeGraphBuilder failed: parse error, issues=%zu", result.issues.size());
+    for (const auto &issue : result.issues) {
+      if (issue.severity == IssueSeverity::Error) {
+        TDLOGE("  parse issue: [%s] %s", issue.code.c_str(), issue.message.c_str());
+      }
+    }
+    return;
+  }
+  TDLOGI("GeGraphBuilder step: parsed, nodes=%zu, inputs=%zu, outputs=%zu",
+         parser_.Nodes().size(), parser_.GraphInputs().size(), parser_.GraphOutputs().size());
+
+  TDLOGI("GeGraphBuilder step: loading weights from directory");
+  loader_ = GeWeightLoader::CreateFromDirectory(dir_path, parser_.Model(), result);
+  if (!result.ok) {
+    TDLOGE("GeGraphBuilder failed: weight load error");
+    return;
+  }
+  TDLOGI("GeGraphBuilder step: weights loaded");
+
+  initialized_ = result.ok;
+  TDLOGI("GeGraphBuilder (directory) exit: success, initialized=%s", initialized_ ? "true" : "false");
+}
+
 bool GeGraphBuilder::IsFullyOffloaded() const noexcept {
   for (const ParsedNode &node : parser_.Nodes()) {
     if (!node.ascend_ir.has_value()) {
@@ -1823,7 +1884,8 @@ bool GeGraphBuilder::IsFullyOffloaded() const noexcept {
 }
 
 std::unique_ptr<ge::Graph> GeGraphBuilder::Build(ValidationResult &result) {
-  TDLOGI("Build enter: path=%s", archive_->Path());
+  const char *build_path = archive_ != nullptr ? archive_->Path() : dir_path_.c_str();
+  TDLOGI("Build enter: path=%s", build_path);
 
   if (!initialized_) {
     TDLOGE("Build failed: builder not initialized");

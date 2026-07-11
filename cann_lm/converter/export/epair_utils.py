@@ -2,80 +2,116 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 from pathlib import Path
 
 
-def pack_weights(
-    model_dir: str | Path,
-    output_bin: str | Path | None = None,
-    output_json: str | Path | None = None,
-) -> tuple[Path, Path]:
-    """Pack individual weight/constant tensor files into a single binary.
+@dataclasses.dataclass
+class ConsolidatedWeights:
+    """Packed consolidated weights in memory.
 
-    Reads ``data/weights/model_weights_config.json`` and ``data/constants/model_constants_config.json``
-    from *model_dir*, concatenates all raw tensor blobs into *output_bin*, and writes a
-    ``data/weights_index.json`` with entries::
+    All data is held in memory — use ``consolidated_weights_save()`` to write
+    to disk when needed.
+
+    Attributes:
+        weights_bin: Concatenated raw tensor bytes (``weights.bin`` content).
+        weights_index: List of ``{"name": str, "offset": int, "size": int}``
+            entries describing each tensor's location in ``weights_bin``.
+    """
+    weights_bin: bytes
+    weights_index: list[dict]
+
+
+def pack_weights(contents) -> ConsolidatedWeights:
+    """Pack weights from EpairContents into ConsolidatedWeights (in memory).
+
+    Reads tensor data from ``contents.ep.state_dict()``, concatenates all raw
+    tensor blobs into ``weights_bin``, and builds a ``weights_index`` with
+    entries::
 
         {"name": "<param_name>", "size": <bytes>, "offset": <byte_offset>}
 
-    After packing, the old ``data/weights/`` and ``data/constants/`` directories are removed.
+    Only tensors referenced in the ``ExportedProgram`` graph signature
+    (parameters, buffers, and lifted tensor constants) are included.
 
     Args:
-        model_dir: The top-level model directory (contains ``data/``).
-        output_bin: Output binary path (default: ``<model_dir>/data/weights.bin``).
-        output_json: Output JSON index path (default: ``<model_dir>/data/weights_index.json``).
+        contents: EpairContents object containing model and weights.
 
     Returns:
-        (output_bin, output_json) paths.
+        ConsolidatedWeights with ``weights_bin`` and ``weights_index``.
     """
-    model_dir = Path(model_dir).resolve()
-    data_dir = model_dir / "data"
+    raw_sd = contents.ep.state_dict() if callable(contents.ep.state_dict) else contents.ep.state_dict
+    state_dict = dict(raw_sd)
 
-    if output_bin is None:
-        output_bin = data_dir / "weights.bin"
-    if output_json is None:
-        output_json = data_dir / "weights_index.json"
-    output_bin = Path(output_bin).resolve()
-    output_json = Path(output_json).resolve()
-    output_bin.parent.mkdir(parents=True, exist_ok=True)
+    spec_names = set()
+    gs = contents.ep.graph_signature
+    for mapping in (gs.inputs_to_parameters, gs.inputs_to_buffers, gs.inputs_to_lifted_tensor_constants):
+        for placeholder, logical_name in mapping.items():
+            if logical_name in state_dict:
+                spec_names.add(logical_name)
 
-    import shutil
+    names = sorted(spec_names)
 
+    weights_bin = bytearray()
     index = []
     offset = 0
+    for name in names:
+        tensor = state_dict[name]
+        data = tensor.detach().cpu().numpy().tobytes()
+        weights_bin.extend(data)
+        index.append({
+            "name": name,
+            "size": len(data),
+            "offset": offset,
+        })
+        offset += len(data)
 
-    with open(output_bin, "wb") as bin_f:
-        for sub_dir, config_name in [("weights", "model_weights_config.json"),
-                                     ("constants", "model_constants_config.json")]:
-            config_path = data_dir / sub_dir / config_name
-            if not config_path.is_file():
-                continue
+    print(f"Packed {len(index)} tensors ({offset / 1024:.0f} KB)")
+    return ConsolidatedWeights(
+        weights_bin=bytes(weights_bin),
+        weights_index=index,
+    )
 
-            with open(config_path) as f:
-                config = json.load(f)
 
-            for param_name, meta in config["config"].items():
-                file_path = data_dir / sub_dir / meta["path_name"]
-                if not file_path.is_file():
-                    raise FileNotFoundError(f"Tensor file not found: {file_path} (for {param_name})")
+def consolidated_weights_save(contents, output_dir: str | Path, *, save_weights: bool = True) -> None:
+    """Write epair contents to disk in consolidated weights format.
 
-                data = file_path.read_bytes()
-                bin_f.write(data)
-                index.append({
-                    "name": param_name,
-                    "size": len(data),
-                    "offset": offset,
-                })
-                offset += len(data)
+    Writes three files under ``output_dir/data/``:
 
-    with open(output_json, "w") as f:
-        json.dump(index, f, indent=2)
+    - ``weights.bin`` — raw concatenated tensor bytes
+    - ``weights_index.json`` — index describing each tensor
+    - ``ep_json_with_ascend_ir.json`` — annotated EP JSON
 
-    # Remove old weight/constant directories
-    for sub_dir in ["weights", "constants"]:
-        shutil.rmtree(data_dir / sub_dir, ignore_errors=True)
+    ``ep_json_with_ascend_ir.json`` is always written. ``weights.bin`` and
+    ``weights_index.json`` are written only when ``save_weights=True``.
 
-    print(f"Packed {len(index)} tensors → {output_bin} ({offset / 1024:.0f} KB)")
-    print(f"Index → {output_json}")
-    return output_bin, output_json
+    Args:
+        contents: EpairContents object containing model and weights.
+        output_dir: Directory to write ``data/`` subdirectory into.
+        save_weights: If False, skip writing ``weights.bin`` and
+            ``weights_index.json``.
+    """
+    output_dir = Path(output_dir).resolve()
+    data_dir = output_dir / "data"
+    data_dir.mkdir(parents=True, exist_ok=True)
+
+    if save_weights:
+        cw = pack_weights(contents)
+        bin_path = data_dir / "weights.bin"
+        bin_path.write_bytes(cw.weights_bin)
+
+        idx_path = data_dir / "weights_index.json"
+        with open(idx_path, "w") as f:
+            json.dump(cw.weights_index, f, indent=2)
+
+        print(f"Saved: {bin_path} ({len(cw.weights_bin) / 1024:.0f} KB)")
+        print(f"Saved: {idx_path}")
+    else:
+        print("  [skip] weights.bin + weights_index.json (save_weights=False)")
+
+    ep_json_path = data_dir / "ep_json_with_ascend_ir.json"
+    with open(ep_json_path, "w") as f:
+        json.dump(contents.ep_json, f, indent=2)
+
+    print(f"Saved: {ep_json_path}")

@@ -1,8 +1,11 @@
 #include "torch_delegate/epair_model_loader.h"
 
 #include <atomic>
+#include <filesystem>
+#include <fstream>
 #include <map>
 #include <memory>
+#include <sstream>
 #include <string>
 #include <utility>
 #include <vector>
@@ -11,6 +14,7 @@
 
 #include "backend/epair_archive.h"
 #include "backend/ge_graph_builder.h"
+#include "common/epair_archive_constants.h"
 #include "common/logging/assert_macros.h"
 #include "common/memory_utils.h"
 
@@ -143,36 +147,84 @@ class EpairModelLoader::Impl {
       return;
     }
 
-    TDLOGI("Initialize step: creating archive");
-    const auto archive = EpairArchive::TryCreate(archive_path);
-    if (archive == nullptr) {
-      TDLOGE("Initialize failed: archive creation error, path=%s", archive_path);
+    const std::filesystem::path path(archive_path);
+
+    if (std::filesystem::is_directory(path)) {
+      InitializeFromDirectory(path);
+    } else {
+      InitializeFromArchive(path);
+    }
+  }
+
+  void InitializeFromDirectory(const std::filesystem::path &dir_path) {
+    TDLOGI("InitializeFromDirectory enter: path=%s", dir_path.c_str());
+
+    const std::string model_json_path =
+        (dir_path / epair_spec::kAnnotatedModelJson).string();
+
+    std::ifstream file(model_json_path);
+    if (!file) {
+      TDLOGE("InitializeFromDirectory failed: cannot open %s", model_json_path.c_str());
       init_status_ = FAILED;
       return;
     }
-    TDLOGI("Initialize step: archive created, path=%s", archive->Path());
+    std::ostringstream ss;
+    ss << file.rdbuf();
+    const std::string model_json = ss.str();
 
     ValidationResult result{true, {}};
-    TDLOGI("Initialize step: building graph");
-    GeGraphBuilder builder(*archive, result);
+    GeGraphBuilder builder(model_json, dir_path.string(), result);
     if (!result.ok) {
-      TDLOGE("Initialize failed: builder init failed, issues=%zu", result.issues.size());
+      TDLOGE("InitializeFromDirectory failed: builder init failed, issues=%zu", result.issues.size());
       init_status_ = FAILED;
       return;
     }
-    TDLOGI("Initialize step: builder initialized");
+    TDLOGI("InitializeFromDirectory step: builder initialized");
 
     graph_ = builder.Build(result);
     if (!result.ok || graph_ == nullptr) {
-      TDLOGE("Initialize failed: graph build failed, issues=%zu", result.issues.size());
+      TDLOGE("InitializeFromDirectory failed: graph build failed, issues=%zu", result.issues.size());
       init_status_ = FAILED;
       return;
     }
-    TDLOGI("Initialize step: graph built");
+    TDLOGI("InitializeFromDirectory step: graph built");
 
     graph_id_ = g_next_graph_id.fetch_add(1, std::memory_order_relaxed);
     init_status_ = SUCCESS;
-    TDLOGI("Initialize exit: success, graph_id=%u", graph_id_);
+    TDLOGI("InitializeFromDirectory exit: success, graph_id=%u", graph_id_);
+  }
+
+  void InitializeFromArchive(const std::filesystem::path &archive_path) {
+    TDLOGI("InitializeFromArchive enter: path=%s", archive_path.c_str());
+
+    const auto archive = EpairArchive::TryCreate(archive_path.c_str());
+    if (archive == nullptr) {
+      TDLOGE("InitializeFromArchive failed: archive creation error, path=%s", archive_path.c_str());
+      init_status_ = FAILED;
+      return;
+    }
+    TDLOGI("InitializeFromArchive step: archive created, path=%s", archive->Path());
+
+    ValidationResult result{true, {}};
+    GeGraphBuilder builder(*archive, result);
+    if (!result.ok) {
+      TDLOGE("InitializeFromArchive failed: builder init failed, issues=%zu", result.issues.size());
+      init_status_ = FAILED;
+      return;
+    }
+    TDLOGI("InitializeFromArchive step: builder initialized");
+
+    graph_ = builder.Build(result);
+    if (!result.ok || graph_ == nullptr) {
+      TDLOGE("InitializeFromArchive failed: graph build failed, issues=%zu", result.issues.size());
+      init_status_ = FAILED;
+      return;
+    }
+    TDLOGI("InitializeFromArchive step: graph built");
+
+    graph_id_ = g_next_graph_id.fetch_add(1, std::memory_order_relaxed);
+    init_status_ = SUCCESS;
+    TDLOGI("InitializeFromArchive exit: success, graph_id=%u", graph_id_);
   }
 
   Status init_status_ = FAILED;

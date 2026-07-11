@@ -33,114 +33,6 @@ bool TryGetIntField(const OrderedJson &value, int64_t &out) {
   return false;
 }
 
-std::vector<int64_t> ParseIntList(const OrderedJson &array, ValidationResult &result, const std::string &code,
-                                  const std::string &context) {
-  std::vector<int64_t> values;
-  if (!array.is_array()) {
-    AddError(result, code, "Expected JSON array", context);
-    return values;
-  }
-  for (const auto &item : array) {
-    int64_t value = 0;
-    if (!TryGetIntField(item, value)) {
-      AddError(result, code, "Expected integer element", context);
-      return {};
-    }
-    values.push_back(value);
-  }
-  return values;
-}
-
-ParsedTensorMeta ParseTensorMeta(const OrderedJson &meta, ValidationResult &result, const std::string &context) {
-  ParsedTensorMeta parsed;
-  if (!meta.is_object()) {
-    AddError(result, "INVALID_WEIGHT_TENSOR_META", "Tensor meta must be object", context);
-    return parsed;
-  }
-  if (meta.contains("dtype") && meta["dtype"].is_number_integer()) {
-    parsed.dtype = meta["dtype"].get<int64_t>();
-  } else {
-    AddError(result, "MISSING_WEIGHT_DTYPE", "Missing integer dtype", context);
-  }
-  if (meta.contains("sizes")) {
-    parsed.sizes = ParseIntList(meta["sizes"], result, "INVALID_WEIGHT_SIZES", context);
-  } else {
-    AddError(result, "MISSING_WEIGHT_SIZES", "Missing sizes array", context);
-  }
-  if (meta.contains("requires_grad") && meta["requires_grad"].is_boolean()) {
-    parsed.requires_grad = meta["requires_grad"].get<bool>();
-  }
-  if (meta.contains("device") && meta["device"].is_object()) {
-    const auto &device = meta["device"];
-    if (device.contains("type") && device["type"].is_string()) {
-      parsed.device.type = device["type"].get<std::string>();
-    }
-    if (device.contains("index") && device["index"].is_number_integer()) {
-      parsed.device.index = device["index"].get<int64_t>();
-    }
-  }
-  if (meta.contains("strides")) {
-    parsed.strides = ParseIntList(meta["strides"], result, "INVALID_WEIGHT_STRIDES", context);
-  }
-  if (meta.contains("storage_offset")) {
-    int64_t value = 0;
-    if (!TryGetIntField(meta["storage_offset"], value)) {
-      AddError(result, "INVALID_WEIGHT_STORAGE_OFFSET", "storage_offset must be integer", context);
-    } else {
-      parsed.storage_offset = value;
-    }
-  }
-  if (meta.contains("layout") && meta["layout"].is_number_integer()) {
-    parsed.layout = meta["layout"].get<int64_t>();
-  }
-  return parsed;
-}
-
-void ParseConfigFile(const EpairArchive &archive, const std::string &config_record, const std::string &base_dir,
-                     bool mark_parameter_from_flag, std::unordered_map<std::string, TensorRecordInfo> &out_records,
-                     ValidationResult &result) {
-  if (!archive.HasRecord(config_record.c_str())) {
-    return;
-  }
-  OrderedJson root;
-  try {
-    const RecordData record = archive.ReadRecord(config_record.c_str());
-    root = OrderedJson::parse(record.AsString());
-  } catch (const OrderedJson::parse_error &error) {
-    AddError(result, "CONFIG_JSON_PARSE_ERROR", error.what(), config_record);
-    return;
-  }
-  if (!root.contains("config") || !root["config"].is_object()) {
-    AddError(result, "INVALID_WEIGHT_CONFIG", "Config file missing 'config' object", config_record);
-    return;
-  }
-  for (const auto &[logical_name, entry] : root["config"].items()) {
-    if (!entry.is_object()) {
-      AddError(result, "INVALID_WEIGHT_ENTRY", "Config entry must be object", logical_name);
-      continue;
-    }
-    TensorRecordInfo info;
-    info.logical_name = logical_name;
-    if (!entry.contains("path_name") || !entry["path_name"].is_string()) {
-      AddError(result, "MISSING_WEIGHT_PATH", "Config entry missing path_name", logical_name);
-      continue;
-    }
-    info.record_path = base_dir + entry["path_name"].get<std::string>();
-    if (entry.contains("is_param") && entry["is_param"].is_boolean()) {
-      info.is_parameter = mark_parameter_from_flag ? entry["is_param"].get<bool>() : false;
-    }
-    if (entry.contains("use_pickle") && entry["use_pickle"].is_boolean()) {
-      info.use_pickle = entry["use_pickle"].get<bool>();
-    }
-    if (!entry.contains("tensor_meta")) {
-      AddError(result, "MISSING_WEIGHT_TENSOR_META", "Config entry missing tensor_meta", logical_name);
-      continue;
-    }
-    info.tensor_meta = ParseTensorMeta(entry["tensor_meta"], result, logical_name);
-    out_records[logical_name] = std::move(info);
-  }
-}
-
 std::string ResolveLogicalName(const std::string &name,
                                const std::unordered_map<std::string, std::string> &placeholder_to_logical_name,
                                const std::unordered_map<std::string, TensorRecordInfo> &logical_name_to_record) {
@@ -336,11 +228,10 @@ void BuildConsolidatedLookup(const ParsedModel &model,
 
 
 GeWeightLoader GeWeightLoader::CreateFromDirectory(const std::string &dir_path, const ParsedModel &model,
-                                                    ValidationResult &result) {
+                                                     ValidationResult &result) {
   GeWeightLoader loader;
   loader.dir_path_ = dir_path;
   BuildConsolidatedLookup(model, loader.placeholder_to_logical_name_);
-  loader.consolidated_ = true;
   loader.LoadConsolidatedFromDir(dir_path, model, result);
 
   for (const auto &[placeholder_name, logical_name] : loader.placeholder_to_logical_name_) {
@@ -355,17 +246,16 @@ GeWeightLoader GeWeightLoader::CreateFromDirectory(const std::string &dir_path, 
 
 GeWeightLoader GeWeightLoader::Create(const EpairArchive &archive, const ParsedModel &model, ValidationResult &result) {
   GeWeightLoader loader;
-  loader.archive_ = &archive;
   BuildConsolidatedLookup(model, loader.placeholder_to_logical_name_);
 
-  // Try consolidated mode first, fall back to legacy
-  if (archive.HasRecord(epair_spec::kConsolidatedWeightsIndex)) {
-    loader.consolidated_ = true;
-    loader.LoadConsolidated(archive, model, result);
-  } else {
-    loader.consolidated_ = false;
-    loader.LoadLegacy(archive, model, result);
+  if (!archive.HasRecord(epair_spec::kConsolidatedWeightsIndex)) {
+    AddError(result, "MISSING_WEIGHTS_INDEX",
+             "Consolidated weights_index.json not found; legacy weight format is no longer supported",
+             epair_spec::kConsolidatedWeightsIndex);
+    return loader;
   }
+
+  loader.LoadConsolidated(archive, model, result);
 
   for (const auto &[placeholder_name, logical_name] : loader.placeholder_to_logical_name_) {
     if (loader.logical_name_to_record_.find(logical_name) == loader.logical_name_to_record_.end()) {
@@ -375,14 +265,6 @@ GeWeightLoader GeWeightLoader::Create(const EpairArchive &archive, const ParsedM
   }
 
   return loader;
-}
-
-void GeWeightLoader::LoadLegacy(const EpairArchive &archive, const ParsedModel &model, ValidationResult &result) {
-  (void)model;
-  ParseConfigFile(archive, epair_spec::kWeightsConfigJson, epair_spec::kWeightsDirectory, true,
-                  logical_name_to_record_, result);
-  ParseConfigFile(archive, epair_spec::kConstantsConfigJson, epair_spec::kConstantsDirectory, false,
-                  logical_name_to_record_, result);
 }
 
 void GeWeightLoader::LoadConsolidated(const EpairArchive &archive, const ParsedModel &model, ValidationResult &result) {
@@ -427,6 +309,12 @@ void GeWeightLoader::LoadConsolidated(const EpairArchive &archive, const ParsedM
     return;
   }
 
+  // Build reverse map: logical_name -> placeholder_name
+  std::unordered_map<std::string, std::string> logical_to_placeholder;
+  for (const auto &[placeholder, logical] : placeholder_to_logical_name_) {
+    logical_to_placeholder[logical] = placeholder;
+  }
+
   for (const auto &entry : root) {
     if (!entry.is_object()) continue;
 
@@ -445,15 +333,26 @@ void GeWeightLoader::LoadConsolidated(const EpairArchive &archive, const ParsedM
       info.is_parameter = param_it->second;
     }
 
-    // Populate tensor_meta from model.tensor_values (populated during
-    // model JSON parsing). The keys in tensor_values use the same FQN
-    // as logical_name in input_specs / consolidated index.
+    // Populate tensor_meta from model.tensor_values. The tensor_values keys
+    // may use placeholder names (e.g. "p_w1"); try lookup by logical name
+    // first, then fall back to placeholder name.
     const auto meta_it = model.tensor_values.find(info.logical_name);
     if (meta_it != model.tensor_values.end()) {
       info.tensor_meta = meta_it->second;
     } else {
-      AddError(result, "MISSING_TENSOR_META",
-               "No tensor metadata found for consolidated weight", info.logical_name);
+      const auto ph_it = logical_to_placeholder.find(info.logical_name);
+      if (ph_it != logical_to_placeholder.end()) {
+        const auto ph_meta_it = model.tensor_values.find(ph_it->second);
+        if (ph_meta_it != model.tensor_values.end()) {
+          info.tensor_meta = ph_meta_it->second;
+        } else {
+          AddError(result, "MISSING_TENSOR_META",
+                   "No tensor metadata found for consolidated weight", info.logical_name);
+        }
+      } else {
+        AddError(result, "MISSING_TENSOR_META",
+                 "No tensor metadata found for consolidated weight", info.logical_name);
+      }
     }
 
     logical_name_to_record_[info.logical_name] = std::move(info);
@@ -505,6 +404,12 @@ void GeWeightLoader::LoadConsolidatedFromDir(const std::string &dir_path, const 
     return;
   }
 
+  // Build reverse map: logical_name -> placeholder_name
+  std::unordered_map<std::string, std::string> logical_to_placeholder;
+  for (const auto &[placeholder, logical] : placeholder_to_logical_name_) {
+    logical_to_placeholder[logical] = placeholder;
+  }
+
   for (const auto &entry : root) {
     if (!entry.is_object()) continue;
 
@@ -522,12 +427,25 @@ void GeWeightLoader::LoadConsolidatedFromDir(const std::string &dir_path, const 
       info.is_parameter = param_it->second;
     }
 
+    // tensor_values may be keyed by placeholder name (e.g. "p_w1");
+    // try logical name first, then fall back to placeholder name.
     const auto meta_it = model.tensor_values.find(info.logical_name);
     if (meta_it != model.tensor_values.end()) {
       info.tensor_meta = meta_it->second;
     } else {
-      AddError(result, "MISSING_TENSOR_META",
-               "No tensor metadata found for consolidated weight", info.logical_name);
+      const auto ph_it = logical_to_placeholder.find(info.logical_name);
+      if (ph_it != logical_to_placeholder.end()) {
+        const auto ph_meta_it = model.tensor_values.find(ph_it->second);
+        if (ph_meta_it != model.tensor_values.end()) {
+          info.tensor_meta = ph_meta_it->second;
+        } else {
+          AddError(result, "MISSING_TENSOR_META",
+                   "No tensor metadata found for consolidated weight", info.logical_name);
+        }
+      } else {
+        AddError(result, "MISSING_TENSOR_META",
+                 "No tensor metadata found for consolidated weight", info.logical_name);
+      }
     }
 
     logical_name_to_record_[info.logical_name] = std::move(info);
@@ -565,42 +483,16 @@ TensorHolder GeWeightLoader::ReadTensorData(const std::string &name, ValidationR
     return {};
   }
 
-  if (consolidated_) {
-    // Consolidated mode: read from cached weights.bin at offset+size
-    if (info->offset + info->data_size > consolidated_data_.size()) {
-      AddError(result, "CONSOLIDATED_WEIGHT_RANGE_ERROR",
-               "Tensor range exceeds weights.bin size", info->logical_name);
-      return {};
-    }
-    TensorHolder holder = BuildTensorHolder(
-        info->tensor_meta.sizes, info->tensor_meta.dtype, info->tensor_meta.layout,
-        consolidated_data_.data() + info->offset, info->data_size,
-        result, info->record_path, "WEIGHT_SIZE_MISMATCH");
-    holder.requires_grad = info->tensor_meta.requires_grad;
-    return holder;
-  }
-
-  // Legacy mode: read individual record file
-  if (!archive_->HasRecord(info->record_path.c_str())) {
-    AddError(result, "MISSING_WEIGHT_RECORD", "Archive missing tensor record", info->record_path);
+  // Consolidated mode: read from cached weights.bin at offset+size
+  if (info->offset + info->data_size > consolidated_data_.size()) {
+    AddError(result, "CONSOLIDATED_WEIGHT_RANGE_ERROR",
+             "Tensor range exceeds weights.bin size", info->logical_name);
     return {};
   }
-  if (!archive_->HasRecord(epair_spec::kByteorder)) {
-    AddError(result, "UNSUPPORTED_BYTEORDER", "PT2 archive byteorder must exist and be little-endian",
-             info->logical_name);
-    return {};
-  }
-  const RecordData byteorder_record = archive_->ReadRecord(epair_spec::kByteorder);
-  const std::string byteorder = byteorder_record.AsString();
-  if (byteorder != "little") {
-    AddError(result, "UNSUPPORTED_BYTEORDER", "PT2 archive byteorder must exist and be little-endian",
-             info->logical_name);
-    return {};
-  }
-  const RecordData record = archive_->ReadRecord(info->record_path.c_str());
-  TensorHolder holder = BuildTensorHolder(info->tensor_meta.sizes, info->tensor_meta.dtype, info->tensor_meta.layout,
-                                          record.data.get(), record.size, result, info->record_path,
-                                          "WEIGHT_SIZE_MISMATCH");
+  TensorHolder holder = BuildTensorHolder(
+      info->tensor_meta.sizes, info->tensor_meta.dtype, info->tensor_meta.layout,
+      consolidated_data_.data() + info->offset, info->data_size,
+      result, info->record_path, "WEIGHT_SIZE_MISMATCH");
   holder.requires_grad = info->tensor_meta.requires_grad;
   return holder;
 }

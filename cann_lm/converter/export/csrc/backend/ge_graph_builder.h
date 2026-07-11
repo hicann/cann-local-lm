@@ -18,11 +18,15 @@ class GeGraphBuilder {
  public:
   explicit GeGraphBuilder(const EpairArchive &archive, ValidationResult &result);
 
+  GeGraphBuilder(const std::string &model_json, const std::string &dir_path,
+                 ValidationResult &result);
+
   std::unique_ptr<ge::Graph> Build(ValidationResult &result);
   bool IsFullyOffloaded() const noexcept;
 
  private:
   const EpairArchive *archive_ = nullptr;
+  std::string dir_path_;
   EpairModelParser parser_;
   GeWeightLoader loader_;
   AtenSchemaResolver schema_resolver_;

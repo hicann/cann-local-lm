@@ -55,6 +55,11 @@ def pack_weights(contents, *, max_file_size: int = 5 * 1024) -> ConsolidatedWeig
     raw_sd = contents.ep.state_dict() if callable(contents.ep.state_dict) else contents.ep.state_dict
     state_dict = dict(raw_sd)
 
+    # Non-persistent buffers are not in state_dict; add them from the module
+    for name, buf in contents.ep.module().named_buffers():
+        if name not in state_dict:
+            state_dict[name] = buf
+
     spec_names = set()
     gs = contents.ep.graph_signature
     for mapping in (gs.inputs_to_parameters, gs.inputs_to_buffers, gs.inputs_to_lifted_tensor_constants):

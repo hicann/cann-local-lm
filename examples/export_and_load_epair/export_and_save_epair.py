@@ -9,26 +9,20 @@ if str(_PROJECT_ROOT) not in sys.path:
 
 import torch
 from cann_lm.converter.export.epair_utils import consolidated_weights_save
+from cann_lm.models.fake_ops import register_ge_converters
 import torch_delegate
 
-
-class MyModel(torch.nn.Module):
-    def __init__(self):
-        super().__init__()
-        self.weight = torch.nn.Parameter(torch.randn(4, 3))
-        self.register_buffer("bias", torch.ones(3, 3))
-
-    def forward(self, x):
-        y = torch.mm(x, self.weight) + self.bias
-        return torch.transpose(y, 0, 1)
+from simple_transformer import SimpleTransformer
 
 
 ROOT = Path(__file__).resolve().parent
 
+register_ge_converters()
+
 torch.manual_seed(43)
 device = torch.device("cpu")
-model = MyModel().eval().to(device)
-sample_inputs = (torch.randn(3, 4, device=device),)
+model = SimpleTransformer(vocab_size=256, d_model=64, n_heads=8, d_ff=256, n_layers=2, max_seq_len=128).eval().to(device)
+sample_inputs = (torch.randint(0, 256, (2, 16), dtype=torch.int64, device=device),)
 exported_program = torch.export.export(model, sample_inputs, strict=False)
 
 epair = torch_delegate.export_to_epair(exported_program)
@@ -42,5 +36,5 @@ print(f"Saved: {pt2_path}")
 
 for i, inp in enumerate(sample_inputs):
     path = ROOT / f"input_{i}.bin"
-    inp.cpu().float().detach().numpy().tofile(path)
+    inp.cpu().detach().numpy().tofile(path)
     print(f"Saved input[{i}] shape={list(inp.shape)} -> {path}")

@@ -4,16 +4,12 @@
 #
 # 前置条件：
 #   1. source /home/developer/Ascend/cann/set_env.sh
-#   2. venv（由 torch-delegate-harmony 创建）：/mnt/workspace/torch-delegate-harmony/.venv/
-#   3. torch_delegate whl 已安装到 venv 中
+#   2. venv：/mnt/workspace/torchair_lazy_venv/
+#   3. torch_delegate whl + torchair 已安装到 venv 中
 #
 # 用法：
-#   bash run.sh
-#
-# 一键执行命令（含 CANN 环境初始化）：
 #   source /home/developer/Ascend/cann/set_env.sh && \
-#     export TORCH_DELEGATE_HOME="/mnt/workspace/torch-delegate-harmony" && \
-#     bash /mnt/workspace/project/CANN-LM_5883/examples/export_and_load_example/run.sh
+#   bash run.sh
 # 日志打屏export ASCEND_SLOG_PRINT_TO_STDOUT=1
 
 set -euo pipefail
@@ -21,6 +17,8 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${ROOT_DIR}/../.." && pwd)"
 TORCH_DELEGATE_HOME="${TORCH_DELEGATE_HOME:-/mnt/workspace/torch-delegate-harmony}"
+VENV_DIR="${VENV_DIR:-/mnt/workspace/torchair_lazy_venv}"
+TORCHAIR_DIR="${TORCHAIR_DIR:-/mnt/workspace/torchair}"
 PHASE=0
 TOTAL=5
 
@@ -51,7 +49,7 @@ if [[ -z "${ASCEND_HOME_PATH:-}" ]]; then
 fi
 check "ASCEND_HOME_PATH=${ASCEND_HOME_PATH}"
 
-_VENV_PY="${TORCH_DELEGATE_HOME}/.venv/bin/python3"
+_VENV_PY="${VENV_DIR}/bin/python3"
 if [[ -x "${_VENV_PY}" ]]; then
   PYTHON="${_VENV_PY}"
 else
@@ -76,7 +74,7 @@ else
   check "libtorch_delegate_backend.so (prebuilt)"
 fi
 
-_TORCHAIR_STUBS="$(realpath "${TORCH_DELEGATE_HOME}/../torchair/build/stubs" 2>/dev/null || true)"
+_TORCHAIR_STUBS="$(realpath "${TORCHAIR_DIR}/build/stubs" 2>/dev/null || true)"
 if [[ -d "${_TORCHAIR_STUBS:-}" ]]; then
   check "torchair stubs: ${_TORCHAIR_STUBS}"
 fi
@@ -108,8 +106,9 @@ export TORCH_DELEGATE_ENABLE_FALLBACK_CODEGEN=0
 export TORCH_DEVICE_BACKEND_AUTOLOAD=0
 
 # torchair stubs（用于无 NPU 硬件时 Python 侧初始化通过）
+# CANN lib64 必须在 stubs 之前，否则 stubs 中的 liberror_manager.so 会覆盖真实实现
 if [[ -d "${_TORCHAIR_STUBS:-}" ]]; then
-  export LD_LIBRARY_PATH="${_TORCHAIR_STUBS}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+  export LD_LIBRARY_PATH="${ASCEND_HOME_PATH}/lib64:${_TORCHAIR_STUBS}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
 fi
 
 cd "${ROOT_DIR}"
@@ -149,13 +148,23 @@ phase "Delegate 加载验证"
 
 cd "${ROOT_DIR}"
 # C++ 二进制运行时需要 CANN + torch 库
-export LD_LIBRARY_PATH="${ASCEND_HOME_PATH}/lib64:${_TORCH_PKG_DIR}/lib:${LD_LIBRARY_PATH:-}"
+# 顺序: Python lib → CANN lib64 (优先) → torchair stubs → torch.libs → torch/lib
+# 注意: Python base lib 必须在前面，否则会加载到系统的 libpython3.12.so (缺少符号)
+_PYTHON_LIB_DIR="$("${PYTHON}" -c 'import sys; print(sys.base_prefix)')/lib"
+export LD_LIBRARY_PATH="${_PYTHON_LIB_DIR}:${ASCEND_HOME_PATH}/lib64"
+if [[ -d "${_TORCHAIR_STUBS:-}" ]]; then
+  export LD_LIBRARY_PATH="${LD_LIBRARY_PATH}:${_TORCHAIR_STUBS}"
+fi
 _TORCH_LIBS="$(dirname "${_TORCH_PKG_DIR}")/torch.libs"
 if [[ -d "${_TORCH_LIBS}" ]]; then
-  export LD_LIBRARY_PATH="${_TORCH_LIBS}:${LD_LIBRARY_PATH}"
+  export LD_LIBRARY_PATH="${LD_LIBRARY_PATH}:${_TORCH_LIBS}"
 fi
-if [[ -d "${_TORCHAIR_STUBS:-}" ]]; then
-  export LD_LIBRARY_PATH="${_TORCHAIR_STUBS}:${LD_LIBRARY_PATH}"
+export LD_LIBRARY_PATH="${LD_LIBRARY_PATH}:${_TORCH_PKG_DIR}/lib"
+
+# stub_lib: backend build 产生的 libascend_hal.so stub
+_BACKEND_STUB_LIB="${CSRC_DIR}/build/stub_lib"
+if [[ -d "${_BACKEND_STUB_LIB}" ]]; then
+  export LD_LIBRARY_PATH="${LD_LIBRARY_PATH}:${_BACKEND_STUB_LIB}"
 fi
 
 "${PYTHON}" "${ROOT_DIR}/compare_single_op_vs_delegate.py"

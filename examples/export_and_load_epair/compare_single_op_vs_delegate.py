@@ -21,7 +21,12 @@ def validate_export_and_eager():
     epair = td.epair_load(str(pt2_path))
     ep = epair.ep
 
-    x = torch.randn(3, 4)
+    input_path = ROOT / "input_0.bin"
+    if input_path.exists():
+        import numpy as np
+        x = torch.from_numpy(np.fromfile(str(input_path), dtype=np.int64)).reshape(2, 16)
+    else:
+        x = torch.randint(0, 256, (2, 16), dtype=torch.int64)
     model = ep.module()
     with torch.no_grad():
         output = model(x)

@@ -25,7 +25,10 @@ _PROJECT_ROOT = os.path.normpath(os.path.join(THIS_DIR, "..", "..", ".."))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
-import cann_lm.hf_cpu  # noqa: F401  disables torch_npu probe before importing transformers
+_LLM_ENGINE_DIR = os.path.dirname(THIS_DIR)  # llm_engine_on_cpu/ holds sibling hf_cpu.py
+if _LLM_ENGINE_DIR not in sys.path:
+    sys.path.insert(0, _LLM_ENGINE_DIR)
+import hf_cpu  # noqa: F401  disables torch_npu probe before importing transformers
 
 from cann_lm.models.qwen3 import Qwen3ForCausalLM, Qwen3TextConfig, load_qwen3_weights
 from transformers import AutoTokenizer, Qwen3ForCausalLM as HFQwen3ForCausalLM

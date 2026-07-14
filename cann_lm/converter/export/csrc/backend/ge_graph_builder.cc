@@ -24,7 +24,6 @@
 #include "common/base64.h"
 #include "common/logging/assert_macros.h"
 #include "common/memory_utils.h"
-#include "fallback_codegen/fallback_codegen.h"
 
 // todo (@AGENTS) 本文件超过 1000 行，下一步可以拆解重构，精简代码源文件
 
@@ -1657,13 +1656,20 @@ bool PlanNodes(GraphBuildContext &ctx, const EpairModelParser &parser, const td:
         return false;
       }
     } else {
-      // 处理 Fallback Node 场景
-      TD_ASSERT_TRUE(!node.effective_schema_target.empty(),
-                     "Fallback node has no effective schema target, node=%s, effective_target=%s", node.name.c_str(),
-                     node.effective_schema_target.c_str());
-      TD_ASSERT_TRUE(PlanFallbackNode(ctx, node, deps, result),
-                     "PlanNodes failed: fallback node build error, node=%s, effective_target=%s", node.name.c_str(),
-                     node.effective_schema_target.c_str());
+      // 算子无法映射到 Ascend IR，直接报错退出
+      TDLOGE("PlanNodes failed: node [%s] has no ascend_ir mapping (source is empty), "
+             "target=%s, effective_target=%s. "
+             "This operator cannot be converted to Ascend IR. "
+             "Please register the GE operator or decompose the operation in the model definition.",
+             node.name.c_str(), node.target.c_str(), node.effective_schema_target.c_str());
+      result.ok = false;
+      result.issues.push_back({
+          IssueSeverity::Error,
+          "UNMAPPED_OPERATOR",
+          "Operator has no Ascend IR mapping: " + node.name,
+          node.target
+      });
+      return false;
     }
   }
   return true;
@@ -1747,37 +1753,6 @@ GeGraphBuilder::GeGraphBuilder(const std::string &model_json, const std::string 
                                 ValidationResult &result)
     : weights_index_path_(weights_index_path) {
   TDLOGI("GeGraphBuilder enter: weights_index=%s", weights_index_path.c_str());
-
-  const char *enable_codegen_env = std::getenv("TORCH_DELEGATE_ENABLE_FALLBACK_CODEGEN");
-  bool enable_codegen = true;
-  if (enable_codegen_env != nullptr) {
-    std::string val(enable_codegen_env);
-    enable_codegen = (val == "1" || val == "true" || val == "TRUE");
-  }
-
-  if (enable_codegen) {
-    TDLOGI("GeGraphBuilder step: running fallback codegen");
-    auto codegen_result = torch_delegate::fallback::FallbackCodegen::GenerateFromModelJson(model_json);
-
-    ValidationIssue issue;
-    issue.code = codegen_result.skipped ? "FALLBACK_CODEGEN_SKIPPED" : "FALLBACK_CODEGEN_FAILED";
-    issue.message = codegen_result.error_message;
-    issue.context = "";
-
-    if (!codegen_result.success) {
-      issue.severity = IssueSeverity::Error;
-      result.issues.push_back(issue);
-      result.ok = false;
-      TDLOGE("GeGraphBuilder failed: codegen error, %s", codegen_result.error_message.c_str());
-      return;
-    } else if (codegen_result.skipped) {
-      issue.severity = IssueSeverity::Warning;
-      result.issues.push_back(issue);
-      TDLOGI("GeGraphBuilder step: codegen skipped, %s", codegen_result.error_message.c_str());
-    } else {
-      TDLOGI("GeGraphBuilder step: codegen success, ops=%zu", codegen_result.generated_op_names.size());
-    }
-  }
 
   TDLOGI("GeGraphBuilder step: parsing model");
   parser_ = EpairModelParser::Parse(model_json, result);

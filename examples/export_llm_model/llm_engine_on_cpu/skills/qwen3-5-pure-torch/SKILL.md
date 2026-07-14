@@ -1,16 +1,20 @@
 ---
 name: qwen3-5-pure-torch
 description: |
-  不依赖 transformers 库，纯 PyTorch 实现 Qwen3.5 模型定义。当用户提到以下场景时使用：
+  不依赖 transformers 库，纯 PyTorch 实现 Qwen3.5 模型定义，并用真实 checkpoint 调试与验证。当用户提到以下场景时使用：
   - 实现 / 编写 Qwen3.5 模型（纯 torch，无 transformers 依赖）
   - 从 HuggingFace 权重加载 Qwen3.5 到自定义实现
-  - Qwen3.5 推理脚本（纯 torch）
+  - Qwen3.5 推理脚本（纯 torch）/ 出字
   - Qwen3.5 模型配置定义
   - 将 Qwen3.5 modeling 代码从 transformers 迁移到独立实现
-version: 1.0.0
+  - 调试纯 torch Qwen3.5（加载真实权重、generate 退化、KV cache、causal mask）
+  - 验证纯 torch Qwen3.5 与 HuggingFace transformers Qwen3.5ForCausalLM 数值对齐
+version: 1.1.0
 metadata:
   author: assistant
   category: model-implementation
+  model: qwen3.5-0.8b
+  reference: Qwen/Qwen3.5-0.8B
   allowedTools:
     - read
     - write
@@ -665,25 +669,113 @@ class SimpleDeltaNetCache:
 
 全注意力层的 KV cache 用简单的 dict/list 管理。
 
-## 验证步骤
+## 验证步骤（实况：Qwen3.5-0.8B VLM checkpoint）
 
-1. **形状验证**：随机输入，验证各层输出形状正确
-2. **权重对齐**：加载 HuggingFace 权重后，与 transformers 输出逐 token 比对
-3. **推理测试**：用真实 prompt 测试生成质量
-4. **线性注意力验证**：对比 chunk 和 recurrent 模式输出一致性
+用真实 VLM checkpoint（`Qwen/Qwen3.5-0.8B`，单分片 `model.safetensors-00001-of-00001.safetensors`，text 权重前缀 `model.language_model.*`，tied embeddings，无 `lm_head.weight`）调试时发现并修复的 4 个 bug：
+
+### Bug 1：`load_qwen3_5_weights` 不做前缀重映射（致命）
+
+- VLM checkpoint 的 text 权重 key 是 `model.language_model.layers.0.*` / `model.language_model.embed_tokens.weight` / `model.language_model.norm.weight`，而纯 torch 文本 CausalLM 的 param 名是 `model.layers.0.*` / `model.embed_tokens.weight` / `model.norm.weight`。
+- 原 loader 只按 `k in param_dict` 过滤、不做映射 → **0 个 key 命中**，模型全是随机权重。
+- 修复：加 `_remap_key`，`model.language_model.` → `model.`；visual/mtp 不在 param_dict 自然被丢弃；兜底 glob `model.safetensors-0000*-of-*.safetensors` 单分片命名；tied 时 `lm_head.weight` 从 missing 集合剔除。
+
+```python
+def _remap_key(k: str) -> str:
+    if k.startswith("model.language_model."):
+        return "model." + k[len("model.language_model."):]
+    return k
+```
+
+### Bug 2：config 缺字段 → `from_pretrained` 静默丢弃
+
+- 0.8B `text_config` 含 `attn_output_gate=true`、`mtp_num_hidden_layers`、`mtp_use_dedicated_embeddings`、`mamba_ssm_dtype`、`mlp_only_layers`、`rope_parameters.mrope_interleaved`，原 dataclass 没这些字段 → `from_dict` 的 `valid_keys` 过滤把它们扔了。
+- 修复：dataclass 补全字段。`attn_output_gate=True` 与 full-attention 层 `q_proj` 输出 2×（query+gate）一致——Q Gate 必须保留。
+
+### Bug 3：causal mask 缺失 → generate 预填充泄漏未来 token
+
+- `TextModel.forward` 原来只在 `attention_mask is not None` 时建 mask；`generate` 默认传 `attention_mask=None` → **full-attention 层无因果屏蔽**，预填充每个 token 看到未来 token。
+- 修复：`_create_causal_mask` 接受 `attention_mask=None`（纯因果，无 padding）；forward 预填充时**总建 mask**，decode（`seq_len==1 and past_len>0`）跳过（单 query 可看全部缓存）。
+
+```python
+past_len = past_key_values.get_seq_length() if past_key_values is not None else 0
+if seq_len == 1 and past_len > 0:
+    causal_mask = None
+else:
+    causal_mask = _create_causal_mask(attention_mask, inputs_embeds, past_key_values)
+```
+
+### Bug 4：`SimpleKVCache.get_seq_length` KeyError
+
+- 原取 `self._cache[0][0].shape[2]`，但 `layer_types[0]=='linear_attention'`（无 KV），第一层 KV 实际在 layer 3 → `KeyError: 0`。
+- 修复：取任意已缓存 key：`first_key = next(iter(self._cache)); return self._cache[first_key][0].shape[2]`。
+
+### 验证脚本
+
+| 脚本 | 用途 |
+|------|------|
+| `cann_lm/models/run_qwen3_5.py` | 纯 torch 模型 + HF tokenizer 出字 |
+| `cann_lm/models/qwen3_5/verify_qwen3_5_vs_hf.py` | 与 HF `Qwen3_5ForCausalLM` 逐 token 对拍（float32 + eager） |
+| `cann_lm/hf_cpu.py` | 禁用 transformers 的 torch_npu probe（本环境必做，先于 `from transformers import`） |
+
+```bash
+# 出字
+cd cann_lm/models && TORCH_DEVICE_BACKEND_AUTOLOAD=0 python3 run_qwen3_5.py \
+    --model /path/to/qwe3.5-0.8B --greedy --max-new-tokens 64
+# 对拍
+cd cann_lm/models/qwen3_5 && TORCH_DEVICE_BACKEND_AUTOLOAD=0 python3 verify_qwen3_5_vs_hf.py \
+    --model /path/to/qwe3.5-0.8B
+```
+
+### 验证结果（0.8B，float32 + eager）
+
+| 指标 | 结果 |
+|------|------|
+| 参数量 | 752,393,024 == HF |
+| embed_tokens 权重 | bit-identical（max\|Δ\|=0） |
+| logits（chat prompt 19 token） | max\|Δ\| = **0.000e+00**，argmax 100%，top5 100% |
+| logits（随机 32 token） | max\|Δ\| = **0.000e+00**，argmax 100% |
+| prefill cache-vs-nocache | 8.5e-05（fp 噪声） |
+| greedy 16 token | **identical=True** |
+| 出字 | "你好！我是 Qwen3.5，由通义实验室自主研发的超…"（与 HF 一致） |
+
+> HF 因没装 `flash-linear-attention`/`causal-conv1d` 回退到 torch 实现，与纯 torch 同算法，故对拍公平且 bit-identical。
+
+### 调试技巧：先判 bug 在 forward 还是 generate
+
+1. **退化输出（如 `at-at-at`）≠ forward 错**。先做 `forward(ids, use_cache=False)` 与 HF 对拍：若 bit-identical 则 forward 全对（含 GatedDeltaNet chunk prefill、interleaved MRoPE、Q Gate），bug 在 generate 的 cache 路径。
+2. 再查 `forward(ids, use_cache=True)` vs `forward(ids, use_cache=False)`：若 prefill-with-cache ≠ no-cache，则 cache 预填充路径坏。
+3. **单 token（纯 eos）prompt 易出退化输出**，调试生成务必用真实 chat template prompt（`tokenizer.apply_chat_template`）。
 
 ## 常见问题
 
-### 权重 key 不匹配
-- HuggingFace 权重 key 前缀为 `model.layers.*`
-- 自定义模型也使用相同前缀，大部分可直接加载
-- GatedDeltaNet 的 `in_proj_qkv/z/b/a` 需确认与 HuggingFace 权重 key 一致
+### 权重 key 不匹配（VLM checkpoint 前缀）
+- Qwen3.5 VLM checkpoint 的 text 权重前缀是 `model.language_model.*`（不是 `model.*`），纯 torch 文本 CausalLM 的 param 名是 `model.*`。
+- 必须 `model.language_manager.` → `model.` 重映射，否则 **0 key 命中**（loader 不报错但全是随机权重，表现为输出乱码/退化）。
+- `model.visual.*` / `mtp.*` 不在文本模型 param_dict，自然被过滤丢弃。
+- tied（`tie_word_embeddings=true`）时 checkpoint 不存 `lm_head.weight`，加载后 `model.lm_head.weight = model.model.embed_tokens.weight` 绑定。
+
+### config 字段被 `from_pretrained` 静默丢弃
+- `from_dict` 只保留 dataclass 已声明字段，checkpoint 里多出的字段（`attn_output_gate`/`mtp_*`/`mamba_ssm_dtype`/`mlp_only_layers`/`mrope_interleaved`）会被无声扔掉。
+- dataclass 必须补全这些字段，否则 `attn_output_gate` 丢了也不会报错，但后续若用它判断 Q Gate 会出错。
+
+### generate 预填充泄漏未来 token（causal mask）
+- `TextModel.forward` 若仅在 `attention_mask is not None` 时建 mask，而 `generate` 默认 `attention_mask=None` → full-attention 层预填充时无因果屏蔽。
+- 表现：forward(no_cache) 与 HF 对拍可能 bit-identical（因为 HF 也可能传 None 走同一路径？），但 generate 的 prefill 与 no-cache forward 不一致，生成质量差。
+- 修复：`_create_causal_mask(None,...)` 产出纯因果 mask；forward 预填充总建 mask。
+
+### `SimpleKVCache.get_seq_length` KeyError: 0
+- 混合层型模型里 layer 0 是 `linear_attention`（用 delta_cache，无 KV cache），第一层 KV 在第一个 `full_attention` 层（如 layer 3）。
+- `get_seq_length` 不能假设 key 0 存在，要取任意已缓存 key。
 
 ### partial_rotary_factor = 0.25
-- Qwen3.5 只对 head_dim 的 25% 应用 RoPE（即 64/256）
+- Qwen3.5 只对 head_dim 的 25% 应用 RoPE（256 的 1/4 = 64 维）
 - `apply_rotary_pos_emb` 中 `rotary_dim = cos.shape[-1]`，剩余维度 pass-through
 
 ### GatedDeltaNet 的 conv1d 和 recurrent state
 - Prefill: 使用 `torch_chunk_gated_delta_rule`
 - Decode (seq_len=1): 使用 `torch_recurrent_gated_delta_rule`
 - conv_state 用于 causal conv1d 的左上下文缓存
+
+### 本环境用 transformers 必须先禁用 torch_npu probe
+- `import cann_lm.hf_cpu`（在 `from transformers import ...` 之前），否则 transformers 的 `is_torch_npu_available()` 会因 `libhccl_compat.so` 缺失而 `import torch_npu` 致命报错。
+- 跑脚本统一加 `TORCH_DEVICE_BACKEND_AUTOLOAD=0`。

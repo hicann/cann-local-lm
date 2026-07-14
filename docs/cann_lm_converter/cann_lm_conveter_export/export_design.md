@@ -187,7 +187,6 @@ EpairModelLoader(model_json_path, weights_index_path)
     ├── 读取 model JSON 文件内容
     └── GeGraphBuilder(model_json_string, weights_index_path, result)
             │
-            ├── (可选) FallbackCodegen::GenerateFromModelJson
             ├── EpairModelParser::Parse(model_json) → ParsedModel
             ├── GeWeightLoader::Create(weights_index_path, model, result)
             │       │
@@ -199,6 +198,7 @@ EpairModelLoader(model_json_path, weights_index_path)
                     ├── PrepareContext
                     ├── PreparePlaceholders (创建 Data/Const 节点)
                     ├── PlanNodes (创建 Ascend 算子节点)
+                    │   └── 遇到无法映射到 Ascend IR 的算子时直接报错退出
                     ├── BindDeferredOutputs
                     ├── BindDeferredEdges
                     └── FinalizeGraph
@@ -212,12 +212,21 @@ EpairModelLoader(model_json_path, weights_index_path)
 2. `ReadTensorData` 首次访问某个 bin 文件时，才将其读入 `bin_files_cache_`（`unordered_map<path, vector<uint8_t>>`）
 3. 后续访问同一 bin 文件的张量直接从缓存读取
 
-### Fallback Codegen
+### 无法映射算子的处理
 
-`GeGraphBuilder` 构造时可选执行 fallback codegen（由环境变量 `TORCH_DELEGATE_ENABLE_FALLBACK_CODEGEN` 控制）：
+`PlanNodes` 遍历所有图节点时，若遇到 `ascend_ir.source` 为空的节点（即无法映射到 Ascend IR 的算子），**直接报错退出**，不再执行 fallback codegen。
 
-- 未设置或 `1`/`true`：执行 fallback codegen，为无法直接映射到 Ascend IR 的算子生成 C++ 代码
-- `0`/`false`：跳过 fallback codegen
+错误信息示例：
+```
+PlanNodes failed: node [node_1_aten_arange_start] has no ascend_ir mapping (source is empty),
+target=torch.ops.aten.arange.start, effective_target=torch.ops.aten.arange.start.
+This operator cannot be converted to Ascend IR.
+Please register the GE operator or decompose the operation in the model definition.
+```
+
+用户需要：
+1. 在 `reg_register.h` 中注册缺失的 GE 算子，或
+2. 在模型定义中用已支持的算子组合替换不支持的算子
 
 ## 使用示例
 
@@ -278,15 +287,70 @@ if (status != td::SUCCESS) { /* error handling */ }
 | `csrc/backend/epair_model_parser.h/.cc` | `EpairModelParser`：解析 `ep_json_with_ascend_ir.json` |
 | `csrc/fallback_codegen/fallback_codegen.h/.cc` | `FallbackCodegen`：为未映射算子生成 C++ 代码 |
 
-## 待办事项
+## model_constants_config.json 分析
 
-1. **pt2 格式中 `data/constants/model_constants_config.json` 尚未处理**
-   - pt2 归档内 `data/constants/model_constants_config.json` 描述了 lifted tensor constants 的元信息（dtype、shape 等），当前导出流程未解析和保留此文件
-   - 需在 `export_to_epair` 或 `consolidated_weights_save` 中补充解析逻辑，确保 lifted tensor constants 的元信息完整传递到 C++ 侧
+### 文件来源
 
-2. **HuggingFace 模型路径的 tokenizer 和 LLM config 处理**
-   - 当前导出流程仅处理 PyTorch ExportedProgram（权重 + 图结构），不涉及 tokenizer 和模型配置
-   - 若输入为 HuggingFace 模型路径（如 `/path/to/Qwen3-5`），还需处理：
-     - `tokenizer.json` / `tokenizer_config.json`：分词器配置
-     - `config.json` / `generation_config.json`：模型架构配置（层数、隐藏维度、头数等）
-     - 需将这些配置文件一并导出或转换为 C++ 后端可读取的格式
+`data/constants/model_constants_config.json` 是 PT2 归档格式的内部元信息文件，由 `torch_delegate.epair_save()` 生成。以 qwen3-0.6B 导出为例，其内容：
+
+```json
+{
+    "config": {
+        "model.lifted_tensor_0": {
+            "path_name": "tensor_0",
+            "is_param": false,
+            "tensor_meta": { "dtype": 6, "sizes": [], ... }
+        },
+        "model.lifted_tensor_1": {
+            "path_name": "tensor_1",
+            "is_param": false,
+            "tensor_meta": { "dtype": 6, "sizes": [], ... }
+        },
+        "model.rotary_emb.inv_freq": {
+            "path_name": "tensor_2",
+            "is_param": false,
+            "tensor_meta": { "dtype": 6, "sizes": [{"as_int": 64}], ... }
+        }
+    }
+}
+```
+
+### 与 input_specs 的对应关系
+
+`input_specs` 是 ep_json 中 `graph_module.signature` 下的数组字段，列出模型的所有输入（参数/buffer/常量/用户输入）。以 qwen3-0.6B 为例，共 321 条：
+
+| 索引 | kind | 名称 | 说明 |
+|------|------|------|------|
+| [0-310] | `parameter` | `model.embed_tokens.weight` 等 | 311 个模型参数 |
+| [311] | `tensor_constant` | `c_model_lifted_tensor_0` | ← 对应 `model_constants_config.json` 中的 `model.lifted_tensor_0` |
+| [312] | `tensor_constant` | `c_model_lifted_tensor_1` | ← 对应 `model.lifted_tensor_1` |
+| [313] | `buffer` | `model.rotary_emb.inv_freq` | ← 对应 `model.rotary_emb.inv_freq` |
+| [314] | `user_input` | `input_ids` | 用户输入 |
+| [315-320] | `constant_input` | `attention_mask=None` 等 | None/False 常量参数 |
+
+`model_constants_config.json` 中的 3 个常量**全部出现在 `input_specs` 中**：
+
+| model_constants_config.json | input_specs 索引 | kind | 数据来源 |
+|---|---|---|---|
+| `model.lifted_tensor_0` (dtype=6, sizes=[]) | [311] | `tensor_constant` | `pack_weights` 通过 `inputs_to_lifted_tensor_constants` 打包到 bin 文件 |
+| `model.lifted_tensor_1` (dtype=6, sizes=[]) | [312] | `tensor_constant` | 同上 |
+| `model.rotary_emb.inv_freq` (dtype=6, sizes=[64]) | [313] | `buffer` | `pack_weights` 通过 `ep.module().named_buffers()` 补充打包到 bin 文件 |
+
+### 信息覆盖情况
+
+| 信息 | model_constants_config.json 来源 | CANN-LM_5883 来源 | 是否已覆盖 |
+|------|---|---|---|
+| 常量数据 | `data/constants/tensor_N` 文件 | `weights_*.bin`（`pack_weights` 已打包） | 已覆盖 |
+| 常量名/类型 | `config` 对象的 key 和 `is_param` | `input_specs` 的 `kind` 和 `name` | 已覆盖 |
+| dtype/shape | `tensor_meta.dtype` / `tensor_meta.sizes` | C++ 侧从 `ep_json` 图节点推导 | 已覆盖 |
+| 数据存储位置 | `path_name` → `data/constants/` 目录 | `weight_info.json` 的 `file` + `offset` | 已覆盖 |
+
+### 结论
+
+`model_constants_config.json` 是 PT2 归档格式的冗余元信息文件。CANN-LM_5883 通过以下路径已覆盖其全部信息：
+
+1. **数据**：`pack_weights` 通过 `gs.inputs_to_lifted_tensor_constants` + `ep.module().named_buffers()` 将常量数据打包到 `weights_*.bin`
+2. **元信息**：C++ 侧 `EpairModelParser` 解析 `input_specs` 获取 kind/name，`GeWeightLoader` 从 `weight_info.json` 获取数据位置
+3. **dtype/shape**：C++ 侧从 `ep_json` 的图节点（graph nodes）推导张量元信息
+
+**不需要单独解析 `model_constants_config.json`**。

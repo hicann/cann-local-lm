@@ -12,7 +12,7 @@ from cann_lm.converter.export.epair_utils import consolidated_weights_save
 from cann_lm.models.fake_ops import register_ge_converters
 import torch_delegate
 
-from simple_transformer import SimpleTransformer
+from simple_network import SimpleNetwork
 
 
 ROOT = Path(__file__).resolve().parent
@@ -21,8 +21,8 @@ register_ge_converters()
 
 torch.manual_seed(43)
 device = torch.device("cpu")
-model = SimpleTransformer(vocab_size=256, d_model=64, n_heads=8, d_ff=256, n_layers=2, max_seq_len=128).eval().to(device)
-sample_inputs = (torch.randint(0, 256, (2, 16), dtype=torch.int64, device=device),)
+model = SimpleNetwork(dim=64).eval().to(device)
+sample_inputs = (torch.randn(2, 64, device=device),)
 exported_program = torch.export.export(model, sample_inputs, strict=False)
 
 epair = torch_delegate.export_to_epair(exported_program)

@@ -33,6 +33,18 @@ class Qwen3_5TextConfig:
     linear_num_key_heads: int = 16
     linear_num_value_heads: int = 32
 
+    # Q Gate: full-attention layers emit 2x q_proj (query + gate, sigmoid-modulated).
+    # Qwen3.5-0.8B sets attn_output_gate=true.
+    attn_output_gate: bool = True
+
+    # Multi-token prediction head (present in the VLM checkpoint; the standalone
+    # text CausalLM does not use it, but the field is kept so from_pretrained does
+    # not silently drop it).
+    mtp_num_hidden_layers: int = 0
+    mtp_use_dedicated_embeddings: bool = False
+    mamba_ssm_dtype: str = "float32"
+    mlp_only_layers: list = field(default_factory=list)
+
     layer_types: list[str] | None = None
     full_attention_interval: int = 4
 
@@ -41,6 +53,7 @@ class Qwen3_5TextConfig:
         "rope_theta": 1000000.0,
         "partial_rotary_factor": 0.25,
         "mrope_section": [11, 11, 10],
+        "mrope_interleaved": True,
     })
 
     dtype: str | None = None

@@ -24,9 +24,9 @@ def validate_export_and_eager():
     input_path = ROOT / "input_0.bin"
     if input_path.exists():
         import numpy as np
-        x = torch.from_numpy(np.fromfile(str(input_path), dtype=np.int64)).reshape(2, 16)
+        x = torch.from_numpy(np.fromfile(str(input_path), dtype=np.float32)).reshape(2, 64)
     else:
-        x = torch.randint(0, 256, (2, 16), dtype=torch.int64)
+        x = torch.randn(2, 64)
     model = ep.module()
     with torch.no_grad():
         output = model(x)

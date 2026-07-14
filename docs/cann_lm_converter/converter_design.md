@@ -552,3 +552,12 @@ python cann_lm/converter/cann-lm-converter.py \
 1. **分区模式** (`--partition-layers`) — 按 transformer layer 分区保存，支持多卡加载
 2. **量化模块** (`cann_lm/converter/quant/`) — 权重量化 (W8A16 / W4A16)
 3. **pt2 格式 `model_constants_config.json` 解析** — lifted tensor constants 元信息
+
+## 待办事项
+
+1. **HuggingFace 模型路径的 tokenizer 和 LLM config 处理**
+   - 当前导出流程仅处理 PyTorch ExportedProgram（权重 + 图结构），不涉及 tokenizer 和模型配置
+   - 若输入为 HuggingFace 模型路径（如 `/path/to/Qwen3-5`），还需处理：
+     - `tokenizer.json` / `tokenizer_config.json`：分词器配置
+     - `config.json` / `generation_config.json`：模型架构配置（层数、隐藏维度、头数等）
+     - 需将这些配置文件一并导出或转换为 C++ 后端可读取的格式

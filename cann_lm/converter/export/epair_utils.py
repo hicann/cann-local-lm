@@ -6,6 +6,9 @@ import dataclasses
 import json
 from pathlib import Path
 
+import torch
+
+DEFAULT_SPLIT_SIZE = 1024 * 1024 * 1024 * 50 # 50GB
 
 @dataclasses.dataclass
 class ConsolidatedWeights:
@@ -25,7 +28,7 @@ class ConsolidatedWeights:
     weights_index: dict[str, list[dict]]
 
 
-def pack_weights(contents, *, max_file_size: int = 5 * 1024) -> ConsolidatedWeights:
+def pack_weights(contents, *, max_file_size: int = DEFAULT_SPLIT_SIZE) -> ConsolidatedWeights:
     """Pack weights from EpairContents into ConsolidatedWeights (in memory).
 
     Reads tensor data from ``contents.ep.state_dict()``, concatenates raw
@@ -79,7 +82,10 @@ def pack_weights(contents, *, max_file_size: int = 5 * 1024) -> ConsolidatedWeig
 
     for name in names:
         tensor = state_dict[name]
-        data = tensor.detach().cpu().numpy().tobytes()
+        raw = tensor.detach().cpu().contiguous()
+        if raw.dtype == torch.bfloat16:
+            raw = raw.view(torch.int16)
+        data = raw.numpy().tobytes()
 
         # If current bin is non-empty and adding this tensor would exceed the
         # limit, start a new file. Individual tensors are never split.

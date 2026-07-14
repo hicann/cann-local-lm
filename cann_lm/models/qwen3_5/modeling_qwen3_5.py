@@ -324,7 +324,10 @@ class SimpleKVCache:
     def get_seq_length(self) -> int:
         if not self._cache:
             return 0
-        return self._cache[0][0].shape[2]
+        # Layer 0 may be a linear-attention layer with no KV; any cached full-
+        # attention layer has the same seq length.
+        first_key = next(iter(self._cache))
+        return self._cache[first_key][0].shape[2]
 
 
 class SimpleDeltaNetCache:
@@ -597,24 +600,31 @@ class Qwen3_5DecoderLayer(nn.Module):
 
 
 def _create_causal_mask(
-    attention_mask: torch.Tensor,
+    attention_mask: torch.Tensor | None,
     inputs_embeds: torch.Tensor,
     past_key_values: SimpleKVCache | None = None,
 ) -> torch.Tensor:
+    """Build an additive causal mask, (b, 1, seq_len, total_len).
+
+    `attention_mask=None` produces a pure causal mask (no padding). With a
+    2D padding mask the unmasked positions are 0.0 and masked positions are
+    `finfo.min`. Decode steps (seq_len==1 with cache) collapse to all-zero
+    (single query attends to all cached keys), which is a no-op.
+    """
     batch_size, seq_len = inputs_embeds.shape[:2]
     past_len = past_key_values.get_seq_length() if past_key_values is not None else 0
     total_len = past_len + seq_len
 
     dtype = inputs_embeds.dtype
+    device = inputs_embeds.device
     min_val = torch.finfo(dtype).min
 
-    causal_mask = torch.full((batch_size, 1, seq_len, total_len), fill_value=min_val, dtype=dtype, device=inputs_embeds.device)
-    causal_mask[..., :seq_len, past_len:total_len] = 0
-
-    if seq_len > 1:
-        row_idx = torch.arange(seq_len, device=inputs_embeds.device)
-        col_offset = past_len
-        causal_mask[..., row_idx, :row_idx + col_offset] = min_val
+    q_pos = torch.arange(seq_len, device=device, dtype=torch.long) + past_len  # (seq_len,)
+    k_pos = torch.arange(total_len, device=device, dtype=torch.long)          # (total_len,)
+    causal = k_pos.unsqueeze(0) <= q_pos.unsqueeze(1)                          # (seq_len, total_len)
+    causal_mask = torch.where(causal, torch.tensor(0.0, dtype=dtype, device=device),
+                              torch.tensor(min_val, dtype=dtype, device=device))
+    causal_mask = causal_mask.unsqueeze(0).unsqueeze(0).expand(batch_size, 1, seq_len, total_len)
 
     if attention_mask is not None:
         extended_mask = attention_mask[:, None, None, :].to(dtype=dtype)
@@ -669,7 +679,14 @@ class Qwen3_5TextModel(nn.Module):
         else:
             text_position_ids = None
 
-        causal_mask = _create_causal_mask(attention_mask, inputs_embeds, past_key_values) if attention_mask is not None else None
+        # Causal mask for full-attention layers. Build it for prefill (and the
+        # first step); a single-token decode step with an active cache needs no
+        # mask (the single query may attend to all cached keys).
+        past_len = past_key_values.get_seq_length() if past_key_values is not None else 0
+        if seq_len == 1 and past_len > 0:
+            causal_mask = None
+        else:
+            causal_mask = _create_causal_mask(attention_mask, inputs_embeds, past_key_values)
 
         linear_attn_mask = attention_mask
         if (past_key_values is not None and past_key_values.get_seq_length() > 0) or (
@@ -822,6 +839,18 @@ class Qwen3_5ForCausalLM(nn.Module):
         return input_ids
 
 
+def _remap_key(k: str) -> str:
+    """Map HuggingFace safetensors key to this implementation's param name.
+
+    VLM checkpoints prefix the text model with `model.language_model.` while
+    this standalone text CausalLM uses `model.`. Visual / mtp weights are
+    dropped (not present in the text model).
+    """
+    if k.startswith("model.language_model."):
+        return "model." + k[len("model.language_model."):]
+    return k
+
+
 def load_qwen3_5_weights(
     model: Qwen3_5ForCausalLM,
     model_path: str,
@@ -843,9 +872,14 @@ def load_qwen3_5_weights(
     elif os.path.isfile(single_path):
         shards = ["model.safetensors"]
     else:
-        from huggingface_hub import snapshot_download
-        cached = snapshot_download(model_path, allow_patterns=["*.safetensors", "*.json"])
-        return load_qwen3_5_weights(model, cached, device, dtype)
+        # Sharded single-file naming like `model.safetensors-00001-of-00001.safetensors`
+        import glob
+        shards = sorted(glob.glob(os.path.join(model_path, "model.safetensors-*.safetensors")))
+        if not shards:
+            from huggingface_hub import snapshot_download
+            cached = snapshot_download(model_path, allow_patterns=["*.safetensors", "*.json"])
+            return load_qwen3_5_weights(model, cached, device, dtype)
+        shards = [os.path.basename(s) for s in shards]
 
     for shard in shards:
         shard_path = os.path.join(model_path, shard)
@@ -853,11 +887,22 @@ def load_qwen3_5_weights(
             from huggingface_hub import hf_hub_download
             shard_path = hf_hub_download(model_path, shard)
         state = load_file(shard_path, device="cpu")
-        filtered = {k: v.to(device=device, dtype=dtype) for k, v in state.items() if k in param_dict}
-        model.load_state_dict(filtered, strict=False)
-        loaded.update(filtered.keys())
+        remapped = {}
+        for k, v in state.items():
+            nk = _remap_key(k)
+            if nk in param_dict:
+                p = param_dict[nk]
+                if p.shape != v.shape:
+                    print(f"[WARN] shape mismatch {nk}: model {tuple(p.shape)} vs ckpt {tuple(v.shape)}, skip")
+                    continue
+                remapped[nk] = v.to(device=device, dtype=dtype)
+        model.load_state_dict(remapped, strict=False)
+        loaded.update(remapped.keys())
 
     missing = set(param_dict) - loaded
+    # lm_head is expected to be missing when tie_word_embeddings (not stored in ckpt)
+    if model.config.tie_word_embeddings and "lm_head.weight" in missing:
+        missing.discard("lm_head.weight")
     if missing:
         print(f"[WARN] {len(missing)} keys missing (e.g. {list(missing)[:3]})")
 

@@ -18,6 +18,7 @@ from .modeling_qwen3_5 import (
     apply_rotary_pos_emb,
     repeat_kv,
     rotate_half,
+    load_qwen3_5_weights,
 )
 
 __all__ = [
@@ -38,4 +39,5 @@ __all__ = [
     "apply_rotary_pos_emb",
     "repeat_kv",
     "rotate_half",
+    "load_qwen3_5_weights",
 ]

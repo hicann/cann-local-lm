@@ -63,5 +63,19 @@ def get_entry(name: str) -> ModelEntry:
     return REGISTRY[key]
 
 
+def detect_model_type(hf_config: dict) -> ModelEntry:
+    """Auto-detect the model entry from HF config.json's top-level `model_type`.
+
+    Users no longer pass --model-type on the CLI; the registry is looked up from
+    config.json["model_type"] (e.g. "gemma4" / "qwen3" / "qwen3_5").
+    """
+    model_type = hf_config.get("model_type")
+    if not model_type:
+        raise ValueError(
+            f"config.json missing 'model_type' field; supported: {available_models()}"
+        )
+    return get_entry(model_type)
+
+
 def available_models() -> list[str]:
     return list(REGISTRY)

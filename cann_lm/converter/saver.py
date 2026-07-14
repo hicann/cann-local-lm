@@ -17,7 +17,7 @@ def save_epair(
     artifact: ModelArtifact,
     output_dir: str | Path,
     *,
-    max_file_size: int = 512 * 1024 * 1024,
+    max_file_size: int = 50 * 1024 * 1024 * 1024,  # 默认 50GB
     sample_seq_len: int = 128,
     save_weights: bool = True,
 ) -> None:

@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
 """CANN-LM Converter — 将 HuggingFace 模型转换为 epair 格式.
 
+Model type is auto-detected from config.json; no --model-type needed.
+
 Usage:
   python cann-lm-converter.py \
       --hf-path /path/to/gemma-4-e2b-it \
-      --model-type gemma4 \
       --output-dir /path/to/output \
       --dtype float16 \
-      --max-file-size 536870912
+      --device cpu \
+      --max-file-size 53687091200 \
+      --sample-seq-len 128
 """
 
 from __future__ import annotations
@@ -31,6 +34,45 @@ _DTYPE_MAP = {
     "bfloat16": torch.bfloat16,
 }
 
+_DEFAULT_MAX_FILE_SIZE = 50 * 1024 * 1024 * 1024  # 50GB
+
+
+def convert(
+    hf_path: str,
+    output_dir: str,
+    dtype: torch.dtype,
+    device: str = "cpu",
+    max_file_size: int = _DEFAULT_MAX_FILE_SIZE,
+    sample_seq_len: int = 128,
+) -> None:
+    """程序化入口：HF 模型 → epair，返回 None。
+
+    模型类型由 load_model 内部自动探测（从 config.json 的 model_type），
+    调用方无需传入。量化参数后续在此签名上扩展。
+    """
+    print(f"[1/3] Loading model from {hf_path}")
+    artifact = load_model(hf_path, dtype=dtype, device=device)
+    print(f"      Model: {type(artifact.model).__name__}")
+    print(f"      Params: {sum(p.numel() for p in artifact.model.parameters()):,}")
+    print(f"      Tokenizer files: {len(artifact.tokenizer_files)}")
+
+    print(f"[2/3] Saving epair to {output_dir}")
+    save_epair(
+        artifact,
+        output_dir,
+        max_file_size=max_file_size,
+        sample_seq_len=sample_seq_len,
+    )
+
+    print(f"[3/3] Verifying output")
+    out = Path(output_dir)
+    for name in ["ep_json_with_ascend_ir.json", "model_config.json", "weight_info.json"]:
+        fp = out / name
+        status = "[OK]" if fp.exists() else "[MISSING]"
+        print(f"      {status} {name}")
+    print(f"      Weight files: {len(list(out.glob('weights_*.bin')))}")
+    print(f"\nDone. Output: {output_dir}")
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -38,67 +80,31 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--hf-path", required=True,
                         help="HuggingFace model path (local directory)")
-    parser.add_argument("--model-type", required=True,
-                        choices=["gemma4", "qwen3_5", "qwen3"],
-                        help="Model type")
     parser.add_argument("--output-dir", required=True,
-                        help="Output directory")
+                        help="epair output directory")
     parser.add_argument("--dtype", default="float16",
                         choices=list(_DTYPE_MAP),
                         help="Weight dtype (default: float16)")
     parser.add_argument("--device", default="cpu",
                         help="Load device (default: cpu)")
-    parser.add_argument("--max-file-size", type=int, default=512 * 1024 * 1024,
-                        help="Max bytes per bin file (default: 512MB)")
+    parser.add_argument("--max-file-size", type=int, default=_DEFAULT_MAX_FILE_SIZE,
+                        help="Max bytes per bin file (default: 50GB)")
     parser.add_argument("--sample-seq-len", type=int, default=128,
                         help="Sample input seq len for torch.export (default: 128)")
-    parser.add_argument("--no-weights", action="store_true",
-                        help="Only export ep_json, skip weights")
-    parser.add_argument("--partition-layers", type=int, default=None,
-                        help="Partition: layers per partition (not yet implemented)")
+    # 量化参数: TBD
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
-
-    print(f"[1/3] Loading model: {args.model_type} from {args.hf_path}")
-    artifact = load_model(
-        args.hf_path,
-        args.model_type,
+    convert(
+        hf_path=args.hf_path,
+        output_dir=args.output_dir,
         dtype=_DTYPE_MAP[args.dtype],
         device=args.device,
+        max_file_size=args.max_file_size,
+        sample_seq_len=args.sample_seq_len,
     )
-    print(f"      Model: {type(artifact.model).__name__}")
-    print(f"      Params: {sum(p.numel() for p in artifact.model.parameters()):,}")
-    print(f"      Tokenizer files: {len(artifact.tokenizer_files)}")
-
-    print(f"[2/3] Saving epair to {args.output_dir}")
-    if args.partition_layers:
-        print(f"      Partition mode: {args.partition_layers} layers/partition")
-        raise NotImplementedError("Partition mode not yet implemented")
-    else:
-        save_epair(
-            artifact,
-            args.output_dir,
-            max_file_size=args.max_file_size,
-            sample_seq_len=args.sample_seq_len,
-            save_weights=not args.no_weights,
-        )
-
-    print(f"[3/3] Verifying output")
-    output_dir = Path(args.output_dir)
-    expected = ["ep_json_with_ascend_ir.json", "model_config.json"]
-    if not args.no_weights:
-        expected.append("weight_info.json")
-    for name in expected:
-        fp = output_dir / name
-        status = "[OK]" if fp.exists() else "[MISSING]"
-        print(f"      {status} {name}")
-
-    bin_files = list(output_dir.glob("weights_*.bin"))
-    print(f"      Weight files: {len(bin_files)}")
-    print(f"\nDone. Output: {args.output_dir}")
 
 
 if __name__ == "__main__":

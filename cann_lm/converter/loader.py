@@ -11,7 +11,7 @@ from typing import Any
 import torch
 import torch.nn as nn
 
-from cann_lm.converter.model_registry import ModelEntry, get_entry
+from cann_lm.converter.model_registry import ModelEntry, detect_model_type
 
 
 @dataclasses.dataclass
@@ -26,25 +26,30 @@ class ModelArtifact:
 
 def load_model(
     hf_path: str,
-    model_name: str,
     *,
     dtype: torch.dtype = torch.float16,
     device: str = "cpu",
 ) -> ModelArtifact:
-    entry = get_entry(model_name)
-
+    # 1. 读取原始 config.json
     config_json_path = os.path.join(hf_path, "config.json")
     with open(config_json_path) as f:
         hf_config = json.load(f)
 
+    # 2. 自动探测模型类型 (从 config.json 的 model_type)
+    entry = detect_model_type(hf_config)
+
+    # 3. 构造自定义 config
     config = build_config(hf_config, entry)
 
+    # 4. 实例化模型
     model = entry.model_cls(config)
     model = model.to(dtype=dtype).to(device=device)
     model.eval()
 
+    # 5. 加载权重
     model = entry.load_weights_fn(model, hf_path, device=device, dtype=dtype)
 
+    # 6. 收集 tokenizer 文件
     tokenizer_files = collect_tokenizer_files(hf_path)
 
     return ModelArtifact(

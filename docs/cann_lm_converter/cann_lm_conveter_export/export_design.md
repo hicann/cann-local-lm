@@ -198,6 +198,7 @@ EpairModelLoader(model_json_path, weights_index_path)
                     ├── PrepareContext
                     ├── PreparePlaceholders (创建 Data/Const 节点)
                     ├── PlanNodes (创建 Ascend 算子节点)
+                    │   ├── 跳过 _assert_tensor_metadata 节点（见下方「_assert_tensor_metadata 节点处理」）
                     │   └── 遇到无法映射到 Ascend IR 的算子时直接报错退出
                     ├── BindDeferredOutputs
                     ├── BindDeferredEdges
@@ -227,6 +228,36 @@ Please register the GE operator or decompose the operation in the model definiti
 用户需要：
 1. 在 `reg_register.h` 中注册缺失的 GE 算子，或
 2. 在模型定义中用已支持的算子组合替换不支持的算子
+
+### _assert_tensor_metadata 节点处理
+
+`torch.export`（以及 `torch_delegate.export_to_epair` 内部由 torchair `_optimize_and_convert` 跑的 decomposition）会自动插入 `torch.ops.aten._assert_tensor_metadata.default` 节点，用于运行时校验中间张量的 shape/dtype/stride。这类节点的特点：
+
+- schema 为 `() -> ()`，**无输出**、无 GE 算子映射（`ascend_ir.source` 为空）；
+- 纯 PyTorch 运时验证，不是计算节点，GE 编译阶段不需要；
+- 每层 transformer 约产生 9 个，qwen3-0.6B（28 层）共 ~262 个。
+
+**问题**：若不处理，`PlanNodes` 会把它们当作 `ascend_ir.source` 为空的未映射算子，走到「无法映射算子的处理」分支报 `UNMAPPED_OPERATOR` 错误导致构图失败（C++ `PlanFallbackNode` 也会因 "no outputs" 报错）。
+
+**修复**（参考 torch-delegate PR #93）：在 `GeGraphBuilder::PlanNodes` 节点循环**顶部**用 `IsAssertTensorMetadataNode(node)` 识别（`node.target == "torch.ops.aten._assert_tensor_metadata.default"`）并 `continue` 跳过，不进入 converter/fallback/未映射算子分支。
+
+```cpp
+// ge_graph_builder.cc
+bool IsAssertTensorMetadataNode(const ParsedNode &node) {
+  return node.target == "torch.ops.aten._assert_tensor_metadata.default";
+}
+
+// PlanNodes 循环顶部
+for (const auto &node : parser.Nodes()) {
+  if (IsAssertTensorMetadataNode(node)) {
+    TDLOGI("PlanNodes skipping _assert_tensor_metadata node: %s", node.name.c_str());
+    continue;
+  }
+  // ...后续 converter / 未映射算子处理
+}
+```
+
+> 注：CANN-LM 已移除 `fallback_codegen`（44ab718），未映射算子直接报错；故 PR #93 中对 `fallback_codegen.cc` 的 "跳过 assert 节点" 改动不适用，只需 `ge_graph_builder.cc` 的 PlanNodes 跳过即可。Python 侧（example 脚本）若仍需在导出时清理 ep_json，可用 `epair_utils` 之外的本地 strip（见 `examples/export_llm_model/export_llm_model_epair.py` 的 `_strip_assert_nodes_ep_json`）；converter 主路径靠 C++ 侧跳过，不再依赖 Python strip。
 
 ## 使用示例
 

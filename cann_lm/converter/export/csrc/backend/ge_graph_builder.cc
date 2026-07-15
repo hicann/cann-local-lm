@@ -559,6 +559,15 @@ bool IsConverterNoOpNode(const ParsedNode &node) {
   return IsConverterNode(node) && !HasBuildableConverterOps(node);
 }
 
+bool IsAssertTensorMetadataNode(const ParsedNode &node) {
+  // torch.export + torchair decomposition 会插入 _assert_tensor_metadata 节点
+  // （schema: () -> ()，无输出、无 GE 算子映射），用于运行时校验中间张量的
+  // shape/dtype/stride。它们没有计算语义，GE 编译阶段不需要，会在 PlanNodes 里
+  // 被当作 "no ascend_ir mapping" 的未映射算子而报错（UNMAPPED_OPERATOR）导致
+  // 构图失败。这里识别后在 PlanNodes 顶部直接跳过。
+  return node.target == "torch.ops.aten._assert_tensor_metadata.default";
+}
+
 bool IsSameTensorMeta(const ParsedTensorMeta &lhs, const ParsedTensorMeta &rhs) {
   return lhs.dtype == rhs.dtype && lhs.sizes == rhs.sizes && lhs.requires_grad == rhs.requires_grad &&
          lhs.device.type == rhs.device.type && lhs.device.index == rhs.device.index && lhs.strides == rhs.strides &&
@@ -1635,6 +1644,12 @@ bool PlanNodes(GraphBuildContext &ctx, const EpairModelParser &parser, const td:
                const td::AtenSchemaResolver &resolver, const td::AtenTensorDescMapper &mapper, ValidationResult &result) {
   const GraphPlanningDeps deps{parser, weight_loader, resolver, mapper};
   for (const auto &node : parser.Nodes()) {
+    // _assert_tensor_metadata 是 torch.export/torchair decomposition 插入的运行时
+    // 校验节点（无输出、无 GE 算子映射），跳过以免被当成未映射算子导致构图失败。
+    if (IsAssertTensorMetadataNode(node)) {
+      TDLOGI("PlanNodes skipping _assert_tensor_metadata node: %s", node.name.c_str());
+      continue;
+    }
     TDLOGI("PlanNodes visiting: node=%s, target=%s, source=%s, outputs=%zu", node.name.c_str(), node.target.c_str(),
            node.source_info.source.c_str(), node.outputs.size());
     // 当前如果模型 JSON 中不包含 ascend_ir 字段，报错退出

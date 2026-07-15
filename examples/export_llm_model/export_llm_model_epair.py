@@ -23,24 +23,23 @@ import torch_delegate
 ROOT = Path(__file__).resolve().parent
 HF_PATH = "/mnt/workspace/data/models/qwen3-0.6B"
 
-def _remove_assert_tensor_metadata(ep: torch.export.ExportedProgram) -> int:
-    """Remove aten._assert_tensor_metadata nodes from the exported graph.
 
-    torch.export 自动插入的 metadata 校验节点（schema: -> ()）没有计算语义，
-    但会被下游转换器（torchair / GE）拒绝。在导出阶段提前移除，
-    保证 epair 和 reference 路径均不会再遇到该算子。
+def _strip_assert_nodes_ep_json(epair) -> int:
+    """Remove aten._assert_tensor_metadata nodes from epair.ep_json.
+
+    torch.export + torchair decomposition（run inside _optimize_and_convert）
+    会插入 _assert_tensor_metadata 节点（schema: () -> ()，无输出、无 GE 算子
+    映射，C++ PlanFallbackNode 会因 "no outputs" 报错）。pre-strip ExportedProgram
+    无效（export_to_epair 内部 decomposition 会重新插入），必须在 export_to_epair
+    之后、consolidated_weights_save 之前从 ep_json 移除。
     """
-    graph = ep.graph
-    target = torch.ops.aten._assert_tensor_metadata.default
-    removed = 0
-    for node in list(graph.nodes):
-        if node.op == "call_function" and node.target is target:
-            graph.erase_node(node)
-            removed += 1
-    if removed > 0:
-        graph.lint()
-        ep.graph_module.recompile()
-        print(f"[Strip] 移除了 {removed} 个 _assert_tensor_metadata 节点")
+    graph = epair.ep_json.get("graph_module", {}).get("graph", {})
+    nodes = graph.get("nodes", [])
+    before = len(nodes)
+    kept = [n for n in nodes if "_assert_tensor_metadata" not in n.get("target", "")]
+    removed = before - len(kept)
+    if removed:
+        graph["nodes"] = kept
     return removed
 
 def main():
@@ -93,14 +92,14 @@ def main():
     #   - GE 编译阶段不需要形状验证，可安全移除
     # 若不移除，C++ PlanFallbackNode 会因 "no outputs" 报错导致 Graph 构建失败。
     exported = torch.export.export(wrapper, (input_ids,), strict=False)
-    _remove_assert_tensor_metadata(exported)
+    # _remove_assert_tensor_metadata(exported)
     epair = torch_delegate.export_to_epair(exported)
 
-    # export_to_epair 内部会重新生成 ep_json，需再次过滤
-    nodes = epair.ep_json["graph_module"]["graph"]["nodes"]
-    epair.ep_json["graph_module"]["graph"]["nodes"] = [
-        n for n in nodes if "assert" not in n.get("target", "").lower()
-    ]
+    # export_to_epair 内部 decomposition 会重新插入 _assert_tensor_metadata 节点
+    # （无输出、无 GE 算子映射，C++ 加载会报 "no outputs"）。落盘前从 ep_json 移除。
+    removed = _strip_assert_nodes_ep_json(epair)
+    if removed:
+        print(f"[Strip] 移除了 {removed} 个 _assert_tensor_metadata 节点")
 
     output_dir = ROOT / "epair_model"
     consolidated_weights_save(epair, output_dir, save_weights=True, max_file_size=512 * 1024 * 1024)

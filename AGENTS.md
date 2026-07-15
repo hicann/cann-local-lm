@@ -22,8 +22,32 @@ CANN-LM_5883/
 |[`converter_design.md`](docs/cann_lm_converter/converter_design.md)|大模型导出全流程|cann_lm/converter/|
 
 ## 开发约定
+### 通用
+- 环境安装全部在.venv环境中进行，不要修改系统环境
+- Python 版本：`>= 3.10`（使用 `dict[str, Any]` 等内置泛型语法，不引入 `from __future__ import annotations`）
+- 依赖：`torch`（必需）+ `torchair`（Ascend 后端必需，用于 IR 转换）;不要依赖torch_npu,如果需要引入torch_npu,设置stub,参考下方运行环境设置
+- **运行环境设置（converter，已验证）**：本机为 CPU-only（无 NPU），converter 只用 torchair 的 converter 模块（IR 转换）。方案是**全量 torchair + 全量 torchair 自带的 stubs**——把 `libtorch_npu`/`libge_runner`/`libhccl` 等 CANN 重库在 lib 层打桩，全量 torchair 的 GE 引擎调用被 stub 接住（`[STUB] Session/GEFinalize`），CPU 上能跑且 decomposition/IR 行为与生产一致。组件版本：
+  - `torch` 2.9.0+cpu（系统 python）
+  - `torch-delegate` 0.1.0（whl，按 torch 2.9.0 + CANN 9.1.0 编，源码 `/mnt/workspace/torch-delegate-harmony`）
+  - `torchair` **全量**（branch `26.1.0`，按 torch 2.9.0 + CANN 9.1.0 编，源码 `/mnt/workspace/torchair-full`，装为 whl）
+  - `torch_npu` 打桩（lib 层 stub，`/mnt/workspace/torchair-full/build/stubs`，含 `libtorch_npu.so`/`libge_local_stub.so`/`libge_runner.so`/`libhccl_stub.so` 等，非真实安装）
+  - CANN 9.1.0（提供 lib64，`/home/developer/Ascend/cann-9.1.0`）
+
+  运行 converter / 任何依赖 torchair 的脚本前，**必须先 source 这套环境变量**：
+```bash
+source /home/developer/Ascend/cann-9.1.0/set_env.sh
+export LD_LIBRARY_PATH=/mnt/workspace/torchair-full/build/stubs:${ASCEND_HOME_PATH}/lib64:${LD_LIBRARY_PATH:-}
+export TORCH_DELEGATE_HOME=/mnt/workspace/torch-delegate-harmony
+export PYTHONPATH=/mnt/workspace/project/CANN-LM_5883:${PYTHONPATH:-}
+export TORCH_DEVICE_BACKEND_AUTOLOAD=0          # 阻止 torch autoload npu backend
+export TORCH_DELEGATE_ENABLE_FALLBACK_CODEGEN=0 # 不走 fallback codegen
+```
+  - **关键**：stubs 必须用**全量 torchair 自带的** `/mnt/workspace/torchair-full/build/stubs`（ABI 匹配）。不要用旧 minimal-stub torchair 的 `/mnt/workspace/torchair/build/stubs`——符号不匹配会导致全量 torchair import 失败（`libruntime_common.so: undefined symbol: ErrorManager::ATCReportErrMessage`）；而用真实 CANN lib64 又会 `initialize_graph_engine → aclrtSetDevice → 107001`（无设备）。只有"全量 torchair + 其自带 stubs"这套组合在 CPU 上可用。
+  - converter 本身不用 transformers；若跑 `examples/` 下用 transformers 的 run/verify 脚本，先 `import hf_cpu`（禁用 transformers 的 torch_npu probe，shim 在 `examples/export_llm_model/llm_engine_on_cpu/hf_cpu.py`）。
+  - 跑 `CANN-LM_5883` 仓库脚本统一加 `TORCH_DEVICE_BACKEND_AUTOLOAD=0`。
 - 测试：`pytest`，测试文件放置于 `tests/python/`；单文件运行 `pytest tests/python/test_api.py`，单用例 `pytest tests/python/test_api.py::test_name`
-- **端到端测试原则**：所有端到端测试用例及其生成产物（模型文件、权重、OM 等）统一放置于 `examples/` 路径下，按用例名分目录组织；禁止散落到 `cann_lm/` 或其他路径；在进行测试的时候先不要修改主仓代码，先修改测试代码，如果无法通过进行交互
+- **端到端测试原则**：所有端到端测试用例及其生成产物（模型文件、权重、OM 等）统一放置于 `examples/` 路径下，按用例名分目录组织；禁止散落到 `cann_lm/` 或其他路径；在进行测试的时候先不要修改主仓代码，先修改测试代码，如果无法通过进行交确认
+- **测试时禁改 cann_lm/**：跑测试用例时**不要修改 `cann_lm/` 下任何代码**（含 converter/models/export 等）；要改 `cann_lm/` 前必须先找确认。优先改测试代码（`tests/`、`examples/`），无法通过再确认改主仓。
 - **组件规模原则**：单函数实现代码最好控制在 50 行以内；若明显超过，应优先按单一职责拆分辅助函数，但不要为了拆分而制造无意义跳转，优先聚合而非拆分；实现复杂度上升后再重构拆分
 - **函数参数原则**：函数/方法参数个数默认不超过 5 个；若超过，优先通过结构体、context 对象或明确的数据聚合来收敛参数，而不是继续横向追加位置参数
 

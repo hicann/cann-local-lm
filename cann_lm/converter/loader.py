@@ -83,8 +83,10 @@ _TOKENIZER_PATTERNS = [
     "tokenizer.json",
     "tokenizer_config.json",
     "special_tokens_map.json",
+]
+
+_OPTIONAL_TOKENIZER_PATTERNS = [
     "tokenizer.model",
-    "generation_config.json",
     "vocab.json",
     "merges.txt",
 ]
@@ -92,7 +94,11 @@ _TOKENIZER_PATTERNS = [
 
 def collect_tokenizer_files(hf_path: str) -> list[Path]:
     files = []
-    for p in _TOKENIZER_PATTERNS:
+    patterns = _TOKENIZER_PATTERNS
+    # 无 tokenizer.json 时补充旧格式文件
+    if not (Path(hf_path) / "tokenizer.json").exists():
+        patterns = patterns + _OPTIONAL_TOKENIZER_PATTERNS
+    for p in patterns:
         fp = Path(hf_path) / p
         if fp.exists():
             files.append(fp)

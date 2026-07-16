@@ -915,7 +915,11 @@ python cann_lm/converter/cann-lm-converter.py \
 2. **prefill/decode 分离** — 参照 litert-torch，导出 `prefill_epair` + `decode_epair`
 3. **量化模块** (`cann_lm/converter/quant/`) — 权重量化（方案 TBD）
 4. **分区模式** — 按 transformer layer 分区保存，支持多卡加载（TBD）
-5. **llm_config** 需要和llm_engine确认使用哪些参数
+
+## 遗留任务
+
+1. **generation_config.json 处理** — 当前已从 `collect_tokenizer_files` 中移除（不应和 tokenizer 一起处理）。后续需要在 `llm_config` 中单独处理 `generation_config.json` 的参数（temperature/top_p/top_k/max_length 等），需和 llm_engine 确认使用哪些字段后再实现。
+2. **图的导出输入输出接口** — 需要确定如何统一导出输入输出（个数不确定，且可能比较多）。
 
 ## 待办事项
 

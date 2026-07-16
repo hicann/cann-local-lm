@@ -50,6 +50,7 @@ export TORCH_DELEGATE_ENABLE_FALLBACK_CODEGEN=0 # 不走 fallback codegen
 - **测试时禁改 cann_lm/**：跑测试用例时**不要修改 `cann_lm/` 下任何代码**（含 converter/models/export 等）；要改 `cann_lm/` 前必须先找确认。优先改测试代码（`tests/`、`examples/`），无法通过再确认改主仓。
 - **组件规模原则**：单函数实现代码最好控制在 50 行以内；若明显超过，应优先按单一职责拆分辅助函数，但不要为了拆分而制造无意义跳转，优先聚合而非拆分；实现复杂度上升后再重构拆分
 - **函数参数原则**：函数/方法参数个数默认不超过 5 个；若超过，优先通过结构体、context 对象或明确的数据聚合来收敛参数，而不是继续横向追加位置参数
+- skills读取：可以使用./examples/export_llm_model/llm_engine_on_cpu/skills/路径下的skills
 
 
 ### C++ 模块

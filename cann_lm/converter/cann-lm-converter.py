@@ -9,7 +9,7 @@ Usage:
       --output-dir /path/to/output \
       --dtype float16 \
       --device cpu \
-      --max-file-size 53687091200 \
+      --kv-cache-max-len 2048 \
       --sample-seq-len 128
 """
 
@@ -43,25 +43,27 @@ def convert(
     dtype: torch.dtype,
     device: str = "cpu",
     max_file_size: int = _DEFAULT_MAX_FILE_SIZE,
+    kv_cache_max_len: int = 2048,
     sample_seq_len: int = 128,
+    use_embeddings: bool = False,
 ) -> None:
-    """程序化入口：HF 模型 → epair，返回 None。
-
-    模型类型由 load_model 内部自动探测（从 config.json 的 model_type），
-    调用方无需传入。量化参数后续在此签名上扩展。
-    """
+    """程序化入口：HF 模型 → epair"""
     print(f"[1/3] Loading model from {hf_path}")
     artifact = load_model(hf_path, dtype=dtype, device=device)
     print(f"      Model: {type(artifact.model).__name__}")
     print(f"      Params: {sum(p.numel() for p in artifact.model.parameters()):,}")
     print(f"      Tokenizer files: {len(artifact.tokenizer_files)}")
+    print(f"      Wrapper: {artifact.wrapper_cls.__name__ if artifact.wrapper_cls else 'None'}")
+    print(f"      Embedding mode: {'external (no embed_tokens in graph)' if use_embeddings else 'internal (embed_tokens in graph)'}")
 
     print(f"[2/3] Saving epair to {output_dir}")
     save_epair(
         artifact,
         output_dir,
         max_file_size=max_file_size,
+        kv_cache_max_len=kv_cache_max_len,
         sample_seq_len=sample_seq_len,
+        use_embeddings=use_embeddings,
     )
 
     print(f"[3/3] Verifying output")
@@ -89,8 +91,12 @@ def parse_args() -> argparse.Namespace:
                         help="Load device (default: cpu)")
     parser.add_argument("--max-file-size", type=int, default=_DEFAULT_MAX_FILE_SIZE,
                         help="Max bytes per bin file (default: 50GB)")
+    parser.add_argument("--kv-cache-max-len", type=int, default=2048,
+                        help="KV cache max length (default: 2048)")
     parser.add_argument("--sample-seq-len", type=int, default=128,
                         help="Sample input seq len for torch.export (default: 128)")
+    parser.add_argument("--use-embeddings", action="store_true",
+                        help="Use external embeddings (no embed_tokens in graph, for embedding quantization)")
     # 量化参数: TBD
     return parser.parse_args()
 
@@ -103,7 +109,9 @@ def main() -> None:
         dtype=_DTYPE_MAP[args.dtype],
         device=args.device,
         max_file_size=args.max_file_size,
+        kv_cache_max_len=args.kv_cache_max_len,
         sample_seq_len=args.sample_seq_len,
+        use_embeddings=args.use_embeddings,
     )
 
 

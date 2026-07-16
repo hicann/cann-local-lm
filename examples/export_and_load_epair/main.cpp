@@ -119,13 +119,17 @@ std::map<ge::AscendString, ge::AscendString> GlobalOptionsWithSoc(const std::str
 int main(int argc, char *argv[]) {
   if (argc < 3) {
     std::cerr << "[ERROR] Usage: " << argv[0]
-              << " <model_json_path> <weights_index_path>" << std::endl;
+              << " <model_json_path> <weights_index_path> [output_basename]" << std::endl;
+    std::cerr << "         output_basename defaults to \"cann_lm_graph\"; produces "
+                 "<basename>.onnx and <basename>.om" << std::endl;
     return -1;
   }
 
   constexpr size_t kTotalStages = 4;
   const char *model_json_path = argv[1];
   const char *weights_index_path = argv[2];
+  // 可选第 3 参数：输出文件 basename（默认 cann_lm_graph），避免不同模型互相覆盖。
+  const std::string output_basename = (argc >= 4) ? argv[3] : "cann_lm_graph";
 
   // [1/4] Load epair and build GE Graph
   PrintStage(1, kTotalStages, "Load epair and build GE Graph");
@@ -149,12 +153,13 @@ int main(int argc, char *argv[]) {
   // Dump graph to ONNX (for debugging)
   PrintStage(3, kTotalStages, "Dump graph to ONNX");
 
-  ge::graphStatus dump_status = graph.DumpToFile(ge::Graph::DumpFormat::kOnnx, "cann_lm_graph");
+  ge::graphStatus dump_status =
+      graph.DumpToFile(ge::Graph::DumpFormat::kOnnx, output_basename.c_str());
   if (dump_status != ge::GRAPH_SUCCESS) {
     std::cerr << "[ERROR] DumpToFile failed, status: " << dump_status << std::endl;
     return -1;
   }
-  std::cout << "[PASS] Graph dumped to cann_lm_graph.onnx" << std::endl;
+  std::cout << "[PASS] Graph dumped to " << output_basename << ".onnx" << std::endl;
 
   // [4/4] Compile graph
   PrintStage(4, kTotalStages, "Compile graph");
@@ -178,8 +183,8 @@ int main(int argc, char *argv[]) {
   }
   std::cout << "[PASS] aclgrphBuildModel succeeded, model size: " << model.length << " bytes" << std::endl;
 
-  const char *const output_file = "cann_lm_graph";
-  ge::graphStatus save_status = ge::aclgrphSaveModel(output_file, model);
+  const std::string output_file = output_basename;
+  ge::graphStatus save_status = ge::aclgrphSaveModel(output_file.c_str(), model);
   if (save_status != ge::GRAPH_SUCCESS) {
     std::cerr << "[ERROR] aclgrphSaveModel failed, status: " << save_status << std::endl;
     ge::aclgrphBuildFinalize();

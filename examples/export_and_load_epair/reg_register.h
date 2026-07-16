@@ -89,6 +89,19 @@ REG_OP(RmsNorm)
     .ATTR(epsilon, Float, 1e-6f)
     .OP_END_FACTORY_REG(RmsNorm)
 
+// AddRmsNorm: 残差加 + RMSNorm 融合算子（CANN es_nn）。converter (ge.AddRmsNorm)
+// 产出 inputs x1/x2/gamma、outputs y/rstd/x、attr epsilon；REG_OP 名字必须一致，
+// 否则 C++ PlanConverterNode 的 NamedIoNodeBuilder 会报 "not registered"。
+REG_OP(AddRmsNorm)
+    .INPUT(x1, TensorType({DT_FLOAT, DT_FLOAT16, DT_BF16}))
+    .INPUT(x2, TensorType({DT_FLOAT, DT_FLOAT16, DT_BF16}))
+    .INPUT(gamma, TensorType({DT_FLOAT, DT_FLOAT16, DT_BF16}))
+    .OUTPUT(y, TensorType({DT_FLOAT, DT_FLOAT16, DT_BF16}))
+    .OUTPUT(rstd, TensorType({DT_FLOAT, DT_FLOAT16, DT_BF16}))
+    .OUTPUT(x, TensorType({DT_FLOAT, DT_FLOAT16, DT_BF16}))
+    .ATTR(epsilon, Float, 1e-6f)
+    .OP_END_FACTORY_REG(AddRmsNorm)
+
 REG_OP(Cast)
     .INPUT(x, TensorType({DT_BOOL, DT_FLOAT16, DT_FLOAT, DT_INT8, DT_INT32, DT_UINT32,
                           DT_UINT8, DT_INT64, DT_UINT64, DT_INT16, DT_UINT16, DT_DOUBLE,

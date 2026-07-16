@@ -1,15 +1,19 @@
-"""Model registry — maps model names to config/model/weight-loader entries."""
+"""Model registry — maps model names to config/model/weight-loader/wrapper entries."""
 
 from __future__ import annotations
 
 import dataclasses
 from typing import Callable
 
+from cann_lm.converter.export_wrapper import ExportWrapper
 from cann_lm.models.gemma4 import Gemma4ForCausalLM, Gemma4TextConfig
+from cann_lm.models.gemma4.export_wrapper import Gemma4ExportWrapper
 from cann_lm.models.gemma4.modeling_gemma4 import load_gemma4_weights
 from cann_lm.models.qwen3 import Qwen3ForCausalLM, Qwen3TextConfig
+from cann_lm.models.qwen3.export_wrapper import Qwen3ExportWrapper
 from cann_lm.models.qwen3.modeling_qwen3 import load_qwen3_weights
 from cann_lm.models.qwen3_5 import Qwen3_5ForCausalLM, Qwen3_5TextConfig
+from cann_lm.models.qwen3_5.export_wrapper import Qwen3_5ExportWrapper
 from cann_lm.models.qwen3_5.modeling_qwen3_5 import load_qwen3_5_weights
 
 
@@ -19,7 +23,8 @@ class ModelEntry:
     config_cls: type
     model_cls: type
     load_weights_fn: Callable
-    config_json_key: str
+    config_json_key: str | None
+    wrapper_cls: type
 
 
 REGISTRY: dict[str, ModelEntry] = {
@@ -29,6 +34,15 @@ REGISTRY: dict[str, ModelEntry] = {
         model_cls=Gemma4ForCausalLM,
         load_weights_fn=load_gemma4_weights,
         config_json_key="text_config",
+        wrapper_cls=Gemma4ExportWrapper,
+    ),
+    "qwen3": ModelEntry(
+        model_type="qwen3",
+        config_cls=Qwen3TextConfig,
+        model_cls=Qwen3ForCausalLM,
+        load_weights_fn=load_qwen3_weights,
+        config_json_key=None,
+        wrapper_cls=Qwen3ExportWrapper,
     ),
     "qwen3_5": ModelEntry(
         model_type="qwen3_5_text",
@@ -36,13 +50,7 @@ REGISTRY: dict[str, ModelEntry] = {
         model_cls=Qwen3_5ForCausalLM,
         load_weights_fn=load_qwen3_5_weights,
         config_json_key="text_config",
-    ),
-    "qwen3": ModelEntry(
-        model_type="qwen3",
-        config_cls=Qwen3TextConfig,
-        model_cls=Qwen3ForCausalLM,
-        load_weights_fn=load_qwen3_weights,
-        config_json_key="text_config",
+        wrapper_cls=Qwen3_5ExportWrapper,
     ),
 }
 
@@ -64,11 +72,7 @@ def get_entry(name: str) -> ModelEntry:
 
 
 def detect_model_type(hf_config: dict) -> ModelEntry:
-    """Auto-detect the model entry from HF config.json's top-level `model_type`.
-
-    Users no longer pass --model-type on the CLI; the registry is looked up from
-    config.json["model_type"] (e.g. "gemma4" / "qwen3" / "qwen3_5").
-    """
+    """Auto-detect the model entry from HF config.json's top-level `model_type`."""
     model_type = hf_config.get("model_type")
     if not model_type:
         raise ValueError(

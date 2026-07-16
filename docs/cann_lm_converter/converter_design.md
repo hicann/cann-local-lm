@@ -108,6 +108,7 @@ class ModelEntry:
     model_cls: type               # Gemma4ForCausalLM / Qwen3ForCausalLM / Qwen3_5ForCausalLM
     load_weights_fn: callable     # load_gemma4_weights / load_qwen3_weights / load_qwen3_5_weights
     config_json_key: str | None   # config.json 中 text 配置的 key (如 "text_config")，None 表示顶层
+    wrapper_cls: type             # ExportWrapper 子类 (Qwen3ExportWrapper / Gemma4ExportWrapper / ...)
 
 
 REGISTRY: dict[str, ModelEntry] = {
@@ -117,6 +118,7 @@ REGISTRY: dict[str, ModelEntry] = {
         model_cls=Gemma4ForCausalLM,
         load_weights_fn=load_gemma4_weights,
         config_json_key="text_config",
+        wrapper_cls=Gemma4ExportWrapper,
     ),
     "qwen3": ModelEntry(
         model_type="qwen3",
@@ -124,6 +126,7 @@ REGISTRY: dict[str, ModelEntry] = {
         model_cls=Qwen3ForCausalLM,
         load_weights_fn=load_qwen3_weights,
         config_json_key=None,               # 扁平 config，直接从顶层取
+        wrapper_cls=Qwen3ExportWrapper,
     ),
     "qwen3_5": ModelEntry(
         model_type="qwen3_5_text",
@@ -131,6 +134,7 @@ REGISTRY: dict[str, ModelEntry] = {
         model_cls=Qwen3_5ForCausalLM,
         load_weights_fn=load_qwen3_5_weights,
         config_json_key="text_config",
+        wrapper_cls=Qwen3_5ExportWrapper,
     ),
 }
 
@@ -173,6 +177,7 @@ class ModelArtifact:
     hf_config: dict               # 原始 config.json 原始字典 (保留全部字段)
     tokenizer_files: list[Path]   # tokenizer 相关文件路径列表
     model_type: str               # 模型类型标识
+    wrapper_cls: type             # ExportWrapper 子类 (从 ModelEntry 透传)
 ```
 
 ### load_model 接口
@@ -267,27 +272,148 @@ def collect_tokenizer_files(hf_path: str) -> list[Path]:
 
 ## saver.py — epair 保存
 
-### ExportWrapper — 统一 forward 返回
+### ExportWrapper 基类 — 统一 I/O 契约
 
-不同模型的 forward 返回 dict（key 不同），C++ EpairModelParser 不支持 `as_none` 类型的 output_spec。用 wrapper 只返回 logits tensor：
+参考 litert-torch 的 `ExportableModule` 和 npu_tuned_export 的 `Qwen3ForCausalLMWrapper`，设计统一 wrapper 基类。核心思想：**KV cache 作为显式图输入输出**，子类实现 `_drive_layers` 负责与原生模型 forward 对接。
+
+支持 **两种 embedding 模式**：
+- `use_embeddings=False`（默认）：传 `input_ids`，图内含 `embed_tokens` 节点
+- `use_embeddings=True`：传 `embeddings`，图内不含 `embed_tokens`（embedding 量化用，查表在 host 侧做）
+
+基类位于 `cann_lm/converter/export_wrapper.py`，子类位于各模型目录（如 `cann_lm/models/qwen3/export_wrapper.py`）。
 
 ```python
 class ExportWrapper(nn.Module):
-    """Wraps a CausalLM model so forward returns only logits tensor.
+    """统一对外 I/O：cache in/out + output_pos 选位。子类实现 _drive_layers。
 
-    CausalLM.forward 通常返回 dict (含 loss/logits/past_key_values 等)，
-    torch.export 会将 dict 的每个 value 作为单独的 graph output。
-    C++ EpairModelParser 不支持 as_none 类型的 output_spec，
-    需用 wrapper 只返回 logits tensor。
+    轻量版：子类内部调原生 forward（带 if past is None 分支）
+    全量版（后续）：各 attention 加 scatter-write 路径，一张静态图覆盖 prefill+decode
     """
-    def __init__(self, model: nn.Module):
+
+    def __init__(self, model, *, kv_cache_max_len: int = 2048, batch: int = 1):
         super().__init__()
         self.model = model
+        self.config = model.config
+        self.kv_cache_max_len = kv_cache_max_len
+        self.batch = batch
 
-    def forward(self, input_ids: torch.Tensor) -> torch.Tensor:
-        out = self.model(input_ids=input_ids)
-        return out["logits"] if isinstance(out, dict) else out
+    def forward(
+        self,
+        input_ids=None,            # input_ids 或 embeddings 二选一
+        attention_mask=None,
+        position_ids=None,
+        past_key_values=None,
+        new_kv_cache_pos=None,
+        embeddings=None,           # ← 外部 embedding (量化用)
+        output_pos=None,           # ← 选位：decode 时只算最后一个 token 的 logits
+    ):
+        logits, past_kv_flat = self._drive_layers(
+            input_ids, attention_mask, position_ids,
+            past_key_values, new_kv_cache_pos, embeddings,
+        )
+        if output_pos is not None:
+            logits = logits[:, output_pos, :]
+        return logits, *past_kv_flat
+
+    def _drive_layers(self, input_ids, attention_mask, position_ids,
+                      past_key_values, new_kv_cache_pos, embeddings=None):
+        """子类实现：统一 I/O → 原生 forward kwargs → 提取 logits + 展平 KV cache"""
+        raise NotImplementedError
+
+    def get_sample_inputs(self, seq_len=128, use_embeddings=False):
+        """构造导出用示例输入
+
+        Args:
+            use_embeddings: True 时传 embeddings (图外查表), False 时传 input_ids (图内查表)
+        """
+        # ... 构造 input_ids, attention_mask, position_ids, past_key_values, ...
+        if use_embeddings:
+            embeddings = self.model.model.embed_tokens(input_ids).detach()
+            return (None, attention_mask, position_ids, past_key_values,
+                    new_kv_cache_pos, embeddings, output_pos)
+        else:
+            return (input_ids, attention_mask, position_ids, past_key_values,
+                    new_kv_cache_pos, None, output_pos)
 ```
+
+### 统一图 I/O 契约
+
+```
+输入:
+  input_ids          [batch, seq_len] int64               ← 与 embeddings 二选一
+  embeddings         [batch, seq_len, hidden] float16    ← 图外查表 (量化用)
+  attention_mask     [batch, 1, seq_len, kv_cache_max_len]    ← 4D 预构造 mask
+  position_ids       [batch, seq_len] int64
+  past_key_values    list of (key_buf, value_buf) per layer   ← 每层一对预分配 buffer
+                     shape: [kv_cache_max_len, kv_head, batch, head_dim]
+  new_kv_cache_pos   [seq_len] int64                           ← scatter 写入位置
+  output_pos         [1] int32 (可选)                          ← 只算哪个位置的 logits
+
+输出:
+  lm_logits          [batch, n_pos, vocab]                    ← output_pos 选位后
+  past_key_0, past_value_0, past_key_1, past_value_1, ...    ← 展平的所有层 KV cache
+```
+
+**为什么需要 4D 预构造 mask？** 模型的 `_prepare_causal_mask` / `_create_causal_mask` 内部有动态控制流（依赖运行时 seq 长度），torch.export 无法静态追踪。传 4D mask 时走透传路径（`return attention_mask`），跳过动态构造。三个模型的透传位置：
+
+| 模型 | 透传代码位置 |
+|------|-------------|
+| qwen3 | `modeling_qwen3.py` 第 349 行 `return attention_mask` |
+| gemma4 | `modeling_gemma4.py` 第 571 行 `return attention_mask` |
+| qwen3_5 | `modeling_qwen3_5.py` 第 616 行 `if attention_mask.dim() == 4: return attention_mask`（新增） |
+
+### Qwen3ExportWrapper 子类示例
+
+```python
+class Qwen3ExportWrapper(ExportWrapper):
+    """qwen3 子类：调原生 forward + 提取 logits + 展平 list[(k,v)] cache"""
+
+    def _drive_layers(self, input_ids, attention_mask, position_ids,
+                      past_key_values, new_kv_cache_pos, embeddings=None):
+        kwargs = {
+            "attention_mask": attention_mask,
+            "position_ids": position_ids,
+            "past_key_values": past_key_values,
+            "use_cache": True,
+        }
+        if embeddings is not None:
+            kwargs["inputs_embeds"] = embeddings   # 图外查表
+        else:
+            kwargs["input_ids"] = input_ids        # 图内查表
+
+        outputs = self.model(**kwargs)
+        logits = outputs["logits"]
+        past_kv_flat = []
+        for layer_kv in outputs["past_key_values"]:
+            past_kv_flat.append(layer_kv[0])
+            past_kv_flat.append(layer_kv[1])
+        return logits, past_kv_flat
+```
+
+### 三个子类的差异
+
+| 子类 | 文件位置 | 原生 cache 类型 | forward kwargs 差异 | 特殊处理 |
+|------|---------|----------------|---------------------|---------|
+| Qwen3ExportWrapper | `models/qwen3/export_wrapper.py` | `list[(k,v), ...]` | `position_ids` 外部传入 | 无 |
+| Gemma4ExportWrapper | `models/gemma4/export_wrapper.py` | `list[(k,v), ...]` | 无 `position_ids`（内部计算） | `shared_kv_states=None` |
+| Qwen3_5ExportWrapper | `models/qwen3_5/export_wrapper.py` | `SimpleKVCache` | `delta_cache`、`use_cache` | list → SimpleKVCache 转换；`delta_cache=None` |
+
+三个子类都支持 `embeddings` 参数：非 None 时传 `inputs_embeds`，None 时传 `input_ids`。
+
+### 轻量 vs 全量
+
+| | 轻量（当前里程碑） | 全量（后续） |
+|---|---|---|
+| 对外 I/O | 统一（基类） | 统一（基类） |
+| 子类内部 | 调原生 `forward`（带 `if past is None` 分支） | 各 attention 加 scatter-write 路径 |
+| 导出图 | 按 sample 走一条分支、形状特化 | 一张静态图覆盖 prefill+decode |
+| 工作量 | 小（基类 + 3 子类脚手架） | 大（逐模型改 attention） |
+
+### 各模型的全量难点（后续）
+
+- **gemma4**：KV 共享（后 n 层无自己的 buffer，复用别的层）→ 不 fit "每层一个 buffer"；sliding window 的局部 mask；per-layer head_dim/rope。
+- **qwen3_5**：线性注意力（GatedDeltaNet）的 cache 是 `[num_v_heads, k_head_dim, v_head_dim]` 的 **recurrent state**（delta rule 增量更新），不是 `[kv_cache_max_len, ...]` 的 KV buffer——需单独设计 recurrent buffer 的增量协议。
+- **qwen3**：最接近参考工程（标准 GQA + KV cache），全量改造阻力最小，建议先做。
 
 ### save_epair 接口
 
@@ -297,7 +423,9 @@ def save_epair(
     output_dir: str | Path,
     *,
     max_file_size: int = 50 * 1024 * 1024 * 1024,  # 默认 50GB
+    kv_cache_max_len: int = 2048,
     sample_seq_len: int = 128,
+    use_embeddings: bool = False,         # ← True: 图外查表 (量化用)
     save_weights: bool = True,
 ) -> None:
     """
@@ -321,11 +449,17 @@ def save_epair(
     # 1. 注册 GE converters (export_to_epair 前必须调用)
     register_ge_converters()
 
-    # 2. 创建示例输入
-    sample_inputs = create_sample_inputs(artifact, sample_seq_len)
+    # 2. 创建示例输入 (统一 I/O 契约, 支持 embeddings 模式)
+    sample_inputs = wrapper.get_sample_inputs(
+        seq_len=sample_seq_len, use_embeddings=use_embeddings
+    )
 
-    # 3. ExportWrapper 统一返回 logits (解决 dict 返回问题)
-    wrapper = ExportWrapper(artifact.model).eval()
+    # 3. 从注册表获取 wrapper 子类，构造统一 I/O wrapper
+    wrapper = artifact.wrapper_cls(
+        artifact.model,
+        kv_cache_max_len=kv_cache_max_len,
+        batch=1,
+    ).eval()
     ep = torch.export.export(wrapper, sample_inputs, strict=False)
 
     # 4. export_to_epair
@@ -356,11 +490,31 @@ def save_epair(
 ### create_sample_inputs
 
 ```python
-def create_sample_inputs(artifact: ModelArtifact, seq_len: int = 128) -> tuple:
+def create_sample_inputs(artifact: ModelArtifact, kv_cache_max_len: int = 2048,
+                          seq_len: int = 128) -> tuple:
+    """构造统一 I/O 契约的示例输入"""
     config = artifact.config
-    vocab_size = config.vocab_size if hasattr(config, "vocab_size") else 128000
-    input_ids = torch.randint(0, vocab_size, (1, seq_len), dtype=torch.int64)
-    return (input_ids,)
+    batch = 1
+    num_layers = config.num_hidden_layers
+    num_kv_heads = config.num_key_value_heads
+    head_dim = config.head_dim
+    vocab_size = config.vocab_size
+
+    input_ids = torch.randint(0, vocab_size, (batch, seq_len), dtype=torch.int64)
+    attention_mask = torch.ones(batch, 1, seq_len, kv_cache_max_len, dtype=torch.float16)
+    position_ids = torch.arange(seq_len, dtype=torch.int64).unsqueeze(0)
+    new_kv_cache_pos = torch.arange(seq_len, dtype=torch.int64)
+    output_pos = torch.tensor([seq_len - 1], dtype=torch.int32)
+
+    # 每层一对预分配 KV buffer
+    past_key_values = []
+    for _ in range(num_layers):
+        k = torch.zeros(kv_cache_max_len, num_kv_heads, batch, head_dim, dtype=torch.float16)
+        v = torch.zeros_like(k)
+        past_key_values.append((k, v))
+
+    return (input_ids, attention_mask, position_ids, past_key_values,
+            new_kv_cache_pos, output_pos)
 ```
 
 ### save_model_config
@@ -462,7 +616,10 @@ def parse_args():
     parser.add_argument("--dtype", default="float16", choices=["float32", "float16", "bfloat16"])
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--max-file-size", type=int, default=50*1024*1024*1024)
+    parser.add_argument("--kv-cache-max-len", type=int, default=2048)
     parser.add_argument("--sample-seq-len", type=int, default=128)
+    parser.add_argument("--use-embeddings", action="store_true",
+                        help="Use external embeddings (no embed_tokens in graph)")
     return parser.parse_args()
 ```
 
@@ -471,10 +628,11 @@ def parse_args():
 ```
 cann-lm-converter.py (CLI)
     │
-    ├── parse_args()  ← --hf-path, --output-dir, --dtype, --device, --max-file-size, --sample-seq-len
+    ├── parse_args()  ← --hf-path, --output-dir, --dtype, --device, --max-file-size,
+    │                    --kv-cache-max-len, --sample-seq-len, --use-embeddings
     │
     ▼
-convert(hf_path, output_dir, dtype, device, max_file_size, sample_seq_len)
+convert(hf_path, output_dir, dtype, device, max_file_size, kv_cache_max_len, sample_seq_len, use_embeddings)
     │
     ▼
 loader.load_model(hf_path, dtype, device)   # 模型类型自动探测
@@ -594,7 +752,28 @@ loader.GetGEGraph(&graph);  // 构建 GE Graph (解析 ep_json + 懒加载 bin)
 - `modeling_{model_name}.py` — model class + `load_{model_name}_weights` 函数
 - `__init__.py` — 导出 config class, model class, load_weights 函数
 
-### 步骤 2：注册到 model_registry.py
+### 步骤 2：实现 ExportWrapper 子类
+
+在 `cann_lm/models/{model_name}/export_wrapper.py` 下创建子类，继承 `ExportWrapper`，实现 `_drive_layers`：
+
+```python
+from cann_lm.converter.export_wrapper import ExportWrapper
+
+class {ModelName}ExportWrapper(ExportWrapper):
+    def _drive_layers(self, input_ids, attention_mask, position_ids,
+                      past_key_values, new_kv_cache_pos, embeddings=None):
+        kwargs = {...}  # 模型特有的 forward kwargs
+        if embeddings is not None:
+            kwargs["inputs_embeds"] = embeddings
+        else:
+            kwargs["input_ids"] = input_ids
+        outputs = self.model(**kwargs)
+        # 提取 logits + 展平 KV cache
+        ...
+        return logits, past_kv_flat
+```
+
+### 步骤 3：注册到 model_registry.py
 
 ```python
 REGISTRY["{model_name}"] = ModelEntry(
@@ -603,25 +782,27 @@ REGISTRY["{model_name}"] = ModelEntry(
     model_cls={ModelForCausalLM},
     load_weights_fn=load_{model_name}_weights,
     config_json_key="{key}" or None,    # 嵌套 config 的 key，扁平则为 None
+    wrapper_cls={ModelName}ExportWrapper,  # 步骤 2 实现的 wrapper 子类
 )
 ```
 
-### 步骤 3：确认兼容性
+### 步骤 4：确认兼容性
 
 | 检查项 | 说明 |
 |--------|------|
 | config 加载 | 有 `from_pretrained`？无则 `build_config` fallback 到手动字段过滤 |
 | to_dict | 有 `to_dict`？无则 `save_model_config` 用 `dataclasses.asdict` |
 | weight key | 是否需要重映射？在 `load_*_weights` 内部处理 |
-| forward 返回 | 返回 dict？是则 `ExportWrapper` 自动处理 |
+| forward 返回 | 返回 dict？是则 `ExportWrapper` 子类的 `_drive_layers` 处理 |
+| mask 4D 透传 | `_prepare_causal_mask` 有 4D 透传？无则需添加（参考 qwen3_5） |
 | bfloat16 | 用 bfloat16 权重？`pack_weights` 已兼容 |
 | 非持久 buffer | 有 `persistent=False` buffer？`pack_weights` 已兼容 |
 
-### 步骤 4：补充 GE 算子
+### 步骤 5：补充 GE 算子
 
 在 `examples/export_llm_model/reg_register.h` 中注册模型需要的 GE 算子。运行 C++ 二进制时根据报错逐个补充。
 
-### 步骤 5：验证
+### 步骤 6：验证
 
 ```bash
 # Python 导出
@@ -712,12 +893,20 @@ source /home/developer/Ascend/cann/set_env.sh
 export PYTHONPATH="/mnt/workspace/project/CANN-LM_5883:${PYTHONPATH:-}"
 export TORCH_DEVICE_BACKEND_AUTOLOAD=0
 
-# 模型类型从 config.json 自动探测，无需 --model-type
+# 模式 A: 图内查表 (默认)
 python cann_lm/converter/cann-lm-converter.py \
     --hf-path /path/to/qwen3-0.6B \
     --output-dir /path/to/output \
     --dtype float16 \
     --sample-seq-len 8
+
+# 模式 B: 图外查表 (embedding 量化用, 图内不含 embed_tokens)
+python cann_lm/converter/cann-lm-converter.py \
+    --hf-path /path/to/qwen3-0.6B \
+    --output-dir /path/to/output \
+    --dtype float16 \
+    --sample-seq-len 8 \
+    --use-embeddings
 ```
 
 ## 待实现功能
@@ -726,6 +915,7 @@ python cann_lm/converter/cann-lm-converter.py \
 2. **prefill/decode 分离** — 参照 litert-torch，导出 `prefill_epair` + `decode_epair`
 3. **量化模块** (`cann_lm/converter/quant/`) — 权重量化（方案 TBD）
 4. **分区模式** — 按 transformer layer 分区保存，支持多卡加载（TBD）
+5. **llm_config** 需要和llm_engine确认使用哪些参数
 
 ## 待办事项
 

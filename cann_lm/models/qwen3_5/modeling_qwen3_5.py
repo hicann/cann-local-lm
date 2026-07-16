@@ -308,26 +308,37 @@ def torch_recurrent_gated_delta_rule(
 
 
 class SimpleKVCache:
+    """KV cache for full-attention layers. Uses list-based storage (torch.export friendly).
+
+    Mirrors transformers' DynamicCache design: list of layers, each storing
+    keys/values as plain tensor attributes. No dict operations.
+    """
+
     def __init__(self):
-        self._cache: dict[int, tuple[torch.Tensor, torch.Tensor]] = {}
+        self.keys: list[torch.Tensor | None] = []
+        self.values: list[torch.Tensor | None] = []
 
     def update(
         self, key_states: torch.Tensor, value_states: torch.Tensor, layer_idx: int
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        if layer_idx in self._cache:
-            cached_key, cached_value = self._cache[layer_idx]
-            key_states = torch.cat([cached_key, key_states], dim=2)
-            value_states = torch.cat([cached_value, value_states], dim=2)
-        self._cache[layer_idx] = (key_states, value_states)
-        return key_states, value_states
+        while len(self.keys) <= layer_idx:
+            self.keys.append(None)
+            self.values.append(None)
+
+        if self.keys[layer_idx] is None:
+            self.keys[layer_idx] = key_states
+            self.values[layer_idx] = value_states
+        else:
+            self.keys[layer_idx] = torch.cat([self.keys[layer_idx], key_states], dim=2)
+            self.values[layer_idx] = torch.cat([self.values[layer_idx], value_states], dim=2)
+
+        return self.keys[layer_idx], self.values[layer_idx]
 
     def get_seq_length(self) -> int:
-        if not self._cache:
-            return 0
-        # Layer 0 may be a linear-attention layer with no KV; any cached full-
-        # attention layer has the same seq length.
-        first_key = next(iter(self._cache))
-        return self._cache[first_key][0].shape[2]
+        for i in range(len(self.keys)):
+            if self.keys[i] is not None:
+                return self.keys[i].shape[2]
+        return 0
 
 
 class SimpleDeltaNetCache:
@@ -610,7 +621,12 @@ def _create_causal_mask(
     2D padding mask the unmasked positions are 0.0 and masked positions are
     `finfo.min`. Decode steps (seq_len==1 with cache) collapse to all-zero
     (single query attends to all cached keys), which is a no-op.
+
+    If `attention_mask` is already 4D, it is returned as-is (pre-constructed).
     """
+    if attention_mask is not None and attention_mask.dim() == 4:
+        return attention_mask
+
     batch_size, seq_len = inputs_embeds.shape[:2]
     past_len = past_key_values.get_seq_length() if past_key_values is not None else 0
     total_len = past_len + seq_len
@@ -689,9 +705,10 @@ class Qwen3_5TextModel(nn.Module):
             causal_mask = _create_causal_mask(attention_mask, inputs_embeds, past_key_values)
 
         linear_attn_mask = attention_mask
-        if (past_key_values is not None and past_key_values.get_seq_length() > 0) or (
-            attention_mask is not None and torch.all(attention_mask == 1)
-        ):
+        # decode 步 (有 cache) 不需要 linear mask; prefill 步保留 mask
+        # 注意: 原始代码用 torch.all(mask==1) 检查是否全 1 (无 padding),
+        # 但 torch.all 是数据依赖的, torch.export 无法追踪, 这里简化为仅检查 cache 状态
+        if past_key_values is not None and past_key_values.get_seq_length() > 0:
             linear_attn_mask = None
 
         hidden_states = inputs_embeds

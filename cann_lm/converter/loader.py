@@ -22,6 +22,7 @@ class ModelArtifact:
     hf_config: dict
     tokenizer_files: list[Path]
     model_type: str
+    wrapper_cls: type  # ExportWrapper 子类 (从 ModelEntry 透传)
 
 
 def load_model(
@@ -59,6 +60,7 @@ def load_model(
         hf_config=hf_config,
         tokenizer_files=tokenizer_files,
         model_type=entry.model_type,
+        wrapper_cls=entry.wrapper_cls,
     )
 
 

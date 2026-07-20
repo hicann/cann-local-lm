@@ -28,6 +28,22 @@ def register_ge_converters() -> None:
     from torchair.ge import custom_op
     from torchair._ge_concrete_graph import ge_apis as ge
 
+    @register_fx_node_ge_converter(torch.ops.aten.softplus.default)
+    def _convert_softplus(x: Any, meta_outputs: Any = None) -> Any:
+        del meta_outputs
+        return ge.Softplus(x)
+
+    @register_fx_node_ge_converter(torch.ops.aten.eye.default)
+    def _convert_eye(n: Any, m: Any = None, *, dtype: Any = None, device: Any = None,
+                     pin_memory: bool = False, meta_outputs: Any = None) -> Any:
+        del device, pin_memory, meta_outputs
+        import torch as _torch
+        rows = int(n)
+        cols = int(m) if m is not None else rows
+        dt = _torch.float32 if dtype is None else dtype
+        eye_tensor = _torch.eye(rows, cols, dtype=dt)
+        return ge.Const(eye_tensor)
+
     @register_fx_node_ge_converter(torch.ops.cann_lm.rope_in_place.default)
     def _convert_rope_in_place(
         input: Any,
@@ -155,3 +171,17 @@ def register_ge_converters() -> None:
             pse_type=0,
             out_dtype=0,
         )
+
+    @register_fx_node_ge_converter(torch.ops.aten.type_as.default)
+    def _convert_type_as(x: Any, dtype_or_tensor: Any, meta_outputs: Any = None) -> Any:
+        del meta_outputs
+        import torch as _torch
+        if isinstance(dtype_or_tensor, _torch.Tensor):
+            dt = dtype_or_tensor.dtype
+        else:
+            dt = dtype_or_tensor
+        _GE_DTYPE_MAP = {
+            _torch.float16: 1, _torch.float32: 0, _torch.bfloat16: 27,
+            _torch.int64: 9, _torch.int32: 3, _torch.bool: 12,
+        }
+        return ge.Cast(x, dst_type=_GE_DTYPE_MAP.get(dt, 0))

@@ -102,6 +102,73 @@ REG_OP(AddRmsNorm)
     .ATTR(epsilon, Float, 1e-6f)
     .OP_END_FACTORY_REG(AddRmsNorm)
 
+// 动态 shape 相关算子（torchair 为符号维度图引入，CANN GE OperatorFactory 默认未注册）：
+// Shape: 取张量形状为 int32/int64 1D（input x → output y）。权威定义见 op_reg.h。
+REG_OP(Shape)
+    .INPUT(x, TensorType({DT_FLOAT, DT_FLOAT16, DT_INT8, DT_INT16, DT_UINT16, DT_UINT8, DT_INT32, DT_INT64, DT_UINT32,
+                          DT_UINT64, DT_BOOL, DT_DOUBLE}))
+    .OUTPUT(y, TensorType({DT_INT32, DT_INT64}))
+    .ATTR(dtype, Int, DT_INT32)
+    .OP_END_FACTORY_REG(Shape)
+
+// Pack: 把多个张量沿 axis 打包成一个（DYNAMIC_INPUT x0/x1/... → y）。
+// 权威定义：ge/tests/framework/ge_running_env/include/ge_running_env/op_reg.h
+// 注意 attr 顺序 axis 在前、N 是 REQUIRED_ATTR（torchair 节点 [N,axis] 与 GE ir_def
+// [axis,N] 顺序冲突会在 PrepareDynShape 阶段 RecoverIrAttrNames 报 compatibility failed）。
+REG_OP(Pack)
+    .DYNAMIC_INPUT(x, TensorType::BasicType())
+    .OUTPUT(y, TensorType::BasicType())
+    .ATTR(axis, Int, 0)
+    .REQUIRED_ATTR(N, Int)
+    .OP_END_FACTORY_REG(Pack)
+
+// Gather: 动态图 aten.sym_size_int 等映射；inputs x+indices → y。
+REG_OP(Gather)
+    .INPUT(x, TensorType::BasicType())
+    .INPUT(indices, TensorType::IndexNumberType())
+    .OUTPUT(y, TensorType::BasicType())
+    .ATTR(validate_indices, Bool, true)
+    .ATTR(batch_dims, Int, 0)
+    .ATTR(is_preprocessed, Bool, false)
+    .ATTR(negative_index_support, Bool, false)
+    .OP_END_FACTORY_REG(Gather)
+
+REG_OP(Pow)
+    .INPUT(x1, "T1")
+    .INPUT(x2, "T2")
+    .OUTPUT(y, "T3")
+    .DATATYPE(T1, TensorType({DT_BF16, DT_FLOAT16, DT_FLOAT, DT_INT32, DT_INT64, DT_INT8, DT_INT16, DT_UINT8, DT_DOUBLE,
+                              DT_COMPLEX64, DT_COMPLEX128}))
+    .DATATYPE(T2, TensorType({DT_BF16, DT_FLOAT16, DT_FLOAT, DT_INT32, DT_INT64, DT_INT8, DT_INT16, DT_UINT8, DT_DOUBLE,
+                              DT_COMPLEX64, DT_COMPLEX128}))
+    .DATATYPE(T3, Promote({"T1", "T2"}))
+    .OP_END_FACTORY_REG(Pow)
+
+REG_OP(Neg)
+    .INPUT(x, TensorType({DT_BF16, DT_FLOAT16, DT_FLOAT, DT_DOUBLE, DT_INT8, DT_INT32, DT_INT64, DT_COMPLEX64,
+                          DT_COMPLEX128}))
+    .OUTPUT(y, TensorType({DT_BF16, DT_FLOAT16, DT_FLOAT, DT_DOUBLE, DT_INT8, DT_INT32, DT_INT64, DT_COMPLEX64,
+                           DT_COMPLEX128}))
+    .OP_END_FACTORY_REG(Neg)
+
+REG_OP(Muls)
+    .INPUT(x, TensorType({DT_FLOAT, DT_FLOAT16, DT_DOUBLE, DT_INT8, DT_INT16, DT_INT32, DT_INT64,
+                          DT_UINT8, DT_UINT16, DT_UINT32, DT_UINT64, DT_COMPLEX64, DT_COMPLEX128, DT_BF16}))
+    .OUTPUT(y, TensorType({DT_FLOAT, DT_FLOAT16, DT_DOUBLE, DT_INT8, DT_INT16, DT_INT32, DT_INT64,
+                           DT_UINT8, DT_UINT16, DT_UINT32, DT_UINT64, DT_COMPLEX64, DT_COMPLEX128, DT_BF16}))
+    .ATTR(value, Float, 1.0f)
+    .OP_END_FACTORY_REG(Muls)
+
+REG_OP(Cos)
+    .INPUT(x, TensorType({DT_FLOAT, DT_FLOAT16, DT_DOUBLE, DT_COMPLEX64, DT_COMPLEX128, DT_BF16}))
+    .OUTPUT(y, TensorType({DT_FLOAT, DT_FLOAT16, DT_DOUBLE, DT_COMPLEX64, DT_COMPLEX128, DT_BF16}))
+    .OP_END_FACTORY_REG(Cos)
+
+REG_OP(Sin)
+    .INPUT(x, TensorType({DT_FLOAT, DT_FLOAT16, DT_DOUBLE, DT_COMPLEX64, DT_COMPLEX128, DT_BF16}))
+    .OUTPUT(y, TensorType({DT_FLOAT, DT_FLOAT16, DT_DOUBLE, DT_COMPLEX64, DT_COMPLEX128, DT_BF16}))
+    .OP_END_FACTORY_REG(Sin)
+
 REG_OP(Cast)
     .INPUT(x, TensorType({DT_BOOL, DT_FLOAT16, DT_FLOAT, DT_INT8, DT_INT32, DT_UINT32,
                           DT_UINT8, DT_INT64, DT_UINT64, DT_INT16, DT_UINT16, DT_DOUBLE,

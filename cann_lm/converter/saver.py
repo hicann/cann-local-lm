@@ -26,6 +26,40 @@ def _remove_assert_nodes(ep_json: dict) -> int:
     return removed
 
 
+def _remove_none_inputs(ep_json: dict) -> int:
+    """从 ep_json 中移除 as_none 的输入引用。
+
+    当 wrapper 传 past_key_values=None 或 embeddings=None 时，
+    ep_json 的 graph.inputs 和 input_specs 中会记录 as_none。
+    C++ EpairModelParser 不支持 as_none 输入类型。
+    """
+    removed = 0
+    # 1. 从 graph.inputs 移除 as_none 条目
+    graph = ep_json.get("graph_module", {}).get("graph", {})
+    inputs = graph.get("inputs", [])
+    filtered_inputs = [inp for inp in inputs if not (len(inp) == 1 and "as_none" in inp)]
+    removed += len(inputs) - len(filtered_inputs)
+    graph["inputs"] = filtered_inputs
+
+    # 2. 从 input_specs 移除 as_none 的 constant_input
+    specs = ep_json.get("graph_module", {}).get("signature", {}).get("input_specs", [])
+    filtered_specs = []
+    for spec in specs:
+        kind = list(spec.keys())[0]
+        detail = spec[kind]
+        if kind == "constant_input":
+            value = detail.get("value", {}) if isinstance(detail, dict) else {}
+            if isinstance(value, dict) and value.get("as_none") is True:
+                removed += 1
+                continue
+        filtered_specs.append(spec)
+    ep_json["graph_module"]["signature"]["input_specs"] = filtered_specs
+
+    if removed > 0:
+        print(f"[Strip] 移除了 {removed} 个 as_none 输入引用")
+    return removed
+
+
 def save_epair(
     artifact: ModelArtifact,
     output_dir: str | Path,
@@ -64,6 +98,7 @@ def save_epair(
     epair = torch_delegate.export_to_epair(ep)
 
     _remove_assert_nodes(epair.ep_json)
+    _remove_none_inputs(epair.ep_json)
 
     consolidated_weights_save(
         epair, output_dir,

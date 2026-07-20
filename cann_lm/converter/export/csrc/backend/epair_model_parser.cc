@@ -157,7 +157,12 @@ std::vector<ParsedValueRef> ParseValueRefs(const OrderedJson &array, ValidationR
       name = "__bool_" + std::to_string(values.size());
     } else if (item.contains("as_string") && item["as_string"].is_string()) {
       name = "__string_" + std::to_string(values.size());
+    } else if (item.contains("as_none") || item.empty()) {
+      // Skip None/empty value references (e.g. past_key_values=None, embeddings=None)
+      continue;
     } else {
+      TDLOGW("ParseValueRefs: unknown value ref, keys=[%s]",
+             ([&] { std::string s; for (auto it = item.begin(); it != item.end(); ++it) { s += it.key() + ","; } return s; })().c_str());
       AddError(result, code, "Value reference must contain as_tensor.name or other supported type");
       continue;
     }

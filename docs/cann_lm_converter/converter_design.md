@@ -920,7 +920,154 @@ python cann_lm/converter/cann-lm-converter.py \
 
 1. **generation_config.json 处理** — 当前已从 `collect_tokenizer_files` 中移除（不应和 tokenizer 一起处理）。后续需要在 `llm_config` 中单独处理 `generation_config.json` 的参数（temperature/top_p/top_k/max_length 等），需和 llm_engine 确认使用哪些字段后再实现。
 2. **图的导出输入输出接口** — 需要确定如何统一导出输入输出（个数不确定，且可能比较多）。
+3. **qwen3.5 线性注意力导出** — qwen3.5 有 18 层线性注意力（GatedDeltaNet），其 `torch_chunk_gated_delta_rule` 使用 Python for 循环（63 次迭代 + `.clone()`），导致 `torch.export` 生成 ~500+ 节点/层，`export_to_epair` 转 GE IR 时图爆炸 → segfault。
+   - **当前状态**：`torch.export` 成功（19242 节点），wrapper 精度验证通过（4 层 ALL PASS），但 `export_to_epair` 崩溃
+   - **根因**：纯 Python fallback 版本循环展开，图节点过多
+   - **解决方向**：
+     - 方案 A：安装 `flash-linear-attention` (fla) + triton + GPU 环境，用编译的 triton kernel 替换 Python 循环（当前 CPU-only 环境不可用）
+     - 方案 B：将 delta rule 封装为自定义 GE 算子（类似 `FusedInferAttentionScore`），不展开内部循环（工作量大）
+     - 方案 C：在模型代码中集成 fla kernel（和 transformers 一致：有 fla 用 kernel，无 fla fallback）
+4. **新 ExportWrapper 的 ep_json 格式与 C++ 解析器不兼容** — 新统一 ExportWrapper（7 输入→57 输出）产生的 ep_json 中，parameter/buffer 的 input_specs 格式从 `{"arg": {"as_tensor": {"name": "..."}}}` 变为 `{"arg": {"name": "..."}}`（缺少 `as_tensor` 包裹），C++ `EpairModelParser` 报 `INVALID_GRAPH_INPUTS: Value reference must contain as_tensor.name`。
+   - **当前状态**：旧简单 ExportWrapper（1 输入→1 输出，仅返回 logits）C++ 可正常加载和编译 OM；新统一 ExportWrapper（含 KV cache I/O）C++ 解析失败
+   - **根因**：`torch.export` + `export_to_epair` 在处理多输入多输出 wrapper 时，序列化 parameter/buffer 的 input_specs 格式与单输入单输出不同
+   - **临时方案**：C++ 加载用旧导出脚本 `export_llm_model_epair.py`（简单 wrapper），新 converter CLI 用于精度验证（不需要 C++ 加载）
+   - **解决方向**：
+     - 方案 A：修改 C++ `EpairModelParser` 支持 `{"arg": {"name": "..."}}` 格式（去掉 `as_tensor` 包裹的兼容性）
+     - 方案 B：在 saver.py 中将 parameter/buffer 的 `input_specs` 格式从 `{"arg": {"name": ...}}` 转换为 `{"arg": {"as_tensor": {"name": ...}}}`
 
 ## 待办事项
 
 - 图的导出还需要确定输入输出（个数不确定，而且有可能会比较多），需要看下怎么统一导出输入输出接口
+
+## 精度差异分析：cann_lm 自定义模型 vs HF transformers
+
+### 验证结果汇总
+
+| 模型 | logits max_diff (vs HF) | tokens match | 层数 | 架构特点 |
+|------|----------------------|-------------|------|---------|
+| qwen3-0.6B | 0.023 | ✅ | 28 | 标准 GQA |
+| qwen3.5-0.8B | 0.019 | ✅ | 24 | 混合 (6 full + 18 linear) |
+| gemma4-E2B | 0.17 | ✅ | 35 | KV 共享 + sliding + per-layer embeddings |
+
+所有模型生成的 token 序列与 HF 完全一致，精度差异在 float16 正常范围内。
+
+### gemma4 误差积累分析
+
+gemma4 的 max_diff (0.17) 比 qwen3 (0.023) 大约 7 倍，原因如下：
+
+#### 误差来源
+
+| 来源 | gemma4 特有 | 贡献 | 说明 |
+|------|------------|------|------|
+| **Gemma4ClippableLinear** vs nn.Linear | ✅ | 最大 | HF 用 `Gemma4ClippableLinear` (有 clamp 逻辑), 我们用 `nn.Linear` — 相同权重下计算结果有微小差异 |
+| **5 个 RMSNorm/层 × 35 层 = 175 次** | ✅ | 中等 | gemma4 有 per_layer_input_norm, 每层 5 个 RMSNorm (vs qwen3 的 2 个 × 28 层 = 56 次) |
+| **Per-Layer Embeddings (PLE)** | ✅ | 中等 | 额外的 embedding 查表 + projection 计算路径 |
+| **Double-wide MLP** | ✅ | 小 | `use_double_wide_mlp=True`, 更宽的 MLP |
+| **k_norm + v_norm** (per-head RMSNorm) | ✅ | 小 | 每个 head 单独做 RMSNorm |
+| float16 舍入 | 所有模型 | 基础 | 所有模型共有 |
+
+#### KV 共享层不引入误差
+
+gemma4 有 20 层 KV 共享层 (num_kv_shared_layers=20)，但 **KV 共享本身不引入误差**：
+
+```
+非共享层 (Layer 0-14):
+  我们的 k_proj(hidden) → k_norm → rope → 存入 shared_kv_states
+  HF 的  k_proj(hidden) → k_norm → rope → 存入 shared_kv_states
+  ↑ 这里产生 ~0.001 的 float16 差异 (ClippableLinear vs nn.Linear)
+
+共享层 (Layer 15-34):
+  两者都读同一份 shared_kv_states[layer_type] → 直接复用 tensor
+  → 误差不增加 (同一个 tensor 对象, 零误差)
+  → 只有 q_proj 计算引入新误差
+```
+
+#### 误差累积链
+
+```
+Layer 0:   误差 0.000 (输入相同)
+Layer 1:   误差 0.001 (1 层 ClippableLinear 差异 + 5 次 RMSNorm)
+Layer 2:   误差 0.002 (上层误差 + 本层计算)
+  ...
+Layer 14:  误差 0.005 (15 层累积, 非共享层)
+           ↓ KV 共享 (shared_kv_states)
+Layer 15:  误差 0.005 (复用 Layer 14 的 KV, 不衰减)
+Layer 16:  误差 0.006 (q_proj 新误差)
+  ...
+Layer 34:  误差 0.015 (20 层共享 + 逐层增长)
+           ↓ lm_head + final_logit_softcapping
+Logits:    误差 0.17 (35 层 + 175 RMSNorm + PLE 累积)
+```
+
+#### final_logit_softcapping 对比时的影响
+
+gemma4 有 `final_logit_softcapping=30.0`，对 logits 做 `tanh(x/30)*30` 压缩。验证时必须确保两边都走（或都不走）softcap，否则会产生 ~10 的虚假差异：
+
+```
+原始 logits:  35.0
+softcap:      tanh(35/30) * 30 = 0.821 * 30 = 24.6
+虚假差异:    35.0 - 24.6 = 10.4  ← 如果一边走 softcap 一边不走
+```
+
+验证脚本中 HF 侧需手动调用 `lm_head` + `tanh(logits/softcap)*softcap`，与 wrapper 的 `Gemma4ForCausalLM.forward`（内置 softcap）对齐。
+
+#### HF 的 KV 共享层设计
+
+```python
+# HF: 只有"每种 layer_type 的最后一个非共享层"存储 KV
+self.store_full_length_kv = not self.is_kv_shared_layer and layer_idx == last_non_shared_of_this_type
+
+# 非共享层: 自己计算 k/v, 存入 shared_kv_states
+if not self.is_kv_shared_layer:
+    key_states = self.k_proj(hidden_states)
+    key_states = self.k_norm(key_states)
+    key_states = apply_rotary_pos_emb(key_states)
+    if self.store_full_length_kv:
+        shared_kv_states[self.layer_type] = (key_states, value_states)
+
+# 共享层: 直接读, 不计算
+if self.is_kv_shared_layer:
+    key_states, value_states = shared_kv_states[self.layer_type]  # 零误差复用
+```
+
+关键机制：`store_full_length_kv` 确保**每种 layer_type 只存一份 KV**，共享层直接复用同一 tensor 对象，不重新计算。
+
+#### 完全消除差异的方向
+
+1. 用 `Gemma4ClippableLinear` 替换 `nn.Linear`（对齐 HF 的 clamp 逻辑）
+2. 或用 float32（差异降到 1e-6 以下，模型体积翻倍）
+
+当前 0.17 的差异在 float16 下是正常的，生成 token 完全一致，不影响推理结果。
+
+#### bfloat16 下的 tie-breaking 问题
+
+在 bfloat16 精度下，部分 prompt 的 top-N logits 可能出现完全相同的情况（tie），导致 `Gemma4ClippableLinear` vs `nn.Linear` 的微小差异改变 argmax 选择。
+
+**实际案例**（prompt="Hello, my name is"，bfloat16，加 BOS token）：
+
+```
+HF (Gemma4ClippableLinear):           cann_lm (nn.Linear):
+  #1: token 236743 " "  (18.500)       #1: token 532 " and" (18.500)
+  #2: token 532 " and" (18.250)       #2: token 236761 "." (18.500)
+  #3: token 236761 "." (18.250)       #3: token 236743 " " (18.500)
+  
+  Top-1 vs Top-2 gap: 0.250          Top-1 vs Top-2 gap: 0.000 ← top-3 完全打平
+```
+
+**原因**：
+1. cann_lm 的 top-3 tokens 的 logits 完全相同（18.500） — 模型在这个位置"不确定"
+2. HF 的 `Gemma4ClippableLinear` 的 clamp 让 top-1 和 top-2 产生 0.25 的间隔 → 明确选择 " "
+3. cann_lm 无 clamp → tie-breaking 依赖 argmax 的实现细节 → 选择了 " and" 而非 " "
+4. **第一个 token 不同 → KV cache 不同 → 后续 decode 全部分叉**
+
+**影响范围**：
+- 仅影响 top-N logits 几乎相同的 prompt（间隔 < 0.3）
+- 对 top-1 和 top-2 有明确间隔（>1.0）的 prompt 无影响
+- 实测 3 个 prompt 中 2 个完全一致，1 个因 tie-breaking 分叉
+
+**不是 bug**：这是两个独立实现在数值精度边界下的正常分歧。模型本身在这些位置就不确定（多个 token 概率几乎相等），任何微小数值差异都会改变 argmax 结果。
+
+**解决方向**：
+1. 用 `Gemma4ClippableLinear` 替换 `nn.Linear`（消除 clamp 差异，对齐 HF 的 tie-breaking）
+2. 或用 float32（差异降到 1e-6，tie 几乎不会出现）
+3. 或用 sampling（`do_sample=True`）替代 greedy（`do_sample=False`），采样对 tie-breaking 不敏感

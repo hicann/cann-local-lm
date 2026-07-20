@@ -253,6 +253,33 @@ REG_OP(Identity)
                            DT_INT64, DT_UINT32, DT_UINT64, DT_BOOL, DT_DOUBLE, DT_BF16}))
     .OP_END_FACTORY_REG(Identity)
 
+REG_OP(Softplus)
+    .INPUT(x, TensorType({DT_FLOAT16, DT_FLOAT, DT_DOUBLE, DT_INT32, DT_INT64, DT_BF16}))
+    .OUTPUT(y, TensorType({DT_FLOAT16, DT_FLOAT, DT_DOUBLE, DT_INT32, DT_INT64, DT_BF16}))
+    .OP_END_FACTORY_REG(Softplus)
+
+REG_OP(IndexByTensor)
+    .INPUT(x, TensorType({TensorType::BasicType(), DT_BOOL}))
+    .DYNAMIC_INPUT(indices, TensorType({DT_INT64}))
+    .OUTPUT(y, TensorType({TensorType::BasicType(), DT_BOOL}))
+    .ATTR(indices_mask, ListInt, {})
+    .OP_END_FACTORY_REG(IndexByTensor)
+
+REG_OP(Reciprocal)
+    .INPUT(x, TensorType({DT_FLOAT, DT_DOUBLE, DT_FLOAT16, DT_COMPLEX64, DT_COMPLEX128, DT_BF16}))
+    .OUTPUT(y, TensorType({DT_FLOAT, DT_DOUBLE, DT_FLOAT16, DT_COMPLEX64, DT_COMPLEX128, DT_BF16}))
+    .OP_END_FACTORY_REG(Reciprocal)
+
+REG_OP(Gelu)
+    .INPUT(x, TensorType({DT_BF16, DT_FLOAT16, DT_FLOAT}))
+    .OUTPUT(y, TensorType({DT_BF16, DT_FLOAT16, DT_FLOAT}))
+    .OP_END_FACTORY_REG(Gelu)
+
+REG_OP(Tanh)
+    .INPUT(x, TensorType::UnaryDataType())
+    .OUTPUT(y, TensorType::UnaryDataType())
+    .OP_END_FACTORY_REG(Tanh)
+
 REG_OP(Swish)
     .INPUT(x, TensorType({DT_FLOAT16, DT_FLOAT, DT_BF16}))
     .OUTPUT(y, TensorType({DT_FLOAT16, DT_FLOAT, DT_BF16}))

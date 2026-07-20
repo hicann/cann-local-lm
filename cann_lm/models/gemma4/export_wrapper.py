@@ -1,4 +1,17 @@
-"""Gemma4 export wrapper — translates unified I/O to native forward kwargs."""
+"""Gemma4 export wrapper — translates unified I/O to native forward kwargs.
+
+gemma4 的特殊之处：
+- forward 不接受 position_ids（内部从 past_key_values 推导）
+- 有 shared_kv_states 参数（KV 共享层无 k_proj/v_proj）
+- 有 layer_types (sliding_attention + full_attention)
+- KV cache 是 list[(k,v) or None]
+- 35 层中后 20 层为 KV 共享层 (num_kv_shared_layers=20)
+
+轻量版处理策略：
+- past_key_values=None → [None]*N 触发模型内部创建
+- 展平后重建为 list[(k,v)] 以支持 decode
+- shared_kv_states 传空 dict (避免 shared 层崩溃)
+"""
 
 from __future__ import annotations
 
@@ -8,11 +21,7 @@ from cann_lm.converter.export_wrapper import ExportWrapper
 
 
 class Gemma4ExportWrapper(ExportWrapper):
-    """gemma4 子类：调原生 forward + 提取 logits + 展平 list[(k,v)] cache
-
-    gemma4 的 forward 不接受 position_ids（内部计算），
-    额外有 shared_kv_states 参数（共享 KV，轻量版传 None）。
-    """
+    """gemma4 子类：调原生 forward + 展平 KV cache + 处理 shared_kv_states"""
 
     def _drive_layers(
         self,
@@ -23,10 +32,27 @@ class Gemma4ExportWrapper(ExportWrapper):
         new_kv_cache_pos: torch.Tensor,
         embeddings: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, list[torch.Tensor]]:
+        # None → [None]*N 触发模型内部创建 cache
+        num_layers = self.config.num_hidden_layers
+        if past_key_values is None:
+            kv_list = [None] * num_layers
+        elif isinstance(past_key_values, list) and len(past_key_values) > 0 and isinstance(past_key_values[0], (tuple, list)):
+            # 已经是 list[(k,v), ...] 格式，直接用
+            kv_list = past_key_values
+        else:
+            # 展平的 [k0, v0, k1, v1, ...] → 重建为 [(k0,v0), (k1,v1), ...]
+            kv_list = [(past_key_values[i], past_key_values[i + 1]) for i in range(0, len(past_key_values), 2)]
+
+        # shared_kv_states: 传空 dict 避免 shared 层崩溃
+        # gemma4 有 num_kv_shared_layers 个层没有 k_proj/v_proj,
+        # 它们复用前面的层 KV, 需要 shared_kv_states 字典
+        # 轻量版传空 dict (第一个 full attention 层会产生 shared states)
+        shared_kv_states = {} if num_layers > 0 else None
+
         kwargs = {
             "attention_mask": attention_mask,
-            "past_key_values": past_key_values,
-            "shared_kv_states": None,
+            "past_key_values": kv_list,
+            "shared_kv_states": shared_kv_states,
             "output_hidden_states": False,
         }
         if embeddings is not None:
@@ -37,9 +63,12 @@ class Gemma4ExportWrapper(ExportWrapper):
         outputs = self.model(**kwargs)
         logits = outputs["logits"]
         updated_kv = outputs["past_key_values"]
+
+        # 展平 list[(k,v)] → [k0, v0, k1, v1, ...]
         past_kv_flat: list[torch.Tensor] = []
         if updated_kv is not None:
             for layer_kv in updated_kv:
-                past_kv_flat.append(layer_kv[0])
-                past_kv_flat.append(layer_kv[1])
+                if layer_kv is not None:
+                    past_kv_flat.append(layer_kv[0])
+                    past_kv_flat.append(layer_kv[1])
         return logits, past_kv_flat

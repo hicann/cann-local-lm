@@ -22,6 +22,14 @@ CMakeCache.txt
 CMakeFiles/
 Testing/
 
+# GE compile artifacts
+kernel_meta/
+kernel_meta_*/
+kernel_meta_temp_*/
+ge_check_op.json
+buildPidInfo.json
+task_pid_*.txt
+
 # Generated fixtures and model artifacts
 fixtures/
 epair_model/

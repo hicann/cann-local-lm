@@ -1786,6 +1786,10 @@ GeGraphBuilder::GeGraphBuilder(const std::string &model_json, const std::string 
   TDLOGI("GeGraphBuilder step: loading weights");
   loader_ = GeWeightLoader::Create(weights_index_path_, parser_.Model(), result);
   if (!result.ok) {
+    for (const auto &issue : result.issues) {
+      TDLOGE("GeGraphBuilder weight issue: code=%s, message=%s, context=%s",
+             issue.code.c_str(), issue.message.c_str(), issue.context.c_str());
+    }
     TDLOGE("GeGraphBuilder failed: weight load error");
     return;
   }

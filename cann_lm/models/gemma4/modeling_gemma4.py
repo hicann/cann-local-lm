@@ -103,9 +103,11 @@ def eager_attention_forward(
     value_states = repeat_kv(value, module.num_key_value_groups)
     attn_weights = torch.matmul(query, key_states.transpose(2, 3)) * scaling
     if softcap is not None:
-        attn_weights = attn_weights / softcap
+        inv_softcap = torch.tensor(1.0 / softcap, dtype=attn_weights.dtype, device=attn_weights.device)
+        softcap_t = torch.tensor(softcap, dtype=attn_weights.dtype, device=attn_weights.device)
+        attn_weights = attn_weights * inv_softcap
         attn_weights = torch.tanh(attn_weights)
-        attn_weights = attn_weights * softcap
+        attn_weights = attn_weights * softcap_t
 
     if attention_mask is not None:
         attn_weights = attn_weights + attention_mask
@@ -196,7 +198,7 @@ class Gemma4TextRotaryEmbedding(nn.Module):
                 "head_dim": head_dim,
             }
 
-    def _compute_inv_freq(self, layer_type: str, device: torch.device) -> torch.Tensor:
+    def _compute_inv_freq(self, layer_type: str, device: torch.device, dtype: torch.dtype = torch.float32) -> torch.Tensor:
         rope_config = self._rope_configs[layer_type]
         rope_type = rope_config["rope_type"]
         base = rope_config["base"]
@@ -205,19 +207,23 @@ class Gemma4TextRotaryEmbedding(nn.Module):
 
         if rope_type == "proportional":
             rope_angles = int(partial_rotary_factor * head_dim // 2)
-            inv_freq_rotated = 1.0 / (base ** (torch.arange(0, 2 * rope_angles, 2, dtype=torch.int64).to(device=device, dtype=torch.float) / head_dim))
+            inv_head_dim = torch.tensor(1.0 / head_dim, dtype=dtype, device=device)
+            exponents = torch.arange(0, 2 * rope_angles, 2, dtype=dtype, device=device) * inv_head_dim
+            inv_freq_rotated = torch.pow(base, -exponents)
             nope_angles = head_dim // 2 - rope_angles
             if nope_angles > 0:
-                return torch.cat((inv_freq_rotated, torch.zeros(nope_angles, dtype=torch.float32, device=device)), dim=0)
+                return torch.cat((inv_freq_rotated, torch.zeros(nope_angles, dtype=dtype, device=device)), dim=0)
             else:
                 return inv_freq_rotated
         else:
             dim = int(head_dim * partial_rotary_factor)
-            return 1.0 / (base ** (torch.arange(0, dim, 2, dtype=torch.int64).to(device=device, dtype=torch.float) / dim))
+            inv_dim = torch.tensor(1.0 / dim, dtype=dtype, device=device)
+            exponents = torch.arange(0, dim, 2, dtype=dtype, device=device) * inv_dim
+            return torch.pow(base, -exponents)
 
     @torch.no_grad()
     def forward(self, x: torch.Tensor, position_ids: torch.Tensor, layer_type: str = "full_attention"):
-        inv_freq = self._compute_inv_freq(layer_type, x.device)
+        inv_freq = self._compute_inv_freq(layer_type, x.device, x.dtype)
         attn_scaling = 1.0
 
         inv_freq_expanded = inv_freq[None, :, None].float().expand(position_ids.shape[0], -1, 1).to(x.device)
@@ -568,6 +574,23 @@ class Gemma4TextModel(nn.Module):
             mask = full_mask
             return torch.where(mask, torch.tensor(0.0, device=device, dtype=dtype), torch.tensor(min_dtype, device=device, dtype=dtype)).unsqueeze(0)
 
+        # 4D mask: apply sliding window restriction for sliding_attention layers
+        if attention_mask.dim() == 4:
+            if layer_type == "sliding_attention":
+                sliding_window = getattr(self.config, "sliding_window", None)
+                kv_len = attention_mask.shape[-1]
+                if sliding_window is not None and sliding_window > 0 and kv_len > sliding_window:
+                    q_len = attention_mask.shape[-2]
+                    min_dtype_val = torch.finfo(attention_mask.dtype).min
+                    q_range = torch.arange(q_len, device=attention_mask.device).unsqueeze(1)
+                    k_range = torch.arange(kv_len, device=attention_mask.device).unsqueeze(0)
+                    diff = q_range - k_range
+                    window_mask = ~((diff >= 0) & (diff <= sliding_window - 1))
+                    attention_mask = attention_mask.masked_fill(
+                        window_mask.unsqueeze(0).unsqueeze(0), min_dtype_val
+                    )
+            return attention_mask
+
         return attention_mask
 
     def _build_rope_embeddings_for_layers(
@@ -707,9 +730,11 @@ class Gemma4ForCausalLM(nn.Module):
         logits = self.lm_head(hidden_states)
 
         if self.final_logit_softcapping is not None:
-            logits = logits / self.final_logit_softcapping
+            inv_softcap = torch.tensor(1.0 / self.final_logit_softcapping, dtype=logits.dtype, device=logits.device)
+            softcap = torch.tensor(self.final_logit_softcapping, dtype=logits.dtype, device=logits.device)
+            logits = logits * inv_softcap
             logits = torch.tanh(logits)
-            logits = logits * self.final_logit_softcapping
+            logits = logits * softcap
 
         loss = None
         if labels is not None:

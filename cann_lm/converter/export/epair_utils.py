@@ -58,10 +58,16 @@ def pack_weights(contents, *, max_file_size: int = DEFAULT_SPLIT_SIZE) -> Consol
     raw_sd = contents.ep.state_dict() if callable(contents.ep.state_dict) else contents.ep.state_dict
     state_dict = dict(raw_sd)
 
-    # Non-persistent buffers are not in state_dict; add them from the module
+    # Non-persistent buffers: add from ep.module().named_buffers() (uses module path names)
     for name, buf in contents.ep.module().named_buffers():
         if name not in state_dict:
             state_dict[name] = buf
+
+    # Lifted tensor constants: add from ep.constants (uses ep_json tensor_constant_name)
+    if hasattr(contents.ep, 'constants') and isinstance(contents.ep.constants, dict):
+        for name, tensor in contents.ep.constants.items():
+            if name not in state_dict and isinstance(tensor, torch.Tensor):
+                state_dict[name] = tensor
 
     spec_names = set()
     gs = contents.ep.graph_signature

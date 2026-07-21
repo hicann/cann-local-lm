@@ -41,6 +41,7 @@ fusion_result.json
 weight_info.json
 examples/*/data/
 examples/*/epair_model/
+examples/export_*/
 
 # local file
 AGENTS.md

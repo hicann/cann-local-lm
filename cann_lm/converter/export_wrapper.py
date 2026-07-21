@@ -114,9 +114,13 @@ class ExportWrapper(nn.Module):
             past_key_values.append((k, v))
 
         if use_embeddings:
+            # use_embeddings=True: 图外查表 (embed_tokens 不在图内), 但 PLE 仍需 input_ids
+            # → 同时返回 input_ids + embeddings. _drive_layers 同时传两者给 model:
+            # model 用 inputs_embeds (不查 embed_tokens), PLE 用 input_ids (不反查),
+            # 避开 bfloat16 下 inputs_embeds == weight 反查的精度问题.
             embeddings = self.model.model.embed_tokens(input_ids).detach()
             return (
-                None,
+                input_ids,
                 attention_mask,
                 position_ids,
                 past_key_values,
@@ -125,18 +129,17 @@ class ExportWrapper(nn.Module):
                 output_pos,
             )
         else:
-            # embeddings 传 dummy zero tensor（非 None）—— torchair export_to_epair 的
-            # parse_input 对 None placeholder 会 AssertionError("meta_outputs must be
-            # torch.Tensor")。dummy tensor 在 forward 里走 else 分支（input_ids 路径），
-            # 不参与计算（num_users=0），不影响图语义。
-            dummy_embeddings = torch.zeros(self.batch, seq_len, config.hidden_size, dtype=dtype)
+            # use_embeddings=False: 图内查表, embeddings=None.
+            # _drive_layers 判断 embeddings is None → 不传 inputs_embeds, 只传 input_ids,
+            # model 走 input_ids 路径 (embed_tokens 查表), PLE 有 input_ids 不反查.
+            # torchair export_to_epair 已接受 None placeholder (不再 AssertionError).
             return (
                 input_ids,
                 attention_mask,
                 position_ids,
                 past_key_values,
                 new_kv_cache_pos,
-                dummy_embeddings,
+                None,
                 output_pos,
             )
 

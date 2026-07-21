@@ -53,10 +53,14 @@ class Qwen3_5ExportWrapper(ExportWrapper):
             "labels": None,
             "use_cache": True,
         }
+        # 总是传 input_ids (PLE 用, 不反查); embeddings 非 None 时也传 inputs_embeds (图外查表)
+        # - use_embeddings=False (embeddings=None): 只传 input_ids, model 查 embed_tokens
+        # - use_embeddings=True (embeddings=真实): 传 input_ids + inputs_embeds, model 用
+        #   inputs_embeds (不查 embed_tokens), PLE 用 input_ids (不反查, 避开 bfloat16 == 精度问题)
+        if input_ids is not None:
+            kwargs["input_ids"] = input_ids
         if embeddings is not None:
             kwargs["inputs_embeds"] = embeddings
-        else:
-            kwargs["input_ids"] = input_ids
 
         outputs = self.model(**kwargs)
         logits = outputs["logits"]

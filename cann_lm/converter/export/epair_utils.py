@@ -132,14 +132,15 @@ def pack_weights(contents, *, max_file_size: int = DEFAULT_SPLIT_SIZE) -> Consol
 
 def consolidated_weights_save(contents, output_dir: str | Path, *,
                               save_weights: bool = True,
-                              max_file_size: int = 5 * 1024) -> None:
+                              max_file_size: int = 5 * 1024,
+                              ep_json_filename: str = "ep_json_with_ascend_ir.json") -> None:
     """Write epair contents to disk in consolidated weights format.
 
     Writes files directly under ``output_dir`` (no ``data/`` subdirectory):
 
     - ``weights_0.bin``, ``weights_1.bin``, ... — raw concatenated tensor bytes
     - ``weight_info.json`` — index describing each tensor and its bin file
-    - ``ep_json_with_ascend_ir.json`` — annotated EP JSON
+    - ``<ep_json_filename>`` — annotated EP JSON (default ``ep_json_with_ascend_ir.json``)
 
     Weight files are written directly to disk (streaming, not in-memory)
     to support large models (>8B params) without OOM.
@@ -151,6 +152,10 @@ def consolidated_weights_save(contents, output_dir: str | Path, *,
             ``weight_info.json``.
         max_file_size: Maximum size (in bytes) of each bin file before
             splitting. Defaults to 5 KB for testing.
+        ep_json_filename: Filename for the annotated EP JSON. Defaults to
+            ``ep_json_with_ascend_ir.json``. Use a custom name for
+            prefill/decode split export (e.g.
+            ``prefill_ep_json_with_ascend_ir.json``).
     """
     output_dir = Path(output_dir).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -165,7 +170,7 @@ def consolidated_weights_save(contents, output_dir: str | Path, *,
     else:
         print("  [skip] weights_*.bin + weight_info.json (save_weights=False)")
 
-    ep_json_path = output_dir / "ep_json_with_ascend_ir.json"
+    ep_json_path = output_dir / ep_json_filename
     with open(ep_json_path, "w") as f:
         json.dump(contents.ep_json, f, indent=2)
     print(f"Saved: {ep_json_path}")

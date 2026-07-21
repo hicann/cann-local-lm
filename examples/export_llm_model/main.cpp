@@ -27,23 +27,54 @@ std::map<ge::AscendString, ge::AscendString> GlobalOptionsWithSoc(const std::str
   return opts;
 }
 
+// Derive output OM name from model_json_path when the caller doesn't pass one.
+// Strips the "_ep_json_with_ascend_ir.json" suffix from the filename.
+//   prefill_ep_json_with_ascend_ir.json -> "prefill"
+//   decode_ep_json_with_ascend_ir.json  -> "decode"
+//   ep_json_with_ascend_ir.json         -> "model"
+// Falls back to the filename sans ".json", or "model" if that's empty.
+// 算子注册参考/mnt/workspace/ge/tests/framework/ge_running_env/include/ge_running_env/op_reg.h 和/mnt/workspace/torchair-full/build/dist/torchair/_ge_concrete_graph/auto_generated_ge_raw_ops.py
+std::string DeriveOutputName(const std::string &model_json_path) {
+  std::string filename = model_json_path;
+  size_t last_sep = filename.find_last_of('/');
+  if (last_sep != std::string::npos) {
+    filename = filename.substr(last_sep + 1);
+  }
+  const std::string kEpSuffix = "_ep_json_with_ascend_ir.json";
+  if (filename.size() >= kEpSuffix.size() &&
+      filename.compare(filename.size() - kEpSuffix.size(), kEpSuffix.size(), kEpSuffix) == 0) {
+    std::string stem = filename.substr(0, filename.size() - kEpSuffix.size());
+    return stem.empty() ? std::string("model") : stem;
+  }
+  const std::string kJsonSuffix = ".json";
+  if (filename.size() >= kJsonSuffix.size() &&
+      filename.compare(filename.size() - kJsonSuffix.size(), kJsonSuffix.size(), kJsonSuffix) == 0) {
+    filename = filename.substr(0, filename.size() - kJsonSuffix.size());
+  }
+  return filename.empty() ? std::string("model") : filename;
+}
+
 }  // namespace
 
 int main(int argc, char *argv[]) {
   if (argc < 3) {
     std::cerr << "[ERROR] Usage: " << argv[0]
-              << " <model_json_path> <weights_index_path>" << std::endl;
+              << " <model_json_path> <weights_index_path> [output_name]" << std::endl;
+    std::cerr << "  output_name defaults to the model_json filename stem" << std::endl;
     return -1;
   }
 
   constexpr size_t kTotalStages = 3;
   const char *model_json_path = argv[1];
   const char *weights_index_path = argv[2];
+  const std::string output_name =
+      (argc >= 4) ? std::string(argv[3]) : DeriveOutputName(model_json_path);
 
   // [1/3] Load epair and build GE Graph
   PrintStage(1, kTotalStages, "Load epair and build GE Graph");
-  std::cout << "  model_json: " << model_json_path << std::endl;
-  std::cout << "  weights_index: " << weights_index_path << std::endl;
+  std::cout << "  model_json:   " << model_json_path << std::endl;
+  std::cout << "  weights_index:" << weights_index_path << std::endl;
+  std::cout << "  output_name: " << output_name << std::endl;
 
   td::EpairModelLoader loader(model_json_path, weights_index_path);
   std::cout << "[PASS] EpairModelLoader constructed" << std::endl;
@@ -81,14 +112,13 @@ int main(int argc, char *argv[]) {
   }
   std::cout << "[PASS] aclgrphBuildModel succeeded, model size: " << model.length << " bytes" << std::endl;
 
-  const char *const output_file = "qwen3_model";
-  ge::graphStatus save_status = ge::aclgrphSaveModel(output_file, model);
+  ge::graphStatus save_status = ge::aclgrphSaveModel(output_name.c_str(), model);
   if (save_status != ge::GRAPH_SUCCESS) {
     std::cerr << "[ERROR] aclgrphSaveModel failed, status: " << save_status << std::endl;
     ge::aclgrphBuildFinalize();
     return -1;
   }
-  std::cout << "[PASS] aclgrphSaveModel succeeded, " << output_file << ".om generated" << std::endl;
+  std::cout << "[PASS] aclgrphSaveModel succeeded, " << output_name << ".om generated" << std::endl;
 
   ge::aclgrphBuildFinalize();
   std::cout << "[PASS] aclgrphBuildFinalize succeeded" << std::endl;

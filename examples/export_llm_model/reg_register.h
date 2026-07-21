@@ -81,6 +81,56 @@ REG_OP(Transpose)
                            DT_QUINT16,   DT_QINT32,    DT_BOOL,       DT_HIFLOAT8, DT_FLOAT8_E5M2, DT_FLOAT8_E4M3FN}))
     .OP_END_FACTORY_REG(Transpose)
 
+REG_OP(TransposeD)
+    .INPUT(x, TensorType({DT_BF16, DT_FLOAT16, DT_FLOAT, DT_INT64, DT_INT32,
+                          DT_UINT8, DT_UINT16, DT_UINT32, DT_UINT64, DT_INT8, DT_INT16}))
+    .OUTPUT(y, TensorType({DT_BF16, DT_FLOAT16, DT_FLOAT, DT_INT64, DT_INT32,
+                           DT_UINT8, DT_UINT16, DT_UINT32, DT_UINT64, DT_INT8, DT_INT16}))
+    .REQUIRED_ATTR(perm, ListInt)
+    .OP_END_FACTORY_REG(TransposeD)
+
+REG_OP(InplaceUpdate)
+    .INPUT(x, TensorType::ALL())
+    .INPUT(indices, TensorType({DT_INT32}))
+    .INPUT(v, TensorType::ALL())
+    .OUTPUT(y, TensorType::ALL())
+    .OP_END_FACTORY_REG(InplaceUpdate)
+
+REG_OP(GreaterEqual)
+    .INPUT(x1, TensorType::ALL())
+    .INPUT(x2, TensorType::ALL())
+    .OUTPUT(y, TensorType({DT_BOOL}))
+    .OP_END_FACTORY_REG(GreaterEqual)
+
+REG_OP(LessEqual)
+    .INPUT(x1, TensorType::ALL())
+    .INPUT(x2, TensorType::ALL())
+    .OUTPUT(y, TensorType({DT_BOOL}))
+    .OP_END_FACTORY_REG(LessEqual)
+
+REG_OP(LogicalAnd)
+    .INPUT(x1, TensorType({DT_BOOL}))
+    .INPUT(x2, TensorType({DT_BOOL}))
+    .OUTPUT(y, TensorType({DT_BOOL}))
+    .OP_END_FACTORY_REG(LogicalAnd)
+
+REG_OP(LogicalNot)
+    .INPUT(x, TensorType({DT_BOOL}))
+    .OUTPUT(y, TensorType({DT_BOOL}))
+    .OP_END_FACTORY_REG(LogicalNot)
+
+REG_OP(MaskedFill)
+    .INPUT(x, TensorType::ALL())
+    .INPUT(mask, TensorType({DT_BOOL}))
+    .INPUT(value, TensorType::ALL())
+    .OUTPUT(y, TensorType::ALL())
+    .OP_END_FACTORY_REG(MaskedFill)
+
+REG_OP(TensorMove)
+    .INPUT(x, TensorType::ALL())
+    .OUTPUT(y, TensorType::ALL())
+    .OP_END_FACTORY_REG(TensorMove)
+
 REG_OP(RmsNorm)
     .INPUT(x, TensorType({DT_FLOAT, DT_FLOAT16, DT_BF16}))
     .INPUT(gamma, TensorType({DT_FLOAT, DT_FLOAT16, DT_BF16}))

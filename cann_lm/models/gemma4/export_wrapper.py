@@ -1,7 +1,7 @@
 """Gemma4 export wrapper — translates unified I/O to native forward kwargs.
 
 gemma4 的特殊之处：
-- forward 不接受 position_ids（内部从 past_key_values 推导）
+- forward 接受 position_ids（外部传入；为 None 时内部从 past_key_values 推导）
 - 有 shared_kv_states 参数（KV 共享层无 k_proj/v_proj）
 - 有 layer_types (sliding_attention + full_attention)
 - KV cache 是 list[(k,v) or None]
@@ -70,10 +70,14 @@ class Gemma4ExportWrapper(ExportWrapper):
             "new_kv_cache_pos": new_kv_cache_pos,
             "position_ids": position_ids,
         }
+        # 总是传 input_ids (PLE 用, 不反查); embeddings 非 None 时也传 inputs_embeds (图外查表)
+        # - use_embeddings=False (embeddings=None): 只传 input_ids, model 查 embed_tokens
+        # - use_embeddings=True (embeddings=真实): 传 input_ids + inputs_embeds, model 用
+        #   inputs_embeds (不查 embed_tokens), PLE 用 input_ids (不反查, 避开 bfloat16 == 精度问题)
+        if input_ids is not None:
+            kwargs["input_ids"] = input_ids
         if embeddings is not None:
             kwargs["inputs_embeds"] = embeddings
-        else:
-            kwargs["input_ids"] = input_ids
 
         outputs = self.model(**kwargs)
         logits = outputs["logits"]

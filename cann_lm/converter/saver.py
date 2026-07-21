@@ -70,18 +70,85 @@ def save_epair(
     copy_tokenizer_files(artifact.tokenizer_files, output_dir)
     save_model_config(artifact, output_dir)
 
-    pt2_path = output_dir.parent / f"{output_dir.name}.pt2"
-    torch_delegate.epair_save(epair, str(pt2_path))
-    print(f"Saved: {pt2_path}")
+def save_epair_prefill_decode(
+    artifact: ModelArtifact,
+    output_dir: str | Path,
+    *,
+    max_file_size: int = 50 * 1024 * 1024 * 1024,
+    kv_cache_max_len: int = 2048,
+    prefill_seq_len: int = 128,
+    use_embeddings: bool = False,
+    save_weights: bool = True,
+) -> None:
+    """Prefill/decode split export: emit two graphs (prefill + decode) + shared weights.
 
-    for i, inp in enumerate(sample_inputs):
-        path = output_dir.parent / f"input_{i}.bin"
-        if isinstance(inp, torch.Tensor):
-            raw = inp.cpu().detach()
-            if raw.dtype == torch.bfloat16:
-                raw = raw.view(torch.int16)
-            raw.numpy().tofile(path)
-            print(f"Saved input[{i}] shape={list(inp.shape)} -> {path}")
+    Output layout (under output_dir):
+    - ``prefill_ep_json_with_ascend_ir.json`` — prefill graph (seq_len=prefill_seq_len)
+    - ``decode_ep_json_with_ascend_ir.json`` — decode graph (seq_len=1, reusable)
+    - ``weight_info.json`` + ``weights_*.bin`` — shared weights (packed once)
+    - ``model_config.json`` + tokenizer files
+
+    At inference time:
+    - prefill: pad input_ids to prefill_seq_len, mask pad positions,
+      output_pos=[prompt_len-1] to select the last real token's logits
+    - decode: seq_len=1, reuse decode graph, feed previous-step KV cache
+
+    Does NOT save .pt2 or input_N.bin (those belong in a verify script).
+    """
+    import torch_delegate
+    from cann_lm.models.fake_ops import register_ge_converters
+
+    output_dir = Path(output_dir).resolve()
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    register_ge_converters()
+
+    if artifact.wrapper_cls is None:
+        raise ValueError(
+            f"Model '{artifact.model_type}' has no ExportWrapper subclass registered. "
+            "Please implement one in cann_lm/converter/export_wrapper.py."
+        )
+    wrapper = artifact.wrapper_cls(
+        artifact.model,
+        kv_cache_max_len=kv_cache_max_len,
+        batch=1,
+    ).eval()
+
+    # Export prefill_ep (seq_len=prefill_seq_len, shape-specialized)
+    prefill_sample = wrapper.get_sample_inputs(
+        seq_len=prefill_seq_len, use_embeddings=use_embeddings
+    )
+    prefill_ep = torch.export.export(wrapper, prefill_sample, strict=False)
+    prefill_epair = torch_delegate.export_to_epair(prefill_ep)
+    del prefill_ep
+
+    # Export decode_ep (seq_len=1, reused for all decode steps)
+    decode_sample = wrapper.get_sample_inputs(seq_len=1, use_embeddings=use_embeddings)
+    decode_ep = torch.export.export(wrapper, decode_sample, strict=False)
+    decode_epair = torch_delegate.export_to_epair(decode_ep)
+
+    # Release model memory (OOM guard); epair.ep holds independent ExportedProgram ref
+    del decode_ep, wrapper
+    del artifact.model
+    import gc; gc.collect()
+
+    # Write weights + prefill ep_json (save_weights=True, only once)
+    consolidated_weights_save(
+        prefill_epair, output_dir,
+        save_weights=save_weights,
+        max_file_size=max_file_size,
+        ep_json_filename="prefill_ep_json_with_ascend_ir.json",
+    )
+
+    # Write decode ep_json only (save_weights=False, weights already packed above)
+    consolidated_weights_save(
+        decode_epair, output_dir,
+        save_weights=False,
+        ep_json_filename="decode_ep_json_with_ascend_ir.json",
+    )
+
+    copy_tokenizer_files(artifact.tokenizer_files, output_dir)
+    save_model_config(artifact, output_dir)
 
 
 def save_model_config(artifact: ModelArtifact, output_dir: Path) -> None:

@@ -359,7 +359,7 @@ class ExportWrapper(nn.Module):
 | 模型 | 透传代码位置 |
 |------|-------------|
 | qwen3 | `modeling_qwen3.py` 第 349 行 `return attention_mask` |
-| gemma4 | `modeling_gemma4.py` 第 571 行 `return attention_mask` |
+| gemma4 | `modeling_gemma4.py` 第 619 行 `return attention_mask` |
 | qwen3_5 | `modeling_qwen3_5.py` 第 616 行 `if attention_mask.dim() == 4: return attention_mask`（新增） |
 
 ### Qwen3ExportWrapper 子类示例
@@ -395,7 +395,7 @@ class Qwen3ExportWrapper(ExportWrapper):
 | 子类 | 文件位置 | 原生 cache 类型 | forward kwargs 差异 | 特殊处理 |
 |------|---------|----------------|---------------------|---------|
 | Qwen3ExportWrapper | `models/qwen3/export_wrapper.py` | `list[(k,v), ...]` | `position_ids` 外部传入 | 无 |
-| Gemma4ExportWrapper | `models/gemma4/export_wrapper.py` | `list[(k,v), ...]` | 无 `position_ids`（内部计算） | `shared_kv_states=None` |
+| Gemma4ExportWrapper | `models/gemma4/export_wrapper.py` | `list[(k,v), ...]` | `position_ids` 外部传入 | `shared_kv_states=None` |
 | Qwen3_5ExportWrapper | `models/qwen3_5/export_wrapper.py` | `SimpleKVCache` | `delta_cache`、`use_cache` | list → SimpleKVCache 转换；`delta_cache=None` |
 
 三个子类都支持 `embeddings` 参数：非 None 时传 `inputs_embeds`，None 时传 `input_ids`。
@@ -899,10 +899,72 @@ python cann_lm/converter/cann-lm-converter.py \
     --use-embeddings
 ```
 
+## prefill/decode 分离导出
+
+实际 LLM 推理需要 prefill（处理 prompt，seq_len 可变）+ decode（逐 token 生成，seq_len=1）两个阶段。`torch.export` 形状特化后单张图无法覆盖两个阶段（导出时 seq_len=128 的图既不能 prefill 也不能 decode），故 converter CLI 支持 `--mode prefill-decode` 导出两张图。
+
+### 设计
+
+- **prefill 图**：seq_len=`prefill_seq_len`（默认 128，可配）特化。实际推理时 input_ids pad 到 `prefill_seq_len`，attention_mask 屏蔽 pad 位置，output_pos=[prompt_len-1] 取最后实际 token 的 logits
+- **decode 图**：seq_len=1 特化，所有 decode 步复用
+- **权重共享**：两张图的 state_dict 相同（同一模型），`pack_weights` 只执行一次，`weight_info.json` + `weights_*.bin` 只写一份
+
+### 接口
+
+```python
+from cann_lm.converter.saver import save_epair_prefill_decode
+
+save_epair_prefill_decode(
+    artifact, output_dir,
+    prefill_seq_len=128,       # prefill 图 seq_len (可配)
+    kv_cache_max_len=2048,
+    use_embeddings=False,      # True: 图外查表
+    max_file_size=50*1024**3,
+)
+```
+
+CLI：
+```bash
+python cann_lm/converter/cann-lm-converter.py \
+    --hf-path /path/to/gemma-4-E2B \
+    --output-dir /path/to/output \
+    --mode prefill-decode \
+    --prefill-seq-len 128 \
+    --dtype bfloat16
+```
+
+### 产物布局
+
+```
+output_dir/
+├── prefill_ep_json_with_ascend_ir.json   # prefill 图 (seq_len=prefill_seq_len)
+├── decode_ep_json_with_ascend_ir.json    # decode 图 (seq_len=1)
+├── weight_info.json                       # 共享权重索引 (一份)
+├── weights_0.bin                          # 共享权重 (一份)
+├── model_config.json
+└── tokenizer files
+```
+
+C++ 加载两图共享一份权重：
+```cpp
+td::EpairModelLoader prefill_loader("prefill_ep_json_with_ascend_ir.json",
+                                     "weight_info.json");
+td::EpairModelLoader decode_loader("decode_ep_json_with_ascend_ir.json",
+                                    "weight_info.json");
+```
+
+### 不保存 .pt2 / input_N.bin
+
+正式产物不含 `.pt2`（Python 回环验证）和 `input_N.bin`（C++ 验证输入），由测试脚本（verify）自行生成，避免正式流程承担测试职责。
+
+### 全链路已通（Python 导出 + C++ OM 编译）
+
+遗留任务 6（`aten.index_copy.default` GE converter 缺失）已解决：在 `fake_ops/ge_converter.py` 用 `ge.InplaceUpdate` + `ge.TransposeD` 实现了 converter。converter CLI 导出 gemma4 prefill/decode + C++ `main.cpp` 加载编译 OM 全链路跑通（`examples/export_gemma4/`，prefill 6079 节点 / decode 6044 节点 / `prefill.om` + `decode.om` 各 9.4GB）。详见遗留任务 6 的完整修复链。
+
 ## 待实现功能
 
 1. **统一 cache 签名** — ExportWrapper 基类 + 每模型子类，KV cache 显式图 I/O（详见上方章节）
-2. **prefill/decode 分离** — 参照 litert-torch，导出 `prefill_epair` + `decode_epair`
+2. ~~**prefill/decode 分离**~~ — **已实现**（`saver.save_epair_prefill_decode` + CLI `--mode prefill-decode`，见下方"prefill/decode 分离导出"章节）。gemma4 Python 导出 + C++ OM 编译全链路跑通（`prefill.om` + `decode.om` 各 9.4GB）
 3. **量化模块** (`cann_lm/converter/quant/`) — 权重量化（方案 TBD）
 4. **分区模式** — 按 transformer layer 分区保存，支持多卡加载（TBD）
 
@@ -917,17 +979,19 @@ python cann_lm/converter/cann-lm-converter.py \
      - 方案 A：安装 `flash-linear-attention` (fla) + triton + GPU 环境，用编译的 triton kernel 替换 Python 循环（当前 CPU-only 环境不可用）
      - 方案 B：将 delta rule 封装为自定义 GE 算子（类似 `FusedInferAttentionScore`），不展开内部循环（工作量大）
      - 方案 C：在模型代码中集成 fla kernel（和 transformers 一致：有 fla 用 kernel，无 fla fallback）
-4. **新 ExportWrapper 的 ep_json 格式与 C++ 解析器不兼容** — 新统一 ExportWrapper（7 输入→57 输出）产生的 ep_json 中，parameter/buffer 的 input_specs 格式从 `{"arg": {"as_tensor": {"name": "..."}}}` 变为 `{"arg": {"name": "..."}}`（缺少 `as_tensor` 包裹），C++ `EpairModelParser` 报 `INVALID_GRAPH_INPUTS: Value reference must contain as_tensor.name`。
-   - **当前状态**：旧简单 ExportWrapper（1 输入→1 输出，仅返回 logits）C++ 可正常加载和编译 OM；新统一 ExportWrapper（含 KV cache I/O）C++ 解析失败
-   - **根因**：`torch.export` + `export_to_epair` 在处理多输入多输出 wrapper 时，序列化 parameter/buffer 的 input_specs 格式与单输入单输出不同
-   - **临时方案**：C++ 加载用旧导出脚本 `export_llm_model_epair.py`（简单 wrapper），新 converter CLI 用于精度验证（不需要 C++ 加载）
-   - **解决方向**：
-     - 方案 A：修改 C++ `EpairModelParser` 支持 `{"arg": {"name": "..."}}` 格式（去掉 `as_tensor` 包裹的兼容性）
-      - 方案 B：在 saver.py 中将 parameter/buffer 的 `input_specs` 格式从 `{"arg": {"name": ...}}` 转换为 `{"arg": {"as_tensor": {"name": ...}}}`
+4. ~~**新 ExportWrapper 的 ep_json 格式与 C++ 解析器不兼容**~~ — **[已解决]** C++ `epair_model_parser.cc:187-203` 的 `parse_named_arg` 已支持 `arg.name` 和 `arg.as_tensor.name` 两种格式（兜底解决）。原描述：新统一 ExportWrapper 产生 `{"arg": {"name": "..."}}` 格式，C++ 报 `INVALID_GRAPH_INPUTS`，现已不阻塞。
 5. **qwen3 / qwen3.5 scatter-write 改造** — 当前方案 B（预分配 buffer + `index_copy` scatter-write）仅实现 gemma4。qwen3 和 qwen3.5 的 attention 层同样需要从 `torch.cat` 改为 `index_copy` + 预分配 buffer。**基类 `ExportWrapper.get_sample_inputs` 的 mask 已统一为 scatter-write 语义（causal-over-buffer `[kv_max]`）**，故 qwen3/qwen3.5 在完成 scatter 改造前，导出会因 attn K 维度（`kv_max + seq_len`）与 mask（`kv_max`）不匹配报 broadcast 错误。需注意：
    - qwen3: 标准 GQA，改动简单（attention 层 `torch.cat` → `index_copy`）
    - qwen3.5: 混合架构（6 full + 18 linear），linear attention 的 `recurrent_state` 不是 KV buffer 格式，需要单独设计 recurrent buffer 的增量协议
-   - 两个模型的 `ExportWrapper._drive_layers` 也需要同步修改（`get_sample_inputs` 已用基类统一 scatter mask，无需子类 override）
+    - 两个模型的 `ExportWrapper._drive_layers` 也需要同步修改（`get_sample_inputs` 已用基类统一 scatter mask，无需子类 override）
+6. ~~**aten.index_copy.default GE converter 缺失**~~ — **[已解决]** 在 `fake_ops/ge_converter.py` 注册 `aten.index_copy.default` converter，用**方案 B：`ge.InplaceUpdate` + `ge.TransposeD`** 实现（transpose 把 `dim` 换到 axis 0，`InplaceUpdate` 按 1D index 赋值，再 transpose back）。Python 导出 + C++ OM 编译全链路打通。
+   - **实现**：`_convert_index_copy` 在 `register_ge_converters()` 里，用 `ge.TensorMove(self)` 避免 in-place 精度问题（参考 `index_add.py`），index 转 DT_INT32，`perm`/`inverse_perm` 按 `dim` 构造。**dtype 对齐**：用 `ge.Cast(transposed_source, dst_type=int(self.dtype))` 强制 source 对齐 self dtype（InplaceUpdate 要求 x/v 同 dtype；GE infershape 前 `transposed_self.dtype` 是 `DT_UNDEFINED`，须用 `self.dtype`）
+   - **C++ 加载侧**：`examples/export_llm_model/reg_register.h` 补注册 8 个算子：`InplaceUpdate`/`TransposeD`（index_copy converter 用）、`GreaterEqual`/`LessEqual`/`LogicalAnd`/`LogicalNot`/`MaskedFill`/`TensorMove`（ep_json 里有但原 reg_register.h 未注册）
+   - **环境配置**（CANN 9.2.0 weekly 20260715）：
+     - CANN 装到 `/home/developer/Ascend/cann-9.1.0/`（路径名保持一致），实际版本 9.2.0 在 `cann-9.1.0/cann-9.2.0/` 子目录
+     - **符号链接**：在 `cann-9.1.0/` 顶层为 `cann-9.2.0/` 下的目录创建符号链接（`aarch64-linux`/`lib64`/`opp` 等），解决 `Ascend950DT_950x.ini` 等 platform_config 找不到
+     - **Python 依赖**：装 `decorator`/`scipy`/`numpy`/`attrs`/`sympy`/`psutil`/`networkx`/`tqdm`/`requests`/`pyyaml`/`cffi`（TBE/tvm 依赖，`CannKbInit` 需要）
+   - **验证结果**：`prefill.om`（9.4GB）+ `decode.om`（9.4GB）编译成功，3 阶段全 PASS
 
 ## 待办事项
 

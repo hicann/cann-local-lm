@@ -185,3 +185,41 @@ def register_ge_converters() -> None:
             _torch.int64: 9, _torch.int32: 3, _torch.bool: 12,
         }
         return ge.Cast(x, dst_type=_GE_DTYPE_MAP.get(dt, 0))
+
+    @register_fx_node_ge_converter(torch.ops.aten.index_copy.default)
+    def _convert_index_copy(
+        self: Any,
+        dim: int,
+        index: Any,
+        source: Any,
+        meta_outputs: Any = None,
+    ) -> Any:
+        """aten::index_copy(Tensor self, int dim, Tensor index, Tensor source) -> Tensor
+
+        Implemented via InplaceUpdate + transpose: ``InplaceUpdate`` only supports
+        dim=0, so transpose self/source to move ``dim`` to axis 0, InplaceUpdate
+        (replace indices), then transpose back. Supports arbitrary 1D index
+        (not limited to contiguous arange).
+        """
+        del meta_outputs
+        from torchair.ge._ge_graph import DataType
+        # InplaceUpdate requires DT_INT32 indices (see REG_OP InplaceUpdate input)
+        if index.dtype != DataType.DT_INT32:
+            index = ge.Cast(index, dst_type=int(DataType.DT_INT32))
+        ndim = self.rank
+        if dim < 0:
+            dim += ndim
+        # perm moves `dim` to position 0: [dim, 0, 1, ..., dim-1, dim+1, ..., ndim-1]
+        perm = [dim] + [i for i in range(ndim) if i != dim]
+        inverse_perm = [0] * ndim
+        for i, p in enumerate(perm):
+            inverse_perm[p] = i
+        # TensorMove to avoid in-place precision issue (same pattern as index_add.py)
+        moved = ge.TensorMove(self)
+        transposed_self = ge.TransposeD(moved, perm=perm)
+        transposed_source = ge.TransposeD(source, perm=perm)
+        # Force dtype alignment: InplaceUpdate requires x and v to have the same dtype.
+        # Use self.dtype (known) rather than transposed_self.dtype (UNDEFINED before infershape).
+        transposed_source = ge.Cast(transposed_source, dst_type=int(self.dtype))
+        updated = ge.InplaceUpdate(transposed_self, index, transposed_source)
+        return ge.TransposeD(updated, perm=inverse_perm)

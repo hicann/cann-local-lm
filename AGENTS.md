@@ -31,17 +31,19 @@ CANN-LM_5883/
   - `torch-delegate` 0.1.0（whl，按 torch 2.9.0 + CANN 9.1.0 编，源码 `/mnt/workspace/torch-delegate-harmony`）
   - `torchair` **全量**（branch `26.1.0`，按 torch 2.9.0 + CANN 9.1.0 编，源码 `/mnt/workspace/torchair-full`，装为 whl）
   - `torch_npu` 打桩（lib 层 stub，`/mnt/workspace/torchair-full/build/stubs`，含 `libtorch_npu.so`/`libge_local_stub.so`/`libge_runner.so`/`libhccl_stub.so` 等，非真实安装）
-  - CANN 9.1.0（提供 lib64，`/home/developer/Ascend/cann-9.1.0`）
+  - CANN 9.2.0 weekly 20260715（toolkit + 950-ops，提供 lib64 + platform_config + TBE/tvm；装到 `/home/developer/Ascend/cann-9.1.0/`，实际版本在 `cann-9.1.0/cann-9.2.0/` 子目录；set_env.sh 实际路径 `/home/developer/Ascend/cann-9.1.0/cann/set_env.sh`）。**符号链接**：`cann-9.1.0/` 顶层为 `cann-9.2.0/` 下的目录创建了符号链接（`aarch64-linux`/`lib64`/`opp` 等），让 `Ascend950DT_950x.ini` 等 platform_config 可被 GE 找到。**Python 依赖**：TBE/tvm 需要 `decorator`/`scipy`/`numpy`/`attrs`/`sympy`/`psutil`/`networkx`/`tqdm`/`requests`/`pyyaml`/`cffi`（已装到 torchair_lazy_venv）
 
-  运行 converter / 任何依赖 torchair 的脚本前，**必须先 source 这套环境变量**：
+  运行 converter / 任何依赖 torchair 的脚本前，
+**必须先 source 这套环境变量**：
 ```bash
-source /home/developer/Ascend/cann-9.1.0/set_env.sh
+source /home/developer/Ascend/cann-9.1.0/cann/set_env.sh
 export LD_LIBRARY_PATH=/mnt/workspace/torchair-full/build/stubs:${ASCEND_HOME_PATH}/lib64:${LD_LIBRARY_PATH:-}
 export TORCH_DELEGATE_HOME=/mnt/workspace/torch-delegate-harmony
 export PYTHONPATH=/mnt/workspace/project/CANN-LM_5883:${PYTHONPATH:-}
 export TORCH_DEVICE_BACKEND_AUTOLOAD=0          # 阻止 torch autoload npu backend
 export TORCH_DELEGATE_ENABLE_FALLBACK_CODEGEN=0 # 不走 fallback codegen
 ```
+- 注意：实际环境可能是cann-9.2.0，反正不能是
   - **关键**：stubs 必须用**全量 torchair 自带的** `/mnt/workspace/torchair-full/build/stubs`（ABI 匹配）。不要用旧 minimal-stub torchair 的 `/mnt/workspace/torchair/build/stubs`——符号不匹配会导致全量 torchair import 失败（`libruntime_common.so: undefined symbol: ErrorManager::ATCReportErrMessage`）；而用真实 CANN lib64 又会 `initialize_graph_engine → aclrtSetDevice → 107001`（无设备）。只有"全量 torchair + 其自带 stubs"这套组合在 CPU 上可用。
   - converter 本身不用 transformers；若跑 `examples/` 下用 transformers 的 run/verify 脚本，先 `import hf_cpu`（禁用 transformers 的 torch_npu probe，shim 在 `examples/export_llm_model/llm_engine_on_cpu/hf_cpu.py`）。
   - 跑 `CANN-LM_5883` 仓库脚本统一加 `TORCH_DEVICE_BACKEND_AUTOLOAD=0`。
@@ -63,3 +65,7 @@ export TORCH_DELEGATE_ENABLE_FALLBACK_CODEGEN=0 # 不走 fallback codegen
 - **公共 Flag 原则**：所有 C++ target（库、可执行文件）必须通过 `DELEGATE_COMMON_FLAGS` 统一管理编译和链接选项；禁止在单个 target 上直接硬编码 `-Wall`/`-Wextra`/`-Werror` 等公共 flags，新增 target 时须显式调用 `target_compile_options` 和 `target_link_options` 并引用此变量。
 - **ASAN 强制原则**：开发期间运行 C++ 测试时**必须**开启 ASAN（`./build_test.sh` 默认启用；手动 cmake 时传 `-DENABLE_ASAN=ON`）；提交前须确认测试在 ASAN 构建下全部通过且无内存错误报告。
 - **C++ 函数约束**：C++ 函数/方法同样遵循“参数不超过 5 个、单函数最好不超过 50 行”的通用原则；复杂逻辑优先提取为私有辅助方法，但保持调用链可读，避免过度切碎。
+
+
+### 环境问题
+- **如果出现环境没有cann-9.1.0/cann-9.2.0**: 1.查看本地/mnt/workspace/Ascend_tar是否有cann包 2.没有的话从https://ascend.devcloud.huaweicloud.com/artifactory/cann-run-mirror/software/master/ 下载 3.按照run包提供的能力进行安装

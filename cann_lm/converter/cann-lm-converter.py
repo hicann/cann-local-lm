@@ -26,7 +26,7 @@ if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
 from cann_lm.converter.loader import load_model
-from cann_lm.converter.saver import save_epair
+from cann_lm.converter.saver import save_epair, save_epair_prefill_decode
 
 _DTYPE_MAP = {
     "float32": torch.float32,
@@ -46,8 +46,16 @@ def convert(
     kv_cache_max_len: int = 2048,
     sample_seq_len: int = 128,
     use_embeddings: bool = False,
+    mode: str = "single",
+    prefill_seq_len: int = 128,
 ) -> None:
-    """程序化入口：HF 模型 → epair"""
+    """程序化入口：HF 模型 → epair
+
+    Args:
+        mode: "single" — one shape-specialized graph (seq_len=sample_seq_len);
+              "prefill-decode" — two graphs (prefill seq_len=prefill_seq_len
+              + decode seq_len=1) with shared weights, for actual inference.
+    """
     print(f"[1/3] Loading model from {hf_path}")
     artifact = load_model(hf_path, dtype=dtype, device=device)
     print(f"      Model: {type(artifact.model).__name__}")
@@ -55,20 +63,40 @@ def convert(
     print(f"      Tokenizer files: {len(artifact.tokenizer_files)}")
     print(f"      Wrapper: {artifact.wrapper_cls.__name__ if artifact.wrapper_cls else 'None'}")
     print(f"      Embedding mode: {'external (no embed_tokens in graph)' if use_embeddings else 'internal (embed_tokens in graph)'}")
+    print(f"      Export mode: {mode}")
 
     print(f"[2/3] Saving epair to {output_dir}")
-    save_epair(
-        artifact,
-        output_dir,
-        max_file_size=max_file_size,
-        kv_cache_max_len=kv_cache_max_len,
-        sample_seq_len=sample_seq_len,
-        use_embeddings=use_embeddings,
-    )
+    if mode == "prefill-decode":
+        print(f"      prefill_seq_len={prefill_seq_len}, decode_seq_len=1, shared weights")
+        save_epair_prefill_decode(
+            artifact,
+            output_dir,
+            max_file_size=max_file_size,
+            kv_cache_max_len=kv_cache_max_len,
+            prefill_seq_len=prefill_seq_len,
+            use_embeddings=use_embeddings,
+        )
+    else:
+        print(f"      single graph, seq_len={sample_seq_len}")
+        save_epair(
+            artifact,
+            output_dir,
+            max_file_size=max_file_size,
+            kv_cache_max_len=kv_cache_max_len,
+            sample_seq_len=sample_seq_len,
+            use_embeddings=use_embeddings,
+        )
 
     print(f"[3/3] Verifying output")
     out = Path(output_dir)
-    for name in ["ep_json_with_ascend_ir.json", "model_config.json", "weight_info.json"]:
+    if mode == "prefill-decode":
+        expected = ["prefill_ep_json_with_ascend_ir.json",
+                    "decode_ep_json_with_ascend_ir.json",
+                    "model_config.json", "weight_info.json"]
+    else:
+        expected = ["ep_json_with_ascend_ir.json",
+                    "model_config.json", "weight_info.json"]
+    for name in expected:
         fp = out / name
         status = "[OK]" if fp.exists() else "[MISSING]"
         print(f"      {status} {name}")
@@ -97,6 +125,11 @@ def parse_args() -> argparse.Namespace:
                         help="Sample input seq len for torch.export (default: 128)")
     parser.add_argument("--use-embeddings", action="store_true",
                         help="Use external embeddings (no embed_tokens in graph, for embedding quantization)")
+    parser.add_argument("--mode", default="single", choices=["single", "prefill-decode"],
+                        help="Export mode: single (one graph, seq_len=sample-seq-len) "
+                             "or prefill-decode (two graphs: prefill+decode, shared weights, for actual inference)")
+    parser.add_argument("--prefill-seq-len", type=int, default=128,
+                        help="Prefill graph seq_len for prefill-decode mode (default: 128, pad prompt to this)")
     # 量化参数: TBD
     return parser.parse_args()
 
@@ -112,6 +145,8 @@ def main() -> None:
         kv_cache_max_len=args.kv_cache_max_len,
         sample_seq_len=args.sample_seq_len,
         use_embeddings=args.use_embeddings,
+        mode=args.mode,
+        prefill_seq_len=args.prefill_seq_len,
     )
 
 

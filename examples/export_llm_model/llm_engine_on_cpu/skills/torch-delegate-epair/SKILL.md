@@ -145,7 +145,7 @@ print(f"Output shape: {outputs.shape}")
 
 ### CANN 版本过旧
 - 检查: `cat ${ASCEND_HOME_PATH}/compiler/version.info`
-- 下载每日构建: https://ascend.devcloud.huaweicloud.com/artifactory/cann-run-mirror/software/master
+- 更新版本: https://ascend.devcloud.huaweicloud.com/artifactory/cann-run-mirror/software/legacy/20260708000326093/
 - 安装: `chmod +x Ascend-cann-toolkit_*_linux-$(arch).run && ./Ascend-cann-toolkit_*_linux-$(arch).run --install --install-path=/home/developer/Ascend --quiet`
 
 ### ACL set device id failed

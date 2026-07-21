@@ -13,53 +13,6 @@ from cann_lm.converter.loader import ModelArtifact
 from cann_lm.converter.export.epair_utils import consolidated_weights_save
 
 
-def _remove_assert_nodes(ep_json: dict) -> int:
-    """从 ep_json 中移除 _assert_tensor_metadata 断言节点。"""
-    nodes = ep_json["graph_module"]["graph"]["nodes"]
-    before = len(nodes)
-    ep_json["graph_module"]["graph"]["nodes"] = [
-        n for n in nodes if "assert" not in n.get("target", "").lower()
-    ]
-    removed = before - len(ep_json["graph_module"]["graph"]["nodes"])
-    if removed > 0:
-        print(f"[Strip] 移除了 {removed} 个 _assert_tensor_metadata 节点")
-    return removed
-
-
-def _remove_none_inputs(ep_json: dict) -> int:
-    """从 ep_json 中移除 as_none 的输入引用。
-
-    当 wrapper 传 past_key_values=None 或 embeddings=None 时，
-    ep_json 的 graph.inputs 和 input_specs 中会记录 as_none。
-    C++ EpairModelParser 不支持 as_none 输入类型。
-    """
-    removed = 0
-    # 1. 从 graph.inputs 移除 as_none 条目
-    graph = ep_json.get("graph_module", {}).get("graph", {})
-    inputs = graph.get("inputs", [])
-    filtered_inputs = [inp for inp in inputs if not (len(inp) == 1 and "as_none" in inp)]
-    removed += len(inputs) - len(filtered_inputs)
-    graph["inputs"] = filtered_inputs
-
-    # 2. 从 input_specs 移除 as_none 的 constant_input
-    specs = ep_json.get("graph_module", {}).get("signature", {}).get("input_specs", [])
-    filtered_specs = []
-    for spec in specs:
-        kind = list(spec.keys())[0]
-        detail = spec[kind]
-        if kind == "constant_input":
-            value = detail.get("value", {}) if isinstance(detail, dict) else {}
-            if isinstance(value, dict) and value.get("as_none") is True:
-                removed += 1
-                continue
-        filtered_specs.append(spec)
-    ep_json["graph_module"]["signature"]["input_specs"] = filtered_specs
-
-    if removed > 0:
-        print(f"[Strip] 移除了 {removed} 个 as_none 输入引用")
-    return removed
-
-
 def save_epair(
     artifact: ModelArtifact,
     output_dir: str | Path,
@@ -97,8 +50,16 @@ def save_epair(
 
     epair = torch_delegate.export_to_epair(ep)
 
-    _remove_assert_nodes(epair.ep_json)
-    _remove_none_inputs(epair.ep_json)
+    # C++ 侧已兜底处理：
+    # - _assert_tensor_metadata 节点：PlanNodes 顶部 IsAssertTensorMetadataNode 跳过
+    # - as_none 的 constant_input：PreparePlaceholders 里 NodeInputKind::None → continue 跳过
+    # 无需 Python 侧 strip ep_json。
+
+    # 释放原始模型内存 (大模型 OOM 防护)
+    # epair.ep 持有 ExportedProgram 的独立引用, 删除 model/wrapper/ep 不影响 epair
+    del ep, wrapper
+    del artifact.model
+    import gc; gc.collect()
 
     consolidated_weights_save(
         epair, output_dir,
@@ -116,7 +77,10 @@ def save_epair(
     for i, inp in enumerate(sample_inputs):
         path = output_dir.parent / f"input_{i}.bin"
         if isinstance(inp, torch.Tensor):
-            inp.cpu().detach().numpy().tofile(path)
+            raw = inp.cpu().detach()
+            if raw.dtype == torch.bfloat16:
+                raw = raw.view(torch.int16)
+            raw.numpy().tofile(path)
             print(f"Saved input[{i}] shape={list(inp.shape)} -> {path}")
 
 

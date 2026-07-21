@@ -95,7 +95,17 @@ def eager_attention_forward(
     softcap: float | None = None,
     **_kwargs,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Eager (non-flash) scaled dot-product attention with optional soft-capping."""
+    """Eager (non-flash) scaled dot-product attention with optional soft-capping.
+
+    精度策略 (已验证, 不要改):
+    - Q@K matmul: 保持 bfloat16 (和 HF 一致, BLAS 舍入最接近)
+      float32 Q@K 反而更差: 和 HF 的 bfloat16 差异更大, 第一个 token 匹配率从 78% 降到 33%
+    - softmax: 用 float32 (npu_tuned_export 方案, 已有)
+      bfloat16 softmax 在 [6, 2048] (scatter-write buffer) 下有精度损失
+    - @v matmul: 保持 bfloat16 (已验证无差异)
+    scatter-write 下 head_dim=512 的 full_attention 层有 0.25 BLAS 舍入差异, 但无法消除
+    (float32 会引入更大差异), 7/9 第一个 token 与 HF 一致, 可接受
+    """
     if scaling is None:
         scaling = module.head_dim ** -0.5
 
@@ -333,6 +343,7 @@ class Gemma4TextAttention(nn.Module):
         attention_mask: torch.Tensor | None = None,
         past_key_values: list | None = None,
         shared_kv_states: dict | None = None,
+        new_kv_cache_pos: torch.Tensor | None = None,
         **_kwargs,
     ) -> torch.Tensor:
         input_shape = hidden_states.shape[:-1]
@@ -371,12 +382,26 @@ class Gemma4TextAttention(nn.Module):
             value_states = self.v_norm(value_states)
             value_states = value_states.transpose(1, 2)
 
-        # --- KV cache update ---
+        # --- KV cache update (scatter-write, fixed shape) ---
         if past_key_values is not None and not self.is_kv_shared_layer:
-            if past_key_values[self.layer_idx] is not None:
-                key_states = torch.cat([past_key_values[self.layer_idx][0], key_states], dim=2)
-                value_states = torch.cat([past_key_values[self.layer_idx][1], value_states], dim=2)
-            past_key_values[self.layer_idx] = (key_states, value_states)
+            cache_entry = past_key_values[self.layer_idx]
+            if cache_entry is not None and new_kv_cache_pos is not None:
+                cache_k, cache_v = cache_entry
+                # Scatter-write: write new KV at specified positions (non-in-place)
+                cache_k = cache_k.index_copy(2, new_kv_cache_pos, key_states)
+                cache_v = cache_v.index_copy(2, new_kv_cache_pos, value_states)
+                past_key_values[self.layer_idx] = (cache_k, cache_v)
+                # Use entire buffer for attention
+                key_states = cache_k
+                value_states = cache_v
+            elif cache_entry is not None:
+                # Fallback: torch.cat (backward compat, cache shape grows)
+                key_states = torch.cat([cache_entry[0], key_states], dim=2)
+                value_states = torch.cat([cache_entry[1], value_states], dim=2)
+                past_key_values[self.layer_idx] = (key_states, value_states)
+            else:
+                # No cache entry yet, store new KV
+                past_key_values[self.layer_idx] = (key_states, value_states)
 
         if self.store_full_length_kv and shared_kv_states is not None:
             shared_kv_states[self.layer_type] = (key_states, value_states)
@@ -446,6 +471,7 @@ class Gemma4TextDecoderLayer(nn.Module):
         position_embeddings: tuple[torch.Tensor, torch.Tensor] | None = None,
         attention_mask: torch.Tensor | None = None,
         past_key_values: list | None = None,
+        new_kv_cache_pos: torch.Tensor | None = None,
         **kwargs,
     ) -> torch.Tensor:
         residual = hidden_states
@@ -456,6 +482,7 @@ class Gemma4TextDecoderLayer(nn.Module):
             attention_mask=attention_mask,
             past_key_values=past_key_values,
             shared_kv_states=shared_kv_states,
+            new_kv_cache_pos=new_kv_cache_pos,
         )
         hidden_states = self.post_attention_layernorm(hidden_states)
         hidden_states = residual + hidden_states
@@ -613,6 +640,7 @@ class Gemma4TextModel(nn.Module):
         inputs_embeds: torch.Tensor | None = None,
         shared_kv_states: dict | None = None,
         output_hidden_states: bool = False,
+        new_kv_cache_pos: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, list, dict | None]:
         if inputs_embeds is None:
             inputs_embeds = self.embed_tokens(input_ids)
@@ -650,7 +678,7 @@ class Gemma4TextModel(nn.Module):
                 position_embeddings=pos_emb,
                 attention_mask=mask,
                 past_key_values=past_key_values,
-                ### TODO **kwargs,
+                new_kv_cache_pos=new_kv_cache_pos,
             )
             if output_hidden_states:
                 all_hidden_states = all_hidden_states + (hidden_states,)
@@ -713,6 +741,8 @@ class Gemma4ForCausalLM(nn.Module):
         labels: torch.Tensor | None = None,
         shared_kv_states: dict | None = None,
         output_hidden_states: bool = False,
+        new_kv_cache_pos: torch.Tensor | None = None,
+        position_ids: torch.Tensor | None = None,
     ) -> dict:
         model_output = self.model(
             input_ids=input_ids,
@@ -721,6 +751,8 @@ class Gemma4ForCausalLM(nn.Module):
             inputs_embeds=inputs_embeds,
             shared_kv_states=shared_kv_states,
             output_hidden_states=output_hidden_states,
+            new_kv_cache_pos=new_kv_cache_pos,
+            position_ids=position_ids,
         )
         if output_hidden_states:
             hidden_states, past_key_values, shared_kv_states, all_hidden_states = model_output

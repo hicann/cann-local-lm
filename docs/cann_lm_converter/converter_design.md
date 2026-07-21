@@ -487,35 +487,25 @@ def save_epair(
         inp.cpu().detach().numpy().tofile(path)
 ```
 
-### create_sample_inputs
+### get_sample_inputs — 基类实现
+
+示例输入构造已从独立函数迁移到 `ExportWrapper.get_sample_inputs` 基类方法，saver.py 直接调用 `wrapper.get_sample_inputs(seq_len, use_embeddings)`。
+
+基类 mask 策略：**causal-over-buffer**（scatter-write 语义），shape `[batch, 1, seq_len, kv_cache_max_len]`：
 
 ```python
-def create_sample_inputs(artifact: ModelArtifact, kv_cache_max_len: int = 2048,
-                          seq_len: int = 128) -> tuple:
-    """构造统一 I/O 契约的示例输入"""
-    config = artifact.config
-    batch = 1
-    num_layers = config.num_hidden_layers
-    num_kv_heads = config.num_key_value_heads
-    head_dim = config.head_dim
-    vocab_size = config.vocab_size
-
-    input_ids = torch.randint(0, vocab_size, (batch, seq_len), dtype=torch.int64)
-    attention_mask = torch.ones(batch, 1, seq_len, kv_cache_max_len, dtype=torch.float16)
-    position_ids = torch.arange(seq_len, dtype=torch.int64).unsqueeze(0)
-    new_kv_cache_pos = torch.arange(seq_len, dtype=torch.int64)
-    output_pos = torch.tensor([seq_len - 1], dtype=torch.int32)
-
-    # 每层一对预分配 KV buffer
-    past_key_values = []
-    for _ in range(num_layers):
-        k = torch.zeros(kv_cache_max_len, num_kv_heads, batch, head_dim, dtype=torch.float16)
-        v = torch.zeros_like(k)
-        past_key_values.append((k, v))
-
-    return (input_ids, attention_mask, position_ids, past_key_values,
-            new_kv_cache_pos, output_pos)
+# ExportWrapper.get_sample_inputs 内 mask 构造
+min_val = torch.finfo(dtype).min
+q_pos = torch.arange(seq_len, dtype=dtype).unsqueeze(1)    # [seq_len, 1]
+k_pos = torch.arange(kv_max, dtype=dtype).unsqueeze(0)    # [1, kv_max]
+mask = torch.where(k_pos <= q_pos, torch.tensor(0.0, dtype=dtype), min_val)
+attention_mask = mask.unsqueeze(0).unsqueeze(0).expand(batch, 1, seq_len, kv_max)
 ```
+
+要求模型的 attention 用 `index_copy` scatter-write（新 KV 写入 buffer，attn 读取的 K = buffer 本身，维度 = kv_max）。
+非 scatter 模型（仍用 `torch.cat` 拼接 past+new，K 维度 = kv_max + seq_len）导出会因维度不匹配报 broadcast 错误 — 见遗留任务 5。
+
+其余输入：input_ids（random）、position_ids（arange）、new_kv_cache_pos（arange）、output_pos（`[seq_len-1]`）、past_key_values（每层一对零 buffer，per-layer head_dim 由 `_get_layer_head_dim` 决定）。
 
 ### save_model_config
 
@@ -933,7 +923,11 @@ python cann_lm/converter/cann-lm-converter.py \
    - **临时方案**：C++ 加载用旧导出脚本 `export_llm_model_epair.py`（简单 wrapper），新 converter CLI 用于精度验证（不需要 C++ 加载）
    - **解决方向**：
      - 方案 A：修改 C++ `EpairModelParser` 支持 `{"arg": {"name": "..."}}` 格式（去掉 `as_tensor` 包裹的兼容性）
-     - 方案 B：在 saver.py 中将 parameter/buffer 的 `input_specs` 格式从 `{"arg": {"name": ...}}` 转换为 `{"arg": {"as_tensor": {"name": ...}}}`
+      - 方案 B：在 saver.py 中将 parameter/buffer 的 `input_specs` 格式从 `{"arg": {"name": ...}}` 转换为 `{"arg": {"as_tensor": {"name": ...}}}`
+5. **qwen3 / qwen3.5 scatter-write 改造** — 当前方案 B（预分配 buffer + `index_copy` scatter-write）仅实现 gemma4。qwen3 和 qwen3.5 的 attention 层同样需要从 `torch.cat` 改为 `index_copy` + 预分配 buffer。**基类 `ExportWrapper.get_sample_inputs` 的 mask 已统一为 scatter-write 语义（causal-over-buffer `[kv_max]`）**，故 qwen3/qwen3.5 在完成 scatter 改造前，导出会因 attn K 维度（`kv_max + seq_len`）与 mask（`kv_max`）不匹配报 broadcast 错误。需注意：
+   - qwen3: 标准 GQA，改动简单（attention 层 `torch.cat` → `index_copy`）
+   - qwen3.5: 混合架构（6 full + 18 linear），linear attention 的 `recurrent_state` 不是 KV buffer 格式，需要单独设计 recurrent buffer 的增量协议
+   - 两个模型的 `ExportWrapper._drive_layers` 也需要同步修改（`get_sample_inputs` 已用基类统一 scatter mask，无需子类 override）
 
 ## 待办事项
 
@@ -1038,6 +1032,32 @@ if self.is_kv_shared_layer:
 2. 或用 float32（差异降到 1e-6 以下，模型体积翻倍）
 
 当前 0.17 的差异在 float16 下是正常的，生成 token 完全一致，不影响推理结果。
+
+#### scatter-write 下 bfloat16 attention 精度策略 (已验证, 不要改)
+
+scatter-write 模式下，KV cache 是固定 `[kv_cache_max_len]` 的预分配 buffer，attention matmul 规模从 `[seq_len, seq_len]` 变为 `[seq_len, kv_cache_max_len]`。经逐层分析确认：
+
+| 组件 | 精度 | 原因 |
+|------|------|------|
+| Q@K matmul | **bfloat16** (保持原始) | 和 HF 一致, BLAS 舍入最接近 HF 的 bfloat16 |
+| softmax | **float32** (npu_tuned_export 方案, 已有) | bfloat16 下 [6, 2048] 求和有精度损失 |
+| @v matmul | **bfloat16** (保持原始) | 已验证零 KV 位置不影响结果 |
+
+**已验证的实验结论 (不要重复试)**:
+
+1. **float32 Q@K 反而更差** — 和 HF 的 bfloat16 差异更大, 固定 seed 对比第一个 token 匹配率从 78% (7/9) 降到 33% (3/9)
+   - 原因: HF 用 bfloat16 Q@K (小矩阵), 我们也用 bfloat16 (大矩阵) → BLAS 跍同一路径, 舍入相似 → logits 接近
+   - float32 Q@K → 和 HF 的 bfloat16 差异更大 → 匹配率降低
+
+2. **scatter-write 下 head_dim=512 的 full_attention 层有 0.25 BLAS 舍入差异** — `bfloat16 [6, 512] @ [512, 2048]` vs `bfloat16 [6, 512] @ [512, 6]` 用不同 BLAS 代码路径
+   - head_dim=256 (sliding 层): 0.0 差异 (BLAS 跍同一路径)
+   - head_dim=512 (full 层): 0.25 差异 → 35 层累积 → logits diff 0.4375
+   - 无法消除 (float32 会引入更大差异)
+
+3. **固定 seed + sampling 对比结果**:
+   - 第一个 token 匹配率: 7/9 (78%)
+   - 第二个 token 匹配率: 0/9 (0%) — 一旦分叉, KV cache 不同, 后续完全不同
+   - HF 输出始终更连贯 (2B 小模型 + 0.4375 diff 足够改变采样路径)
 
 #### bfloat16 下的 tie-breaking 问题
 

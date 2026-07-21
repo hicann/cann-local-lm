@@ -68,10 +68,17 @@ class ExportWrapper(nn.Module):
         raise NotImplementedError
 
     def get_sample_inputs(self, seq_len: int = 128, use_embeddings: bool = False) -> tuple:
-        """构造导出用示例输入
+        """构造导出用示例输入 (scatter-write 模式)
 
-        轻量版：past_key_values=None (模型内部创建 cache)，mask 为 [1,1,seq_len,seq_len] causal
-        后续全量版将使用预分配 KV buffer + scatter-write
+        预分配零 KV buffer [batch, heads, kv_cache_max_len, head_dim] +
+        causal-over-buffer mask [batch, 1, seq_len, kv_cache_max_len] —
+        k_pos <= q_pos 才可见, 未写入位置自动被屏蔽.
+
+        要求模型的 attention 用 ``index_copy`` scatter-write (新 KV 写入 buffer,
+        attn 读取的 K = buffer 本身, K 维度 = kv_cache_max_len).
+        非 scatter 模型 (仍用 ``torch.cat`` 拼接 past+new, K 维度 =
+        kv_cache_max_len + seq_len) 导出会因维度不匹配报 broadcast 错误,
+        需先完成 scatter-write 改造 (见 converter_design.md 遗留任务 5).
 
         Args:
             seq_len: 示例序列长度
@@ -79,22 +86,32 @@ class ExportWrapper(nn.Module):
         """
         config = self.config
         num_layers = config.num_hidden_layers
+        num_kv_heads = config.num_key_value_heads
         vocab_size = config.vocab_size
         dtype = next(self.model.parameters()).dtype
+        kv_max = self.kv_cache_max_len
 
         input_ids = torch.randint(0, vocab_size, (self.batch, seq_len), dtype=torch.int64)
 
-        # 4D causal mask [batch, 1, seq_len, seq_len] — 走 4D 透传路径
+        # 4D causal mask [batch, 1, seq_len, kv_max] — causal over buffer (scatter-write)
+        # 与 make_sample_inputs / make_causal_mask_over_buffer 一致.
         min_val = torch.finfo(dtype).min
-        causal = torch.triu(torch.full((seq_len, seq_len), min_val, dtype=dtype), diagonal=1)
-        attention_mask = causal.unsqueeze(0).unsqueeze(0).expand(self.batch, 1, seq_len, seq_len)
+        q_pos = torch.arange(seq_len, dtype=dtype).unsqueeze(1)        # [seq_len, 1]
+        k_pos = torch.arange(kv_max, dtype=dtype).unsqueeze(0)        # [1, kv_max]
+        mask = torch.where(k_pos <= q_pos, torch.tensor(0.0, dtype=dtype), min_val)
+        attention_mask = mask.unsqueeze(0).unsqueeze(0).expand(self.batch, 1, seq_len, kv_max)
 
         position_ids = torch.arange(seq_len, dtype=torch.int64).unsqueeze(0).repeat(self.batch, 1)
         new_kv_cache_pos = torch.arange(seq_len, dtype=torch.int64)
         output_pos = torch.tensor([seq_len - 1], dtype=torch.int32)
 
-        # 轻量版：past_key_values=None (模型内部创建 cache)
-        past_key_values = None
+        # 预分配零 KV buffer: list[(k, v), ...]
+        past_key_values = []
+        for i in range(num_layers):
+            layer_head_dim = self._get_layer_head_dim(i)
+            k = torch.zeros(self.batch, num_kv_heads, kv_max, layer_head_dim, dtype=dtype)
+            v = torch.zeros(self.batch, num_kv_heads, kv_max, layer_head_dim, dtype=dtype)
+            past_key_values.append((k, v))
 
         if use_embeddings:
             embeddings = self.model.model.embed_tokens(input_ids).detach()
@@ -108,12 +125,92 @@ class ExportWrapper(nn.Module):
                 output_pos,
             )
         else:
+            # embeddings 传 dummy zero tensor（非 None）—— torchair export_to_epair 的
+            # parse_input 对 None placeholder 会 AssertionError("meta_outputs must be
+            # torch.Tensor")。dummy tensor 在 forward 里走 else 分支（input_ids 路径），
+            # 不参与计算（num_users=0），不影响图语义。
+            dummy_embeddings = torch.zeros(self.batch, seq_len, config.hidden_size, dtype=dtype)
             return (
                 input_ids,
                 attention_mask,
                 position_ids,
                 past_key_values,
                 new_kv_cache_pos,
-                None,
+                dummy_embeddings,
                 output_pos,
             )
+
+    # ──────────────────────────────────────────────────────────────
+    # ONNX export 辅助方法（通用默认实现，子类可 override）
+    # ──────────────────────────────────────────────────────────────
+
+    def _get_layer_head_dim(self, layer_idx: int) -> int:
+        """每层的 KV head 维度。默认返回 config.head_dim。
+
+        gemma4 等有 per-layer head_dim 的模型 override 此方法
+        （sliding 层用 head_dim，full 层用 global_head_dim）。
+        """
+        return self.config.head_dim
+
+    def make_sample_inputs(self, seq_len: int = 8, dtype: torch.dtype | None = None) -> tuple:
+        """构造 ONNX 导出用示例输入（带预分配 KV buffer 的全量版）。
+
+        与 get_sample_inputs（轻量版，past=None）不同，这里传入非 None 的
+        past_key_values（零 tensor）+ cache-extended mask，使 ONNX 图含 KV cache I/O。
+
+        forward 签名: (input_ids, attention_mask, position_ids, past_key_values,
+                       new_kv_cache_pos, embeddings, output_pos)
+        其中 embeddings=None / output_pos=None 在 tracing 时被 Python 分支解析，
+        不会成为 ONNX 输入。past_key_values 是 list[(k,v),...] 会被 ONNX 展平。
+        """
+        config = self.config
+        num_kv_heads = config.num_key_value_heads
+        vocab_size = config.vocab_size
+        num_layers = config.num_hidden_layers
+        kv_max = self.kv_cache_max_len
+        if dtype is None:
+            dtype = next(self.model.parameters()).dtype
+
+        # 1. input_ids
+        input_ids = torch.randint(0, vocab_size, (self.batch, seq_len), dtype=torch.int64)
+
+        # 2. attention_mask [batch, 1, seq_len, kv_max] — causal over buffer
+        #    k_pos <= q_pos → attend, k_pos > q_pos → mask (未写入位置自动屏蔽)
+        min_val = torch.finfo(dtype).min
+        q_pos = torch.arange(seq_len, dtype=dtype).unsqueeze(1)
+        k_pos = torch.arange(kv_max, dtype=dtype).unsqueeze(0)
+        mask = torch.where(k_pos <= q_pos, torch.tensor(0.0, dtype=dtype), min_val)
+        attention_mask = mask.unsqueeze(0).unsqueeze(0).expand(self.batch, 1, seq_len, kv_max)
+
+        # 3. position_ids
+        position_ids = torch.arange(seq_len, dtype=torch.int64).unsqueeze(0).repeat(self.batch, 1)
+
+        # 4. past_key_values: list[(k, v), ...] — 零 tensor, per-layer head_dim
+        past_key_values = []
+        for i in range(num_layers):
+            layer_head_dim = self._get_layer_head_dim(i)
+            k = torch.zeros(self.batch, num_kv_heads, kv_max, layer_head_dim, dtype=dtype)
+            v = torch.zeros(self.batch, num_kv_heads, kv_max, layer_head_dim, dtype=dtype)
+            past_key_values.append((k, v))
+
+        # 5. new_kv_cache_pos
+        new_kv_cache_pos = torch.arange(seq_len, dtype=torch.int64)
+
+        # 6. embeddings=None (图内查表)  7. output_pos=None (返回全部 logits)
+        return (input_ids, attention_mask, position_ids, past_key_values,
+                new_kv_cache_pos, None, None)
+
+    def make_input_output_names(self) -> tuple[list[str], list[str]]:
+        """生成 ONNX input/output 名称（全 KV cache 模型通用）。
+
+        ONNX 会把 past_key_values (list[(k,v),...]) 展平为独立 tensor 输入。
+        qwen3.5 等混合层模型需 override（linear 层用 delta_state，命名不同）。
+        """
+        n = self.config.num_hidden_layers
+        input_names = ["input_ids", "attention_mask", "position_ids", "new_kv_cache_pos"]
+        for i in range(n):
+            input_names.extend([f"past_key_{i}", f"past_value_{i}"])
+        output_names = ["logits"]
+        for i in range(n):
+            output_names.extend([f"past_key_{i}_out", f"past_value_{i}_out"])
+        return input_names, output_names

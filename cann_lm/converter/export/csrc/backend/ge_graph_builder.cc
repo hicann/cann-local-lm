@@ -1276,6 +1276,12 @@ bool PreparePlaceholders(GraphBuildContext &ctx, const EpairModelParser &parser,
         }
         holder.datatype = pt2::kDtypeBool;
         holder.value = std::vector<uint8_t>{static_cast<uint8_t>(value_opt.value())};
+      } else if (input_spec->input_kind == NodeInputKind::None) {
+        // as_none 的 constant_input（如 past_key_values=None, embeddings=None）
+        // 是 Python None，不是真实 tensor → 跳过，不创建 Const 节点。
+        // 下游 PlanConverterNode (line ~830) 已用 if (None) continue 跳过此类输入。
+        TDLOGI("PreparePlaceholders skipping as_none constant_input: %s", input.name.c_str());
+        continue;
       } else {
         TDLOGE("PreparePlaceholders failed: unsupported constant_input value type for %s", input.name.c_str());
         AddError(result, "UNSUPPORTED_CONSTANT_TYPE", "Unsupported constant_input value type", input.name);

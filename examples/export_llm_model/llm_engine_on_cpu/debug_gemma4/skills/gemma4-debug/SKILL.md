@@ -234,6 +234,31 @@ def make_causal_mask_with_padding(q_len, k_len, real_q_len, real_k_len, dtype):
 | epair 导出 + 回环 | PASS (2/3 text) | Prompt 1 tie-breaking, Prompt 2/3 完全一致 |
 | BOS + bfloat16 出字 | ✅ | "Beijing. It is the largest city in China and" |
 
+## 精度策略 (已验证, 不要改)
+
+scatter-write 模式下 attention 的精度配置:
+
+| 组件 | 精度 | 原因 |
+|------|------|------|
+| Q@K matmul | **bfloat16** | 和 HF 一致, BLAS 舍入最接近 |
+| softmax | **float32** | npu_tuned_export 方案, 已有 |
+| @v matmul | **bfloat16** | 已验证零 KV 位置不影响结果 |
+
+### 已验证结论 (不要重复试)
+
+1. **float32 Q@K 反而更差** — 固定 seed 对比第一个 token 匹配率从 78% 降到 33%
+   - HF 用 bfloat16 Q@K, 我们也用 bfloat16 → BLAS 跪同一路径 → logits 接近
+   - float32 Q@K → 和 HF 的 bfloat16 差异更大 → 匹配率降低
+
+2. **head_dim=512 的 full_attention 层有 0.25 BLAS 舍入差异** (无法消除)
+   - `bfloat16 [6, 512] @ [512, 2048]` vs `[6, 512] @ [512, 6]` → 不同 BLAS 路径
+   - head_dim=256 (sliding 层): 0.0 差异
+   - 35 层累积 → logits diff 0.4375 → 7/9 第一个 token 与 HF 一致
+
+3. **固定 seed + sampling 对比**:
+   - 第一个 token 匹配: 7/9 (78%)
+   - 第二个 token 起: 0/9 (0%) — 分叉后 KV cache 不同, 后续完全不同
+
 ## 关键配置
 
 ```python

@@ -23,6 +23,19 @@ from cann_lm.converter.export_wrapper import ExportWrapper
 class Gemma4ExportWrapper(ExportWrapper):
     """gemma4 子类：调原生 forward + 展平 KV cache + 处理 shared_kv_states"""
 
+    def _get_layer_head_dim(self, layer_idx: int) -> int:
+        """gemma4: full_attention 层用 global_head_dim，sliding 层用 head_dim。
+
+        gemma4 有 per-layer head_dim 差异（sliding 层的 KV 维度 = head_dim，
+        full 层的 KV 维度 = global_head_dim）。qwen3/qwen3.5 无此差异（用 base 默认）。
+        """
+        global_head_dim = getattr(self.config, "global_head_dim", None)
+        layer_types = getattr(self.config, "layer_types", None)
+        if global_head_dim and layer_types:
+            is_sliding = layer_types[layer_idx] == "sliding_attention"
+            return global_head_dim if not is_sliding else self.config.head_dim
+        return self.config.head_dim
+
     def _drive_layers(
         self,
         input_ids: torch.Tensor | None,
@@ -37,8 +50,8 @@ class Gemma4ExportWrapper(ExportWrapper):
         if past_key_values is None:
             kv_list = [None] * num_layers
         elif isinstance(past_key_values, list) and len(past_key_values) > 0 and isinstance(past_key_values[0], (tuple, list)):
-            # 已经是 list[(k,v), ...] 格式，直接用
-            kv_list = past_key_values
+            # 已经是 list[(k,v), ...] 格式 → clone 防止 in-place 修改 (ONNX tracing 友好)
+            kv_list = [(k, v) for k, v in past_key_values]
         else:
             # 展平的 [k0, v0, k1, v1, ...] → 重建为 [(k0,v0), (k1,v1), ...]
             kv_list = [(past_key_values[i], past_key_values[i + 1]) for i in range(0, len(past_key_values), 2)]
@@ -54,6 +67,8 @@ class Gemma4ExportWrapper(ExportWrapper):
             "past_key_values": kv_list,
             "shared_kv_states": shared_kv_states,
             "output_hidden_states": False,
+            "new_kv_cache_pos": new_kv_cache_pos,
+            "position_ids": position_ids,
         }
         if embeddings is not None:
             kwargs["inputs_embeds"] = embeddings

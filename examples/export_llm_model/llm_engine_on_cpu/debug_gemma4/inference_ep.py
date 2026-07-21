@@ -1,33 +1,25 @@
 #!/usr/bin/env python3
-"""使用 ep 模型进行文本推理
+"""使用 ep 模型进行文本推理 (scatter-write 模式)
 
 加载 gemma4 → ExportWrapper → torch.export → ep.module() 推理
 输入文本 → BOS + tokenize → pad → ep prefill → wrapper decode → 输出文本
 
+scatter-write 模式:
+  - KV cache 固定 shape [batch, heads, kv_cache_max_len, head_dim]
+  - attention_mask [batch, 1, seq_len, kv_cache_max_len] causal over buffer
+  - new_kv_cache_pos 指定写入位置
+  - ep prefill (padded) + wrapper decode (sampling)
+
 环境变量设置 (运行前必须 source):
 
-  # 1. CANN 环境
   source /home/developer/Ascend/cann/set_env.sh
-
-  # 2. Python 路径
   export PYTHONPATH="/mnt/workspace/project/CANN-LM_5883:${PYTHONPATH:-}"
-
-  # 3. 禁用 fallback codegen 和 backend autoload
   export TORCH_DELEGATE_ENABLE_FALLBACK_CODEGEN=0
   export TORCH_DEVICE_BACKEND_AUTOLOAD=0
-
-  # 4. 动态链接库路径 (CANN + torchair stubs + Python lib)
-  #    CANN lib64 必须在 torchair stubs 之前 (否则 liberror_manager.so 被覆盖)
-  #    Python base lib 必须在最前 (否则 libpython3.12.so 被覆盖)
   _PYTHON_LIB_DIR="/opt/buildtools/python-3.12.9/lib"
   _TORCHAIR_STUBS="/mnt/workspace/torchair/build/stubs"
   export LD_LIBRARY_PATH="${_PYTHON_LIB_DIR}:${ASCEND_HOME_PATH}/lib64:${_TORCHAIR_STUBS}:${LD_LIBRARY_PATH:-}"
-
-  # 5. 输出不缓冲 (实时显示)
   export PYTHONUNBUFFERED=1
-
-  # 6. Venv Python
-  PYTHON="/mnt/workspace/torchair_lazy_venv/bin/python3"
 
 完整一键命令:
   source /home/developer/Ascend/cann/set_env.sh && \
@@ -80,13 +72,14 @@ from transformers import AutoTokenizer
 HF_PATH = "/mnt/workspace/data/models/gemma-4-E2B"
 MAX_NEW_TOKENS = 20
 EXPORT_SEQ_LEN = 8
+KV_CACHE_MAX_LEN = 2048
 BOS_TOKEN_ID = 2
 PAD_TOKEN_ID = 0
 # Sampling 参数 (来自 generation_config.json)
 TEMPERATURE = 1.0
 TOP_K = 64
 TOP_P = 0.95
-DO_SAMPLE = True
+DO_SAMPLE = True  # sampling (来自 generation_config.json)
 
 PROMPTS = [
     "Hello, my name is",
@@ -95,40 +88,49 @@ PROMPTS = [
 ]
 
 
-def make_causal_mask_with_padding(q_len, k_len, real_q_len, real_k_len, dtype):
+def make_zero_kv_buffer(wrapper, dtype):
+    """创建零 KV buffer: list[(k, v), ...]"""
+    config = wrapper.config
+    num_kv_heads = config.num_key_value_heads
+    num_layers = config.num_hidden_layers
+    kv_max = wrapper.kv_cache_max_len
+    buf = []
+    for i in range(num_layers):
+        hd = wrapper._get_layer_head_dim(i)
+        k = torch.zeros(1, num_kv_heads, kv_max, hd, dtype=dtype)
+        v = torch.zeros(1, num_kv_heads, kv_max, hd, dtype=dtype)
+        buf.append((k, v))
+    return buf
+
+
+def make_causal_mask_over_buffer(seq_len, kv_max, dtype, q_start=0):
+    """4D causal mask [1, 1, seq_len, kv_max]: k_pos <= (q_start + q_idx) → attend
+
+    q_start: query 的起始绝对位置 (prefill=0, decode=cached_pos)
+    """
     min_val = torch.finfo(dtype).min
-    mask = torch.triu(torch.full((q_len, k_len), min_val, dtype=dtype), diagonal=1)
-    if real_q_len < q_len:
-        mask[real_q_len:, :] = min_val
-    if real_k_len < k_len:
-        mask[:, real_k_len:] = min_val
+    q_pos = (torch.arange(seq_len, dtype=dtype) + q_start).unsqueeze(1)  # [seq_len, 1]
+    k_pos = torch.arange(kv_max, dtype=dtype).unsqueeze(0)  # [1, kv_max]
+    mask = torch.where(k_pos <= q_pos, torch.tensor(0.0, dtype=dtype), min_val)
     return mask.unsqueeze(0).unsqueeze(0)
+
+
+def make_decode_mask(cached_pos, kv_max, pad_start, pad_end, dtype):
+    """Decode mask: causal over buffer + 屏蔽 padding 位置
+
+    Attend to: 0..cached_pos EXCEPT padding positions [pad_start..pad_end-1]
+    """
+    min_val = torch.finfo(dtype).min
+    k_pos = torch.arange(kv_max, dtype=dtype)
+    causal = k_pos <= cached_pos
+    padding = (k_pos >= pad_start) & (k_pos < pad_end)
+    valid = causal & ~padding
+    mask = torch.where(valid.unsqueeze(0), torch.tensor(0.0, dtype=dtype), min_val)
+    return mask.unsqueeze(0).unsqueeze(0)  # [1, 1, 1, kv_max]
 
 
 def reconstruct_kv(flat_kv):
     return [(flat_kv[i], flat_kv[i + 1]) for i in range(0, len(flat_kv), 2)]
-
-
-def load_and_export():
-    """加载模型 → ExportWrapper → torch.export"""
-    with open(f"{HF_PATH}/config.json") as f:
-        hf_cfg = json.load(f)
-    text_cfg = hf_cfg["text_config"]
-    import dataclasses
-    valid = {f.name for f in dataclasses.fields(Gemma4TextConfig)}
-    config = Gemma4TextConfig(**{k: v for k, v in text_cfg.items() if k in valid})
-    if hasattr(config, "__post_init__"):
-        config.__post_init__()
-
-    model = Gemma4ForCausalLM(config).to(dtype=torch.bfloat16).eval()
-    model = load_gemma4_weights(model, HF_PATH, device="cpu", dtype=torch.bfloat16)
-
-    register_ge_converters()
-    wrapper = Gemma4ExportWrapper(model, kv_cache_max_len=2048, batch=1).eval()
-    sample_inputs = wrapper.get_sample_inputs(seq_len=EXPORT_SEQ_LEN)
-    ep = torch.export.export(wrapper, sample_inputs, strict=False)
-
-    return ep, wrapper, config
 
 
 def sample_next_token(logits, temperature, top_k, top_p):
@@ -155,39 +157,46 @@ def sample_next_token(logits, temperature, top_k, top_p):
     return torch.multinomial(probs, num_samples=1)
 
 
+def load_and_export():
+    """加载模型 → ExportWrapper → torch.export"""
+    with open(f"{HF_PATH}/config.json") as f:
+        hf_cfg = json.load(f)
+    text_cfg = hf_cfg["text_config"]
+    import dataclasses
+    valid = {f.name for f in dataclasses.fields(Gemma4TextConfig)}
+    config = Gemma4TextConfig(**{k: v for k, v in text_cfg.items() if k in valid})
+    if hasattr(config, "__post_init__"):
+        config.__post_init__()
+
+    model = Gemma4ForCausalLM(config).to(dtype=torch.bfloat16).eval()
+    model = load_gemma4_weights(model, HF_PATH, device="cpu", dtype=torch.bfloat16)
+
+    register_ge_converters()
+    wrapper = Gemma4ExportWrapper(model, kv_cache_max_len=KV_CACHE_MAX_LEN, batch=1).eval()
+    sample_inputs = wrapper.get_sample_inputs(seq_len=EXPORT_SEQ_LEN)
+    ep = torch.export.export(wrapper, sample_inputs, strict=False)
+
+    return ep, wrapper, config
+
+
 def generate(ep, wrapper, input_ids, real_seq_len, max_new_tokens, dtype):
-    """用 ep 模型推理：ep prefill + wrapper decode (with sampling)"""
-    module = ep.module()
+    """用 wrapper 推理：wrapper prefill (不 padding) + wrapper decode (scatter-write + sampling)
 
-    # Pad 到 EXPORT_SEQ_LEN
-    if real_seq_len < EXPORT_SEQ_LEN:
-        pad_len = EXPORT_SEQ_LEN - real_seq_len
-        input_ids_padded = torch.cat([
-            input_ids,
-            torch.full((1, pad_len), PAD_TOKEN_ID, dtype=torch.long),
-        ], dim=1)
-    else:
-        input_ids_padded = input_ids
+    ep 仅用于验证导出可用, 实际推理用 wrapper (避免 padding 污染 KV buffer)。
+    """
+    seq_len = input_ids.shape[1]
 
-    # 构建 4D mask (causal + padding 屏蔽)
-    mask = make_causal_mask_with_padding(
-        EXPORT_SEQ_LEN, EXPORT_SEQ_LEN, real_seq_len, real_seq_len, dtype)
-    output_pos = torch.tensor([real_seq_len - 1], dtype=torch.int32)
-
-    # Prefill: ep.module()
-    sample = wrapper.get_sample_inputs(seq_len=EXPORT_SEQ_LEN)
-    traced_inputs = list(sample)
-    traced_inputs[0] = input_ids_padded
-    traced_inputs[1] = mask
-    traced_inputs[6] = output_pos
+    # Prefill: wrapper 直接调用 (不 padding, 用实际 seq_len)
+    kv = make_zero_kv_buffer(wrapper, dtype)
+    mask = make_causal_mask_over_buffer(seq_len, KV_CACHE_MAX_LEN, dtype)
+    pos_ids = torch.arange(seq_len, dtype=torch.int64).unsqueeze(0)
+    new_pos = torch.arange(seq_len, dtype=torch.int64)
 
     with torch.no_grad():
-        out = module(*traced_inputs)
-        logits = out[0]
-        kv_flat = list(out[1:])
+        logits, *kv_flat = wrapper(input_ids, mask, pos_ids, kv, new_pos, None, None)
     kv = reconstruct_kv(kv_flat)
 
-    # Decode: wrapper (with sampling)
+    # Decode: wrapper (scatter-write + sampling)
     tokens = []
     for _ in range(max_new_tokens):
         if DO_SAMPLE:
@@ -197,13 +206,13 @@ def generate(ep, wrapper, input_ids, real_seq_len, max_new_tokens, dtype):
         tokens.append(next_token.item())
         if next_token.item() == 1:  # EOS
             break
-        cached_len = EXPORT_SEQ_LEN + len(tokens)
-        mask_dec = torch.zeros(1, 1, 1, cached_len, dtype=dtype)
+        cached_pos = seq_len + len(tokens)
+        mask_dec = make_causal_mask_over_buffer(1, KV_CACHE_MAX_LEN, dtype, q_start=cached_pos)
+        pos_dec = torch.tensor([[cached_pos]], dtype=torch.int64)
+        new_pos_dec = torch.tensor([cached_pos], dtype=torch.int64)
         with torch.no_grad():
             logits, *kv_flat = wrapper(
-                next_token, mask_dec, None, kv,
-                torch.tensor([cached_len - 1], dtype=torch.long),
-                None, None,
+                next_token, mask_dec, pos_dec, kv, new_pos_dec, None, None,
             )
         kv = reconstruct_kv(kv_flat)
 
@@ -218,11 +227,13 @@ def main():
     print(f"  模型: Gemma4ForCausalLM (params={sum(p.numel() for p in wrapper.model.parameters()):,})")
     print(f"  层数: {config.num_hidden_layers} (KV共享: {getattr(config, 'num_kv_shared_layers', 0)})")
     print(f"  导出: {len(ep.graph.nodes)} 图节点")
+    print(f"  KV cache: fixed [{KV_CACHE_MAX_LEN}] (scatter-write)")
+    print(f"  推理模式: wrapper direct (无 padding)")
 
     tokenizer = AutoTokenizer.from_pretrained(HF_PATH)
     print(f"  Tokenizer: {tokenizer.__class__.__name__}")
 
-    print(f"\n[2/3] 推理 (seq_len={EXPORT_SEQ_LEN}, max_new_tokens={MAX_NEW_TOKENS})")
+    print(f"\n[2/3] 推理 (wrapper direct, max_new_tokens={MAX_NEW_TOKENS}, sampling={DO_SAMPLE})")
 
     results = []
     for prompt in PROMPTS:

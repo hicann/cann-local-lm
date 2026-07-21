@@ -78,13 +78,16 @@ def pack_weights(contents, *, max_file_size: int = DEFAULT_SPLIT_SIZE) -> Consol
 
     names = [n for n in state_dict if n in spec_names]
 
-    bin_files: list[bytes] = []
+    # Direct-to-disk writing (avoid accumulating all weights in memory)
     index: dict[str, list[dict]] = {}
 
-    current_bin = bytearray()
     current_file_name = "weights_0.bin"
     current_file_idx = 0
     current_offset = 0
+    total_written = 0
+
+    # Open first file for writing
+    bin_path = None
 
     for name in names:
         tensor = state_dict[name]
@@ -92,35 +95,39 @@ def pack_weights(contents, *, max_file_size: int = DEFAULT_SPLIT_SIZE) -> Consol
         if raw.dtype == torch.bfloat16:
             raw = raw.view(torch.int16)
         data = raw.numpy().tobytes()
+        del raw  # Free tensor reference
 
-        # If current bin is non-empty and adding this tensor would exceed the
-        # limit, start a new file. Individual tensors are never split.
+        # If adding this tensor would exceed the limit, start a new file
         if current_offset > 0 and current_offset + len(data) > max_file_size:
-            bin_files.append(bytes(current_bin))
-            current_bin = bytearray()
+            if bin_path is not None:
+                bin_path.close()
             current_file_idx += 1
             current_file_name = f"weights_{current_file_idx}.bin"
             current_offset = 0
 
-        index.setdefault(current_file_name, []).append({
+        # Open file if not yet open
+        if current_offset == 0:
+            import os
+            bin_path = open(os.path.join(".", current_file_name), "wb")
+            index[current_file_name] = []
+
+        index[current_file_name].append({
             "name": name,
             "offset": current_offset,
             "size": len(data),
         })
 
-        current_bin.extend(data)
+        bin_path.write(data)
         current_offset += len(data)
+        total_written += len(data)
+        del data  # Free bytes immediately
 
-    # Flush the last file
-    if current_bin:
-        bin_files.append(bytes(current_bin))
+    # Close last file
+    if bin_path is not None:
+        bin_path.close()
 
-    total = sum(len(b) for b in bin_files)
-    print(f"Packed {len(index)} tensors into {len(bin_files)} file(s) ({total / 1024:.0f} KB)")
-    return ConsolidatedWeights(
-        bin_files=bin_files,
-        weights_index=index,
-    )
+    num_files = current_file_idx + 1
+    print(f"Packed {len(index)} tensors into {num_files} file(s) ({total_written / 1024:.0f} KB)")
 
 
 def consolidated_weights_save(contents, output_dir: str | Path, *,
@@ -134,10 +141,8 @@ def consolidated_weights_save(contents, output_dir: str | Path, *,
     - ``weight_info.json`` — index describing each tensor and its bin file
     - ``ep_json_with_ascend_ir.json`` — annotated EP JSON
 
-    ``ep_json_with_ascend_ir.json`` is always written. Weight files are
-    written only when ``save_weights=True``. When the total weight data
-    exceeds ``max_file_size``, it is split across multiple ``weights_N.bin``
-    files. Individual tensors are never split.
+    Weight files are written directly to disk (streaming, not in-memory)
+    to support large models (>8B params) without OOM.
 
     Args:
         contents: EpairContents object containing model and weights.
@@ -151,16 +156,11 @@ def consolidated_weights_save(contents, output_dir: str | Path, *,
     output_dir.mkdir(parents=True, exist_ok=True)
 
     if save_weights:
-        cw = pack_weights(contents, max_file_size=max_file_size)
-
-        for idx, bin_data in enumerate(cw.bin_files):
-            bin_path = output_dir / f"weights_{idx}.bin"
-            bin_path.write_bytes(bin_data)
-            print(f"Saved: {bin_path} ({len(bin_data) / 1024:.0f} KB)")
+        weights_index = _pack_weights_to_dir(contents, output_dir, max_file_size)
 
         idx_path = output_dir / "weight_info.json"
         with open(idx_path, "w") as f:
-            json.dump(cw.weights_index, f, indent=2)
+            json.dump(weights_index, f, indent=2)
         print(f"Saved: {idx_path}")
     else:
         print("  [skip] weights_*.bin + weight_info.json (save_weights=False)")
@@ -169,3 +169,77 @@ def consolidated_weights_save(contents, output_dir: str | Path, *,
     with open(ep_json_path, "w") as f:
         json.dump(contents.ep_json, f, indent=2)
     print(f"Saved: {ep_json_path}")
+
+
+def _pack_weights_to_dir(contents, output_dir: Path, max_file_size: int) -> dict[str, list[dict]]:
+    """Pack weights from EpairContents directly to disk in output_dir.
+
+    Streaming write — never accumulates more than one tensor in memory.
+    """
+    raw_sd = contents.ep.state_dict() if callable(contents.ep.state_dict) else contents.ep.state_dict
+    state_dict = dict(raw_sd)
+
+    # Non-persistent buffers: add from ep.module().named_buffers()
+    for name, buf in contents.ep.module().named_buffers():
+        if name not in state_dict:
+            state_dict[name] = buf
+
+    # Lifted tensor constants: add from ep.constants
+    if hasattr(contents.ep, 'constants') and isinstance(contents.ep.constants, dict):
+        for name, tensor in contents.ep.constants.items():
+            if name not in state_dict and isinstance(tensor, torch.Tensor):
+                state_dict[name] = tensor
+
+    # Filter to only graph-signature-referenced tensors
+    spec_names = set()
+    gs = contents.ep.graph_signature
+    for mapping in (gs.inputs_to_parameters, gs.inputs_to_buffers, gs.inputs_to_lifted_tensor_constants):
+        for placeholder, logical_name in mapping.items():
+            if logical_name in state_dict:
+                spec_names.add(logical_name)
+
+    names = [n for n in state_dict if n in spec_names]
+
+    index: dict[str, list[dict]] = {}
+    current_file_name = "weights_0.bin"
+    current_file_idx = 0
+    current_offset = 0
+    total_written = 0
+    bin_fp = None
+
+    for name in names:
+        tensor = state_dict[name]
+        raw = tensor.detach().cpu().contiguous()
+        if raw.dtype == torch.bfloat16:
+            raw = raw.view(torch.int16)
+        data = raw.numpy().tobytes()
+        del raw
+
+        if current_offset > 0 and current_offset + len(data) > max_file_size:
+            if bin_fp is not None:
+                bin_fp.close()
+            current_file_idx += 1
+            current_file_name = f"weights_{current_file_idx}.bin"
+            current_offset = 0
+
+        if current_offset == 0:
+            bin_fp = open(output_dir / current_file_name, "wb")
+            index[current_file_name] = []
+
+        index[current_file_name].append({
+            "name": name,
+            "offset": current_offset,
+            "size": len(data),
+        })
+
+        bin_fp.write(data)
+        current_offset += len(data)
+        total_written += len(data)
+        del data
+
+    if bin_fp is not None:
+        bin_fp.close()
+
+    print(f"Packed {len(index)} tensors into {current_file_idx + 1} file(s) "
+          f"({total_written / 1024:.0f} KB)")
+    return index

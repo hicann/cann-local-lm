@@ -70,6 +70,22 @@ def _add_rms_norm_meta(
     return y, rstd, x_sum
 
 
+@torch.library.impl("cann_lm::add_rms_norm", "cpu")
+def _add_rms_norm_cpu(
+    x1: torch.Tensor,
+    x2: torch.Tensor,
+    gamma: torch.Tensor,
+    *,
+    epsilon: float = 1e-6,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    # 与 CANN es_nn AddRmsNorm 对齐: x = x1 + x2; y = x * rsqrt(mean(x^2)+eps) * gamma
+    x = x1 + x2
+    ms = x.float().pow(2).mean(dim=-1, keepdim=True)
+    rstd = torch.rsqrt(ms + epsilon)
+    y = (x.float() * rstd).to(x1.dtype) * gamma
+    return y, rstd, x
+
+
 def register_ge_converters() -> None:
     from torchair import register_fx_node_ge_converter
     from torchair._ge_concrete_graph import ge_apis as ge
@@ -201,6 +217,21 @@ def compile_ep_to_epair(
 # ─────────────────────────────────────────────────────────────────────
 # CLI
 # ─────────────────────────────────────────────────────────────────────
+def run_eager(
+    device_name: str = "cpu",
+) -> torch.Tensor:
+    """Run AddRmsNormModel eagerly to verify the real add_rms_norm CPU kernel."""
+    device = select_device(device_name)
+    model = AddRmsNormModel().eval().to(device)
+    (x,) = build_sample_inputs(device)
+    with torch.no_grad():
+        y = model(x)
+    print(f"Input  shape: {list(x.shape)}, dtype={x.dtype}")
+    print(f"Output shape: {list(y.shape)}, dtype={y.dtype}")
+    print(f"Output (first 8): {y.flatten()[:8].tolist()}")
+    return y
+
+
 def _add_export_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--output", default="generate/addrmsnorm.pt2")
     parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
@@ -231,6 +262,13 @@ def main() -> None:
     compile_parser = subparsers.add_parser("compile", help="Compile .pt2 to .epair")
     _add_compile_args(compile_parser)
 
+    eager_parser = subparsers.add_parser(
+        "eager", help="Run AddRmsNormModel eagerly to verify the CPU add_rms_norm kernel"
+    )
+    eager_parser.add_argument(
+        "--device", choices=("auto", "cpu", "cuda"), default="cpu"
+    )
+
     args = parser.parse_args()
 
     if args.command == "export":
@@ -248,6 +286,8 @@ def main() -> None:
             max_file_size=args.max_file_size,
         )
         print(f"Consolidated epair written to: {output_dir}")
+    elif args.command == "eager":
+        run_eager(device_name=args.device)
 
 
 if __name__ == "__main__":

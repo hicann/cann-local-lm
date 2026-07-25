@@ -49,6 +49,7 @@ python3 -c "import torch; print(torch.__version__)"
 ## 步骤
 
 ### 1. 构建 torch-delegate-harmony
+下载路径：https://gitcode.com/shengnan666/torch-delegate
 
 ```bash
 source /home/developer/Ascend/cann/set_env.sh
@@ -84,7 +85,12 @@ cd /mnt/workspace/torchair
 TARGET_PYTHON_PATH=$(which python3) NO_ASCEND_SDK=1 bash configure
 
 # build & install
-bash build_and_install.sh $(dirname $(which python3))/../lib/python3.12/site-packages
+bash build_and_install.sh $(dirname $(which python3))/../lib/python$(python3 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")/site-packages
+
+# 手动复制 torchair Python 包到 venv（build_and_install.sh 可能未自动安装）
+SITE_PKG=$(python3 -c "import site; print(site.getsitepackages()[0])")
+cp -r /mnt/workspace/torchair/build/dist/torchair ${SITE_PKG}/ 2>/dev/null || true
+cp -r /mnt/workspace/torchair/python/torchair ${SITE_PKG}/ 2>/dev/null || true
 
 # 安装缺失依赖
 pip install packaging
@@ -93,7 +99,9 @@ pip install packaging
 ### 4. 验证导入
 
 ```bash
+source /home/developer/Ascend/cann/set_env.sh
 source /mnt/workspace/torch-delegate-harmony/.venv/bin/activate
+export LD_LIBRARY_PATH=/mnt/workspace/torchair/build/stubs:${ASCEND_HOME_PATH}/lib64:${LD_LIBRARY_PATH:-}
 python3 -c "from torch_delegate import export_to_epair, epair_save, epair_load; print('OK')"
 ```
 
@@ -102,6 +110,7 @@ python3 -c "from torch_delegate import export_to_epair, epair_save, epair_load; 
 **无 NPU 设备时（stub 模式）：**
 
 ```bash
+source /home/developer/Ascend/cann/set_env.sh
 source /mnt/workspace/torch-delegate-harmony/.venv/bin/activate
 export LD_LIBRARY_PATH=/mnt/workspace/torchair/build/stubs:${ASCEND_HOME_PATH}/lib64:${LD_LIBRARY_PATH:-}
 ```

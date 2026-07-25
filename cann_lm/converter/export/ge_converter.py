@@ -20,13 +20,16 @@ from typing import Any
 
 import torch
 
-from . import ops as _backend_ops  # Registers cann_lm ops.
+from cann_lm.models.fused_ops import ops as _backend_ops  # Registers cann_lm ops.
 
 
 def register_ge_converters() -> None:
     from torchair import register_fx_node_ge_converter
     from torchair.ge import custom_op
     from torchair._ge_concrete_graph import ge_apis as ge
+
+    from ._quant_matmul_converter import convert_quant_matmul
+    register_fx_node_ge_converter(torch.ops.cann_lm.quant_matmul.default)(convert_quant_matmul)
 
     @register_fx_node_ge_converter(torch.ops.aten.softplus.default)
     def _convert_softplus(x: Any, meta_outputs: Any = None) -> Any:
@@ -171,6 +174,48 @@ def register_ge_converters() -> None:
             pse_type=0,
             out_dtype=0,
         )
+
+    @register_fx_node_ge_converter(torch.ops.cann_lm.rms_norm.default)
+    def _convert_rms_norm(
+        x: Any,
+        gamma: Any,
+        *,
+        epsilon: float = 1e-6,
+        meta_outputs: Any = None,
+    ) -> Any:
+        del meta_outputs
+        return ge.RmsNorm(x, gamma, epsilon=epsilon)
+
+    @register_fx_node_ge_converter(torch.ops.cann_lm.add_rms_norm.default)
+    def _convert_add_rms_norm(
+        x1: Any,
+        x2: Any,
+        gamma: Any,
+        *,
+        epsilon: float = 1e-6,
+        meta_outputs: Any = None,
+    ) -> Any:
+        del meta_outputs
+        # ge.AddRmsNorm(x1, x2, gamma, *, epsilon) -> (y, rstd, x=x1+x2)
+        return ge.AddRmsNorm(x1, x2, gamma, epsilon=epsilon)
+
+    @register_fx_node_ge_converter(torch.ops.cann_lm.rotary_mul.default)
+    def _convert_rotary_mul(
+        x: Any,
+        cos: Any,
+        sin: Any,
+        *,
+        rotary_mode: str = "half",
+        meta_outputs: Any = None,
+    ) -> Any:
+        del meta_outputs
+        if rotary_mode != "half":
+            raise NotImplementedError(
+                f"rotary_mode={rotary_mode!r} not mapped; "
+                "CANN RotaryMul only supports half-rotation"
+            )
+        # ge.RotaryMul(x, r1=cos, r2=sin) -> y
+        return ge.RotaryMul(x, cos, sin)
 
     @register_fx_node_ge_converter(torch.ops.aten.type_as.default)
     def _convert_type_as(x: Any, dtype_or_tensor: Any, meta_outputs: Any = None) -> Any:

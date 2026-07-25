@@ -12,7 +12,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Export-only torch.library op schemas, meta registrations, and GE converters."""
+"""Aggregator: importing this module registers all cann_lm fused ops."""
 
-from .ops import *
-from .ge_converter import register_ge_converters
+from . import (  # noqa: F401  (side-effect: define + register_fake/impl)
+    add_rms_norm,
+    beam_search,
+    fused_infer_attention_score,
+    quant_matmul,
+    rope_in_place,
+    rms_norm,
+    rotary_mul,
+)
+
+__all__: list[str] = []

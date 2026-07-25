@@ -26,7 +26,6 @@ from models.gemma4.modeling_gemma4 import (
     Gemma4TextModel,
     Gemma4ForCausalLM,
     apply_rotary_pos_emb,
-    apply_rotary_pos_emb_qk,
     repeat_kv,
     eager_attention_forward,
     rotate_half,
@@ -112,14 +111,12 @@ def test_components(config: Gemma4TextConfig):
     cos_sl, sin_sl = rope(x, pos_ids, "sliding_attention")
     check("RoPE sliding cos shape", cos_sl.shape[-1] == config.head_dim // 2 * 2)
 
-    # apply_rotary_pos_emb_qk
+    # apply_rotary_pos_emb (single tensor, fused via cann_lm::rotary_mul)
     n_heads = config.num_attention_heads
     hd = config.global_head_dim
     q = torch.randn(b, s, n_heads, hd)
-    k = torch.randn(b, s, n_heads // 2, hd)  # GQA: kv heads = num_heads/2
-    q_out, k_out = apply_rotary_pos_emb_qk(q, k, cos, sin)
-    check("rope_qk q shape", q_out.shape == q.shape)
-    check("rope_qk k shape", k_out.shape == k.shape)
+    q_out = apply_rotary_pos_emb(q, cos, sin, unsqueeze_dim=2)
+    check("apply_rotary_pos_emb shape", q_out.shape == q.shape)
 
     # repeat_kv
     kv = torch.randn(2, 2, 4, hd)  # (b, kv_heads, s, d)

@@ -28,6 +28,6 @@ CANN-LM 已有三个模型定义（gemma4/qwen3/qwen3_5）和一个 epair 导出
 
 - **新增文件**: `model_registry.py`, `loader.py`, `saver.py`, `cann-lm-converter.py`
 - **修改文件**: `epair_utils.py`（bfloat16 + 非持久 buffer）, `__init__.py`
-- **依赖**: `torch_delegate`（export_to_epair）, `cann_lm.models`（模型定义 + load_*_weights）, `cann_lm.models.fake_ops`（register_ge_converters）
+- **依赖**: `torch_delegate`（export_to_epair）, `cann_lm.models`（模型定义 + load_*_weights）, `cann_lm.converter.export.ge_converter`（register_ge_converters）
 - **不修改**: `cann_lm/models/` 下的模型定义代码
 - **环境变量**: `ASCEND_HOME_PATH`, `PYTHONPATH`, `TORCH_DEVICE_BACKEND_AUTOLOAD=0`

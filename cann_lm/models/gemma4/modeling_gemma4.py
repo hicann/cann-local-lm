@@ -15,6 +15,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
+from ..fused_ops import ops as _fused_ops  # noqa: F401  (registers cann_lm fused ops)
 from .configuration_gemma4 import (
     Gemma4AudioConfig,
     Gemma4Config,
@@ -40,39 +41,16 @@ def apply_rotary_pos_emb(
     sin: torch.Tensor,
     unsqueeze_dim: int = 1,
 ) -> torch.Tensor:
-    """Apply RoPE to a single tensor (for use in both text and vision)."""
+    """Apply RoPE to a single tensor via cann_lm::rotary_mul (fused)."""
     cos = cos.unsqueeze(unsqueeze_dim)
     sin = sin.unsqueeze(unsqueeze_dim)
     rotary_dim = cos.shape[-1]
     x_rot = x[..., :rotary_dim]
     x_pass = x[..., rotary_dim:]
+    out = torch.ops.cann_lm.rotary_mul(x_rot, cos, sin, rotary_mode="half")
     if x_pass.shape[-1] > 0:
-        return torch.cat([(x_rot * cos) + (rotate_half(x_rot) * sin), x_pass], dim=-1)
-    return (x * cos) + (rotate_half(x) * sin)
-
-def apply_rotary_pos_emb_qk(
-    q: torch.Tensor,
-    k: torch.Tensor,
-    cos: torch.Tensor,
-    sin: torch.Tensor,
-    unsqueeze_dim: int = 2,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """Apply RoPE to query and key tensors."""
-    cos = cos.unsqueeze(unsqueeze_dim)
-    sin = sin.unsqueeze(unsqueeze_dim)
-
-    # Handle partial rotary: only rotate rotary_dim channels
-    rotary_dim = cos.shape[-1]
-    q_rot, q_pass = q[..., :rotary_dim], q[..., rotary_dim:]
-    k_rot, k_pass = k[..., :rotary_dim], k[..., rotary_dim:]
-
-    q_embed = (q_rot * cos) + (rotate_half(q_rot) * sin)
-    k_embed = (k_rot * cos) + (rotate_half(k_rot) * sin)
-
-    if q_pass.shape[-1] > 0:
-        q_embed = torch.cat([q_embed, q_pass], dim=-1)
-        k_embed = torch.cat([k_embed, k_pass], dim=-1)
-    return q_embed, k_embed
+        return torch.cat([out, x_pass], dim=-1)
+    return out
 
 
 def repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
@@ -134,7 +112,7 @@ def eager_attention_forward(
 # ════════════════════════════════════════════════════════════════════
 
 class Gemma4RMSNorm(nn.Module):
-    """RMSNorm matching the Gemma-4 convention (pow(-0.5) instead of rsqrt)."""
+    """RMSNorm matching the Gemma-4 convention, via cann_lm::rms_norm (fused)."""
 
     def __init__(self, dim: int, eps: float = 1e-6, with_scale: bool = True):
         super().__init__()
@@ -142,19 +120,22 @@ class Gemma4RMSNorm(nn.Module):
         self.with_scale = with_scale
         if with_scale:
             self.weight = nn.Parameter(torch.ones(dim))
-
-    def _norm(self, x: torch.Tensor) -> torch.Tensor:
-        mean_sq = x.pow(2).mean(-1, keepdim=True) + self.eps
-        return x * torch.pow(mean_sq, -0.5)
+        else:
+            # gamma is identically 1; pre-allocate a ones buffer so forward can pass
+            # a weight tensor to the fused op without allocating each call.
+            self.register_buffer("weight", torch.ones(dim), persistent=False)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        output = self._norm(x.float())
-        if self.with_scale:
-            output = output * self.weight.float()
-        return output.type_as(x)
+        y, _ = torch.ops.cann_lm.rms_norm(x, self.weight, epsilon=self.eps)
+        return y
+
+    def forward_add(self, x1: torch.Tensor, x2: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """Fused add + rms_norm: returns (rms_norm(x1 + x2), x1 + x2)."""
+        y, _, residual = torch.ops.cann_lm.add_rms_norm(x1, x2, self.weight, epsilon=self.eps)
+        return y, residual
 
     def extra_repr(self):
-        return f"{tuple(self.weight.shape) if self.with_scale else '()'}, eps={self.eps}"
+        return f"{tuple(self.weight.shape)}, eps={self.eps}"
 
 class Gemma4TextScaledWordEmbedding(nn.Embedding):
     """
@@ -485,10 +466,8 @@ class Gemma4TextDecoderLayer(nn.Module):
             new_kv_cache_pos=new_kv_cache_pos,
         )
         hidden_states = self.post_attention_layernorm(hidden_states)
-        hidden_states = residual + hidden_states
+        hidden_states, residual = self.pre_feedforward_layernorm.forward_add(residual, hidden_states)
 
-        residual = hidden_states
-        hidden_states = self.pre_feedforward_layernorm(hidden_states)
         hidden_states = self.mlp(hidden_states)
         hidden_states = self.post_feedforward_layernorm(hidden_states)
         hidden_states = residual + hidden_states
@@ -951,7 +930,6 @@ __all__ = [
     "Gemma4TextRotaryEmbedding",
     "rotate_half",
     "apply_rotary_pos_emb",
-    "apply_rotary_pos_emb_qk",
     "repeat_kv",
     "eager_attention_forward",
     "load_gemma4_weights",

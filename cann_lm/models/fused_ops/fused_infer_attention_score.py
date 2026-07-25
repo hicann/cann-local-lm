@@ -12,20 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Export-only torch.library op schemas and meta registrations."""
-
-import os
-
-os.environ.setdefault("TORCH_DEVICE_BACKEND_AUTOLOAD", "0")
+"""cann_lm::fused_infer_attention_score - fused attention op."""
 
 import torch
 
+from ._library import LIBRARY
 
-_LIBRARY = torch.library.Library("cann_lm", "DEF")
-_LIBRARY.define(
-    "rope_in_place(Tensor(a!) input, Tensor sin_cache, Tensor cos_cache) -> ()"
-)
-_LIBRARY.define(
+LIBRARY.define(
     "fused_infer_attention_score("
     "Tensor query, Tensor key, Tensor value, *, "
     "Tensor? pse_shift=None, Tensor? atten_mask=None, "
@@ -46,19 +39,6 @@ _LIBRARY.define(
     "int block_size=0, int antiquant_mode=0, bool softmax_lse_flag=False, "
     "int key_antiquant_mode=0, int value_antiquant_mode=0) -> (Tensor, Tensor)"
 )
-_LIBRARY.define(
-    "beam_search(Tensor log_probs, Tensor top_tokens, Tensor top_probs) -> "
-    "(Tensor, Tensor, Tensor)"
-)
-
-
-@torch.library.register_fake("cann_lm::rope_in_place")
-def _rope_in_place_meta(
-    input: torch.Tensor,
-    sin_cache: torch.Tensor,
-    cos_cache: torch.Tensor,
-):
-    pass
 
 
 @torch.library.register_fake("cann_lm::fused_infer_attention_score")
@@ -160,16 +140,3 @@ def _fused_infer_attention_score_meta(
     else:
         lse_out = torch.empty([0], dtype=torch.float32, device=query.device)
     return attention_out, lse_out
-
-
-@torch.library.register_fake("cann_lm::beam_search")
-def _beam_search_meta(
-    log_probs: torch.Tensor,
-    top_tokens: torch.Tensor,
-    top_probs: torch.Tensor,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    del top_probs
-    token_ids = top_tokens.new_empty(log_probs.shape)
-    beam_indices = top_tokens.new_empty(log_probs.shape)
-    scores = log_probs.new_empty(log_probs.shape)
-    return token_ids, beam_indices, scores

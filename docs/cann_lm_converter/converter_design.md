@@ -441,7 +441,7 @@ def save_epair(
     └── ...
     """
     import torch_delegate
-    from cann_lm.models.fake_ops import register_ge_converters
+    from cann_lm.converter.export.ge_converter import register_ge_converters
 
     output_dir = Path(output_dir).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -959,7 +959,7 @@ td::EpairModelLoader decode_loader("decode_ep_json_with_ascend_ir.json",
 
 ### 全链路已通（Python 导出 + C++ OM 编译）
 
-遗留任务 6（`aten.index_copy.default` GE converter 缺失）已解决：在 `fake_ops/ge_converter.py` 用 `ge.InplaceUpdate` + `ge.TransposeD` 实现了 converter。converter CLI 导出 gemma4 prefill/decode + C++ `main.cpp` 加载编译 OM 全链路跑通（`examples/export_gemma4/`，prefill 6079 节点 / decode 6044 节点 / `prefill.om` + `decode.om` 各 9.4GB）。详见遗留任务 6 的完整修复链。
+遗留任务 6（`aten.index_copy.default` GE converter 缺失）已解决：在 `converter/export/ge_converter.py` 用 `ge.InplaceUpdate` + `ge.TransposeD` 实现了 converter。converter CLI 导出 gemma4 prefill/decode + C++ `main.cpp` 加载编译 OM 全链路跑通（`examples/export_gemma4/`，prefill 6079 节点 / decode 6044 节点 / `prefill.om` + `decode.om` 各 9.4GB）。详见遗留任务 6 的完整修复链。
 
 ## 待实现功能
 
@@ -984,7 +984,7 @@ td::EpairModelLoader decode_loader("decode_ep_json_with_ascend_ir.json",
    - qwen3: 标准 GQA，改动简单（attention 层 `torch.cat` → `index_copy`）
    - qwen3.5: 混合架构（6 full + 18 linear），linear attention 的 `recurrent_state` 不是 KV buffer 格式，需要单独设计 recurrent buffer 的增量协议
     - 两个模型的 `ExportWrapper._drive_layers` 也需要同步修改（`get_sample_inputs` 已用基类统一 scatter mask，无需子类 override）
-6. ~~**aten.index_copy.default GE converter 缺失**~~ — **[已解决]** 在 `fake_ops/ge_converter.py` 注册 `aten.index_copy.default` converter，用**方案 B：`ge.InplaceUpdate` + `ge.TransposeD`** 实现（transpose 把 `dim` 换到 axis 0，`InplaceUpdate` 按 1D index 赋值，再 transpose back）。Python 导出 + C++ OM 编译全链路打通。
+6. ~~**aten.index_copy.default GE converter 缺失**~~ — **[已解决]** 在 `converter/export/ge_converter.py` 注册 `aten.index_copy.default` converter，用**方案 B：`ge.InplaceUpdate` + `ge.TransposeD`** 实现（transpose 把 `dim` 换到 axis 0，`InplaceUpdate` 按 1D index 赋值，再 transpose back）。Python 导出 + C++ OM 编译全链路打通。
    - **实现**：`_convert_index_copy` 在 `register_ge_converters()` 里，用 `ge.TensorMove(self)` 避免 in-place 精度问题（参考 `index_add.py`），index 转 DT_INT32，`perm`/`inverse_perm` 按 `dim` 构造。**dtype 对齐**：用 `ge.Cast(transposed_source, dst_type=int(self.dtype))` 强制 source 对齐 self dtype（InplaceUpdate 要求 x/v 同 dtype；GE infershape 前 `transposed_self.dtype` 是 `DT_UNDEFINED`，须用 `self.dtype`）
    - **C++ 加载侧**：`examples/export_llm_model/reg_register.h` 补注册 8 个算子：`InplaceUpdate`/`TransposeD`（index_copy converter 用）、`GreaterEqual`/`LessEqual`/`LogicalAnd`/`LogicalNot`/`MaskedFill`/`TensorMove`（ep_json 里有但原 reg_register.h 未注册）
    - **环境配置**（CANN 9.2.0 weekly 20260715）：

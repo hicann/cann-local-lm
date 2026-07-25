@@ -26,27 +26,44 @@ CANN-LM_5883/
 - 环境安装全部在.venv环境中进行，不要修改系统环境
 - Python 版本：`>= 3.10`（使用 `dict[str, Any]` 等内置泛型语法，不引入 `from __future__ import annotations`）
 - 依赖：`torch`（必需）+ `torchair`（Ascend 后端必需，用于 IR 转换）;不要依赖torch_npu,如果需要引入torch_npu,设置stub,参考下方运行环境设置
-- **运行环境设置（converter，已验证）**：本机为 CPU-only（无 NPU），converter 只用 torchair 的 converter 模块（IR 转换）。方案是**全量 torchair + 全量 torchair 自带的 stubs**——把 `libtorch_npu`/`libge_runner`/`libhccl` 等 CANN 重库在 lib 层打桩，全量 torchair 的 GE 引擎调用被 stub 接住（`[STUB] Session/GEFinalize`），CPU 上能跑且 decomposition/IR 行为与生产一致。组件版本：
-  - `torch` 2.9.0+cpu（系统 python）
-  - `torch-delegate` 0.1.0（whl，按 torch 2.9.0 + CANN 9.1.0 编，源码 `/mnt/workspace/torch-delegate-harmony`）
-  - `torchair` **全量**（branch `26.1.0`，按 torch 2.9.0 + CANN 9.1.0 编，源码 `/mnt/workspace/torchair-full`，装为 whl）
-  - `torch_npu` 打桩（lib 层 stub，`/mnt/workspace/torchair-full/build/stubs`，含 `libtorch_npu.so`/`libge_local_stub.so`/`libge_runner.so`/`libhccl_stub.so` 等，非真实安装）
-  - CANN 9.2.0 weekly 20260715（toolkit + 950-ops，提供 lib64 + platform_config + TBE/tvm；装到 `/home/developer/Ascend/cann-9.1.0/`，实际版本在 `cann-9.1.0/cann-9.2.0/` 子目录；set_env.sh 实际路径 `/home/developer/Ascend/cann-9.1.0/cann/set_env.sh`）。**符号链接**：`cann-9.1.0/` 顶层为 `cann-9.2.0/` 下的目录创建了符号链接（`aarch64-linux`/`lib64`/`opp` 等），让 `Ascend950DT_950x.ini` 等 platform_config 可被 GE 找到。**Python 依赖**：TBE/tvm 需要 `decorator`/`scipy`/`numpy`/`attrs`/`sympy`/`psutil`/`networkx`/`tqdm`/`requests`/`pyyaml`/`cffi`（已装到 torchair_lazy_venv）
+- **运行环境设置（converter，已验证）**：本机为 CPU-only（无 NPU），converter 只用 torchair 的 converter 模块（IR 转换）。方案是 **torchair 源码编译（NO_ASCEND_SDK=1）+ torchair 自带的 stubs**——把 `libtorch_npu`/`libge_runner`/`libhccl` 等 CANN 重库在 lib 层打桩，torchair 的 GE 引擎调用被 stub 接住（`[STUB] Session/GEFinalize`），CPU 上能跑且 decomposition/IR 行为与生产一致。组件版本：
+  - `torch` 2.9.0+cpu（venv: `/mnt/workspace/torch-delegate-harmony/.venv`）
+  - `torch-delegate` 0.1.0（whl，按 torch 2.9.0 + CANN 9.2.0 编，源码 `/mnt/workspace/torch-delegate-harmony`）
+  - `torchair`（源码编译，`NO_ASCEND_SDK=1`，源码 `/mnt/workspace/torchair`，Python 包手动复制到 venv site-packages）
+  - `torch_npu` 打桩（lib 层 stub，`/mnt/workspace/torchair/build/stubs`，含 `libtorch_npu.so`/`libge_local_stub.so`/`libge_runner.so`/`libhccl_stub.so` 等，非真实安装）
+  - CANN 9.2.0 weekly 20260715（toolkit + 950-ops，提供 lib64 + platform_config + TBE/tvm；装到 `/home/developer/Ascend/cann-9.2.0/`；set_env.sh 实际路径 `/home/developer/Ascend/cann/set_env.sh`）。**符号链接**：`/home/developer/Ascend/cann` -> `cann-9.2.0/`，让 `Ascend950DT_950x.ini` 等 platform_config 可被 GE 找到。**Python 依赖**：TBE/tvm 需要 `decorator`/`scipy`/`numpy`/`attrs`/`sympy`/`psutil`/`networkx`/`tqdm`/`requests`/`pyyaml`/`cffi`（已装到 torchair_lazy_venv）
 
   运行 converter / 任何依赖 torchair 的脚本前，
 **必须先 source 这套环境变量**：
 ```bash
-source /home/developer/Ascend/cann-9.1.0/cann/set_env.sh
-export LD_LIBRARY_PATH=/mnt/workspace/torchair-full/build/stubs:${ASCEND_HOME_PATH}/lib64:${LD_LIBRARY_PATH:-}
+source /home/developer/Ascend/cann/set_env.sh
+export LD_LIBRARY_PATH=/mnt/workspace/torchair/build/stubs:${ASCEND_HOME_PATH}/lib64:${LD_LIBRARY_PATH:-}
 export TORCH_DELEGATE_HOME=/mnt/workspace/torch-delegate-harmony
 export PYTHONPATH=/mnt/workspace/project/CANN-LM_5883:${PYTHONPATH:-}
 export TORCH_DEVICE_BACKEND_AUTOLOAD=0          # 阻止 torch autoload npu backend
 export TORCH_DELEGATE_ENABLE_FALLBACK_CODEGEN=0 # 不走 fallback codegen
 ```
-- 注意：实际环境可能是cann-9.2.0，反正不能是
-  - **关键**：stubs 必须用**全量 torchair 自带的** `/mnt/workspace/torchair-full/build/stubs`（ABI 匹配）。不要用旧 minimal-stub torchair 的 `/mnt/workspace/torchair/build/stubs`——符号不匹配会导致全量 torchair import 失败（`libruntime_common.so: undefined symbol: ErrorManager::ATCReportErrMessage`）；而用真实 CANN lib64 又会 `initialize_graph_engine → aclrtSetDevice → 107001`（无设备）。只有"全量 torchair + 其自带 stubs"这套组合在 CPU 上可用。
+  - **关键**：stubs 必须用 **torchair 编译生成的** `/mnt/workspace/torchair/build/stubs`（ABI 匹配）。不要用真实 CANN lib64——会 `initialize_graph_engine → aclrtSetDevice → 107001`（无设备）。只有"torchair + 其自带 stubs"这套组合在 CPU 上可用。
   - converter 本身不用 transformers；若跑 `examples/` 下用 transformers 的 run/verify 脚本，先 `import hf_cpu`（禁用 transformers 的 torch_npu probe，shim 在 `examples/export_llm_model/llm_engine_on_cpu/hf_cpu.py`）。
   - 跑 `CANN-LM_5883` 仓库脚本统一加 `TORCH_DEVICE_BACKEND_AUTOLOAD=0`。
+- **NPU 环境（torch_npu，已验证）**：本机有 2 张 Ascend910（64GB HBM），torch_npu 已安装在系统 Python 中，可直接用于 NPU 推理/验证。组件版本：
+  - Python 3.11.4（`/opt/buildtools/Python-3.11.4/bin/python3`）
+  - `torch` 2.7.1+cpu
+  - `torch_npu` 2.7.1.post4
+  - `torchvision` 0.22.1 / `torchaudio` 2.11.0+cpu
+  - CANN npu-smi 25.5.5，芯片 Ascend910 × 2
+
+  进入 NPU 环境：
+  ```bash
+  source /home/developer/Ascend/cann/set_env.sh
+  export PYTHONPATH=/mnt/workspace/project/CANN-LM_5883:${PYTHONPATH:-}
+  ```
+  验证 NPU 可用：
+  ```bash
+  python3 -c "import torch, torch_npu; print(torch.npu.is_available(), torch.npu.device_count())"
+  ```
+  - 注意：该环境是系统 Python（非 venv），与上方 converter 的 venv 环境独立，互不影响。
+  - 有一个 `libop_plugin_atb.so` 权限警告（owner 不匹配），不影响功能，可忽略。
 - 测试：`pytest`，测试文件放置于 `tests/python/`；单文件运行 `pytest tests/python/test_api.py`，单用例 `pytest tests/python/test_api.py::test_name`
 - **端到端测试原则**：所有端到端测试用例及其生成产物（模型文件、权重、OM 等）统一放置于 `examples/` 路径下，按用例名分目录组织；禁止散落到 `cann_lm/` 或其他路径；在进行测试的时候先不要修改主仓代码，先修改测试代码，如果无法通过进行交确认
 - **测试时禁改 cann_lm/**：跑测试用例时**不要修改 `cann_lm/` 下任何代码**（含 converter/models/export 等）；要改 `cann_lm/` 前必须先找确认。优先改测试代码（`tests/`、`examples/`），无法通过再确认改主仓。

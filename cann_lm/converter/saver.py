@@ -24,7 +24,7 @@ def save_epair(
     save_weights: bool = True,
 ) -> None:
     import torch_delegate
-    from cann_lm.models.fake_ops import register_ge_converters
+    from cann_lm.converter.export.ge_converter import register_ge_converters
 
     output_dir = Path(output_dir).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -96,7 +96,7 @@ def save_epair_prefill_decode(
     Does NOT save .pt2 or input_N.bin (those belong in a verify script).
     """
     import torch_delegate
-    from cann_lm.models.fake_ops import register_ge_converters
+    from cann_lm.converter.export.ge_converter import register_ge_converters
 
     output_dir = Path(output_dir).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)

@@ -38,7 +38,7 @@ from models.gemma4.modeling_gemma4 import (
     Gemma4RMSNorm,
     Gemma4TextRotaryEmbedding,
     rotate_half,
-    apply_rotary_pos_emb_qk,
+    apply_rotary_pos_emb,
     repeat_kv,
     load_gemma4_weights,
 )
@@ -293,14 +293,14 @@ def run_unit_tests():
     _check("RoPE cos range", cos.abs().max() <= 1.0 + 1e-5)
     _check("RoPE sin range", sin.abs().max() <= 1.0 + 1e-5)
 
-    # 4. apply_rotary_pos_emb_qk
+    # 4. apply_rotary_pos_emb (single tensor, fused via cann_lm::rotary_mul)
     print("\n--- Apply RoPE ---")
     q = torch.randn(2, 8, 4, 32)
-    q_rot, k_rot = apply_rotary_pos_emb_qk(q, q, cos, sin)
-    _check("apply_rope shape", q_rot.shape == q.shape)
+    q_out = apply_rotary_pos_emb(q, cos, sin, unsqueeze_dim=2)
+    _check("apply_rope shape", q_out.shape == q.shape)
     
     # Test rotational identity: RoPE should produce different values
-    diff = (q_rot - q).abs().sum()
+    diff = (q_out - q).abs().sum()
     _check("RoPE actually rotates", diff > 0.01)
 
     # 5. repeat_kv

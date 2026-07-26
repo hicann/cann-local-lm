@@ -4,7 +4,7 @@
 >
 > 支持模型：gemma4 / qwen3 / qwen3_5（后续可扩展）
 >
-> 最后更新: 2026-07-14
+> 最后更新: 2026-07-25
 
 ## 目录
 
@@ -33,7 +33,7 @@
 
 - **输入**：HuggingFace 模型目录（`config.json` + safetensors 权重 + tokenizer 文件）
 - **输出**：epair 模型目录（`ep_json_with_ascend_ir.json` + 权重 bin + tokenizer + `model_config.json`），供 C++ 后端加载
-- **量化**：作为内置扩展能力预留，具体方案 TBD（`quant/` 目录预留）
+- **量化**：**未实现**。`fused_ops/quant_matmul` 是 fake-only 算子（schema + meta，export-only，无 eager 计算），`_quant_matmul_converter.py` 仅把 op 映射到 `ge.QuantBatchMatmulV4`（真实量化计算在 NPU/GE 侧）；无 calibration、无权重量化流程、无 A8W4/MXFP4 打包（a8w4 分支已去掉以去除 torch_npu 依赖）
 
 对外只暴露一个入口 `cann-lm-converter.py`，模型类型从 HF `config.json` 自动探测，用户无需指定 `--model-type`。
 
@@ -44,12 +44,23 @@ cann_lm/converter/
 ├── __init__.py
 ├── cann-lm-converter.py          # CLI 入口 (pipeline) + 程序化 convert() 函数
 ├── loader.py                     # 模型加载 (config + weights + tokenizer, 自动探测模型类型)
-├── saver.py                      # epair 保存 (含 ExportWrapper + tokenizer/config 复制)
-├── model_registry.py             # 模型注册表 + detect_model_type
-├── export/
-│   └── epair_utils.py            # 已有: pack_weights, consolidated_weights_save
-└── quant/                        # 预留扩展能力 (量化, TBD)
+├── saver.py                      # epair 保存 (save_epair / save_epair_prefill_decode / save_model_config / copy_tokenizer_files)
+├── model_registry.py             # 模型注册表 (ModelEntry + REGISTRY + get_entry + detect_model_type + available_models)
+├── export_wrapper.py             # ExportWrapper 基类 (forward + get_sample_inputs + make_sample_inputs)
+└── export/
+    ├── epair_utils.py            # pack_weights + consolidated_weights_save
+    ├── ge_converter.py           # register_ge_converters (cann_lm 自定义算子 + 部分 aten 算子的 GE 映射)
+    ├── _quant_matmul_converter.py # cann_lm::quant_matmul GE converter (QuantBatchMatmulV4)
+    └── csrc/                     # C++ 后端 (epair_model_loader / ge_graph_builder / ge_weight_loader, 详见 export_design.md)
 ```
+
+自定义算子库位于 `cann_lm/models/fused_ops/`（`torch.ops.cann_lm.*`），每个算子 `define` schema + `register_fake` meta，再在 `ge_converter.py` 注册对应 GE converter：
+`add_rms_norm` / `rms_norm` / `rotary_mul` / `rope_in_place` / `quant_matmul` /
+`fused_infer_attention_score` / `beam_search`。其中：
+- **有 CPU eager kernel**（可 eager 跑 + 导出）：`add_rms_norm` / `rms_norm` / `rotary_mul`
+- **仅 fake/meta（export-only，无 eager 计算）**：`rope_in_place` / `quant_matmul` / `fused_infer_attention_score` / `beam_search` — 这类算子只占 schema/shape，真实计算靠 GE converter 映射到 NPU 算子（`ge.RopeInPlace` / `ge.QuantBatchMatmulV4` / `ge.FusedInferAttentionScore` / `BeamSearch` custom_op）。详见 `fused_ops/compositte_op.md`。
+
+> 量化**未实现真实模块**：`quant_matmul` 是 fake-only 算子（schema + meta，export-only，无 eager），`_quant_matmul_converter.py` 仅把 op 映射到 `ge.QuantBatchMatmulV4`（真实量化计算在 NPU/GE 侧）。无 calibration、无权重量化流程、无 A8W4/MXFP4 打包布局（a8w4 分支已去掉以去除 torch_npu 依赖）。不再走 `converter/quant/` 预留目录（实际不存在）。
 
 ## 模型差异总览
 
@@ -154,13 +165,18 @@ def get_entry(name: str) -> ModelEntry:
 
 
 def detect_model_type(hf_config: dict) -> ModelEntry:
-    """从 HF config.json 自动探测模型类型"""
+    """Auto-detect the model entry from HF config.json's top-level `model_type`."""
     model_type = hf_config.get("model_type")
     if not model_type:
         raise ValueError(
-            f"config.json 缺少 'model_type' 字段，无法自动探测；已支持: {list(REGISTRY)}"
+            f"config.json missing 'model_type' field; supported: {available_models()}"
         )
     return get_entry(model_type)
+
+
+def available_models() -> list[str]:
+    """已注册模型名列表（CLI 报错提示用）"""
+    return list(REGISTRY)
 ```
 
 ## loader.py — 模型加载
@@ -229,45 +245,65 @@ def load_model(
         hf_config=hf_config,
         tokenizer_files=tokenizer_files,
         model_type=entry.model_type,
+        wrapper_cls=entry.wrapper_cls,
     )
 ```
 
-### build_config — 适配 config 加载差异
+### build_config — 统一字段过滤
 
-各模型的 config 加载方式不同，`build_config` 按优先级检测：
+各模型 config 加载方式不同（有的 config_json_key 嵌套、有的顶层），但 `build_config` **统一走字段过滤**：先按 `config_json_key` 取出嵌套或顶层子字典，再用 dataclass 字段名过滤未知字段，最后触发 `__post_init__`（计算 head_dim 等派生量）。
 
 ```python
 def build_config(hf_config: dict, entry: ModelEntry):
-    # 优先用 from_pretrained (qwen3 / qwen3_5 有)
-    if hasattr(entry.config_cls, "from_pretrained"):
-        return entry.config_cls.from_pretrained(hf_path)
-    # 其次用 from_json_file (qwen3 / qwen3_5 有)
-    if hasattr(entry.config_cls, "from_json_file"):
-        return entry.config_cls.from_json_file(config_json_path)
-    # fallback: 手动字段过滤 (gemma4)
-    if entry.config_json_key and entry.config_json_key in hf_config:
+    # 嵌套 config (gemma4/qwen3_5): 从 text_config 子字典取；扁平 config (qwen3): 顶层
+    if entry.config_json_key in hf_config:
         raw = hf_config[entry.config_json_key]
     else:
         raw = hf_config
+
     valid_fields = {f.name for f in dataclasses.fields(entry.config_cls)}
     filtered = {k: v for k, v in raw.items() if k in valid_fields}
+
     config = entry.config_cls(**filtered)
     if hasattr(config, "__post_init__"):
         config.__post_init__()
     return config
 ```
 
+> 注：`config_cls` 上的 `from_pretrained` / `from_json_file` 方法（qwen3/qwen3_5 有）不再被 `build_config` 调用——统一走字段过滤路径，避免不同 class 的加载方式分叉。
+
 ### collect_tokenizer_files
 
 ```python
 _TOKENIZER_PATTERNS = [
-    "tokenizer.json", "tokenizer_config.json", "special_tokens_map.json",
-    "tokenizer.model", "generation_config.json", "vocab.json", "merges.txt",
+    "tokenizer.json",
+    "tokenizer_config.json",
+    "special_tokens_map.json",
 ]
 
+_OPTIONAL_TOKENIZER_PATTERNS = [
+    "tokenizer.model",      # SentencePiece 旧格式
+    "vocab.json",           # BPE 旧格式
+    "merges.txt",           # BPE 旧格式
+]
+
+
 def collect_tokenizer_files(hf_path: str) -> list[Path]:
-    """收集 HF 目录中的 tokenizer 相关文件"""
-    return [Path(hf_path) / p for p in _TOKENIZER_PATTERNS if (Path(hf_path) / p).exists()]
+    """收集 HF 目录中的 tokenizer 相关文件。
+
+    必选 3 个 (tokenizer.json 系)；无 tokenizer.json 时补充旧格式
+    (tokenizer.model / vocab.json / merges.txt)。
+    generation_config.json 不在此处理（见遗留任务 1）。
+    """
+    files = []
+    patterns = _TOKENIZER_PATTERNS
+    if not (Path(hf_path) / "tokenizer.json").exists():
+        patterns = patterns + _OPTIONAL_TOKENIZER_PATTERNS
+    for p in patterns:
+        fp = Path(hf_path) / p
+        if fp.exists():
+            files.append(fp)
+    return files
 ```
 
 ## saver.py — epair 保存
@@ -429,16 +465,14 @@ def save_epair(
     save_weights: bool = True,
 ) -> None:
     """
-    完整保存流程 (7 步)
+    保存流程（不输出 .pt2 / input_N.bin，二者由 verify 脚本另行生成）
 
     output_dir/
     ├── ep_json_with_ascend_ir.json     # torch.export + ascend_ir
     ├── weight_info.json                # 权重索引
     ├── weights_0.bin                   # 权重数据 (按 max_file_size 切分)
     ├── model_config.json               # 自定义 config 序列化 + HF 原始信息
-    ├── generation_config.json          # 生成配置 (从 HF 复制)
-    ├── tokenizer.json                  # tokenizer 文件 (从 HF 复制)
-    └── ...
+    └── tokenizer 文件
     """
     import torch_delegate
     from cann_lm.converter.export.ge_converter import register_ge_converters
@@ -449,42 +483,49 @@ def save_epair(
     # 1. 注册 GE converters (export_to_epair 前必须调用)
     register_ge_converters()
 
-    # 2. 创建示例输入 (统一 I/O 契约, 支持 embeddings 模式)
-    sample_inputs = wrapper.get_sample_inputs(
-        seq_len=sample_seq_len, use_embeddings=use_embeddings
-    )
-
-    # 3. 从注册表获取 wrapper 子类，构造统一 I/O wrapper
+    # 2. 从 ModelEntry 透传的 wrapper 子类构造统一 I/O wrapper
+    if artifact.wrapper_cls is None:
+        raise ValueError(
+            f"Model '{artifact.model_type}' has no ExportWrapper subclass registered. "
+            "Please implement one in cann_lm/converter/export_wrapper.py."
+        )
     wrapper = artifact.wrapper_cls(
         artifact.model,
         kv_cache_max_len=kv_cache_max_len,
         batch=1,
     ).eval()
+
+    # 3. 创建示例输入 (统一 I/O 契约, 支持 embeddings 模式)
+    sample_inputs = wrapper.get_sample_inputs(
+        seq_len=sample_seq_len, use_embeddings=use_embeddings
+    )
+
+    # 4. torch.export (strict=False 允许 None placeholder / 动态分支)
     ep = torch.export.export(wrapper, sample_inputs, strict=False)
 
-    # 4. export_to_epair
+    # 5. export_to_epair
     epair = torch_delegate.export_to_epair(ep)
 
-    # 5. 保存权重 + ep_json (复用已有 consolidated_weights_save)
+    # C++ 侧已兜底处理 (无需 Python 侧 strip ep_json):
+    #   - _assert_tensor_metadata 节点: PlanNodes 顶部 IsAssertTensorMetadataNode 跳过
+    #   - as_none 的 constant_input: PreparePlaceholders 里 NodeInputKind::None → continue
+
+    # 6. 释放原始模型内存 (大模型 OOM 防护)
+    #    epair.ep 持有 ExportedProgram 的独立引用, 删除 model/wrapper/ep 不影响 epair
+    del ep, wrapper
+    del artifact.model
+    import gc; gc.collect()
+
+    # 7. 保存权重 + ep_json (复用已有 consolidated_weights_save)
     consolidated_weights_save(
         epair, output_dir,
         save_weights=save_weights,
         max_file_size=max_file_size,
     )
 
-    # 6. 复制 tokenizer + 保存 model_config
+    # 8. 复制 tokenizer + 保存 model_config
     copy_tokenizer_files(artifact.tokenizer_files, output_dir)
     save_model_config(artifact, output_dir)
-
-    # 7. 保存 .pt2 (供 Python 侧回环验证)
-    pt2_path = output_dir.parent / f"{output_dir.name}.pt2"
-    torch_delegate.epair_save(epair, str(pt2_path))
-    print(f"Saved: {pt2_path}")
-
-    # 8. 保存 input (供 C++ 侧验证)
-    for i, inp in enumerate(sample_inputs):
-        path = output_dir.parent / f"input_{i}.bin"
-        inp.cpu().detach().numpy().tofile(path)
 ```
 
 ### get_sample_inputs — 基类实现
@@ -575,21 +616,55 @@ def convert(
     dtype: torch.dtype,
     device: str = "cpu",
     max_file_size: int = 50 * 1024 * 1024 * 1024,
+    kv_cache_max_len: int = 2048,
     sample_seq_len: int = 128,
+    use_embeddings: bool = False,
+    mode: str = "single",            # "single" | "prefill-decode"
+    prefill_seq_len: int = 128,
 ) -> None:
-    """程序化入口：HF 模型 → epair"""
+    """程序化入口：HF 模型 → epair
+
+    mode:
+      - "single": 一张形状特化图 (seq_len=sample_seq_len)
+      - "prefill-decode": prefill (seq_len=prefill_seq_len) + decode (seq_len=1) 两图, 共享权重
+    """
     print(f"[1/3] Loading model from {hf_path}")
     artifact = load_model(hf_path, dtype=dtype, device=device)
     print(f"      Model: {type(artifact.model).__name__}")
     print(f"      Parameters: {sum(p.numel() for p in artifact.model.parameters()):,}")
     print(f"      Tokenizer files: {len(artifact.tokenizer_files)}")
+    print(f"      Wrapper: {artifact.wrapper_cls.__name__}")
+    print(f"      Embedding mode: {'external' if use_embeddings else 'internal'}")
+    print(f"      Export mode: {mode}")
 
     print(f"[2/3] Saving epair to {output_dir}")
-    save_epair(artifact, output_dir, max_file_size=max_file_size, sample_seq_len=sample_seq_len)
+    if mode == "prefill-decode":
+        save_epair_prefill_decode(
+            artifact, output_dir,
+            max_file_size=max_file_size,
+            kv_cache_max_len=kv_cache_max_len,
+            prefill_seq_len=prefill_seq_len,
+            use_embeddings=use_embeddings,
+        )
+    else:
+        save_epair(
+            artifact, output_dir,
+            max_file_size=max_file_size,
+            kv_cache_max_len=kv_cache_max_len,
+            sample_seq_len=sample_seq_len,
+            use_embeddings=use_embeddings,
+        )
 
     print(f"[3/3] Verifying output")
     out = Path(output_dir)
-    for name in ["ep_json_with_ascend_ir.json", "model_config.json", "weight_info.json"]:
+    if mode == "prefill-decode":
+        expected = ["prefill_ep_json_with_ascend_ir.json",
+                    "decode_ep_json_with_ascend_ir.json",
+                    "model_config.json", "weight_info.json"]
+    else:
+        expected = ["ep_json_with_ascend_ir.json",
+                    "model_config.json", "weight_info.json"]
+    for name in expected:
         fp = out / name
         print(f"      [{'OK' if fp.exists() else 'MISSING'}] {name}")
     print(f"      Weight files: {len(list(out.glob('weights_*.bin')))}")
@@ -607,9 +682,15 @@ def parse_args():
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--max-file-size", type=int, default=50*1024*1024*1024)
     parser.add_argument("--kv-cache-max-len", type=int, default=2048)
-    parser.add_argument("--sample-seq-len", type=int, default=128)
+    parser.add_argument("--sample-seq-len", type=int, default=128,
+                        help="single 模式的 seq_len")
     parser.add_argument("--use-embeddings", action="store_true",
                         help="Use external embeddings (no embed_tokens in graph)")
+    parser.add_argument("--mode", default="single", choices=["single", "prefill-decode"],
+                        help="single: 一张形状特化图; prefill-decode: prefill+decode 两图 + 共享权重")
+    parser.add_argument("--prefill-seq-len", type=int, default=128,
+                        help="prefill-decode 模式下 prefill 图的 seq_len (decode 固定 1)")
+    # 量化参数: TBD
     return parser.parse_args()
 ```
 
@@ -642,20 +723,26 @@ loader.load_model(hf_path, dtype, device)   # 模型类型自动探测
     └── collect_tokenizer_files(hf_path)
 
     ▼
-saver.save_epair(artifact, output_dir, max_file_size)
+saver.save_epair(artifact, output_dir, max_file_size, kv_cache_max_len, sample_seq_len, use_embeddings)
     │
     ├── register_ge_converters()              ← 步骤 1: 注册 GE converters
+    │     (cann_lm.* 自定义算子 + aten.softplus/eye/type_as/index_copy 等)
     │
-    ├── create_sample_inputs(artifact)
+    ├── wrapper = artifact.wrapper_cls(model, kv_cache_max_len, batch=1).eval()
+    │
+    ├── wrapper.get_sample_inputs(seq_len, use_embeddings)
     │     → torch.randint(0, vocab_size, (1, seq_len))
-    │
-    ├── ExportWrapper(artifact.model).eval()  ← 步骤 3: 统一返回 logits
+    │     → 4D causal-over-buffer mask [1, 1, seq_len, kv_cache_max_len]
+    │     → 预分配零 KV buffer list[(k,v), ...]
     │
     ├── torch.export.export(wrapper, sample_inputs, strict=False)
     │     → ExportedProgram
     │
     ├── torch_delegate.export_to_epair(ep)
     │     → EpairContents (ep_json + state_dict + graph_signature)
+    │     → _assert_tensor_metadata 节点由 C++ 侧 IsAssertTensorMetadataNode 兜底跳过 (无需 strip)
+    │
+    ├── del ep, wrapper, artifact.model + gc.collect()    ← 大模型 OOM 防护
     │
     ├── epair_utils.consolidated_weights_save(epair, output_dir, max_file_size)
     │     → pack_weights: bfloat16→view(int16), 非持久 buffer 从 module 补充
@@ -664,13 +751,13 @@ saver.save_epair(artifact, output_dir, max_file_size)
     │     → ep_json_with_ascend_ir.json
     │
     ├── copy_tokenizer_files(artifact.tokenizer_files, output_dir)
-    │     → tokenizer.json, tokenizer_config.json, ...
+    │     → tokenizer.json, tokenizer_config.json, special_tokens_map.json
     │
-    ├── save_model_config(artifact, output_dir)
-    │     → model_config.json (to_dict / dataclasses.asdict fallback)
-    │
-    ├── torch_delegate.epair_save(epair, pt2_path)   ← .pt2 供 Python 回环验证
-    └── save sample_inputs → input_0.bin             ← 供 C++ 验证
+    └── save_model_config(artifact, output_dir)
+          → model_config.json (to_dict / dataclasses.asdict fallback)
+
+# 注: .pt2 (Python 回环验证) + input_N.bin (C++ 验证输入) 不由 save_epair 生成,
+#     由 verify 脚本另行产出 (见 prefill-decode 章节 "不保存 .pt2 / input_N.bin")
 ```
 
 ## 输出文件布局
@@ -682,18 +769,16 @@ output_dir/
 ├── weights_0.bin                  # 权重数据 (按 max_file_size 切分, 默认 50GB)
 ├── weights_1.bin
 ├── model_config.json              # 自定义 config + HF 元信息
-├── generation_config.json         # 从 HF 复制
 ├── tokenizer.json                 # 从 HF 复制
 ├── tokenizer_config.json          # 从 HF 复制
 └── special_tokens_map.json        # 从 HF 复制
-
-output_dir.pt2                      # .pt2 归档 (供 Python 侧 epair_load 回环验证)
-input_0.bin                         # 示例输入 (供 C++ 侧验证)
 ```
+
+> `save_epair` **不输出** `.pt2`（Python 回环验证）和 `input_N.bin`（C++ 验证输入），二者由 verify 脚本另行生成，不纳入正式产物（与 prefill-decode 模式一致，见下方"不保存 .pt2 / input_N.bin"）。`generation_config.json` 也不再由 converter 复制（见遗留任务 1）。
 
 ## C++ 加载侧
 
-导出产物由 C++ `EpairModelLoader` 加载，位于 `examples/export_llm_model/`。
+导出产物由 C++ `EpairModelLoader` 加载。**加载器库源码**位于 `cann_lm/converter/export/csrc/`（`backend/epair_model_loader.cc` / `ge_graph_builder.cc` / `ge_weight_loader.cc` / `epair_model_parser.cc`，构建产物 `libtorch_delegate_backend.so`，设计详见 `export_design.md`）；**示例 main + 算子注册**位于 `examples/export_llm_model/`（`main.cpp` + `reg_register.h`）。
 
 ### EpairModelLoader API (2 路径)
 
@@ -712,9 +797,15 @@ loader.GetGEGraph(&graph);  // 构建 GE Graph (解析 ep_json + 懒加载 bin)
 2. **Extract GE Graph** — 获取 Graph 副本，验证初始化
 3. **Compile graph** — `aclgrphBuildInitialize` → `aclgrphBuildModel` → `aclgrphSaveModel` → `.om`
 
-### GE 算子注册 (reg_register.h)
+### GE 算子注册 (两层)
 
-不同模型需要不同的 GE 算子集。C++ 侧通过 `reg_register.h` 注册算子：
+GE 算子注册分两层，互补：
+
+1. **Python 侧 `converter/export/ge_converter.py`** — `register_ge_converters()` 把 `torch.ops` 节点映射到 GE 算子，在 `export_to_epair` 前调用（save_epair 步骤 1）。覆盖：
+   - `cann_lm.*` 自定义算子：`add_rms_norm`/`rms_norm`/`rotary_mul`/`rope_in_place`/`quant_matmul`/`fused_infer_attention_score`/`beam_search`（算子定义在 `cann_lm/models/fused_ops/`，GE 映射实现见 `compositte_op.md`）
+   - 部分 `aten.*` 算子：`softplus`/`eye`/`type_as`/`index_copy`（torch.export 残留的 aten 节点，torchair 无内置映射时补）
+
+2. **C++ 侧 `examples/export_llm_model/reg_register.h`** — 注册 GE 图编译期需要的算子实现（aclgrphBuildModel 前），不同模型需要的算子集不同：
 
 | 算子类别 | 示例算子 | 用于 |
 |---------|---------|------|
@@ -883,7 +974,7 @@ source /home/developer/Ascend/cann/set_env.sh
 export PYTHONPATH="/mnt/workspace/project/CANN-LM_5883:${PYTHONPATH:-}"
 export TORCH_DEVICE_BACKEND_AUTOLOAD=0
 
-# 模式 A: 图内查表 (默认)
+# 模式 A: 图内查表 (默认, single 图)
 python cann_lm/converter/cann-lm-converter.py \
     --hf-path /path/to/qwen3-0.6B \
     --output-dir /path/to/output \
@@ -897,6 +988,15 @@ python cann_lm/converter/cann-lm-converter.py \
     --dtype float16 \
     --sample-seq-len 8 \
     --use-embeddings
+
+# 模式 C: prefill/decode 分离 (推理用, prefill+decode 两图 + 共享权重)
+#         详见下方 "prefill/decode 分离导出" 章节
+python cann_lm/converter/cann-lm-converter.py \
+    --hf-path /path/to/gemma-4-E2B \
+    --output-dir /path/to/output \
+    --mode prefill-decode \
+    --prefill-seq-len 128 \
+    --dtype bfloat16
 ```
 
 ## prefill/decode 分离导出
@@ -916,10 +1016,12 @@ from cann_lm.converter.saver import save_epair_prefill_decode
 
 save_epair_prefill_decode(
     artifact, output_dir,
-    prefill_seq_len=128,       # prefill 图 seq_len (可配)
-    kv_cache_max_len=2048,
-    use_embeddings=False,      # True: 图外查表
-    max_file_size=50*1024**3,
+    *,
+    max_file_size=50*1024**3,      # 单 bin 最大字节数
+    kv_cache_max_len=2048,         # KV buffer 第一维
+    prefill_seq_len=128,           # prefill 图 seq_len (可配)
+    use_embeddings=False,          # True: 图外查表
+    save_weights=True,             # 是否写 weights_*.bin (False 只写 ep_json)
 )
 ```
 
@@ -963,9 +1065,9 @@ td::EpairModelLoader decode_loader("decode_ep_json_with_ascend_ir.json",
 
 ## 待实现功能
 
-1. **统一 cache 签名** — ExportWrapper 基类 + 每模型子类，KV cache 显式图 I/O（详见上方章节）
+1. **统一 cache 签名（全量版）** — ExportWrapper 基类 + 每模型子类（**轻量版已实现**：基类 `forward`/`get_sample_inputs` + 3 个子类 `_drive_layers`，KV cache 显式图 I/O，见 saver 章节）；**全量版待做**（各 attention 加 scatter-write 路径，一张静态图覆盖 prefill+decode，见"目标导出方案"章节）
 2. ~~**prefill/decode 分离**~~ — **已实现**（`saver.save_epair_prefill_decode` + CLI `--mode prefill-decode`，见下方"prefill/decode 分离导出"章节）。gemma4 Python 导出 + C++ OM 编译全链路跑通（`prefill.om` + `decode.om` 各 9.4GB）
-3. **量化模块** (`cann_lm/converter/quant/`) — 权重量化（方案 TBD）
+3. **量化模块** — **未实现**。`fused_ops/quant_matmul` 是 fake-only 算子（schema + meta，export-only，无 eager 计算），`_quant_matmul_converter.py` 仅把 op 映射到 `ge.QuantBatchMatmulV4`（真实计算在 NPU/GE 侧）。待实现：calibration、权重量化（per-channel/per-token）、A8W4/MXFP4 打包布局（a8w4 分支当前为去 torch_npu 依赖已去掉）
 4. **分区模式** — 按 transformer layer 分区保存，支持多卡加载（TBD）
 
 ## 遗留任务
@@ -980,10 +1082,11 @@ td::EpairModelLoader decode_loader("decode_ep_json_with_ascend_ir.json",
      - 方案 B：将 delta rule 封装为自定义 GE 算子（类似 `FusedInferAttentionScore`），不展开内部循环（工作量大）
      - 方案 C：在模型代码中集成 fla kernel（和 transformers 一致：有 fla 用 kernel，无 fla fallback）
 4. ~~**新 ExportWrapper 的 ep_json 格式与 C++ 解析器不兼容**~~ — **[已解决]** C++ `epair_model_parser.cc:187-203` 的 `parse_named_arg` 已支持 `arg.name` 和 `arg.as_tensor.name` 两种格式（兜底解决）。原描述：新统一 ExportWrapper 产生 `{"arg": {"name": "..."}}` 格式，C++ 报 `INVALID_GRAPH_INPUTS`，现已不阻塞。
-5. **qwen3 / qwen3.5 scatter-write 改造** — 当前方案 B（预分配 buffer + `index_copy` scatter-write）仅实现 gemma4。qwen3 和 qwen3.5 的 attention 层同样需要从 `torch.cat` 改为 `index_copy` + 预分配 buffer。**基类 `ExportWrapper.get_sample_inputs` 的 mask 已统一为 scatter-write 语义（causal-over-buffer `[kv_max]`）**，故 qwen3/qwen3.5 在完成 scatter 改造前，导出会因 attn K 维度（`kv_max + seq_len`）与 mask（`kv_max`）不匹配报 broadcast 错误。需注意：
+5. **qwen3 / qwen3.5 scatter-write 改造** — 当前方案 B（预分配 buffer + `index_copy` scatter-write）仅实现 gemma4。qwen3 和 qwen3.5 的 attention 层同样需要从 `torch.cat` 改为 `index_copy` + 预分配 buffer。**基类 `ExportWrapper.get_sample_inputs` 的 mask 已统一为 scatter-write 语义（causal-over-buffer `[kv_max]`）**，故 qwen3/qwen3.5 在完成 scatter 改造前，走 CLI（`get_sample_inputs` 传预分配 KV buffer + scatter mask）导出会因 attn K 维度（`kv_max + seq_len`）与 mask（`kv_max`）不匹配报 broadcast 错误。需注意：
    - qwen3: 标准 GQA，改动简单（attention 层 `torch.cat` → `index_copy`）
    - qwen3.5: 混合架构（6 full + 18 linear），linear attention 的 `recurrent_state` 不是 KV buffer 格式，需要单独设计 recurrent buffer 的增量协议
     - 两个模型的 `ExportWrapper._drive_layers` 也需要同步修改（`get_sample_inputs` 已用基类统一 scatter mask，无需子类 override）
+   - **绕过（临时）**：`examples/export_llm_model/export_llm_model_epair.py` 用 `_build_simple_sample_inputs`（`past=None`，模型内部自建 cache，K=seq_len）绕过 scatter mask 不匹配问题，可在 scatter 改造完成前导出 qwen3 单图验证精度（非全量静态图，无法覆盖 prefill+decode）。qwen3.5 仍卡在遗留任务 3 的 linear attention segfault。
 6. ~~**aten.index_copy.default GE converter 缺失**~~ — **[已解决]** 在 `converter/export/ge_converter.py` 注册 `aten.index_copy.default` converter，用**方案 B：`ge.InplaceUpdate` + `ge.TransposeD`** 实现（transpose 把 `dim` 换到 axis 0，`InplaceUpdate` 按 1D index 赋值，再 transpose back）。Python 导出 + C++ OM 编译全链路打通。
    - **实现**：`_convert_index_copy` 在 `register_ge_converters()` 里，用 `ge.TensorMove(self)` 避免 in-place 精度问题（参考 `index_add.py`），index 转 DT_INT32，`perm`/`inverse_perm` 按 `dim` 构造。**dtype 对齐**：用 `ge.Cast(transposed_source, dst_type=int(self.dtype))` 强制 source 对齐 self dtype（InplaceUpdate 要求 x/v 同 dtype；GE infershape 前 `transposed_self.dtype` 是 `DT_UNDEFINED`，须用 `self.dtype`）
    - **C++ 加载侧**：`examples/export_llm_model/reg_register.h` 补注册 8 个算子：`InplaceUpdate`/`TransposeD`（index_copy converter 用）、`GreaterEqual`/`LessEqual`/`LogicalAnd`/`LogicalNot`/`MaskedFill`/`TensorMove`（ep_json 里有但原 reg_register.h 未注册）
@@ -1008,6 +1111,15 @@ td::EpairModelLoader decode_loader("decode_ep_json_with_ascend_ir.json",
 | gemma4-E2B | 0.17 | ✅ | 35 | KV 共享 + sliding + per-layer embeddings |
 
 所有模型生成的 token 序列与 HF 完全一致，精度差异在 float16 正常范围内。
+
+#### gemma4 export decode bug 修复 (2026-07-25)
+
+`examples/export_llm_model/llm_engine_on_cpu/debug_gemma4/compare_hf_vs_ep.py` 之前 EP（wrapper scatter 模式）decode 退化重复（"my name is my name is" / "人工智能人工智能"），而 CLM（cat 模式 `model.generate`）== HF。根因 + 修复：
+
+1. **`_prepare_causal_mask` 4D sliding window decode bug**（根因，`modeling_gemma4.py`）：4D mask 路径对 sliding_attention 层套 window 时用 `q_range=arange(q_len)` 算 q 位置。decode 时 `q_len=1` → `arange(1)=[0]`，但 decode token 在序列中真实位置是 6（非 0），window 算出"只 k_pos=0 可见"，屏蔽所有其他 K → sliding 层只看第一个 prefill token → 退化。修复：`_prepare_causal_mask` 加 `new_kv_cache_pos` 参数，4D sliding 用 `new_kv_cache_pos`（q 在 buffer 的真实写入位置，与 k_pos 同基准）算 window，decode 时正确。两处调用（text_model forward 内）传 `new_kv_cache_pos`。
+2. **`Gemma4ExportWrapper._drive_layers` `shared_kv_states` 持久化**（`models/gemma4/export_wrapper.py`）：wrapper 丢弃 model 返回的 `shared_kv_states`（每次 forward 新建空 dict），而 `model.generate`（`modeling_gemma4.py` line 800）正确跨步持久。修复：wrapper 存 `self._shared_kv_states`，跨 prefill/decode 调用持久（对齐 generate）。非退化根因（store 层 decode 覆盖 shared dict），但更稳健。
+
+验证：greedy 模式 EP == HF == CLM 完全一致（"Hello, my name is" → " Alex. How are you today?"；"人工智能的未来发展方向是" → "多维度的，涵盖了从基础理论的突破到实际应用场景的深度融合。"）。sampling 模式 EP 不退化，第一 token 多数对，分叉后输出连贯（符合 bfloat16 tie-breaking 预期）。
 
 ### gemma4 误差积累分析
 

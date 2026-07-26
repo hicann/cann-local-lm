@@ -36,8 +36,8 @@ os.environ.setdefault("TORCH_DEVICE_BACKEND_AUTOLOAD", "0")
 import torch
 from torch import nn
 
-from .fake_ops.ops import *
-from .fake_ops.ge_converter import register_ge_converters
+from cann_lm.models.fused_ops.ops import *  # noqa: F401  (registers cann_lm fused ops)
+from cann_lm.converter.export.ge_converter import register_ge_converters
 
 BATCH_SIZE = 128
 SEQ_LEN = 2

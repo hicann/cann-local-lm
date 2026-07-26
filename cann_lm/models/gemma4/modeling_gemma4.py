@@ -534,6 +534,7 @@ class Gemma4TextModel(nn.Module):
         inputs_embeds: torch.Tensor,
         attention_mask: torch.Tensor | None = None,
         layer_type: str = "sliding_attention",
+        new_kv_cache_pos: torch.Tensor | None = None,
     ) -> torch.Tensor | None:
         batch_size, seq_len = inputs_embeds.shape[:2]
         device = inputs_embeds.device
@@ -578,19 +579,26 @@ class Gemma4TextModel(nn.Module):
                 full_mask = key_valid.expand(batch_size, seq_len, seq_len)
             
             mask = full_mask
-            return torch.where(mask, torch.tensor(0.0, device=device, dtype=dtype), torch.tensor(min_dtype, device=device, dtype=dtype)).unsqueeze(0)
+            # 2D mask: [batch, seq, seq] → [batch, 1, seq, seq] (heads 维 broadcast)
+            return torch.where(mask, torch.tensor(0.0, device=device, dtype=dtype), torch.tensor(min_dtype, device=device, dtype=dtype)).unsqueeze(1)
 
         # 4D mask: apply sliding window restriction for sliding_attention layers
         if attention_mask.dim() == 4:
+            q_len = attention_mask.shape[-2]
+            kv_len = attention_mask.shape[-1]
             if layer_type == "sliding_attention":
                 sliding_window = getattr(self.config, "sliding_window", None)
-                kv_len = attention_mask.shape[-1]
+                # q 的 buffer 写入位置: 用 new_kv_cache_pos (与 k_pos 同基准), 而非 arange(q_len).
+                # decode 时 arange(1)=[0] != 真实写入位置 (如 8), 会让 window 错误屏蔽所有 k_pos!=0.
+                # new_kv_cache_pos 是 q 写进 buffer 的位置, 直接对应 buffer 维度.
                 if sliding_window is not None and sliding_window > 0 and kv_len > sliding_window:
-                    q_len = attention_mask.shape[-2]
                     min_dtype_val = torch.finfo(attention_mask.dtype).min
-                    q_range = torch.arange(q_len, device=attention_mask.device).unsqueeze(1)
-                    k_range = torch.arange(kv_len, device=attention_mask.device).unsqueeze(0)
-                    diff = q_range - k_range
+                    if new_kv_cache_pos is not None:
+                        q_pos_buf = new_kv_cache_pos.to(device=attention_mask.device, dtype=attention_mask.dtype)
+                    else:
+                        q_pos_buf = torch.arange(q_len, device=attention_mask.device, dtype=attention_mask.dtype)
+                    k_pos = torch.arange(kv_len, device=attention_mask.device, dtype=attention_mask.dtype)
+                    diff = q_pos_buf.unsqueeze(1) - k_pos.unsqueeze(0)
                     window_mask = ~((diff >= 0) & (diff <= sliding_window - 1))
                     attention_mask = attention_mask.masked_fill(
                         window_mask.unsqueeze(0).unsqueeze(0), min_dtype_val
@@ -630,7 +638,7 @@ class Gemma4TextModel(nn.Module):
         if position_ids is None:
             position_ids = self._prepare_position_ids(inputs_embeds, past_key_values)
 
-        causal_mask = self._prepare_causal_mask(inputs_embeds, attention_mask)
+        causal_mask = self._prepare_causal_mask(inputs_embeds, attention_mask, new_kv_cache_pos=new_kv_cache_pos)
         rope_embs = self._build_rope_embeddings_for_layers(inputs_embeds, position_ids)
 
         if shared_kv_states is None:
@@ -647,7 +655,7 @@ class Gemma4TextModel(nn.Module):
             layer_type = self.config.layer_types[i]
             pos_emb = rope_embs[layer_type]
 
-            mask = self._prepare_causal_mask(inputs_embeds, attention_mask, layer_type)
+            mask = self._prepare_causal_mask(inputs_embeds, attention_mask, layer_type, new_kv_cache_pos=new_kv_cache_pos)
 
             per_layer_input = per_layer_inputs[:, :, i, :] if per_layer_inputs is not None else None
             hidden_states = layer(

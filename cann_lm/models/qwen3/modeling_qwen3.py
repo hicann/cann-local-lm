@@ -211,6 +211,7 @@ class Qwen3Attention(nn.Module):
         position_embeddings: tuple[torch.Tensor, torch.Tensor],
         attention_mask: torch.Tensor | None = None,
         past_key_values: list | None = None,
+        new_kv_cache_pos: torch.Tensor | None = None,
         **_kwargs,
     ) -> torch.Tensor:
         bsz, seq_len, _ = hidden_states.shape
@@ -232,10 +233,20 @@ class Qwen3Attention(nn.Module):
 
         if past_key_values is not None:
             cache = past_key_values[self.layer_idx]
-            if cache is not None:
+            if new_kv_cache_pos is not None and cache is not None:
+                # scatter-write: index_copy 到预分配 buffer (K=kv_max 固定)
+                cache_k = cache[0].index_copy(2, new_kv_cache_pos, key_states)
+                cache_v = cache[1].index_copy(2, new_kv_cache_pos, value_states)
+                past_key_values[self.layer_idx] = (cache_k, cache_v)
+                key_states = cache_k
+                value_states = cache_v
+            elif cache is not None:
+                # fallback: torch.cat (K=kv_max+seq_len, 非 scatter, eager generate 用)
                 key_states = torch.cat([cache[0], key_states], dim=2)
                 value_states = torch.cat([cache[1], value_states], dim=2)
-            past_key_values[self.layer_idx] = (key_states, value_states)
+                past_key_values[self.layer_idx] = (key_states, value_states)
+            else:
+                past_key_values[self.layer_idx] = (key_states, value_states)
 
         attn_output, _ = eager_attention_forward(
             self,
@@ -276,6 +287,7 @@ class Qwen3DecoderLayer(nn.Module):
         position_embeddings: tuple[torch.Tensor, torch.Tensor],
         attention_mask: torch.Tensor | None = None,
         past_key_values: list | None = None,
+        new_kv_cache_pos: torch.Tensor | None = None,
         **kwargs,
     ) -> torch.Tensor:
         residual = hidden_states
@@ -285,6 +297,7 @@ class Qwen3DecoderLayer(nn.Module):
             position_embeddings=position_embeddings,
             attention_mask=attention_mask,
             past_key_values=past_key_values,
+            new_kv_cache_pos=new_kv_cache_pos,
         )
         hidden_states = residual + hidden_states
 
@@ -330,13 +343,19 @@ class Qwen3TextModel(nn.Module):
 
         # Single-token decode step with an active KV cache: the single query
         # may attend to all cached keys, no additive mask is needed.
-        if past_key_values is not None and past_key_values[0] is not None and seq_len == 1:
+        # (scatter 模式传 4D mask 屏蔽未写入位置, 不 return None)
+        if (past_key_values is not None and past_key_values[0] is not None
+                and seq_len == 1 and attention_mask is None):
             return None
 
         if attention_mask is None:
             min_dtype = torch.finfo(dtype).min
-            mask = torch.full((seq_len, seq_len), min_dtype, device=device, dtype=dtype)
-            mask = torch.triu(mask, diagonal=1)
+            past_len = past_key_values[0][0].shape[2] if (
+                past_key_values is not None and past_key_values[0] is not None) else 0
+            total_len = past_len + seq_len
+            q_pos = torch.arange(seq_len, device=device).unsqueeze(1) + past_len
+            k_pos = torch.arange(total_len, device=device).unsqueeze(0)
+            mask = torch.where(k_pos <= q_pos, torch.tensor(0.0, dtype=dtype, device=device), min_dtype)
             return mask.unsqueeze(0).unsqueeze(0)
 
         if attention_mask.dim() == 2:
@@ -356,6 +375,7 @@ class Qwen3TextModel(nn.Module):
         past_key_values: list | None = None,
         inputs_embeds: torch.Tensor | None = None,
         output_hidden_states: bool = False,
+        new_kv_cache_pos: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, list | None]:
         if inputs_embeds is None:
             inputs_embeds = self.embed_tokens(input_ids)
@@ -374,6 +394,7 @@ class Qwen3TextModel(nn.Module):
                 position_embeddings=position_embeddings,
                 attention_mask=causal_mask,
                 past_key_values=past_key_values,
+                new_kv_cache_pos=new_kv_cache_pos,
             )
             if output_hidden_states:
                 all_hidden_states = all_hidden_states + (hidden_states,)
@@ -413,6 +434,7 @@ class Qwen3ForCausalLM(nn.Module):
         inputs_embeds: torch.Tensor | None = None,
         labels: torch.Tensor | None = None,
         output_hidden_states: bool = False,
+        new_kv_cache_pos: torch.Tensor | None = None,
     ) -> dict:
         model_output = self.model(
             input_ids=input_ids,
@@ -421,6 +443,7 @@ class Qwen3ForCausalLM(nn.Module):
             past_key_values=past_key_values,
             inputs_embeds=inputs_embeds,
             output_hidden_states=output_hidden_states,
+            new_kv_cache_pos=new_kv_cache_pos,
         )
         if output_hidden_states:
             hidden_states, past_key_values, all_hidden_states = model_output

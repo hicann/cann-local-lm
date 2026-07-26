@@ -319,16 +319,24 @@ class SimpleKVCache:
         self.values: list[torch.Tensor | None] = []
 
     def update(
-        self, key_states: torch.Tensor, value_states: torch.Tensor, layer_idx: int
+        self, key_states: torch.Tensor, value_states: torch.Tensor, layer_idx: int,
+        new_kv_cache_pos: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         while len(self.keys) <= layer_idx:
             self.keys.append(None)
             self.values.append(None)
 
-        if self.keys[layer_idx] is None:
+        if new_kv_cache_pos is not None and self.keys[layer_idx] is not None:
+            # scatter-write: index_copy 到预分配 buffer 的 new_kv_cache_pos 位置 (K=kv_max 固定)
+            cache_k = self.keys[layer_idx].index_copy(2, new_kv_cache_pos, key_states)
+            cache_v = self.values[layer_idx].index_copy(2, new_kv_cache_pos, value_states)
+            self.keys[layer_idx] = cache_k
+            self.values[layer_idx] = cache_v
+        elif self.keys[layer_idx] is None:
             self.keys[layer_idx] = key_states
             self.values[layer_idx] = value_states
         else:
+            # fallback: torch.cat 累积 (K=kv_max+seq_len, 非 scatter, eager generate 用)
             self.keys[layer_idx] = torch.cat([self.keys[layer_idx], key_states], dim=2)
             self.values[layer_idx] = torch.cat([self.values[layer_idx], value_states], dim=2)
 
@@ -515,6 +523,7 @@ class Qwen3_5Attention(nn.Module):
         position_embeddings: tuple[torch.Tensor, torch.Tensor],
         attention_mask: torch.Tensor | None = None,
         past_key_values: SimpleKVCache | None = None,
+        new_kv_cache_pos: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
         input_shape = hidden_states.shape[:-1]
         hidden_shape = (*input_shape, -1, self.head_dim)
@@ -532,7 +541,8 @@ class Qwen3_5Attention(nn.Module):
         query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
 
         if past_key_values is not None:
-            key_states, value_states = past_key_values.update(key_states, value_states, self.layer_idx)
+            key_states, value_states = past_key_values.update(
+                key_states, value_states, self.layer_idx, new_kv_cache_pos)
 
         attn_output, attn_weights = eager_attention_forward(
             self, query_states, key_states, value_states, attention_mask,
@@ -582,6 +592,7 @@ class Qwen3_5DecoderLayer(nn.Module):
         attention_mask: torch.Tensor | None = None,
         past_key_values: SimpleKVCache | None = None,
         delta_cache: SimpleDeltaNetCache | None = None,
+        new_kv_cache_pos: torch.Tensor | None = None,
     ) -> torch.Tensor:
         residual = hidden_states
         hidden_states = self.input_layernorm(hidden_states)
@@ -598,6 +609,7 @@ class Qwen3_5DecoderLayer(nn.Module):
                 attention_mask=attention_mask,
                 past_key_values=past_key_values,
                 position_embeddings=position_embeddings,
+                new_kv_cache_pos=new_kv_cache_pos,
             )
 
         hidden_states = residual + hidden_states
@@ -670,6 +682,7 @@ class Qwen3_5TextModel(nn.Module):
         delta_cache: SimpleDeltaNetCache | None = None,
         inputs_embeds: torch.Tensor | None = None,
         use_cache: bool = False,
+        new_kv_cache_pos: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, SimpleKVCache | None, SimpleDeltaNetCache | None]:
         if (input_ids is None) and (inputs_embeds is None):
             raise ValueError("You must specify either input_ids or inputs_embeds")
@@ -683,6 +696,24 @@ class Qwen3_5TextModel(nn.Module):
 
         if use_cache and past_key_values is None:
             past_key_values = SimpleKVCache()
+        if use_cache and delta_cache is None:
+            # 自动创建 delta_cache (linear attention recurrent state), 对齐 generate 逻辑
+            first_linear_layer_idx = next(
+                (i for i, lt in enumerate(self.config.layer_types)
+                 if lt == "linear_attention"), None)
+            if first_linear_layer_idx is not None:
+                gdn = self.layers[first_linear_layer_idx].linear_attn
+                delta_cache = SimpleDeltaNetCache(
+                    num_layers=self.config.num_hidden_layers,
+                    conv_dim=gdn.conv_dim,
+                    conv_kernel_size=gdn.conv_kernel_size,
+                    k_head_dim=gdn.head_k_dim,
+                    v_head_dim=gdn.head_v_dim,
+                    num_v_heads=gdn.num_v_heads,
+                    batch_size=batch_size,
+                    device=inputs_embeds.device,
+                    dtype=inputs_embeds.dtype,
+                )
 
         if position_ids is None:
             past_len = past_key_values.get_seq_length() if past_key_values is not None else 0
@@ -722,6 +753,7 @@ class Qwen3_5TextModel(nn.Module):
                 attention_mask=layer_mask,
                 past_key_values=past_key_values,
                 delta_cache=delta_cache,
+                new_kv_cache_pos=new_kv_cache_pos,
             )
 
         hidden_states = self.norm(hidden_states)
@@ -747,6 +779,7 @@ class Qwen3_5ForCausalLM(nn.Module):
         inputs_embeds: torch.Tensor | None = None,
         labels: torch.Tensor | None = None,
         use_cache: bool = False,
+        new_kv_cache_pos: torch.Tensor | None = None,
     ) -> dict:
         hidden_states, past_key_values, delta_cache = self.model(
             input_ids=input_ids,
@@ -755,6 +788,7 @@ class Qwen3_5ForCausalLM(nn.Module):
             delta_cache=delta_cache,
             inputs_embeds=inputs_embeds,
             use_cache=use_cache,
+            new_kv_cache_pos=new_kv_cache_pos,
         )
         logits = self.lm_head(hidden_states)
 

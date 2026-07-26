@@ -41,7 +41,42 @@ from cann_lm.models.gemma4 import Gemma4ForCausalLM, Gemma4TextConfig
 from cann_lm.models.gemma4.modeling_gemma4 import load_gemma4_weights
 from cann_lm.models.gemma4.export_wrapper import Gemma4ExportWrapper
 
-HF_PATH = "/mnt/workspace/data/models/gemma-4-E2B"
+
+def _register_cann_lm_decompositions():
+    """注册 cann_lm 自定义算子的 ONNX decomposition (分解为 aten ops → ONNX symbolic).
+
+    仅对有 CPU eager kernel 的算子 (rms_norm/add_rms_norm/rotary_mul) 注册,
+    fake-only 算子 (rope_in_place/quant_matmul/fused_infer_attention_score/beam_search)
+    无 eager kernel, 需单独 ONNX symbolic (此处不涉及, gemma4 不用).
+    """
+    from torch._decomp import register_decomposition
+
+    @register_decomposition(torch.ops.cann_lm.rms_norm.default)
+    def _rms_norm_decomp(x, gamma, *, epsilon=1e-6):
+        ms = x.float().pow(2).mean(dim=-1, keepdim=True)
+        rstd = torch.rsqrt(ms + epsilon)
+        y = (x.float() * rstd * gamma.float()).to(x.dtype)
+        return y, rstd
+
+    @register_decomposition(torch.ops.cann_lm.add_rms_norm.default)
+    def _add_rms_norm_decomp(x1, x2, gamma, *, epsilon=1e-6):
+        s = x1 + x2
+        ms = s.float().pow(2).mean(dim=-1, keepdim=True)
+        rstd = torch.rsqrt(ms + epsilon)
+        y = (s.float() * rstd * gamma.float()).to(s.dtype)
+        return y, rstd, s
+
+    @register_decomposition(torch.ops.cann_lm.rotary_mul.default)
+    def _rotary_mul_decomp(x, cos, sin, *, rotary_mode="half"):
+        if rotary_mode != "half":
+            raise NotImplementedError(f"rotary_mode={rotary_mode!r} not supported")
+        half = x.shape[-1] // 2
+        x1 = x[..., :half]
+        x2 = x[..., half:]
+        rotated = torch.cat((-x2, x1), dim=-1)
+        return (x * cos + rotated * sin).to(x.dtype)
+
+HF_PATH = "/mnt/workspace/data/models/gemma-4-E2B-it"
 OUT_ONNX = Path(__file__).resolve().parent / "generate" / "gemma4_5layers_kv.onnx"
 SEQ_LEN = 8
 NUM_LAYERS = 5
@@ -49,7 +84,8 @@ KV_CACHE_MAX_LEN = 2048
 
 
 def main() -> None:
-    dtype = torch.float16
+    _register_cann_lm_decompositions()
+    dtype = torch.bfloat16
 
     # 1. Build a 5-layer config
     with open(f"{HF_PATH}/config.json") as f:
@@ -98,7 +134,7 @@ def main() -> None:
         opset_version=17,
         input_names=input_names,
         output_names=output_names,
-        dynamo=False,
+        dynamo=True,
     )
     sz = OUT_ONNX.stat().st_size
     print(f"      Done. {OUT_ONNX} ({sz / 1024 / 1024:.1f} MB)")

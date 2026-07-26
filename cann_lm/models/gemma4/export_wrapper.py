@@ -23,6 +23,9 @@ from cann_lm.converter.export_wrapper import ExportWrapper
 class Gemma4ExportWrapper(ExportWrapper):
     """gemma4 子类：调原生 forward + 展平 KV cache + 处理 shared_kv_states"""
 
+    def __init__(self, model, *, kv_cache_max_len: int = 2048, batch: int = 1):
+        super().__init__(model, kv_cache_max_len=kv_cache_max_len, batch=batch)
+
     def _get_layer_head_dim(self, layer_idx: int) -> int:
         """gemma4: full_attention 层用 global_head_dim，sliding 层用 head_dim。
 
@@ -56,16 +59,13 @@ class Gemma4ExportWrapper(ExportWrapper):
             # 展平的 [k0, v0, k1, v1, ...] → 重建为 [(k0,v0), (k1,v1), ...]
             kv_list = [(past_key_values[i], past_key_values[i + 1]) for i in range(0, len(past_key_values), 2)]
 
-        # shared_kv_states: 传空 dict 避免 shared 层崩溃
-        # gemma4 有 num_kv_shared_layers 个层没有 k_proj/v_proj,
-        # 它们复用前面的层 KV, 需要 shared_kv_states 字典
-        # 轻量版传空 dict (第一个 full attention 层会产生 shared states)
-        shared_kv_states = {} if num_layers > 0 else None
-
+        # shared_kv_states: 传 None, model forward 内部新建 {} (store 层填, 共享层读, 单次 forward 内流转).
+        # 不持久化跨调用 (store 层 decode 时会用最新 cache_k 重填, 持久与否结果一致;
+        # 且持久化会触发 torch.export "tensor assigned during export" 报错).
         kwargs = {
             "attention_mask": attention_mask,
             "past_key_values": kv_list,
-            "shared_kv_states": shared_kv_states,
+            "shared_kv_states": None,
             "output_hidden_states": False,
             "new_kv_cache_pos": new_kv_cache_pos,
             "position_ids": position_ids,

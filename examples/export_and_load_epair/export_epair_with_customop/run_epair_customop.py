@@ -6,5 +6,5 @@ import torchair.core._backend as _backend
 _backend.initialize_graph_engine = lambda *a, **kw: None
 _backend.finalize_graph_engine = lambda *a, **kw: None
 
-from cann_lm.models.export_epair_with_customop import main
+from export_epair_with_customop import main
 main()

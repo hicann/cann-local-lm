@@ -1,11 +1,18 @@
 #!/usr/bin/env python3
-"""Export qwen3-0.6B model to epair format using cann_lm model definitions.
+"""Export LLM model (gemma4/qwen3/qwen3.5) to epair via cann_lm model definitions.
 
-Pipeline: config → model → weights → torch.export → epair → consolidated_weights_save
+通用导出脚本: --model 选择模型, --hf-path 指定 HF 权重目录, 复用
+cann_lm.converter.model_registry (ModelEntry: config/model/load_weights/wrapper)
++ ExportWrapper.get_sample_inputs 统一 I/O 契约。
+
+Pipeline: config -> model -> weights -> wrapper -> torch.export -> epair
+          -> strip _assert_tensor_metadata -> consolidated_weights_save
 """
 
 from __future__ import annotations
 
+import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -15,105 +22,102 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-from cann_lm.models.qwen3 import Qwen3ForCausalLM, Qwen3TextConfig, load_qwen3_weights
-from cann_lm.models.fake_ops import register_ge_converters
+from cann_lm.converter.model_registry import get_entry, available_models
+from cann_lm.converter.loader import build_config
+from cann_lm.converter.export.ge_converter import register_ge_converters
 from cann_lm.converter.export.epair_utils import consolidated_weights_save
 import torch_delegate
 
 ROOT = Path(__file__).resolve().parent
-HF_PATH = "/mnt/workspace/data/models/qwen3-0.6B"
+_DTYPE_MAP = {"float16": torch.float16, "bfloat16": torch.bfloat16, "float32": torch.float32}
 
 
-def _strip_assert_nodes_ep_json(epair) -> int:
-    """Remove aten._assert_tensor_metadata nodes from epair.ep_json.
+def _build_simple_sample_inputs(wrapper, seq_len: int) -> tuple:
+    """简单导出输入 (past=None, 模型内部创建 cache, 非 scatter-write 全 KV buffer 模式).
 
-    torch.export + torchair decomposition（run inside _optimize_and_convert）
-    会插入 _assert_tensor_metadata 节点（schema: () -> ()，无输出、无 GE 算子
-    映射，C++ PlanFallbackNode 会因 "no outputs" 报错）。pre-strip ExportedProgram
-    无效（export_to_epair 内部 decomposition 会重新插入），必须在 export_to_epair
-    之后、consolidated_weights_save 之前从 ep_json 移除。
+    适用于未完成 scatter-write 改造的模型 (torch.cat 拼接 past+new, K=seq_len);
+    scatter-write 模型也兼容 (past=None 走模型内部 cache 路径). 与 ExportWrapper.forward
+    签名对齐: (input_ids, attention_mask, position_ids, past_key_values,
+    new_kv_cache_pos, embeddings, output_pos).
     """
-    graph = epair.ep_json.get("graph_module", {}).get("graph", {})
-    nodes = graph.get("nodes", [])
-    before = len(nodes)
-    kept = [n for n in nodes if "_assert_tensor_metadata" not in n.get("target", "")]
-    removed = before - len(kept)
-    if removed:
-        graph["nodes"] = kept
-    return removed
+    config = wrapper.config
+    batch = wrapper.batch
+    dtype = next(wrapper.model.parameters()).dtype
+    input_ids = torch.randint(0, config.vocab_size, (batch, seq_len), dtype=torch.int64)
+    min_val = torch.finfo(dtype).min
+    q = torch.arange(seq_len, dtype=dtype).unsqueeze(1)
+    k = torch.arange(seq_len, dtype=dtype).unsqueeze(0)
+    mask = torch.where(k <= q, torch.tensor(0.0, dtype=dtype), min_val)
+    attention_mask = mask.unsqueeze(0).unsqueeze(0).expand(batch, 1, seq_len, seq_len)
+    position_ids = torch.arange(seq_len, dtype=torch.int64).unsqueeze(0).repeat(batch, 1)
+    new_kv_cache_pos = torch.arange(seq_len, dtype=torch.int64)
+    return (input_ids, attention_mask, position_ids, None, new_kv_cache_pos, None, None)
 
-def main():
+
+def export_model(
+    model_name: str,
+    hf_path: str,
+    seq_len: int,
+    dtype: torch.dtype,
+    output_dir: str,
+    kv_cache_max_len: int,
+) -> None:
     register_ge_converters()
+    entry = get_entry(model_name)
 
-    print(f"[1/4] Loading config from {HF_PATH}")
-    config = Qwen3TextConfig.from_pretrained(HF_PATH)
+    print(f"[1/5] Loading config from {hf_path} (model={model_name})")
+    with open(Path(hf_path) / "config.json") as f:
+        hf_config = json.load(f)
+    config = build_config(hf_config, entry)
     print(f"      hidden_size={config.hidden_size}, layers={config.num_hidden_layers}, "
           f"heads={config.num_attention_heads}, kv_heads={config.num_key_value_heads}, "
           f"head_dim={config.head_dim}, vocab={config.vocab_size}")
 
-    print(f"[2/4] Instantiating model (dtype=float16)")
-    model = Qwen3ForCausalLM(config)
-    model = model.to(dtype=torch.float16).eval()
-    total_params = sum(p.numel() for p in model.parameters())
-    print(f"      Parameters: {total_params:,}")
+    print(f"[2/5] Instantiating model (dtype={dtype})")
+    model = entry.model_cls(config)
+    model = model.to(dtype=dtype).eval()
+    print(f"      Parameters: {sum(p.numel() for p in model.parameters()):,}")
 
-    print(f"[3/4] Loading weights from {HF_PATH}")
-    model = load_qwen3_weights(model, HF_PATH, device="cpu", dtype=torch.float16)
+    print(f"[3/5] Loading weights from {hf_path}")
+    model = entry.load_weights_fn(model, hf_path, device="cpu", dtype=dtype)
 
-    # Qwen3ForCausalLM.forward 返回 dict（含 loss/logits/past_key_values/output_hidden_states），
-    # torch.export 会将 dict 的每个 value 作为单独的 graph output。
-    # C++ EpairModelParser 不支持 as_none 类型的 output_spec（如 loss=None, past_key_values=None），
-    # 需用 wrapper 只返回 logits tensor，使 ep_json 的 output_specs 只有一个 as_tensor 条目。
-    class Qwen3ExportWrapper(torch.nn.Module):
-        def __init__(self, model):
-            super().__init__()
-            self.model = model
+    print(f"[4/5] Building export wrapper (kv_cache_max_len={kv_cache_max_len})")
+    wrapper = entry.wrapper_cls(model, kv_cache_max_len=kv_cache_max_len, batch=1).eval()
+    sample_inputs = _build_simple_sample_inputs(wrapper, seq_len)
 
-        def forward(self, input_ids):
-            out = self.model(input_ids=input_ids, attention_mask=None,
-                             position_ids=None, past_key_values=None,
-                             inputs_embeds=None, labels=None,
-                             output_hidden_states=False)
-            return out["logits"]
-
-    wrapper = Qwen3ExportWrapper(model).eval()
-
-    print(f"[4/4] Exporting to epair")
-    batch, seq_len = 1, 8
-    input_ids = torch.randint(0, config.vocab_size, (batch, seq_len), dtype=torch.long)
-
-    # torch.export 即使 strict=False 也会自动插入 _assert_tensor_metadata 断言节点。
-    # 这些节点用于运行时验证中间张量的 shape/dtype/stride 是否与导出时一致，
-    # 每层 transformer 约产生 9 个断言点，qwen3-0.6B（28 层）共 262 个。
-    # 特点：
-    #   - 无输出（只断言不产生张量）
-    #   - 无 GE 算子映射（ascend_ir.source 为空）
-    #   - 纯 PyTorch 运行时验证，不是计算节点
-    #   - GE 编译阶段不需要形状验证，可安全移除
-    # 若不移除，C++ PlanFallbackNode 会因 "no outputs" 报错导致 Graph 构建失败。
-    exported = torch.export.export(wrapper, (input_ids,), strict=False)
-    # _remove_assert_tensor_metadata(exported)
+    print(f"[5/5] Exporting to epair (seq_len={seq_len})")
+    exported = torch.export.export(wrapper, sample_inputs, strict=False)
     epair = torch_delegate.export_to_epair(exported)
 
-    # export_to_epair 内部 decomposition 会重新插入 _assert_tensor_metadata 节点
-    # （无输出、无 GE 算子映射，C++ 加载会报 "no outputs"）。落盘前从 ep_json 移除。
-    removed = _strip_assert_nodes_ep_json(epair)
-    if removed:
-        print(f"[Strip] 移除了 {removed} 个 _assert_tensor_metadata 节点")
+    out = Path(output_dir).resolve()
+    out.mkdir(parents=True, exist_ok=True)
+    consolidated_weights_save(epair, out, save_weights=True, max_file_size=512 * 1024 * 1024)
 
-    output_dir = ROOT / "epair_model"
-    consolidated_weights_save(epair, output_dir, save_weights=True, max_file_size=512 * 1024 * 1024)
-
-    pt2_path = ROOT / "epair_model.pt2"
+    pt2_path = out.parent / f"{out.name}.pt2"
     torch_delegate.epair_save(epair, str(pt2_path))
     print(f"Saved: {pt2_path}")
 
-    for i, inp in enumerate((input_ids,)):
-        path = ROOT / f"input_{i}.bin"
-        inp.cpu().detach().numpy().tofile(path)
-        print(f"Saved input[{i}] shape={list(inp.shape)} -> {path}")
+    inp = sample_inputs[0]
+    inp_path = out.parent / f"input_0_{out.name}.bin"
+    inp.cpu().detach().numpy().tofile(inp_path)
+    print(f"Saved input[0] shape={list(inp.shape)} -> {inp_path}")
+    print(f"\nDone. Output: {out}")
 
-    print(f"\nDone. Output: {output_dir}")
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Export LLM model (gemma4/qwen3/qwen3.5) to epair via cann_lm definitions.")
+    parser.add_argument("--model", choices=available_models(), required=True,
+                        help="model name (gemma4/qwen3/qwen3_5)")
+    parser.add_argument("--hf-path", required=True, help="HF model directory (with config.json + weights)")
+    parser.add_argument("--seq-len", type=int, default=8)
+    parser.add_argument("--dtype", default="float16", choices=list(_DTYPE_MAP))
+    parser.add_argument("--output-dir", default="epair_model")
+    parser.add_argument("--kv-cache-max-len", type=int, default=2048)
+    args = parser.parse_args()
+
+    export_model(args.model, args.hf_path, args.seq_len, _DTYPE_MAP[args.dtype],
+                 args.output_dir, args.kv_cache_max_len)
 
 
 if __name__ == "__main__":

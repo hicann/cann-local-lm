@@ -24,6 +24,12 @@ from cann_lm.models.qwen3_5.modeling_qwen3_5 import SimpleKVCache
 class Qwen3_5ExportWrapper(ExportWrapper):
     """qwen3_5 子类：list ↔ SimpleKVCache 互转 + 调原生 forward"""
 
+    def __init__(self, model, *, kv_cache_max_len: int = 2048, batch: int = 1):
+        super().__init__(model, kv_cache_max_len=kv_cache_max_len, batch=batch)
+        # delta_cache 用 list 容器持久 (避 nn.Module tensor 属性赋值检测, torch.export 不报;
+        # linear attention 的 recurrent state 必须跨 prefill/decode 调用持久).
+        self._delta_cache_box = [None]
+
     def _get_full_attn_layer_indices(self) -> list[int]:
         """从 config.layer_types 获取 full_attention 层的索引"""
         layer_types = getattr(self.config, "layer_types", [])
@@ -41,17 +47,24 @@ class Qwen3_5ExportWrapper(ExportWrapper):
         cache = SimpleKVCache()
         if past_key_values is not None:
             full_attn_indices = self._get_full_attn_layer_indices()
-            for idx, (k, v) in enumerate(past_key_values):
-                layer_idx = full_attn_indices[idx] if idx < len(full_attn_indices) else idx
-                cache.update(k, v, layer_idx)
+            if len(past_key_values) == len(full_attn_indices):
+                # decode (reconstruct_kv 输出, 6 对, 只 full_attn, 顺序 full_attn_indices)
+                for idx, (k, v) in enumerate(past_key_values):
+                    cache.update(k, v, full_attn_indices[idx])
+            else:
+                # prefill (get_sample_inputs 输出, 24 对, 全层, 按 layer_idx 取 full_attn 层)
+                for layer_idx in full_attn_indices:
+                    k, v = past_key_values[layer_idx]
+                    cache.update(k, v, layer_idx)
 
         kwargs = {
             "attention_mask": attention_mask,
             "past_key_values": cache,
-            "delta_cache": None,
+            "delta_cache": self._delta_cache_box[0],
             "inputs_embeds": None,
             "labels": None,
             "use_cache": True,
+            "new_kv_cache_pos": new_kv_cache_pos,
         }
         # 总是传 input_ids (PLE 用, 不反查); embeddings 非 None 时也传 inputs_embeds (图外查表)
         # - use_embeddings=False (embeddings=None): 只传 input_ids, model 查 embed_tokens
@@ -65,6 +78,7 @@ class Qwen3_5ExportWrapper(ExportWrapper):
         outputs = self.model(**kwargs)
         logits = outputs["logits"]
         updated_cache = outputs["past_key_values"]
+        self._delta_cache_box[0] = outputs.get("delta_cache")   # 持久 delta_cache (跨调用)
 
         past_kv_flat: list[torch.Tensor] = []
         if updated_cache is not None:

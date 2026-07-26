@@ -4,7 +4,7 @@
 >
 > 模型：gemma-4-E2B (5B params, 35 层, 20 层 KV 共享, sliding + full attention)
 >
-> 最后验证：2026-07-17
+> 最后验证：2026-07-25
 
 ## 触发条件
 
@@ -29,44 +29,47 @@ cd /mnt/workspace/project/CANN-LM_5883/examples/export_llm_model/llm_engine_on_c
 
 | 脚本 | 用途 | 状态 |
 |------|------|------|
-| `verify_gemma4_all.py` | 单步 forward 精度 (wrapper vs 原始模型) | PASS (diff=0.0) |
-| `verify_gemma4_vs_hf.py` | 多轮 decode vs HF transformers | PASS (2/3 tokens match) |
-| `verify_gemma4_chunk.py` | chunk vs 非 chunk (token 级) | PASS (diff=0.0) |
-| `verify_gemma4_chunk_text.py` | chunk vs 非 chunk (文本级) | PASS (3/3 text match) |
-| `verify_gemma4_chunk_vs_hf.py` | chunk cann_lm vs HF (文本级) | PASS (2/3 text match) |
-| `verify_gemma4_wrapper_chunk.py` | ExportWrapper chunk vs 非 chunk (文本) | PASS (3/3 text match) |
-| `verify_gemma4_epair_chunk.py` | epair 导出 + 回环推理 vs wrapper | PASS (2/3 text match) |
+| `compare_hf_vs_ep.py` | HF vs EP (ep.module) 对比, greedy/sampling 切换 | PASS (greedy EP==HF, sliding 修复) |
+| `export_gemma4_5layers_onnx_kv.py` | 导出前 5 层 ONNX (带 KV cache I/O, 脚本内注册 cann_lm 算子 decomposition) | PASS (1.3MB ONNX) |
+| `verify_gemma4.py` | 单元测试 (45 项, 含 wrapper vs model 单步) + 端到端推理 (BOS+bfloat16) | PASS (45 tests + 出字) |
+| `verify_gemma4_chunk.py` | chunk vs 非 chunk (--mode cann/wrapper + 可选 --vs-hf/--logits-diff) | PASS (chunk==非chunk, logits-diff token match) |
+| `verify_gemma4_epair.py` | ep 回环 vs wrapper direct (--mode ep/wrapper + sampling) | PASS (ep==wrapper greedy) |
 
 ## 验证层次
 
-### 第 1 层：单步 forward (verify_gemma4_all.py)
+### 第 1 层：单步 forward (verify_gemma4.py 单元测试)
 
 ```bash
-python verify_gemma4_all.py
+python verify_gemma4.py --test-only
 ```
 
-验证 wrapper 单步 forward 与原始模型一致。预期 `max_diff=0.0`。
+含 `test_wrapper_vs_model`:验证 wrapper 单步 forward 与原始 model 一致(预期 `max_diff=0.0`,wrapper 是薄封装不引入误差)。合并自 `verify_gemma4_all.py`。
 
-### 第 2 层：多轮 decode vs HF (verify_gemma4_vs_hf.py)
+### 第 2 层：多轮 decode logits 精度 vs HF (verify_gemma4_chunk.py --logits-diff)
 
 ```bash
-python verify_gemma4_vs_hf.py
+python verify_gemma4_chunk.py --logits-diff --num-steps 4
 ```
 
-验证 cann_lm 多轮 decode 与 HF transformers 的等价性。BOS + bfloat16 + softcap 对齐。
+验证 cann_lm/wrapper 逐 step logits 与 HF (model.language_model + lm_head + softcap 拆解) 的数值精度。
+token match 即 PASS；logits max_diff 是 bfloat16 数值差异预期（cann_lm `nn.Linear` vs HF `Gemma4ClippableLinear`，详见 converter_design.md 精度差异分析）。
 
-### 第 3 层：chunk 推理 (verify_gemma4_wrapper_chunk.py)
+### 第 3 层：chunk 推理 (verify_gemma4_chunk.py)
 
 ```bash
-python verify_gemma4_wrapper_chunk.py
+python verify_gemma4_chunk.py                          # cann 模式, chunk vs 非 chunk
+python verify_gemma4_chunk.py --mode wrapper           # wrapper 模式
+python verify_gemma4_chunk.py --vs-hf                  # 加 HF 三方对比
 ```
 
-验证 ExportWrapper 的分 chunk prefill + decode 与一次性 prefill 生成文本完全一致。
+验证 cann_lm/wrapper 的分 chunk prefill + decode 与一次性 prefill 生成文本完全一致。
 
-### 第 4 层：epair 导出 + 回环 (verify_gemma4_epair_chunk.py)
+### 第 4 层：epair 导出 + 回环 (verify_gemma4_epair.py)
 
 ```bash
-python verify_gemma4_epair_chunk.py
+python verify_gemma4_epair.py                           # ep 回环 vs wrapper, greedy
+python verify_gemma4_epair.py --mode wrapper            # wrapper direct 推理
+python verify_gemma4_epair.py --sampling                # sampling 模式
 ```
 
 验证 torch.export → ep.module() 回环推理与 wrapper 直接调用一致。
@@ -212,17 +215,51 @@ def make_causal_mask_with_padding(q_len, k_len, real_q_len, real_k_len, dtype):
 
 **修复**：添加 `if attention_mask.dim() == 4: return attention_mask` 透传。
 
-### 16. sliding_window mask 4D 透传未裁剪
+### 16. sliding_window mask 4D decode 用错 q 位置基准 (根因)
 
-**现象**：4D 透传对所有层返回同一 mask，sliding 层应有不同窗口
+**现象**：EP(wrapper scatter)decode 退化重复("my name is my name is" / "人工智能人工智能")，但 CLM(cann_lm model.generate cat)== HF 正确
 
-**修复**：4D 透传路径增加 sliding_window 裁剪逻辑。
+**根因**：`_prepare_causal_mask` 4D 路径对 sliding_attention 层套 window 时用 `q_range=arange(q_len)` 算 q 位置。decode 时 `q_len=1` → `arange(1)=[0]`，但 decode token 在序列中真实位置是 6(非 0)，window 算出"只 k_pos=0 可见"，屏蔽所有其他 K → sliding 层只看第一个 prefill token → 退化
+
+**修复**：`_prepare_causal_mask` 加 `new_kv_cache_pos` 参数，4D sliding 用 `new_kv_cache_pos`(q 在 buffer 的真实写入位置，与 k_pos 同基准)算 window，decode 时正确。两处调用(text_model forward 内)传 `new_kv_cache_pos`
+
+**验证**：greedy EP == HF == CLM 完全一致；sampling EP 不退化
 
 ### 17. torch.all 数据依赖
 
 **现象**：`torch.all(attention_mask == 1)` 是数据依赖控制流
 
 **修复**：简化为仅检查 cache 状态。
+
+### 18. 验证 decode 精度必须用 greedy 而非 sampling
+
+**原则**：验证 decode logits 正确性时用 greedy(argmax)，不能用 sampling。
+
+**为啥不能用 sampling**：
+1. **随机性**：即使 EP/HF logits 完全相同，`torch.multinomial` 采样也会选不同 token，无法用"token 一致"判断 logits 对不对
+2. **bfloat16 tie-breaking 放大**：logits 微差(0.17)在 sampling 下被采样放大成完全不同序列(第一 token 78% 一致，第二 token 0%)，这是预期非 bug
+
+**为啥 greedy 能验证**：argmax 无随机，logits 对 → token 序列完全一致；logits 错 → 立刻分歧(退化重复)
+
+**三方对比法**(同 prompt + greedy)：
+
+| 方 | 实现 | KV 模式 | 用途 |
+|----|------|---------|------|
+| HF | transformers 原生 `model.generate` | - | ground truth |
+| CLM | cann_lm `model.generate`(eager, torch.cat 累积) | cat (K=step 数) | 验证模型逻辑+权重 |
+| EP | wrapper export(`ep.module` prefill + wrapper decode) | scatter (K=kv_max buffer) | 验证 export + scatter |
+
+**定位流程**：
+- `HF==CLM==EP` → 全对
+- `HF==CLM!=EP` → bug 在 wrapper export/scatter(模型本身对)
+- `HF!=CLM!=EP` → bug 在模型定义/权重加载
+
+**完整流程**：
+1. **greedy 定位 bug**：三方对比 + 诊断 print(每层 K/mask shape、shared dict keys、prefill argmax、decode step logits)定位根因
+2. **greedy 验证修复**：`EP==HF==CLM` 完全一致 → 证明 logits 对(修复成功)
+3. **sampling 确认推理效果**：恢复 sampling 跑，EP 不退化、输出连贯 → 实际推理 OK(sampling 下分叉是预期，不能用 token 一致判断)
+
+**参考脚本**：`compare_hf_vs_ep.py`(greedy/sampling 可切换 `TEMPERATURE` + `generate_hf` 的 `do_sample`)
 
 ## 验证结果汇总
 

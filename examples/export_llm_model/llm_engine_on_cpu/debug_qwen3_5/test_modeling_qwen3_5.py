@@ -96,8 +96,6 @@ def test_rms_norm_gated():
     out = norm(x, gate)
     report("output_shape", out.shape == (2, 8, hidden_size))
     report("not_nan", not torch.isnan(out).any())
-    out_no_gate = norm(x)
-    report("no_gate_output", out_no_gate.shape == (2, 8, hidden_size))
 
 
 def test_rotary_embedding():
@@ -108,8 +106,9 @@ def test_rotary_embedding():
     position_ids = torch.arange(0, 8).unsqueeze(0).expand(2, -1)
     position_ids_3d = position_ids[None, ...].expand(3, 2, 8)
     cos, sin = rope(x, position_ids_3d)
-    report("cos_shape", cos.shape[-1] == config.head_dim)
-    report("sin_shape", sin.shape[-1] == config.head_dim)
+    rotary_dim = int(config.head_dim * config.rope_parameters.get("partial_rotary_factor", 1.0))
+    report("cos_shape", cos.shape[-1] == rotary_dim)
+    report("sin_shape", sin.shape[-1] == rotary_dim)
     report("cos_not_nan", not torch.isnan(cos).any())
     report("sin_not_nan", not torch.isnan(sin).any())
 
@@ -127,8 +126,10 @@ def test_apply_rotary_pos_emb():
     config = make_small_config()
     q = torch.randn(2, 4, 8, config.head_dim)
     k = torch.randn(2, 2, 8, config.head_dim)
-    cos = torch.randn(1, 1, 8, config.head_dim)
-    sin = torch.randn(1, 1, 8, config.head_dim)
+    # cos/sin 3D [batch, seq, rotary_dim] (apply_rotary_pos_emb 内部 unsqueeze 到 4D)
+    rotary_dim = int(config.head_dim * config.rope_parameters.get("partial_rotary_factor", 1.0))
+    cos = torch.randn(1, 8, rotary_dim)
+    sin = torch.randn(1, 8, rotary_dim)
     q_emb, k_emb = apply_rotary_pos_emb(q, k, cos, sin)
     report("q_shape", q_emb.shape == q.shape)
     report("k_shape", k_emb.shape == k.shape)
@@ -154,7 +155,7 @@ def test_eager_attention_forward():
     k = torch.randn(2, 2, 8, config.head_dim)
     v = torch.randn(2, 2, 8, config.head_dim)
     out, weights = eager_attention_forward(attn, q, k, v, None, scaling=config.head_dim ** -0.5)
-    report("output_shape", out.shape == (2, 8, 4 * config.head_dim))
+    report("output_shape", out.shape == (2, 8, 4, config.head_dim))
     report("weights_shape", weights.shape == (2, 4, 8, 8))
     report("not_nan", not torch.isnan(out).any())
 

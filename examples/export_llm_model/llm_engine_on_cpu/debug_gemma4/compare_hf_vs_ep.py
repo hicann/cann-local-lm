@@ -1,8 +1,22 @@
 #!/usr/bin/env python3
 """对比 HF model.generate() vs ep 模型推理 — 同样 prompt + 同样 sampling 参数
 
-用法:
-  python compare_hf_vs_ep.py
+运行前必须先 source converter 环境 (torchair 源码编译 + stubs, CPU-only 无 NPU):
+
+    source /home/developer/Ascend/cann/set_env.sh
+    export LD_LIBRARY_PATH=/mnt/workspace/torchair/build/stubs:${ASCEND_HOME_PATH}/lib64:${LD_LIBRARY_PATH:-}
+    export PYTHONPATH=/mnt/workspace/project/CANN-LM_5883:${PYTHONPATH:-}
+    export TORCH_DEVICE_BACKEND_AUTOLOAD=0           # 阻止 torch autoload npu backend
+    export TORCH_DELEGATE_HOME=/mnt/workspace/torch-delegate-harmony
+    export TORCH_DELEGATE_ENABLE_FALLBACK_CODEGEN=0  # 不走 fallback codegen
+    /mnt/workspace/torch-delegate-harmony/.venv/bin/python compare_hf_vs_ep.py
+
+环境要点 (详见 AGENTS.md):
+- venv: /mnt/workspace/torch-delegate-harmony/.venv (torch 2.9.0+cpu, torchair 源码编译 NO_ASCEND_SDK=1,
+  torch_delegate 0.1.0, transformers 5.14.1)
+- stubs: 必须用 torchair 编译生成的 /mnt/workspace/torchair/build/stubs (ABI 匹配),
+  不要用真实 CANN lib64 (会 aclrtSetDevice 107001 无设备)
+- venv 无 torch_npu 包 → transformers 不 probe, 不需 import hf_cpu
 """
 
 from __future__ import annotations
@@ -20,10 +34,10 @@ if str(_PROJECT_ROOT) not in sys.path:
 from cann_lm.models.gemma4 import Gemma4ForCausalLM, Gemma4TextConfig
 from cann_lm.models.gemma4.modeling_gemma4 import load_gemma4_weights
 from cann_lm.models.gemma4.export_wrapper import Gemma4ExportWrapper
-from cann_lm.models.fake_ops import register_ge_converters
+from cann_lm.converter.export.ge_converter import register_ge_converters
 from transformers import Gemma4ForConditionalGeneration as HFModel, AutoTokenizer
 
-HF_PATH = "/mnt/workspace/data/models/gemma-4-E2B"
+HF_PATH = "/mnt/workspace/data/models/gemma-4-E2B-it"
 MAX_NEW_TOKENS = 30
 EXPORT_SEQ_LEN = 8
 BOS_TOKEN_ID = 2
@@ -39,13 +53,18 @@ PROMPTS = [
 ]
 
 
-def make_causal_mask_with_padding(q_len, k_len, real_q_len, real_k_len, dtype):
+def make_causal_mask_with_padding(q_len, kv_max, real_q_len, dtype):
+    """scatter 模式 prefill mask: [1,1,q_len,kv_max] causal-over-buffer + pad 屏蔽.
+
+    k_pos <= q_pos 可见 (causal over buffer); pad 位置 (real_q_len:) 整行屏蔽.
+    未写入的 KV 位置 (k_pos > q_pos) 由 causal 天然屏蔽.
+    """
     min_val = torch.finfo(dtype).min
-    mask = torch.triu(torch.full((q_len, k_len), min_val, dtype=dtype), diagonal=1)
+    q_pos = torch.arange(q_len, dtype=dtype).unsqueeze(1)      # [q_len, 1]
+    k_pos = torch.arange(kv_max, dtype=dtype).unsqueeze(0)    # [1, kv_max]
+    mask = torch.where(k_pos <= q_pos, torch.tensor(0.0, dtype=dtype), min_val)
     if real_q_len < q_len:
-        mask[real_q_len:, :] = min_val
-    if real_k_len < k_len:
-        mask[:, real_k_len:] = min_val
+        mask[real_q_len:, :] = min_val                          # pad 行屏蔽
     return mask.unsqueeze(0).unsqueeze(0)
 
 
@@ -101,7 +120,7 @@ def generate_ep(ep, wrapper, input_ids, real_seq_len, max_new_tokens, dtype):
         input_ids_padded = input_ids
 
     mask = make_causal_mask_with_padding(
-        EXPORT_SEQ_LEN, EXPORT_SEQ_LEN, real_seq_len, real_seq_len, dtype)
+        EXPORT_SEQ_LEN, wrapper.kv_cache_max_len, real_seq_len, dtype)
     output_pos = torch.tensor([real_seq_len - 1], dtype=torch.int32)
 
     sample = wrapper.get_sample_inputs(seq_len=EXPORT_SEQ_LEN)
@@ -111,7 +130,7 @@ def generate_ep(ep, wrapper, input_ids, real_seq_len, max_new_tokens, dtype):
     traced_inputs[6] = output_pos
 
     with torch.no_grad():
-        out = module(*traced_inputs)
+        out = module(*traced_inputs)             # ep prefill (exported 图)
         logits = out[0]
         kv_flat = list(out[1:])
     kv = reconstruct_kv(kv_flat)
@@ -122,11 +141,20 @@ def generate_ep(ep, wrapper, input_ids, real_seq_len, max_new_tokens, dtype):
         tokens.append(next_token.item())
         if next_token.item() == 1:
             break
-        cached_len = EXPORT_SEQ_LEN + len(tokens)
-        mask_dec = torch.zeros(1, 1, 1, cached_len, dtype=dtype)
+        cached_len = EXPORT_SEQ_LEN + len(tokens)      # buffer 已写入数 (含 prefill pad)
+        kv_max = wrapper.kv_cache_max_len
+        min_val = torch.finfo(dtype).min
+        mask_dec = torch.zeros(1, 1, 1, kv_max, dtype=dtype)
+        if cached_len < kv_max:                         # 屏蔽未写入位置
+            mask_dec[:, :, :, cached_len:] = min_val
+        if real_seq_len < EXPORT_SEQ_LEN:               # 屏蔽 prefill pad 位置的 KV
+            mask_dec[:, :, :, real_seq_len:EXPORT_SEQ_LEN] = min_val
         with torch.no_grad():
+            # position_ids = 序列真实位置 (跳过 pad): prefill 真实 real_seq_len 个 + 第 n 个 decode
+            seq_pos = real_seq_len + len(tokens) - 1
+            pos_id = torch.tensor([[seq_pos]], dtype=torch.long)
             logits, *kv_flat = wrapper(
-                next_token, mask_dec, None, kv,
+                next_token, mask_dec, pos_id, kv,
                 torch.tensor([cached_len - 1], dtype=torch.long),
                 None, None,
             )

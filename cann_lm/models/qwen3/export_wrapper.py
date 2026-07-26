@@ -28,6 +28,7 @@ class Qwen3ExportWrapper(ExportWrapper):
             "attention_mask": attention_mask,
             "position_ids": position_ids,
             "past_key_values": past_key_values,
+            "new_kv_cache_pos": new_kv_cache_pos,
         }
         # 总是传 input_ids (PLE 用, 不反查); embeddings 非 None 时也传 inputs_embeds (图外查表)
         # - use_embeddings=False (embeddings=None): 只传 input_ids, model 查 embed_tokens

@@ -19,11 +19,11 @@ if str(_PROJECT_ROOT) not in sys.path:
 from cann_lm.models.qwen3_5 import Qwen3_5ForCausalLM, Qwen3_5TextConfig, load_qwen3_5_weights
 from cann_lm.models.qwen3_5.export_wrapper import Qwen3_5ExportWrapper
 from cann_lm.models.qwen3_5.modeling_qwen3_5 import SimpleKVCache
-from cann_lm.models.fake_ops import register_ge_converters
+from cann_lm.converter.export.ge_converter import register_ge_converters
 import torch_delegate
 from transformers import Qwen3_5ForCausalLM as HFQwen3_5ForCausalLM
 
-HF_PATH = "/mnt/workspace/data/models/qwe3.5-0.8B"
+HF_PATH = "/mnt/workspace/data/models/Qwen3.5-0.8B"
 SEQ_LEN = 4
 
 
@@ -63,10 +63,11 @@ def main():
         )
         logits_orig = out_orig["logits"]
         kv_orig = out_orig["past_key_values"]
+        delta_orig = out_orig["delta_cache"]
 
         logits_wrap, *kv_flat = wrapper(
             input_ids, mask, pos, None,
-            torch.arange(SEQ_LEN, dtype=torch.long), None, None,
+            None, None, None,   # cat 模式 (new_kv_cache_pos=None, 不走 scatter index_copy)
         )
 
     diff_1 = (logits_wrap[:, -1:, :] - logits_orig[:, -1:, :]).abs().max().item()
@@ -100,6 +101,7 @@ def main():
     tokens_orig = []
     tokens_wrap = []
     current_orig_kv = kv_orig
+    current_orig_delta = delta_orig
     current_wrap_kv = kv_wrap_list
     all_decode_match = True
 
@@ -116,14 +118,15 @@ def main():
         with torch.no_grad():
             out_o = model(
                 input_ids=next_token, attention_mask=mask_dec,
-                past_key_values=current_orig_kv, delta_cache=None, use_cache=True,
+                past_key_values=current_orig_kv, delta_cache=current_orig_delta, use_cache=True,
             )
             logits_o = out_o["logits"]
             current_orig_kv = out_o["past_key_values"]
+            current_orig_delta = out_o["delta_cache"]
 
             logits_w, *kv_flat_w = wrapper(
                 next_token, mask_dec, pos_dec, current_wrap_kv,
-                torch.tensor([cached_len], dtype=torch.long), None, None,
+                None, None, None,
             )
             current_wrap_kv = reconstruct_kv(kv_flat_w)
 
@@ -171,7 +174,9 @@ def main():
     sample_inputs = list(sample_inputs)
     sample_inputs[0] = input_ids  # 用同一个 input_ids
     sample_inputs = tuple(sample_inputs)
+    print(f"  sample past pairs={len(sample_inputs[3])} k0={list(sample_inputs[3][0][0].shape)} new_pos={list(sample_inputs[4].shape)}")
 
+    wrapper._delta_cache_box[0] = None  # 重置 delta_cache (避 Layer 1-3 持久影响 ep.module export)
     ep = torch.export.export(wrapper, sample_inputs, strict=False)
     print(f"  torch.export OK, nodes={len(ep.graph.nodes)}")
 

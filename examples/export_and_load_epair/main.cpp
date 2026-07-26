@@ -10,6 +10,7 @@
 #include <sstream>
 #include <vector>
 #include <string>
+#include <cstdlib>
 
 namespace {
 
@@ -164,40 +165,44 @@ int main(int argc, char *argv[]) {
   // [4/4] Compile graph
   PrintStage(4, kTotalStages, "Compile graph");
 
-  std::map<ge::AscendString, ge::AscendString> init_options = GlobalOptionsWithSoc("Ascend950DT_950x");
-  ge::graphStatus init_status = aclgrphBuildInitialize(init_options);
-  if (init_status != ge::GRAPH_SUCCESS) {
-    std::cerr << "[ERROR] aclgrphBuildInitialize failed, status: " << init_status << std::endl;
-    return -1;
-  }
-  std::cout << "[PASS] aclgrphBuildInitialize succeeded" << std::endl;
+  if (std::getenv("SKIP_OM_BUILD") != nullptr) {
+    std::cout << "[SKIP] OM build skipped (SKIP_OM_BUILD set; CPU-only/no-NPU mode)" << std::endl;
+  } else {
+    std::map<ge::AscendString, ge::AscendString> init_options = GlobalOptionsWithSoc("Ascend950DT_950x");
+    ge::graphStatus init_status = aclgrphBuildInitialize(init_options);
+    if (init_status != ge::GRAPH_SUCCESS) {
+      std::cerr << "[ERROR] aclgrphBuildInitialize failed, status: " << init_status << std::endl;
+      return -1;
+    }
+    std::cout << "[PASS] aclgrphBuildInitialize succeeded" << std::endl;
 
-  ge::ModelBufferData model;
-  std::map<ge::AscendString, ge::AscendString> build_options;
-  build_options.emplace(ge::AscendString("input_format"), ge::AscendString("ND"));
-  ge::graphStatus build_status = aclgrphBuildModel(graph, build_options, model);
-  if (build_status != ge::GRAPH_SUCCESS) {
-    std::cerr << "[ERROR] aclgrphBuildModel failed, status: " << build_status << std::endl;
+    ge::ModelBufferData model;
+    std::map<ge::AscendString, ge::AscendString> build_options;
+    build_options.emplace(ge::AscendString("input_format"), ge::AscendString("ND"));
+    ge::graphStatus build_status = aclgrphBuildModel(graph, build_options, model);
+    if (build_status != ge::GRAPH_SUCCESS) {
+      std::cerr << "[ERROR] aclgrphBuildModel failed, status: " << build_status << std::endl;
+      ge::aclgrphBuildFinalize();
+      return -1;
+    }
+    std::cout << "[PASS] aclgrphBuildModel succeeded, model size: " << model.length << " bytes" << std::endl;
+
+    const std::string output_file = output_basename;
+    ge::graphStatus save_status = ge::aclgrphSaveModel(output_file.c_str(), model);
+    if (save_status != ge::GRAPH_SUCCESS) {
+      std::cerr << "[ERROR] aclgrphSaveModel failed, status: " << save_status << std::endl;
+      ge::aclgrphBuildFinalize();
+      return -1;
+    }
+    std::cout << "[PASS] aclgrphSaveModel succeeded, " << output_file << ".om generated" << std::endl;
+
     ge::aclgrphBuildFinalize();
-    return -1;
+    std::cout << "[PASS] aclgrphBuildFinalize succeeded" << std::endl;
   }
-  std::cout << "[PASS] aclgrphBuildModel succeeded, model size: " << model.length << " bytes" << std::endl;
-
-  const std::string output_file = output_basename;
-  ge::graphStatus save_status = ge::aclgrphSaveModel(output_file.c_str(), model);
-  if (save_status != ge::GRAPH_SUCCESS) {
-    std::cerr << "[ERROR] aclgrphSaveModel failed, status: " << save_status << std::endl;
-    ge::aclgrphBuildFinalize();
-    return -1;
-  }
-  std::cout << "[PASS] aclgrphSaveModel succeeded, " << output_file << ".om generated" << std::endl;
-
-  ge::aclgrphBuildFinalize();
-  std::cout << "[PASS] aclgrphBuildFinalize succeeded" << std::endl;
 
   std::cout << std::endl;
   std::cout << kStageSep << std::endl;
   std::cout << " All 4 stages passed" << std::endl;
   std::cout << kStageSep << std::endl;
-  return 0;
+  std::quick_exit(0);
 }

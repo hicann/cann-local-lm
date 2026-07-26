@@ -20,7 +20,7 @@ from cann_lm.models.qwen3_5 import Qwen3_5ForCausalLM, Qwen3_5TextConfig, load_q
 from cann_lm.models.qwen3_5.export_wrapper import Qwen3_5ExportWrapper
 from cann_lm.models.qwen3_5.modeling_qwen3_5 import SimpleKVCache
 
-HF_PATH = "/mnt/workspace/data/models/qwe3.5-0.8B"
+HF_PATH = "/mnt/workspace/data/models/Qwen3.5-0.8B"
 
 
 def main():

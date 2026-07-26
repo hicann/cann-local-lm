@@ -14,10 +14,10 @@ MODEL="${1:-simple}"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${ROOT_DIR}/../.." && pwd)"
 TORCH_DELEGATE_HOME="${TORCH_DELEGATE_HOME:-/mnt/workspace/torch-delegate-harmony}"
-TORCHAIR_FULL="${TORCHAIR_FULL:-/mnt/workspace/torchair-full}"
-# torch_delegate + torchair 装在系统 python3；.venv 只用于 C++ 链接的 torch 路径
-PYTHON="python3"
-_VENV_PY="${TORCH_DELEGATE_HOME}/.venv/bin/python3"   # 仅取 TORCH_PKG_DIR（匹配 backend 构建）
+TORCHAIR_FULL="${TORCHAIR_FULL:-/mnt/workspace/torchair}"
+# torch_delegate + torchair 装在 torch-delegate venv (torch 2.9.0+cpu)
+PYTHON="${TORCH_DELEGATE_HOME}/.venv/bin/python3"
+_VENV_PY="${PYTHON}"   # 取 TORCH_PKG_DIR（匹配 backend 构建）
 CSRC_DIR="${PROJECT_ROOT}/cann_lm/converter/export/csrc"
 BACKEND_LIB="${CSRC_DIR}/build/libtorch_delegate_backend.so"
 PHASE=0
@@ -59,6 +59,7 @@ ok "cmake $(cmake --version | head -1 | awk '{print $3}')"
 phase "编译 CANN-LM C++ 后端库 (libtorch_delegate_backend.so)"
 # =========================================================
 if [[ ! -f "${BACKEND_LIB}" ]]; then
+  export CANN_PATH="${ASCEND_HOME_PATH}"
   (cd "${CSRC_DIR}" && bash build_csrc.sh) || die "build_csrc.sh 失败"
 fi
 ok "${BACKEND_LIB##*/}"
@@ -96,6 +97,7 @@ _PY_LIB="$("${PYTHON}" -c 'import sys;print(sys.base_prefix)')/lib"
 _BACKEND_STUB_LIB="${CSRC_DIR}/build/stub_lib"
 export LD_LIBRARY_PATH="${_PY_LIB}:${TORCHAIR_FULL}/build/stubs:${ASCEND_HOME_PATH}/lib64:${ASCEND_HOME_PATH}/aarch64-linux/devlib:${TORCH_PKG_DIR}/lib:${TORCH_PKG_DIR}/../torch.libs:${_BACKEND_STUB_LIB:+${_BACKEND_STUB_LIB}}:${LD_LIBRARY_PATH:-}"
 export ASCEND_SLOG_PRINT_TO_STDOUT=1  # 打开 GE 详细日志（定位 not registered 等）
+export SKIP_OM_BUILD="${SKIP_OM_BUILD:-1}"  # CPU-only 无 NPU 时跳过 OM 编译 (aclgrphBuildModel); NPU 环境设 0
 
 "${ROOT_DIR}/build/export_and_load_example" \
   "${EPAIR_DIR}/ep_json_with_ascend_ir.json" \

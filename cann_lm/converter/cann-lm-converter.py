@@ -48,6 +48,7 @@ def convert(
     use_embeddings: bool = False,
     mode: str = "single",
     prefill_seq_len: int = 128,
+    num_layers: int | None = None,
 ) -> None:
     """程序化入口：HF 模型 → epair
 
@@ -64,6 +65,16 @@ def convert(
     print(f"      Wrapper: {artifact.wrapper_cls.__name__ if artifact.wrapper_cls else 'None'}")
     print(f"      Embedding mode: {'external (no embed_tokens in graph)' if use_embeddings else 'internal (embed_tokens in graph)'}")
     print(f"      Export mode: {mode}")
+
+    if num_layers is not None:
+        text_model = artifact.model.model
+        total = len(text_model.layers)
+        if num_layers > total:
+            raise ValueError(f"--num-layers {num_layers} exceeds total {total} layers")
+        if num_layers < 1:
+            raise ValueError(f"--num-layers must be >= 1, got {num_layers}")
+        text_model.layers = text_model.layers[:num_layers]
+        print(f"      Truncated to first {num_layers}/{total} layers (config.num_hidden_layers unchanged)")
 
     print(f"[2/3] Saving epair to {output_dir}")
     if mode == "prefill-decode":
@@ -130,6 +141,10 @@ def parse_args() -> argparse.Namespace:
                              "or prefill-decode (two graphs: prefill+decode, shared weights, for actual inference)")
     parser.add_argument("--prefill-seq-len", type=int, default=128,
                         help="Prefill graph seq_len for prefill-decode mode (default: 128, pad prompt to this)")
+    parser.add_argument("--num-layers", type=int, default=None,
+                        help="Only export first N layers (slice/debug). None = all layers. "
+                             "Truncates model.model.layers in place, config.num_hidden_layers unchanged "
+                             "(PLE/delta_cache/layer_types stay full)")
     # 量化参数: TBD
     return parser.parse_args()
 
@@ -147,6 +162,7 @@ def main() -> None:
         use_embeddings=args.use_embeddings,
         mode=args.mode,
         prefill_seq_len=args.prefill_seq_len,
+        num_layers=args.num_layers,
     )
 
 

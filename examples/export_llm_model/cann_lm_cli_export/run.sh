@@ -35,6 +35,7 @@ declare -A HF_PATHS=(
 MODE="${MODE:-single}"
 DTYPE="${DTYPE:-bfloat16}"
 SEQ_LEN="${SEQ_LEN:-8}"
+NUM_LAYERS="${NUM_LAYERS:-}"
 MODELS="${1:-gemma4 qwen3 qwen3_5}"
 
 cd "${ROOT_DIR}"
@@ -45,7 +46,7 @@ for m in ${MODELS}; do
   echo "========================================"
   echo " cann-lm-converter.py: ${m}"
   echo "   HF:    ${HF_PATHS[$m]}"
-  echo "   mode:  ${MODE}  dtype: ${DTYPE}  seq_len: ${SEQ_LEN}"
+  echo "   mode:  ${MODE}  dtype: ${DTYPE}  seq_len: ${SEQ_LEN}${NUM_LAYERS:+  layers: ${NUM_LAYERS}}"
   echo "========================================"
   out="${ROOT_DIR}/epair_${m}"
   rm -rf "${out}"
@@ -55,6 +56,7 @@ for m in ${MODELS}; do
   else
     args+=(--sample-seq-len "${SEQ_LEN}")
   fi
+  [[ -z "${NUM_LAYERS}" ]] || args+=(--num-layers "${NUM_LAYERS}")
   "${PYTHON}" "${CONVERTER}" "${args[@]}"
 done
 

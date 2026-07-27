@@ -23,6 +23,12 @@ MODE=prefill-decode bash run.sh gemma4
 
 # 指定 dtype / seq_len
 DTYPE=float16 SEQ_LEN=128 bash run.sh
+
+# 只导出前 N 层 (slice/debug, 截断 model.model.layers, 不改 config)
+NUM_LAYERS=5 bash run.sh
+
+# 组合: 前 5 层 + prefill-decode 模式
+NUM_LAYERS=5 MODE=prefill-decode bash run.sh gemma4
 ```
 
 环境变量(均有默认):
@@ -32,6 +38,7 @@ DTYPE=float16 SEQ_LEN=128 bash run.sh
 | `MODE` | `single` | `single`(一张形状特化图) 或 `prefill-decode`(prefill+decode 两图) |
 | `DTYPE` | `bfloat16` | 三模型原生 bfloat16 |
 | `SEQ_LEN` | `8` | single 模式 `--sample-seq-len`;prefill-decode 模式 `--prefill-seq-len` |
+| `NUM_LAYERS` | (空=全部) | 只导出前 N 层(`--num-layers`),截断 `model.model.layers`,不改 `config.num_hidden_layers` |
 | `VENV_DIR` | `/mnt/workspace/torch-delegate-harmony/.venv` | converter venv (torch 2.9.0+cpu + torchair + torch_delegate) |
 
 ## 测试结果
@@ -53,6 +60,21 @@ DTYPE=float16 SEQ_LEN=128 bash run.sh
 | qwen3_5 | 0.75B | bfloat16 | — | FAIL | segfault (同 single, 遗留任务 3) |
 
 prefill-decode 模式产物含 `prefill_ep_json_with_ascend_ir.json` + `decode_ep_json_with_ascend_ir.json` 两图,权重 `weights_0.bin` + `weight_info.json` 共享一份(`save_epair_prefill_decode` 内部 `save_weights=False` 复用 prefill 的打包结果)。
+
+## 只导出前 N 层 (`--num-layers` / `NUM_LAYERS`)
+
+截断 `model.model.layers = model.model.layers[:N]`,**不改 `config.num_hidden_layers`**:
+- PLE(gemma4)/delta_cache(qwen3.5)/layer_types 仍按全量 config 保持(计算正确,冗余但无害)
+- KV buffer 由 `ExportWrapper._num_layers()` 按**实际层数** `len(model.model.layers)` 精确分配(截断后 N 个,无冗余零张量)
+- 各模型 forward `for layer in self.layers:` 自动只跑 N 层(保留层 0..N-1,layer_idx 与位置一致)
+
+| 模型 | N=5 single | N=5 prefill-decode | 说明 |
+|------|-----------|--------------------|------|
+| gemma4 | PASS (6434MB, 102 权重) | — | N≤15 无 shared 层,最干净 |
+| qwen3 | PASS (757MB, 59 权重) | PASS (761MB, 59 权重) | 标准 GQA,最简单 |
+| qwen3_5 | — | — | FAIL segfault(任何含 linear 层的 N,torch_chunk_gated_delta_rule 展开节点爆炸,截断无法避开) |
+
+> qwen3.5 的 linear attention 层在 `layer_types` 的 `[0,1,2,4,5,6,8,...]` 位置(每 4 层 1 个 full),无法连续截取到纯 full,故截断无法避开 segfault。需靠 NPU fused 算子解决(遗留任务 3)。
 
 ### qwen3.5 segfault 原因
 

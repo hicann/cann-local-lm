@@ -48,8 +48,8 @@ class Gemma4ExportWrapper(ExportWrapper):
         new_kv_cache_pos: torch.Tensor,
         embeddings: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, list[torch.Tensor]]:
-        # None → [None]*N 触发模型内部创建 cache
-        num_layers = self.config.num_hidden_layers
+        # None → [None]*N 触发模型内部创建 cache (N = 实际层数, 支持 --num-layers 截断)
+        num_layers = self._num_layers()
         if past_key_values is None:
             kv_list = [None] * num_layers
         elif isinstance(past_key_values, list) and len(past_key_values) > 0 and isinstance(past_key_values[0], (tuple, list)):

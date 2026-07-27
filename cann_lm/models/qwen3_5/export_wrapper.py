@@ -31,9 +31,14 @@ class Qwen3_5ExportWrapper(ExportWrapper):
         self._delta_cache_box = [None]
 
     def _get_full_attn_layer_indices(self) -> list[int]:
-        """从 config.layer_types 获取 full_attention 层的索引"""
+        """从 config.layer_types 获取 full_attention 层的索引(截断到实际层数).
+
+        截断后 len(self.model.model.layers) < config.num_hidden_layers,
+        需过滤 i < n 避免 prefill 分支 past_key_values[layer_idx] 越界.
+        """
         layer_types = getattr(self.config, "layer_types", [])
-        return [i for i, lt in enumerate(layer_types) if lt == "full_attention"]
+        n = len(self.model.model.layers)
+        return [i for i, lt in enumerate(layer_types) if lt == "full_attention" and i < n]
 
     def _drive_layers(
         self,

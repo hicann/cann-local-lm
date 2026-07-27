@@ -19,8 +19,8 @@ class Qwen3ExportWrapper(ExportWrapper):
         new_kv_cache_pos: torch.Tensor,
         embeddings: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, list[torch.Tensor]]:
-        # None → [None]*N 触发模型内部 cache 创建
-        num_layers = self.config.num_hidden_layers
+        # None → [None]*N 触发模型内部 cache 创建 (N = 实际层数, 支持 --num-layers 截断)
+        num_layers = self._num_layers()
         if past_key_values is None:
             past_key_values = [None] * num_layers
 

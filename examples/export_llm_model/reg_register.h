@@ -139,6 +139,27 @@ REG_OP(RmsNorm)
     .ATTR(epsilon, Float, 1e-6f)
     .OP_END_FACTORY_REG(RmsNorm)
 
+// AddRmsNorm: 残差加 + RMSNorm 融合算子 (cann_lm custom_op, ge_converter ge.AddRmsNorm)
+// inputs x1/x2/gamma, outputs y/rstd/x, attr epsilon. (与 export_and_load_epair/reg_register.h 一致)
+REG_OP(AddRmsNorm)
+    .INPUT(x1, TensorType({DT_FLOAT, DT_FLOAT16, DT_BF16}))
+    .INPUT(x2, TensorType({DT_FLOAT, DT_FLOAT16, DT_BF16}))
+    .INPUT(gamma, TensorType({DT_FLOAT, DT_FLOAT16, DT_BF16}))
+    .OUTPUT(y, TensorType({DT_FLOAT, DT_FLOAT16, DT_BF16}))
+    .OUTPUT(rstd, TensorType({DT_FLOAT, DT_FLOAT16, DT_BF16}))
+    .OUTPUT(x, TensorType({DT_FLOAT, DT_FLOAT16, DT_BF16}))
+    .ATTR(epsilon, Float, 1e-6f)
+    .OP_END_FACTORY_REG(AddRmsNorm)
+
+// RotaryMul: 半旋转位置编码融合算子 (cann_lm custom_op, ge_converter ge.RotaryMul)
+// inputs x/r1(cos)/r2(sin) -> output y. op_info: aic-ascend910_93-ops-info-legacy.json
+REG_OP(RotaryMul)
+    .INPUT(x, TensorType({DT_FLOAT, DT_FLOAT16, DT_BF16}))
+    .INPUT(r1, TensorType({DT_FLOAT, DT_FLOAT16, DT_BF16}))
+    .INPUT(r2, TensorType({DT_FLOAT, DT_FLOAT16, DT_BF16}))
+    .OUTPUT(y, TensorType({DT_FLOAT, DT_FLOAT16, DT_BF16}))
+    .OP_END_FACTORY_REG(RotaryMul)
+
 REG_OP(Cast)
     .INPUT(x, TensorType({DT_BOOL, DT_FLOAT16, DT_FLOAT, DT_INT8, DT_INT32, DT_UINT32,
                           DT_UINT8, DT_INT64, DT_UINT64, DT_INT16, DT_UINT16, DT_DOUBLE,

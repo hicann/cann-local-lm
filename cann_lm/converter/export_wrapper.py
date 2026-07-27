@@ -33,6 +33,14 @@ class ExportWrapper(nn.Module):
         self.kv_cache_max_len = kv_cache_max_len
         self.batch = batch
 
+    def _num_layers(self) -> int:
+        """实际导出层数(支持 --num-layers 截断).
+
+        各模型统一路径 model.model.layers (ForCausalLM → TextModel → layers).
+        截断后 len(self.model.model.layers) == N, 小于 config.num_hidden_layers.
+        """
+        return len(self.model.model.layers)
+
     def forward(
         self,
         input_ids: torch.Tensor | None = None,
@@ -85,7 +93,7 @@ class ExportWrapper(nn.Module):
             use_embeddings: True 时传 embeddings (图外查表), False 时传 input_ids (图内查表)
         """
         config = self.config
-        num_layers = config.num_hidden_layers
+        num_layers = self._num_layers()
         num_kv_heads = config.num_key_value_heads
         vocab_size = config.vocab_size
         dtype = next(self.model.parameters()).dtype
@@ -169,7 +177,7 @@ class ExportWrapper(nn.Module):
         config = self.config
         num_kv_heads = config.num_key_value_heads
         vocab_size = config.vocab_size
-        num_layers = config.num_hidden_layers
+        num_layers = self._num_layers()
         kv_max = self.kv_cache_max_len
         if dtype is None:
             dtype = next(self.model.parameters()).dtype
@@ -209,7 +217,7 @@ class ExportWrapper(nn.Module):
         ONNX 会把 past_key_values (list[(k,v),...]) 展平为独立 tensor 输入。
         qwen3.5 等混合层模型需 override（linear 层用 delta_state，命名不同）。
         """
-        n = self.config.num_hidden_layers
+        n = self._num_layers()
         input_names = ["input_ids", "attention_mask", "position_ids", "new_kv_cache_pos"]
         for i in range(n):
             input_names.extend([f"past_key_{i}", f"past_value_{i}"])

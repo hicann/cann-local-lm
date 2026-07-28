@@ -22,7 +22,7 @@ class Qwen3_5RMSNorm(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         output = self._norm(x.float())
         output = output * (1.0 + self.weight.float())
-        return output.type_as(x)
+        return output.to(x.dtype)
 
     def extra_repr(self):
         return f"{tuple(self.weight.shape)}, eps={self.eps}"
@@ -464,20 +464,33 @@ class Qwen3_5GatedDeltaNet(nn.Module):
             query = query.repeat_interleave(self.num_v_heads // self.num_k_heads, dim=2)
             key = key.repeat_interleave(self.num_v_heads // self.num_k_heads, dim=2)
 
-        if use_precomputed_states and seq_len == 1:
-            core_attn_out, last_recurrent_state = torch_recurrent_gated_delta_rule(
-                query, key, value, g=g, beta=beta,
-                initial_state=recurrent_state,
-                output_final_state=cache_params is not None,
-                use_qk_l2norm_in_kernel=True,
-            )
+        # BHSD 准备 (NPU npu_chunk_gated_delta_rule 签名: query/key/value [B,H,seq,dim])
+        query_bh = query.transpose(1, 2)
+        key_bh = key.transpose(1, 2)
+        value_bh = value.transpose(1, 2)
+        beta_bh = beta.transpose(1, 2)
+        g_bh = g.transpose(1, 2)
+        actual_seq_lens = torch.full(
+            (batch_size,), seq_len, dtype=torch.int32, device=hidden_states.device,
+        )
+        # initial_state NPU [B,H,v_dim,k_dim] (recurrent_states 存 [B,H,k_dim,v_dim])
+        if use_precomputed_states and recurrent_state is not None:
+            initial_state = recurrent_state.transpose(-1, -2)
         else:
-            core_attn_out, last_recurrent_state = torch_chunk_gated_delta_rule(
-                query, key, value, g=g, beta=beta,
-                initial_state=recurrent_state if use_precomputed_states else None,
-                output_final_state=cache_params is not None,
-                use_qk_l2norm_in_kernel=True,
+            initial_state = torch.zeros(
+                batch_size, self.num_v_heads, self.head_v_dim, self.head_k_dim,
+                dtype=hidden_states.dtype, device=hidden_states.device,
             )
+        # prefill + decode 共用 cann_lm::chunk_gated_delta_rule (单 GE 算子,
+        # 避免 torch.export 展开纯 torch for 循环 -> 19418 节点 -> GE segfault).
+        # GE 映射 ge.ChunkGatedDeltaRule (手动定义, torchair 未生成).
+        core_attn_out_bh, last_recurrent_state_npu = torch.ops.cann_lm.chunk_gated_delta_rule(
+            query_bh, key_bh, value_bh, beta_bh, initial_state, actual_seq_lens, g_bh,
+        )
+        # BHSD -> BSHD
+        core_attn_out = core_attn_out_bh.transpose(1, 2)
+        # final_state NPU [B,H,v_dim,k_dim] -> recurrent [B,H,k_dim,v_dim]
+        last_recurrent_state = last_recurrent_state_npu.transpose(-1, -2)
 
         if cache_params is not None:
             cache_params.update_recurrent_state(last_recurrent_state, self.layer_idx)

@@ -217,8 +217,60 @@ def register_ge_converters() -> None:
         # ge.RotaryMul(x, r1=cos, r2=sin) -> y
         return ge.RotaryMul(x, cos, sin)
 
+    @register_fx_node_ge_converter(torch.ops.cann_lm.chunk_gated_delta_rule.default)
+    def _convert_chunk_gated_delta_rule(
+        query: Any,
+        key: Any,
+        value: Any,
+        beta: Any,
+        initial_state: Any,
+        actual_seq_lengths: Any,
+        g: Any = None,
+        *,
+        scale_value: float = 1.0,
+        meta_outputs: Any = None,
+    ) -> Any:
+        del meta_outputs
+        # 手动创建 ge.ChunkGatedDeltaRule (torchair auto_generated 未生成此算子,
+        # npu_chunk_gated_delta_rule converter 直接 raise RuntimeError).
+        # CANN op_info: aic-ascend910_93-ops-info-transformer.json "ChunkGatedDeltaRule"
+        # inputs: query/key/value/beta/initial_state/actual_seq_lengths + g(optional)
+        # outputs: out/final_state, attr: scale_value
+        from torchair.ge._ge_graph import get_default_ge_graph, next_unique_name, Tensor, get_invalid_desc
+        op = get_default_ge_graph().op.add()
+        op.type = "ChunkGatedDeltaRule"
+        op.name = next_unique_name(None, "ChunkGatedDeltaRule")
+        input_list = [
+            (query, "query"),
+            (key, "key"),
+            (value, "value"),
+            (beta, "beta"),
+            (initial_state, "initial_state"),
+            (actual_seq_lengths, "actual_seq_lengths"),
+            (g, "g"),
+        ]
+        for item_t, item_n in input_list:
+            if item_t is not None:
+                op.input.append(item_t.tensor)
+                op.input_desc.add().CopyFrom(item_t.desc)
+                op.input_desc[-1].name = item_n
+            else:
+                op.input.append('')
+                op.input_desc.add().CopyFrom(get_invalid_desc())
+                op.input_desc[-1].name = item_n
+        op.attr["scale_value"].f = scale_value
+        output_index = 0
+        op.output_desc.add().name = "out"
+        out = Tensor(op, output_index)
+        output_index += 1
+        op.output_desc.add().name = "final_state"
+        final_state = Tensor(op, output_index)
+        return out, final_state
+
     @register_fx_node_ge_converter(torch.ops.aten.type_as.default)
-    def _convert_type_as(x: Any, dtype_or_tensor: Any, meta_outputs: Any = None) -> Any:
+
+    @register_fx_node_ge_converter(torch.ops.aten.type_as.default)
+    def _convert_type_as(x: Any, dtype_or_tensor: Any, *, meta_outputs: Any = None) -> Any:
         del meta_outputs
         import torch as _torch
         if isinstance(dtype_or_tensor, _torch.Tensor):

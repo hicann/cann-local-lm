@@ -17,6 +17,7 @@
 from . import (  # noqa: F401  (side-effect: define + register_fake/impl)
     add_rms_norm,
     beam_search,
+    chunk_gated_delta_rule,
     fused_infer_attention_score,
     quant_matmul,
     rope_in_place,

@@ -1,15 +1,23 @@
-# Gemma-4 融合算子汇总与分析
+# 融合算子汇总与分析（Gemma-4 + Qwen3.5）
 
 > 数据来源：
-> - 参考实现（CANN 优化版）：`cann-recipes-infer/models/gemma_4/models/modeling_gemma4.py`
-> - 本仓实现（纯 PyTorch 参考版）：`cann_lm/models/gemma4/modeling_gemma4.py`
+> - 参考实现（CANN 优化版）：
+>   - Gemma-4：`cann-recipes-infer/models/gemma_4/models/modeling_gemma4.py`
+>   - Qwen3.5：`cann-recipes-infer/models/qwen3_5/models/modeling_qwen3_5_moe.py`
+> - 本仓实现（纯 PyTorch 参考版）：
+>   - `cann_lm/models/gemma4/modeling_gemma4.py`
+>   - `cann_lm/models/qwen3_5/modeling_qwen3_5.py`
+>   - 自定义算子：`cann_lm/models/fused_ops/` + GE 映射 `cann_lm/converter/export/ge_converter.py`
 
 参考实现基于 CANN 推理框架（TND/BNSD Paged Attention + MC2 EP + GE Graph），大量使用
-`torch_npu` / `torch.ops.npu` 融合算子；本仓 `modeling_gemma4.py` 为纯 PyTorch 参考实现，
-**未引入任何 `torch_npu` 调用**，全部算子用 `torch` / `torch.nn.functional` 表达。本文档先
-汇总参考实现用到的全部 torch_npu 算子，再逐模块分析本仓实现可替换的融合算子。
+`torch_npu` / `torch.ops.npu` 融合算子；本仓 `modeling_*.py` 为纯 PyTorch 参考实现，
+**未引入任何 `torch_npu` 调用**，全部算子用 `torch` / `torch.nn.functional` 表达，再通过
+`cann_lm::` 自定义算子 + `ge_converter.py` 映射到 GE 算子做 IR 导出。本文档分别汇总两模型
+参考实现用到的全部 torch_npu 算子，再逐模块分析本仓实现可替换的融合算子。
 
 ---
+
+# 第一部分：Gemma-4 融合算子
 
 ## 一、参考实现（cann-recipes-infer）使用的 torch_npu 算子汇总
 
@@ -174,3 +182,172 @@ MC2 dispatch-combine）。
 
 > 注：本仓当前为纯 PyTorch 参考实现，引入 `torch_npu` 需遵循 AGENTS.md 的 stub 约定
 > （converter 侧 torchair 编译 + lib 层打桩），NPU 实机验证走系统 Python 的 torch_npu。
+
+---
+
+# 第二部分：Qwen3.5 融合算子
+
+> 数据来源：`cann-recipes-infer/models/qwen3_5/models/modeling_qwen3_5_moe.py`（3237 行）
+> 本仓实现：`cann_lm/models/qwen3_5/modeling_qwen3_5.py`
+
+Qwen3.5 是**混合架构**：full_attention 层（标准 GQA + KV cache）+ linear_attention 层
+（GatedDeltaNet 线性注意力 + conv1d + recurrent state）。参考实现的融合算子重点在
+**线性注意力**（`npu_chunk_gated_delta_rule` / `npu_recurrent_gated_delta_rule` / `causal_conv1d` /
+`FusedRMSNormGated`），这也是本仓 `export_to_epair` segfault 的根因（纯 torch 的
+`torch_chunk_gated_delta_rule` Python for 循环展开 19418 节点导致 GE 图爆炸）。
+
+## 四、参考实现（cann-recipes-infer）使用的 torch_npu 算子汇总
+
+共 **22** 个融合算子，按功能域分 6 类。线性注意力类（#1-#6）是 Qwen3.5 特有，其余与
+Gemma-4 重叠（详见第一部分，此处只列差异）。
+
+### 4.1 线性注意力类（Qwen3.5 特有，核心）
+
+| # | 算子 | 调用位置 | 关键参数 | 作用 |
+|---|------|----------|----------|------|
+| 1 | `torch_npu.npu_chunk_gated_delta_rule` | `GatedDeltaNet._forward_prefill_with_fused_kernel`（行 1541） | `(query, key, value, beta=, initial_state=, actual_seq_lengths=, scale=, g=)` | **prefill 线性注意力核心**：融合 chunked gated delta rule 全流程（L2norm + chunk decay + intra/inter-chunk recurrence + state update），单算子替代纯 torch 的 ~100 行 Python for 循环 |
+| 2 | `torch_npu.npu_recurrent_gated_delta_rule` | `GatedDeltaNet._forward_decode`（行 1646） | `(query, key, value, last_recurrent_state, beta=, scale=, actual_seq_lengths=, ssm_state_indices=, num_accepted_tokens=, g=, gk=)` | **decode 线性注意力核心**：融合 token-by-token 递归（state *= exp(g) → kv_mem → delta → state += → out），支持 speculative decode 的 num_accepted_tokens |
+| 3 | `causal_conv1d_fn`（外部注入） | `GatedDeltaNet._forward_prefill`（行 1336） | `(x, weight, bias, activation, seq_idx)` | prefill conv1d 融合：state 滚动 + depthwise conv1d + SiLU 单 kernel |
+| 4 | `causal_conv1d_update`（外部注入） | `GatedDeltaNet._forward_decode`（行 1598） | `(x, conv_state, weight, bias, activation)` 位置参数 | decode conv1d 融合：单 token 的 state 滚动 + conv + SiLU |
+| 5 | `FusedRMSNormGated`（外部注入） | `GatedDeltaNet.__init__`（行 1153） | `FusedRMSNormGated(head_v_dim, eps, activation, device, dtype)`，forward `(core_attn_out, z)` | 线性注意力的 norm + gate 融合：`rms_norm(x) * silu(gate)` 单 kernel |
+| 6 | `ge_safe_softplus`（纯 torch 替代） | `GatedDeltaNet`（行 1518） | `relu(x) + log1p(exp(-abs(x)))` | 非 NPU 算子，但为 ge_graph 避开 `aten::softplus`（用 relu+log1p 表达），本仓可直接借鉴 |
+
+> **启用条件**（行 1178-1181）：`use_npu_chunk_gated_delta_rule = (_PLATFORM_VERSION != "950"
+> and hasattr(torch_npu, "npu_chunk_gated_delta_rule"))` —— 即 **950 走纯 torch prefill，
+> 910/A3 走融合算子**。
+
+### 4.2 归一化类（RMSNorm，与 Gemma-4 重叠）
+
+| # | 算子 | 调用位置 | 关键参数 | 作用 |
+|---|------|----------|----------|------|
+| 7 | `torch_npu.npu_rms_norm` | `Qwen3_5MoeRMSNormGated.ln_npu`（行 885）、`Qwen3_5MoeRMSNorm.ln_npu`（行 2577） | `(x, weight, eps)[0]` | 融合 RMSNorm |
+| 8 | `torch_npu.npu_add_rms_norm` | `Qwen3_5MoeRMSNorm.add_rms_norm_npu`（行 2615） | `(residual, x, gamma, eps)` 返回 `(y, _, residual)` | 融合 residual add + RMSNorm |
+| 9 | `torch_npu.npu_rms_norm_dynamic_mx_quant` | `Qwen3_5MoeRMSNorm.rms_norm_mx`（行 2588） | `(x, gamma, epsilon, dst_type)` 返回 `(x_quant, x_scale, _)` | RMSNorm + MXFP8 量化输出（供下游量化 linear） |
+| 10 | `torch_npu.npu_add_rms_norm_dynamic_mx_quant` | `Qwen3_5MoeRMSNorm.add_rms_norm_mx`（行 2605） | `(residual, x, gamma, epsilon, dst_type)` 返回 `(y, x_out, mxscale, _)` | add + RMSNorm + MXFP8 量化 |
+
+### 4.3 激活类
+
+| # | 算子 | 调用位置 | 关键参数 | 作用 |
+|---|------|----------|----------|------|
+| 11 | `torch_npu.npu_swiglu` | `SiLUAndMul.forward`（行 742） | `(x)` | 融合 SiLU+Mul：`silu(gate) * up`（MLP gate_up_proj 后） |
+| 12 | `torch_npu.npu_swiglu_mx_quant` | `SiLUAndMul.forward_mx`（行 746） | `(x, group_index, dst_type, activate_left)` 返回 `(out, scale)` | SiLU+Mul + MXFP8 量化（供量化 down_proj） |
+
+### 4.4 Attention 类（full_attention 层）
+
+| # | 算子 | 调用位置 | 关键参数 | 作用 |
+|---|------|----------|----------|------|
+| 13 | `torch_npu.npu_rotary_mul` | `Qwen3_5MoeAttention.forward`（行 1961） | `(q, cos, sin, rotary_mode='half')` | RoPE 融合（与 Gemma-4 一致） |
+| 14 | `torch_npu.scatter_update_` | `Qwen3_5MoeAttention.forward`（行 1975） | `(cache, indices, updates, dim=-2)` in-place | KV cache 写入（替代 index_copy） |
+| 15 | `torch.ops.npu.npu_fused_infer_attention_score` | `Qwen3_5MoeAttention.forward`（行 1979 prefill / 1998 decode） | prefill: `sparse_mode=3, atten_mask=...`；decode: `actual_seq_lengths_kv=..., atten_mask=None` | FlashAttention 融合（QK^T+softmax+AV+GQA+PagedAttention） |
+
+### 4.5 量化类
+
+| # | 算子 | 调用位置 | 关键参数 | 作用 |
+|---|------|----------|----------|------|
+| 16 | `torch_npu.npu_dynamic_mx_quant` | `_quantize_weight_last_dim`（行 286） | `(weight_2d, dst_type=float8_e4m3fn)` 返回 `(quant, scale)` | 权重在线 MXFP8 量化 |
+| 17 | `torch_npu.npu_mm_all_reduce_base` | `qwen3_5_prefill_mm_all_reduce`（行 219） | `(input, weight, hcom, reduce_op="sum")` | MM + AllReduce 融合（仅 950，prefill 的 o_proj/down_proj） |
+
+### 4.6 MoE 类（本仓 Qwen3.5 为 dense，不含 MoE；参考实现 MoE 版有 8 个，与 Gemma-4 第一部分 #8-#15 一致，略）
+
+---
+
+## 五、本仓 `modeling_qwen3_5.py` 可用的融合算子分析
+
+本仓实现为纯 PyTorch，以下逐模块给出「当前实现 → 可替换融合算子」的映射。标注
+`✅ 已落地` / `✅ 可直接替换` / `⚠️ 需重构（GE 算子）` / `❌ 不适用`。
+
+### 5.1 线性注意力核心（GatedDeltaNet）— **segfault 根因，最高优先级**
+
+**当前实现**（`Qwen3_5GatedDeltaNet.forward`，modeling_qwen3_5.py:415-480）：
+- prefill：`torch_chunk_gated_delta_rule`（行 179-256，~78 行 Python for 循环 + 多次 matmul + cumsum + exp + masked_fill + solve_triangular）
+- decode：`torch_recurrent_gated_delta_rule`（行 259-323，逐 token for 循环递归）
+
+| 算子 | 适用性 | 说明 |
+|------|--------|------|
+| `torch_npu.npu_chunk_gated_delta_rule` | ⚠️ 需重构（GE 算子） | **解决 segfault 的关键**：纯 torch prefill 展开约 19418 节点 → `export_to_epair` GE 转换图爆炸 segfault。融合算子把整个 chunked GDR 流程打成单 GE 算子。需：① `fused_ops/` 注册 `cann_lm::chunk_gated_delta_rule`（schema + fake meta）；② `ge_converter.py` 映射到 `ge.ChunkGatedDeltaRule`（查 CANN op_info）；③ modeling 用 `torch.ops.cann_lm.chunk_gated_delta_rule` 替代 `torch_chunk_gated_delta_rule` |
+| `torch_npu.npu_recurrent_gated_delta_rule` | ⚠️ 需重构（GE 算子） | decode 路径同上，纯 torch for 循环无法被 torch.export 优化。需注册 `cann_lm::recurrent_gated_delta_rule` + GE 映射 |
+| `causal_conv1d_fn` / `causal_conv1d_update` | ⚠️ 需重构（GE 算子） | 当前 `torch_causal_conv1d_update`（行 163-176）= `torch.cat(state,x) + F.conv1d + F.silu`，3 个 kernel launch。可注册 `cann_lm::causal_conv1d` + GE 映射；或直接用 `aten::conv1d`（已有 GE 映射）+ `aten::silu` |
+| `FusedRMSNormGated` | ⚠️ 需重构（GE 算子） | 当前 `Qwen3_5RMSNormGated`（行 31-44）= `pow/rsqrt` 纯 torch norm + `F.silu(gate) * x`。可拆解：norm 部分已有 `cann_lm::rms_norm`（→ `ge.RmsNorm`），gate 部分用 `aten::silu` + `aten::mul`；或注册融合 `cann_lm::rms_norm_gated` + GE 映射 `ge.RmsNormGated`（查 CANN 是否有） |
+
+> **平台分支**：参考实现 `npu_chunk_gated_delta_rule` 只在非 950（910/A3）启用，950 走纯 torch。
+> 本仓纯 torch 路径在 **910 实机推理**会低效（Python 循环），在 **export_to_epair 导出**会
+> segfault（图爆炸）。两条路都需融合算子。
+
+### 5.2 RMSNorm → `npu_rms_norm` / `npu_add_rms_norm`（已落地）
+
+**当前实现**：`Qwen3_5RMSNorm.forward`（行 22-28）= `pow(2).mean + pow(-0.5) + mul` 纯 torch。
+
+| 算子 | 状态 | 说明 |
+|------|------|------|
+| `cann_lm::rms_norm`（= `npu_rms_norm`） | ✅ 已落地 | `fused_ops/rms_norm.py` 有 CPU eager + fake meta；`ge_converter.py:178` 映射 `ge.RmsNorm`。但 modeling_qwen3_5.py **未调用** `torch.ops.cann_lm.rms_norm`，仍是纯 torch（导出时走 aten 分解为 Rsqrt+Mul+ReduceMean）。可改为调 cann_lm 算子，GE 直接用融合 RmsNorm |
+| `cann_lm::add_rms_norm`（= `npu_add_rms_norm`） | ✅ 已落地 | `fused_ops/add_rms_norm.py` + `ge_converter.py:189` 映射 `ge.AddRmsNorm`。modeling_qwen3_5.py 的 `Qwen3_5DecoderLayer.forward`（行 588）残差 add + norm 可改用此融合算子（需重构 forward 拓扑） |
+
+### 5.3 RoPE → `npu_rotary_mul`（已落地）
+
+**当前实现**：`Qwen3_5RotaryEmbedding`（行 68）+ attention 用 `apply_rotary_pos_emb`。
+
+| 算子 | 状态 | 说明 |
+|------|------|------|
+| `cann_lm::rotary_mul`（= `npu_rotary_mul`） | ✅ 已落地 | `fused_ops/rotary_mul.py` + `ge_converter.py:202` 映射 `ge.RotaryMul`。与 Gemma-4 共用 |
+
+### 5.4 KV Cache 写入 → `scatter_update_`（已落地，IR 路径通）
+
+**当前实现**（`SimpleKVCache.update`，行 330-332）：`index_copy(2, new_kv_cache_pos, kv)`。
+
+| 算子 | 状态 | 说明 |
+|------|------|------|
+| `aten::index_copy` → `ge.InplaceUpdate + TransposeD` | ✅ 已落地 | `ge_converter.py:234` 注册 `aten::index_copy` 的 GE 转换器（TensorMove + TransposeD + InplaceUpdate），IR 导出路径已通。实机可用 `npu_scatter_update_` |
+
+### 5.5 Full Attention → `npu_fused_infer_attention_score`（已落地，未启用）
+
+**当前实现**：`Qwen3_5Attention`（行 520-569）= eager attention（matmul QK^T + softmax + matmul AV + GQA repeat_kv）。
+
+| 算子 | 状态 | 说明 |
+|------|------|------|
+| `cann_lm::fused_infer_attention_score` | ⚠️ 需重构 | `fused_ops/fused_infer_attention_score.py` + `ge_converter.py:82` 映射 `ge.FusedInferAttentionScore`（含 block_table/num_key_value_heads/sparse_mode）。modeling_qwen3_5.py 的 full attention 可改用此融合算子（需重构 attention forward） |
+
+### 5.6 激活 → `npu_swiglu`（未落地）
+
+**当前实现**：`Qwen3_5MLP.forward`（行 569）= `F.silu(gate) * up` 纯 torch（或 `gate * silu(up)`）。
+
+| 算子 | 状态 | 说明 |
+|------|------|------|
+| `npu_swiglu` | ❌ 未落地 | 可注册 `cann_lm::swiglu` + GE 映射 `ge.Swiglu`（查 CANN op_info）。优先级低，纯 torch 的 silu+mul 在 GE 导出时分解为 Swish/Sigmoid+Mul，已能导出 |
+
+---
+
+## 六、Qwen3.5 收益排序与建议落地顺序
+
+按「解决导出 segfault / 实机推理提速」排序：
+
+| 优先级 | 融合算子 | 替换目标 | 预期收益 |
+|--------|----------|----------|----------|
+| **P0** | `npu_chunk_gated_delta_rule`（→ `cann_lm::chunk_gated_delta_rule` + `ge.ChunkGatedDeltaRule`） | `torch_chunk_gated_delta_rule`（prefill） | **解决 export_to_epair segfault**：19418 节点 → 1 算子；实机 prefill 提速（单 kernel 替代 ~100 行循环） |
+| **P0** | `npu_recurrent_gated_delta_rule`（→ `cann_lm::recurrent_gated_delta_rule` + GE 映射） | `torch_recurrent_gated_delta_rule`（decode） | 解决 decode 导出 + 实机 decode 提速（逐 token 循环 → 单算子 batch 递归） |
+| P1 | `causal_conv1d_fn` / `causal_conv1d_update`（→ `cann_lm::causal_conv1d` + GE 映射） | `torch_causal_conv1d_update` | 线性注意力的 conv1d 融合（3 kernel → 1），导出 + 推理提速 |
+| P1 | `FusedRMSNormGated`（→ `cann_lm::rms_norm_gated` + `ge.RmsNormGated`） | `Qwen3_5RMSNormGated`（norm + silu(gate) + mul） | 线性注意力 norm+gate 融合，或拆解用已有 `cann_lm::rms_norm` + `aten::silu` |
+| P2 | `npu_rms_norm`（`cann_lm::rms_norm` 已落地，modeling 改调用） | `Qwen3_5RMSNorm` 纯 torch | 每层 4-6 个 RMSNorm，高频；GE 直接用融合 RmsNorm（而非分解 Rsqrt+Mul） |
+| P2 | `npu_add_rms_norm`（`cann_lm::add_rms_norm` 已落地，modeling 改调用） | 残差 add + norm 两步 | 每层 2 处，需重构 forward 拓扑 |
+| P3 | `npu_fused_infer_attention_score`（`cann_lm::fused_infer_attention_score` 已落地） | full attention eager（matmul+softmax+matmul） | 全注意力层融合，消除 repeat_kv + mask 构造 |
+| P3 | `npu_swiglu`（未落地） | `F.silu(gate) * up` | MLP 激活融合，优先级低（纯 torch 已能导出） |
+
+> **P0 是关键**：`chunk_gated_delta_rule` + `recurrent_gated_delta_rule` 是 Qwen3.5
+> `export_to_epair` segfault 的唯二解（纯 torch for 循环无法被 torch.export 优化，图爆炸）。
+> 实现路径：① `fused_ops/chunk_gated_delta_rule.py` 注册 schema + fake meta；② `ge_converter.py`
+> 映射到 `ge.ChunkGatedDeltaRule`（查 CANN `aic-ascend910_93-ops-info-*.json` 的 op_info）；③
+> `modeling_qwen3_5.py` 用 `torch.ops.cann_lm.chunk_gated_delta_rule` 替代 `torch_chunk_gated_delta_rule`。
+> 参考 cann-recipes-infer 的 `npu_chunk_gated_delta_rule` 签名（行 1541）对齐参数。
+
+---
+
+## 七、平台差异速查（Qwen3.5）
+
+| 平台 | `npu_chunk_gated_delta_rule` | fp8/mxfp8 量化 | `npu_mm_all_reduce_base` | MoE MC2 |
+|------|------------------------------|----------------|---------------------------|---------|
+| **950**（Atlas 950） | ❌ 走纯 torch prefill | ✅ 支持 | ✅ 支持 | group_type=0/3 |
+| **910/A3**（非 950） | ✅ 融合算子 | ❌ 不支持 | ❌ A3 不支持 | `fullmesh_v2` |
+
+> 本机 NPU 为 **Ascend910_9362**（非 950），支持 `npu_chunk_gated_delta_rule` 融合算子，
+> 不支持 fp8/mxfp8 量化。融合算子落地后，910 实机推理可走 `npu_chunk_gated_delta_rule`，
+> 950 走纯 torch fallback（但 950 纯 torch 在导出时仍会 segfault，需 950 专属解或保持
+> `cann_lm::chunk_gated_delta_rule` 的 GE 映射让 950 也能用 GE 算子）。

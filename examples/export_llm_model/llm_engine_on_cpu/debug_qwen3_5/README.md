@@ -30,7 +30,7 @@ export TORCH_DELEGATE_ENABLE_FALLBACK_CODEGEN=0  # 不走 fallback codegen
 
 ## 脚本列表
 
-当前 6 个脚本:
+当前 7 个脚本:
 
 | 脚本 | 测试场景 | 验证对象 |
 |------|---------|---------|
@@ -39,6 +39,7 @@ export TORCH_DELEGATE_ENABLE_FALLBACK_CODEGEN=0  # 不走 fallback codegen
 | `verify_qwen3_5_vs_hf.py` | pure-torch vs HF 数值对齐 | logits max_diff(greedy token 一致) |
 | `verify_wrapper_qwen3_5.py` | wrapper 自测 | Qwen3_5ExportWrapper vs 原始 model(max_diff=0.0) |
 | `verify_qwen3_5_all.py` | 单步 + 多轮 decode + epair 导出 | wrapper vs model / vs HF / torch.export + ep.module 回环 |
+| `verify_qwen3_5_epair.py` | epair 导出 + ep 回环推理 | ep.module prefill + wrapper decode vs wrapper direct vs HF |
 | `verify_qwen3_5_chunk.py` | chunk 推理 + vs HF | 分 chunk prefill vs 非 chunk,验证一致性 + vs HF |
 | `verify_qwen3_5_multiturn.py` | 多轮对话(cann/wrapper + chunk) | 跨轮上下文,每轮 prefill(含历史)+ decode |
 
@@ -147,6 +148,41 @@ python verify_qwen3_5_all.py
 - Layer 2: PASS
 - Layer 3: wrapper vs HF diff=0.02(bfloat16 正常)
 - Layer 4: torch.export OK(19418 节点),ep.module 回环 vs HF diff=0.02
+
+---
+
+## 5.5 `verify_qwen3_5_epair.py` — epair 导出 + ep 回环推理
+
+**测试场景**(2 模式):
+- `--mode ep`(默认):`ep.module()` prefill(验证 logits)+ wrapper decode(ep 回环),对比 ep vs wrapper direct vs HF
+- `--mode wrapper`:wrapper direct 推理(cat KV,past=None)
+
+**qwen3.5 特殊处理**:
+- **delta_cache 持久化**:ep.module() 是 trace 后的图,不执行 `_delta_cache_box[0]=...`(Python 副作用),故 ep 回环:
+  1. wrapper prefill(non-ep,cat 模式):获取 delta_cache(更新 `_delta_cache_box`)
+  2. ep.module prefill(scatter 模式):获取 KV_ep(验证 logits_ep == logits_w)
+  3. wrapper decode:用 KV_ep + `_delta_cache_box`(delta_cache 来自 step 1)
+- **形状特化**:ep.module 按 prompt 的实际 seq_len 导出(每个 seq_len 缓存一个 ep)
+- **chunk_gated_delta_rule**:linear attention 用 cann_lm 融合算子(单 GE 节点,避免 19418 节点 segfault)
+
+**用法**:
+```bash
+# ep 回环 vs wrapper vs HF (默认)
+python verify_qwen3_5_epair.py
+
+# wrapper direct 推理
+python verify_qwen3_5_epair.py --mode wrapper
+
+# 单 prompt
+python verify_qwen3_5_epair.py --prompt "你好"
+
+# 不对比 HF
+python verify_qwen3_5_epair.py --no-vs-hf
+```
+
+**参数**:`--mode ep/wrapper` / `--vs-hf`(默认开,`--no-vs-hf` 关闭)/ `--num-steps`(10)/ `--prompt`
+
+**验证结果**:✅ PASS(ep 回环 == wrapper == HF,三 prompt tokens 一致;ep prefill logits max_diff 0.25-0.31 bfloat16 数值差异但 tokens match)
 
 ---
 

@@ -93,6 +93,13 @@ ge::Format AtenTensorDescMapper::MapGeLayoutString(const std::string &layout, Va
   if (layout.empty() || layout == "ND") {
     return ge::FORMAT_ND;
   }
+  // Conv2D/DepthwiseConv2D 等 op 要求 input format NCHW/NHWC (torchair specific_op_input_layout 设)
+  if (layout == "NCHW") {
+    return ge::FORMAT_NCHW;
+  }
+  if (layout == "NHWC") {
+    return ge::FORMAT_NHWC;
+  }
   AddError(result, "UNSUPPORTED_GE_LAYOUT", "Unsupported GE layout string", context + ":" + layout);
   return ge::FORMAT_ND;
 }

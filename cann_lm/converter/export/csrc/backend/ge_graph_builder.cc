@@ -1363,8 +1363,11 @@ bool PlanConverterNode(GraphBuildContext &ctx, const ParsedNode &node, const Gra
         AddError(result, "MISSING_INPUT_TENSOR", "Converter input tensor ref is empty", op.name + ":" + desc->name);
         return false;
       }
+      // Fallback: 对边界输入(FX 张量名)从 tensor_values 取 shape/dtype, 让 GE infershape
+      // 能沿 Data 边推断下游 op 的 input (如 Unsqueeze->Conv2D). 内部 GE ref 找不到返回 nullptr.
+      const ParsedTensorMeta *input_fallback = deps.parser.FindTensorValue(op.inputs[input_index]);
       const td::GeTensorDescInfo desc_info =
-          deps.tensor_desc_mapper.MapAscendIrDesc(desc, nullptr, result, op.name + ":" + desc->name);
+          deps.tensor_desc_mapper.MapAscendIrDesc(desc, input_fallback, result, op.name + ":" + desc->name);
       if (!result.ok) {
         TDLOGE("%s", MakeConverterNodeError(node, &op, "converter input desc mapping error", "", desc->name,
                                             op.inputs[input_index])

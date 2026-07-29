@@ -22,8 +22,10 @@ def save_epair(
     sample_seq_len: int = 128,
     use_embeddings: bool = False,
     save_weights: bool = True,
+    whitelist_decompositions: set | None = None,
 ) -> None:
     import torch_delegate
+    from torch_delegate import EpairConfig
     from cann_lm.converter.export.ge_converter import register_ge_converters
 
     output_dir = Path(output_dir).resolve()
@@ -48,7 +50,11 @@ def save_epair(
 
     ep = torch.export.export(wrapper, sample_inputs, strict=False)
 
-    epair = torch_delegate.export_to_epair(ep)
+    # 用默认 whitelist (linear/matmul/layer_norm/softmax 等分解), conv1d 走自定义 converter
+    if whitelist_decompositions is None:
+        whitelist_decompositions = set(EpairConfig().whitelist_decompositions)
+    config = EpairConfig(whitelist_decompositions=whitelist_decompositions)
+    epair = torch_delegate.export_to_epair(ep, config)
 
     # C++ 侧已兜底处理：
     # - _assert_tensor_metadata 节点：PlanNodes 顶部 IsAssertTensorMetadataNode 跳过
@@ -79,6 +85,7 @@ def save_epair_prefill_decode(
     prefill_seq_len: int = 128,
     use_embeddings: bool = False,
     save_weights: bool = True,
+    whitelist_decompositions: set | None = None,
 ) -> None:
     """Prefill/decode split export: emit two graphs (prefill + decode) + shared weights.
 
@@ -96,6 +103,7 @@ def save_epair_prefill_decode(
     Does NOT save .pt2 or input_N.bin (those belong in a verify script).
     """
     import torch_delegate
+    from torch_delegate import EpairConfig
     from cann_lm.converter.export.ge_converter import register_ge_converters
 
     output_dir = Path(output_dir).resolve()
@@ -119,13 +127,17 @@ def save_epair_prefill_decode(
         seq_len=prefill_seq_len, use_embeddings=use_embeddings
     )
     prefill_ep = torch.export.export(wrapper, prefill_sample, strict=False)
-    prefill_epair = torch_delegate.export_to_epair(prefill_ep)
+    # 用默认 whitelist (linear/matmul/layer_norm/softmax 等分解), conv1d 走自定义 converter
+    if whitelist_decompositions is None:
+        whitelist_decompositions = set(EpairConfig().whitelist_decompositions)
+    config = EpairConfig(whitelist_decompositions=whitelist_decompositions)
+    prefill_epair = torch_delegate.export_to_epair(prefill_ep, config)
     del prefill_ep
 
     # Export decode_ep (seq_len=1, reused for all decode steps)
     decode_sample = wrapper.get_sample_inputs(seq_len=1, use_embeddings=use_embeddings)
     decode_ep = torch.export.export(wrapper, decode_sample, strict=False)
-    decode_epair = torch_delegate.export_to_epair(decode_ep)
+    decode_epair = torch_delegate.export_to_epair(decode_ep, config)
 
     # Release model memory (OOM guard); epair.ep holds independent ExportedProgram ref
     del decode_ep, wrapper

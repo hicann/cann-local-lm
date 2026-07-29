@@ -265,7 +265,70 @@ def register_ge_converters() -> None:
         output_index += 1
         op.output_desc.add().name = "final_state"
         final_state = Tensor(op, output_index)
+        # 填 output desc shape/dtype (从 meta_outputs), 避 GE infershape 不推空 desc
+        mo_list = list(meta_outputs) if isinstance(meta_outputs, (list, tuple)) else [meta_outputs]
+        if len(mo_list) >= 1 and mo_list[0] is not None:
+            mo0 = mo_list[0]
+            del out.desc.shape.dim[:]
+            out.desc.shape.dim.extend(list(getattr(mo0, "size", []) or []))
+            out.desc.dtype = query.desc.dtype
+        if len(mo_list) >= 2 and mo_list[1] is not None:
+            mo1 = mo_list[1]
+            del final_state.desc.shape.dim[:]
+            final_state.desc.shape.dim.extend(list(getattr(mo1, "size", []) or []))
+            final_state.desc.dtype = initial_state.desc.dtype
         return out, final_state
+
+    @register_fx_node_ge_converter(torch.ops.aten.conv1d.default)
+    def _convert_conv1d(
+        x: Any,
+        weight: Any,
+        bias: Any = None,
+        stride: Any = (1,),
+        padding: Any = (0,),
+        dilation: Any = (1,),
+        groups: int = 1,
+        *,
+        meta_outputs: Any = None,
+    ) -> Any:
+        from torchair._ge_concrete_graph.ge_converter.aten.convolution import _npu_convolution
+        s = stride[0] if isinstance(stride, (list, tuple)) and stride else 1
+        p = padding[0] if isinstance(padding, (list, tuple)) and padding else 0
+        d = dilation[0] if isinstance(dilation, (list, tuple)) and dilation else 1
+        x4 = ge.Unsqueeze(x, axes=[2])       # [B,C,L] -> [B,C,1,L]
+        w4 = ge.Unsqueeze(weight, axes=[2])  # [O,C,K] -> [O,C,1,K]
+        # 手动填 Unsqueeze outputDesc 的 shape/dtype, 让下游 Conv2D inputDesc (CopyFrom) 非空,
+        # 避开 GE infershape 不推空 desc (torchair auto_generated 只设 name="y")
+        w_dims = list(weight.desc.shape.dim)  # [O,C,K] (constant 有 shape.dim)
+        # x.desc.shape.dim 空 (boundary 只有 _meta), 从 meta_outputs.size [B,C,L_out] 反推 L_in
+        mo = meta_outputs[0] if isinstance(meta_outputs, (list, tuple)) else meta_outputs
+        mo_size = list(getattr(mo, "size", []) or [])
+        x_dims = []
+        if len(mo_size) == 3 and len(w_dims) == 3:
+            B, C, L_out = mo_size[0], mo_size[1], mo_size[2]
+            K = w_dims[2]
+            L_in = (L_out - 1) * s + K - 2 * p
+            x_dims = [B, C, L_in]
+        # 填 x4 (Unsqueeze output) shape [B,C,1,L_in] + dtype (layout 由 _npu_conv2d 的 specific_op_input_layout 设)
+        if len(x_dims) == 3:
+            del x4.desc.shape.dim[:]
+            x4.desc.shape.dim.extend([x_dims[0], x_dims[1], 1, x_dims[2]])
+            x4.desc.dtype = x.desc.dtype
+            x4.desc.layout = "NCHW"
+        # 填 w4 (Unsqueeze output) shape [O,C,1,K] + dtype
+        if len(w_dims) == 3:
+            del w4.desc.shape.dim[:]
+            w4.desc.shape.dim.extend([w_dims[0], w_dims[1], 1, w_dims[2]])
+            w4.desc.dtype = weight.desc.dtype
+            w4.desc.layout = "NCHW"
+        out4 = _npu_convolution(x4, w4, bias, [1, s], [0, p], [1, d], groups, meta_outputs)
+        # 填 Conv2D outputDesc shape [B,O,1,L_out] + dtype
+        if len(mo_size) == 3 and len(w_dims) == 3:
+            del out4.desc.shape.dim[:]
+            out4.desc.shape.dim.extend([mo_size[0], w_dims[0], 1, mo_size[2]])
+            out4.desc.dtype = x.desc.dtype
+            out4.desc.layout = "NCHW"
+        return ge.Squeeze(out4, axis=[2])
 
     @register_fx_node_ge_converter(torch.ops.aten.type_as.default)
 

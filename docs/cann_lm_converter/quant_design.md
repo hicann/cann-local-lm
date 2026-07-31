@@ -228,6 +228,22 @@ Track 0 注册算子时核对 CANN REG_OP（`torchair/.../auto_generated_ge_raw_
 
 ---
 
+## V4 NPU 验证状态（本机 Ascend910_9362 / ascend910_93 族）
+
+`npu_quant_matmul`（= `aclnnQuantMatmulV5` = QuantBatchMatmulV4 eager 接口）在本机 NPU 实跑验证：
+
+| 模式 | 状态 | 详情 |
+|---|---|---|
+| **W8A8（int8+int8）K-C** | ✅ **跑通，maxdiff≈0** | x1=INT8, x2=INT8, pertoken_scale=fp32(m,), scale=fp32(n,) per-channel → fp16。与 ref `(x1@(q*scale).T)*pertoken` 逐位一致（maxdiff=5.96e-08）。验证脚本 `examples/verify_quant_matmul_v4_w8a8.py`。证明 V4 算子 + scale/pertoken 方法论在本机可用。 |
+| **W4A8 int4（A8W4 K-G）** | ⚠️ op 能执行，结果错 | int4pack(`npu_convert_weight_to_int4pack`→`(k,n//8) int32`) + UINT64 scale(`npu_trans_quant_param`) + group[0,0,256] + k=256 对齐 + pertoken(m,1) + yOffset。op 不报错但输出与 ref 偏差大，且 `(ref-y0)/pertoken` **非 per-channel 常量**（x1 相关）→ op 内部 int4 反量化 ≠ fp32 `q*scale`，是 packing 交错排布 + UINT64 fixed-point scale + yOffset 三者语义未对齐。 |
+
+### A8W4 int4 的关键工具（已验证可用）
+- `torch_npu.npu_convert_weight_to_int4pack(int32_kn)` → `(k, n//8) int32`（每 int32 存 8 个 int4，交错排布）。DT_INT4=29。
+- `torch.ops.npu.npu_trans_quant_param(fp32_scale_1d)` → int64（UINT64 deqScale，fp32→定点）。
+- `torch.ops.npu.npu_quant_matmul`（V5 aclnn）A8W4 K-G 要求：x2Scale=UINT64/INT64、yOffset=FLOAT32(n,) 非空、k 256 对齐、group_sizes=[0,0,256]。
+
+---
+
 ## 遗留问题
 
 1. **int4 CANN 算子选型（核心遗留，已具体化）**——见上节"int4 物化的 CANN 约定"。CANN 无"整数 int4 per-group + int8 act"单算子：`QuantBatchMatmulV3`（整数 int4/int8，per-channel，无 group_size）vs `QuantBatchMatmulV4`（MXFP FLOAT4_E2M1，per-group）。当前 converter→V4 与整数 int4 物化 dtype 不符（真 NPU OM 编译会失败）。**待选型 A（V3 整数 per-channel）/B（V4 mxfp4）/C（维持）**。

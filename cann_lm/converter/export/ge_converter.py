@@ -25,11 +25,15 @@ from cann_lm.models.fused_ops import ops as _backend_ops  # Registers cann_lm op
 
 def register_ge_converters() -> None:
     from torchair import register_fx_node_ge_converter
-    from torchair.ge import custom_op
+    # 先 import torchair custom/ (注册 torchair 的 npu converter, 含 raise 的 npu_chunk_gated_delta_rule
+    # + import torch_npu 的 quantmatmul). 后续 cann_lm converter 覆盖之.
+    from torchair._ge_concrete_graph.ge_converter import custom  # noqa: F401
     from torchair._ge_concrete_graph import ge_apis as ge
 
+    # quant_matmul: 注册到 npu (覆盖 torchair quantmatmul.py 的 import torch_npu converter,
+    # 用简化版 _quant_matmul_converter 不依赖 torch_npu)
     from ._quant_matmul_converter import convert_quant_matmul
-    register_fx_node_ge_converter(torch.ops.cann_lm.quant_matmul.default)(convert_quant_matmul)
+    register_fx_node_ge_converter(torch.ops.npu.npu_quant_matmul.default)(convert_quant_matmul)
 
     @register_fx_node_ge_converter(torch.ops.aten.softplus.default)
     def _convert_softplus(x: Any, meta_outputs: Any = None) -> Any:
@@ -47,192 +51,21 @@ def register_ge_converters() -> None:
         eye_tensor = _torch.eye(rows, cols, dtype=dt)
         return ge.Const(eye_tensor)
 
-    @register_fx_node_ge_converter(torch.ops.cann_lm.rope_in_place.default)
-    def _convert_rope_in_place(
-        input: Any,
-        sin_cache: Any,
-        cos_cache: Any,
-        meta_outputs: Any = None,
-    ) -> Any:
-        del meta_outputs
-        return custom_op(
-            "RopeInPlace",
-            inputs={"input": input, "sin_cache": sin_cache, "cos_cache": cos_cache},
-            outputs=["output"],
-        )
-
-    @register_fx_node_ge_converter(torch.ops.cann_lm.beam_search.default)
-    def _convert_beam_search(
-        log_probs: Any,
-        top_tokens: Any,
-        top_probs: Any,
-        meta_outputs: Any = None,
-    ) -> Any:
-        del meta_outputs
-        return custom_op(
-            "BeamSearch",
-            inputs={
-                "log_probs": log_probs,
-                "top_tokens": top_tokens,
-                "top_probs": top_probs,
-            },
-            outputs=["out_token_ids", "out_token_index", "out_log_probs"],
-        )
-
-    @register_fx_node_ge_converter(torch.ops.cann_lm.fused_infer_attention_score.default)
-    def _convert_fused_infer_attention_score(
-        query: Any,
-        key: Any,
-        value: Any,
-        *,
-        pse_shift: Any = None,
-        atten_mask: Any = None,
-        actual_seq_lengths: Any = None,
-        actual_seq_lengths_kv: Any = None,
-        dequant_scale1: Any = None,
-        quant_scale1: Any = None,
-        dequant_scale2: Any = None,
-        quant_scale2: Any = None,
-        quant_offset2: Any = None,
-        antiquant_scale: Any = None,
-        antiquant_offset: Any = None,
-        block_table: Any = None,
-        query_padding_size: Any = None,
-        kv_padding_size: Any = None,
-        key_antiquant_scale: Any = None,
-        key_antiquant_offset: Any = None,
-        value_antiquant_scale: Any = None,
-        value_antiquant_offset: Any = None,
-        key_shared_prefix: Any = None,
-        value_shared_prefix: Any = None,
-        actual_shared_prefix_len: Any = None,
-        query_rope: Any = None,
-        key_rope: Any = None,
-        key_rope_antiquant_scale: Any = None,
-        num_heads: int = 1,
-        scale: float = 1.0,
-        pre_tokens: int = 2147483647,
-        next_tokens: int = 2147483647,
-        input_layout: str = "BSH",
-        num_key_value_heads: int = 0,
-        sparse_mode: int = 0,
-        inner_precise: int = 0,
-        block_size: int = 0,
-        antiquant_mode: int = 0,
-        softmax_lse_flag: bool = False,
-        key_antiquant_mode: int = 0,
-        value_antiquant_mode: int = 0,
-        meta_outputs: Any = None,
-    ) -> Any:
-        del meta_outputs
-        key_list = [key]
-        value_list = [value]
-        return ge.FusedInferAttentionScore(
-            query, key_list, value_list,
-            pse_shift=pse_shift,
-            atten_mask=atten_mask,
-            actual_seq_lengths=actual_seq_lengths,
-            actual_seq_lengths_kv=actual_seq_lengths_kv,
-            dequant_scale1=dequant_scale1,
-            quant_scale1=quant_scale1,
-            dequant_scale2=dequant_scale2,
-            quant_scale2=quant_scale2,
-            quant_offset2=quant_offset2,
-            antiquant_scale=antiquant_scale,
-            antiquant_offset=antiquant_offset,
-            block_table=block_table,
-            query_padding_size=query_padding_size,
-            kv_padding_size=kv_padding_size,
-            key_antiquant_scale=key_antiquant_scale,
-            key_antiquant_offset=key_antiquant_offset,
-            value_antiquant_scale=value_antiquant_scale,
-            value_antiquant_offset=value_antiquant_offset,
-            key_shared_prefix=key_shared_prefix,
-            value_shared_prefix=value_shared_prefix,
-            actual_shared_prefix_len=actual_shared_prefix_len,
-            query_rope=query_rope,
-            key_rope=key_rope,
-            key_rope_antiquant_scale=key_rope_antiquant_scale,
-            num_heads=num_heads,
-            scale=scale,
-            pre_tokens=pre_tokens,
-            next_tokens=next_tokens,
-            input_layout=input_layout,
-            num_key_value_heads=num_key_value_heads,
-            sparse_mode=sparse_mode,
-            inner_precise=inner_precise,
-            block_size=block_size,
-            antiquant_mode=antiquant_mode,
-            softmax_lse_flag=softmax_lse_flag,
-            key_antiquant_mode=key_antiquant_mode,
-            value_antiquant_mode=value_antiquant_mode,
-            dequant_scale_query=None,
-            learnable_sink=None,
-            q_start_idx=None,
-            kv_start_idx=None,
-            query_quant_mode=0,
-            pse_type=0,
-            out_dtype=0,
-        )
-
-    @register_fx_node_ge_converter(torch.ops.cann_lm.rms_norm.default)
-    def _convert_rms_norm(
-        x: Any,
-        gamma: Any,
-        *,
-        epsilon: float = 1e-6,
-        meta_outputs: Any = None,
-    ) -> Any:
-        del meta_outputs
-        return ge.RmsNorm(x, gamma, epsilon=epsilon)
-
-    @register_fx_node_ge_converter(torch.ops.cann_lm.add_rms_norm.default)
-    def _convert_add_rms_norm(
-        x1: Any,
-        x2: Any,
-        gamma: Any,
-        *,
-        epsilon: float = 1e-6,
-        meta_outputs: Any = None,
-    ) -> Any:
-        del meta_outputs
-        # ge.AddRmsNorm(x1, x2, gamma, *, epsilon) -> (y, rstd, x=x1+x2)
-        return ge.AddRmsNorm(x1, x2, gamma, epsilon=epsilon)
-
-    @register_fx_node_ge_converter(torch.ops.cann_lm.rotary_mul.default)
-    def _convert_rotary_mul(
-        x: Any,
-        cos: Any,
-        sin: Any,
-        *,
-        rotary_mode: str = "half",
-        meta_outputs: Any = None,
-    ) -> Any:
-        del meta_outputs
-        if rotary_mode != "half":
-            raise NotImplementedError(
-                f"rotary_mode={rotary_mode!r} not mapped; "
-                "CANN RotaryMul only supports half-rotation"
-            )
-        # ge.RotaryMul(x, r1=cos, r2=sin) -> y
-        return ge.RotaryMul(x, cos, sin)
-
-    @register_fx_node_ge_converter(torch.ops.cann_lm.chunk_gated_delta_rule.default)
+    @register_fx_node_ge_converter(torch.ops.npu.npu_chunk_gated_delta_rule.default)
     def _convert_chunk_gated_delta_rule(
         query: Any,
         key: Any,
         value: Any,
-        beta: Any,
-        initial_state: Any,
-        actual_seq_lengths: Any,
-        g: Any = None,
         *,
-        scale_value: float = 1.0,
+        beta: Any = None,
+        initial_state: Any = None,
+        actual_seq_lengths: Any = None,
+        scale: float | None = None,
+        g: Any = None,
         meta_outputs: Any = None,
     ) -> Any:
-        del meta_outputs
         # 手动创建 ge.ChunkGatedDeltaRule (torchair auto_generated 未生成此算子,
-        # npu_chunk_gated_delta_rule converter 直接 raise RuntimeError).
+        # npu_chunk_gated_delta_rule converter 直接 raise RuntimeError, 此处覆盖).
         # CANN op_info: aic-ascend910_93-ops-info-transformer.json "ChunkGatedDeltaRule"
         # inputs: query/key/value/beta/initial_state/actual_seq_lengths + g(optional)
         # outputs: out/final_state, attr: scale_value
@@ -258,7 +91,7 @@ def register_ge_converters() -> None:
                 op.input.append('')
                 op.input_desc.add().CopyFrom(get_invalid_desc())
                 op.input_desc[-1].name = item_n
-        op.attr["scale_value"].f = scale_value
+        op.attr["scale_value"].f = scale if scale is not None else 1.0
         output_index = 0
         op.output_desc.add().name = "out"
         out = Tensor(op, output_index)

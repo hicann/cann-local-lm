@@ -16,7 +16,7 @@
 
 import torch
 
-from ._library import LIBRARY
+from cann_lm.models.fused_ops._library import CANN_LM_LIB as LIBRARY
 
 LIBRARY.define(
     "rope_in_place(Tensor(a!) input, Tensor sin_cache, Tensor cos_cache) -> ()"

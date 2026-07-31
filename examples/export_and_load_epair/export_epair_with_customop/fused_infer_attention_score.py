@@ -16,7 +16,7 @@
 
 import torch
 
-from ._library import LIBRARY
+from cann_lm.models.fused_ops._library import CANN_LM_LIB as LIBRARY
 
 LIBRARY.define(
     "fused_infer_attention_score("

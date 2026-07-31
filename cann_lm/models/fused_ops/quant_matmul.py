@@ -23,17 +23,18 @@ a8w4 分支 (x1=FP8_E4M3FN + x2=FP4/FP32-pack + per-group ``y_scale`` +
 
 import torch
 
-from ._library import LIBRARY
+from ._library import NPU_LIB, _HAS_TORCH_NPU
 
-LIBRARY.define(
-    "quant_matmul("
-    "Tensor x1, Tensor x2, Tensor scale, *, "
-    "Tensor? offset=None, Tensor? pertoken_scale=None, Tensor? bias=None, "
-    "int? output_dtype=None, int? x1_dtype=None, int? x2_dtype=None, "
-    "int? pertoken_scale_dtype=None, int? scale_dtype=None, "
-    "int[]? group_sizes=None, Tensor? y_scale=None, "
-    "bool transpose_x1=False, bool transpose_x2=False) -> (Tensor y)"
-)
+if NPU_LIB is not None:
+    NPU_LIB.define(
+        "npu_quant_matmul("
+        "Tensor x1, Tensor x2, Tensor scale, *, "
+        "Tensor? offset=None, Tensor? pertoken_scale=None, Tensor? bias=None, "
+        "int? output_dtype=None, int? x1_dtype=None, int? x2_dtype=None, "
+        "int? pertoken_scale_dtype=None, int? scale_dtype=None, "
+        "int[]? group_sizes=None, Tensor? y_scale=None, "
+        "bool transpose_x1=False, bool transpose_x2=False) -> (Tensor y)"
+    )
 
 _SCALAR_TYPE_TO_TORCH_DTYPE = {
     0: torch.uint8,
@@ -46,31 +47,32 @@ _SCALAR_TYPE_TO_TORCH_DTYPE = {
 }
 
 
-@torch.library.register_fake("cann_lm::quant_matmul")
-def _quant_matmul_meta(
-    x1: torch.Tensor,
-    x2: torch.Tensor,
-    scale: torch.Tensor,
-    *,
-    offset: torch.Tensor | None = None,
-    pertoken_scale: torch.Tensor | None = None,
-    bias: torch.Tensor | None = None,
-    output_dtype: int | None = None,
-    x1_dtype: int | None = None,
-    x2_dtype: int | None = None,
-    pertoken_scale_dtype: int | None = None,
-    scale_dtype: int | None = None,
-    group_sizes: list[int] | None = None,
-    y_scale: torch.Tensor | None = None,
-    transpose_x1: bool = False,
-    transpose_x2: bool = False,
-) -> torch.Tensor:
-    del (
-        offset, pertoken_scale, bias, x1_dtype, x2_dtype, pertoken_scale_dtype,
-        scale_dtype, group_sizes, y_scale, transpose_x1, transpose_x2, scale,
-    )
-    out_dtype = _SCALAR_TYPE_TO_TORCH_DTYPE.get(output_dtype, torch.int8)
-    m = x1.size(-2)
-    n = x2.size(-1)
-    batch = list(torch.broadcast_shapes(x1.shape[:-2], x2.shape[:-2]))
-    return x1.new_empty(batch + [m, n], dtype=out_dtype)
+if not _HAS_TORCH_NPU:
+    @torch.library.register_fake("npu::npu_quant_matmul")
+    def _quant_matmul_meta(
+        x1: torch.Tensor,
+        x2: torch.Tensor,
+        scale: torch.Tensor,
+        *,
+        offset: torch.Tensor | None = None,
+        pertoken_scale: torch.Tensor | None = None,
+        bias: torch.Tensor | None = None,
+        output_dtype: int | None = None,
+        x1_dtype: int | None = None,
+        x2_dtype: int | None = None,
+        pertoken_scale_dtype: int | None = None,
+        scale_dtype: int | None = None,
+        group_sizes: list[int] | None = None,
+        y_scale: torch.Tensor | None = None,
+        transpose_x1: bool = False,
+        transpose_x2: bool = False,
+    ) -> torch.Tensor:
+        del (
+            offset, pertoken_scale, bias, x1_dtype, x2_dtype, pertoken_scale_dtype,
+            scale_dtype, group_sizes, y_scale, transpose_x1, transpose_x2, scale,
+        )
+        out_dtype = _SCALAR_TYPE_TO_TORCH_DTYPE.get(output_dtype, torch.int8)
+        m = x1.size(-2)
+        n = x2.size(-1)
+        batch = list(torch.broadcast_shapes(x1.shape[:-2], x2.shape[:-2]))
+        return x1.new_empty(batch + [m, n], dtype=out_dtype)

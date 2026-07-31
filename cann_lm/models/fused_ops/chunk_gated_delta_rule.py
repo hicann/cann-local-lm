@@ -33,48 +33,50 @@ CPU impl 复用 torch_chunk_gated_delta_rule (chunked 矩阵化, 比 recurrent �
 
 import torch
 
-from ._library import LIBRARY
+from ._library import NPU_LIB, _HAS_TORCH_NPU
 
-LIBRARY.define(
-    "chunk_gated_delta_rule("
-    "Tensor query, Tensor key, Tensor value, Tensor beta, "
-    "Tensor initial_state, Tensor actual_seq_lengths, "
-    "Tensor? g=None, *, float scale_value=1.0"
-    ") -> (Tensor out, Tensor final_state)"
-)
+if NPU_LIB is not None:
+    NPU_LIB.define(
+        "npu_chunk_gated_delta_rule("
+        "Tensor query, Tensor key, Tensor value, *, "
+        "Tensor? beta=None, Tensor? initial_state=None, "
+        "Tensor? actual_seq_lengths=None, float? scale=None, Tensor? g=None"
+        ") -> (Tensor out, Tensor final_state)"
+    )
+
+if not _HAS_TORCH_NPU:
+
+    @torch.library.register_fake("npu::npu_chunk_gated_delta_rule")
+    def _chunk_gated_delta_rule_meta(
+        query: torch.Tensor,
+        key: torch.Tensor,
+        value: torch.Tensor,
+        *,
+        beta: torch.Tensor | None = None,
+        initial_state: torch.Tensor | None = None,
+        actual_seq_lengths: torch.Tensor | None = None,
+        scale: float | None = None,
+        g: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        del key, beta, actual_seq_lengths, g, scale
+        # out: [B, H, seq, v_dim] (query 前几维 + value 最后一维)
+        out = query.new_empty(query.shape[:-1] + (value.shape[-1],))
+        # final_state: like initial_state [B, H, v_dim, k_dim]
+        final_state = initial_state.new_empty(initial_state.shape)
+        return out, final_state
 
 
-@torch.library.register_fake("cann_lm::chunk_gated_delta_rule")
-def _chunk_gated_delta_rule_meta(
-    query: torch.Tensor,
-    key: torch.Tensor,
-    value: torch.Tensor,
-    beta: torch.Tensor,
-    initial_state: torch.Tensor,
-    actual_seq_lengths: torch.Tensor,
-    g: torch.Tensor | None = None,
-    *,
-    scale_value: float = 1.0,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    del key, beta, actual_seq_lengths, g, scale_value
-    # out: [B, H, seq, v_dim] (query 前几维 + value 最后一维)
-    out = query.new_empty(query.shape[:-1] + (value.shape[-1],))
-    # final_state: like initial_state [B, H, v_dim, k_dim]
-    final_state = initial_state.new_empty(initial_state.shape)
-    return out, final_state
-
-
-@torch.library.impl("cann_lm::chunk_gated_delta_rule", "cpu")
+@torch.library.impl("npu::npu_chunk_gated_delta_rule", "cpu")
 def _chunk_gated_delta_rule_cpu(
     query: torch.Tensor,
     key: torch.Tensor,
     value: torch.Tensor,
-    beta: torch.Tensor,
-    initial_state: torch.Tensor,
-    actual_seq_lengths: torch.Tensor,
-    g: torch.Tensor | None = None,
     *,
-    scale_value: float = 1.0,
+    beta: torch.Tensor | None = None,
+    initial_state: torch.Tensor | None = None,
+    actual_seq_lengths: torch.Tensor | None = None,
+    scale: float | None = None,
+    g: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """CPU eager: 转换 BHSD -> BSHD 调用纯 torch torch_chunk_gated_delta_rule.
 
@@ -82,7 +84,7 @@ def _chunk_gated_delta_rule_cpu(
     initial_state [B,H,v_dim,k_dim]. 纯 torch torch_chunk 期望 BSHD ([B,seq,H,dim]) +
     initial_state [B,H,k_dim,v_dim], 故需 transpose.
     """
-    del actual_seq_lengths, scale_value
+    del actual_seq_lengths, scale
     from cann_lm.models.qwen3_5.modeling_qwen3_5 import torch_chunk_gated_delta_rule
 
     # BHSD -> BSHD (transpose dim 1,2)

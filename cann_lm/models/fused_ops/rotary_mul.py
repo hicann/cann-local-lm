@@ -12,49 +12,47 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""cann_lm::rotary_mul - fused rotate-half RoPE (single tensor, 4D BSND).
+"""npu::npu_rotary_mul - fused rotate-half RoPE (schema + meta + CPU eager kernel).
 
-Mirrors torch_npu.npu_rotary_mul(x, cos, sin, *, rotary_mode). Expects 4D
-``[B, S, N, D]`` with cos/sin broadcast over the head axis ``[B, S, 1, D]``.
-``rotary_mode='half'`` is the GPT-NeoX / Llama rotate-half pairing.
+注册到 npu 命名空间 (torch.ops.npu.npu_rotary_mul), torchair custom/ 的
+npu_rotary_mul converter 自动注册 (arch35 -> ge.RotaryPositionEmbedding,
+旧架构 -> ge.RotaryMul). cann_lm CPU impl 仅支持 rotary_mode='half'.
 """
 
 import torch
 
-from ._library import LIBRARY
+from ._library import NPU_LIB, _HAS_TORCH_NPU
 
-LIBRARY.define(
-    "rotary_mul(Tensor x, Tensor cos, Tensor sin, *, "
-    "str rotary_mode=\"half\") -> Tensor out"
-)
+if NPU_LIB is not None:
+    NPU_LIB.define(
+        "npu_rotary_mul(Tensor self, Tensor r1, Tensor r2, str rotary_mode=\"half\") -> Tensor out"
+    )
 
+if not _HAS_TORCH_NPU:
 
-@torch.library.register_fake("cann_lm::rotary_mul")
-def _rotary_mul_meta(
-    x: torch.Tensor,
-    cos: torch.Tensor,
-    sin: torch.Tensor,
-    *,
-    rotary_mode: str = "half",
-) -> torch.Tensor:
-    del cos, sin, rotary_mode
-    return torch.empty_like(x)
+    @torch.library.register_fake("npu::npu_rotary_mul")
+    def _rotary_mul_meta(
+        self: torch.Tensor,
+        r1: torch.Tensor,
+        r2: torch.Tensor,
+        rotary_mode: str = "half",
+    ) -> torch.Tensor:
+        del r1, r2, rotary_mode
+        return torch.empty_like(self)
 
-
-@torch.library.impl("cann_lm::rotary_mul", "cpu")
-def _rotary_mul_cpu(
-    x: torch.Tensor,
-    cos: torch.Tensor,
-    sin: torch.Tensor,
-    *,
-    rotary_mode: str = "half",
-) -> torch.Tensor:
-    if rotary_mode != "half":
-        raise NotImplementedError(
-            f"rotary_mode={rotary_mode!r} not supported on CPU; only 'half'"
-        )
-    x1 = x[..., : x.shape[-1] // 2]
-    x2 = x[..., x.shape[-1] // 2 :]
-    rotated = torch.cat((-x2, x1), dim=-1)
-    out = (x * cos) + (rotated * sin)
-    return out.to(x.dtype)
+    @torch.library.impl("npu::npu_rotary_mul", "cpu")
+    def _rotary_mul_cpu(
+        self: torch.Tensor,
+        r1: torch.Tensor,
+        r2: torch.Tensor,
+        rotary_mode: str = "half",
+    ) -> torch.Tensor:
+        if rotary_mode != "half":
+            raise NotImplementedError(
+                f"rotary_mode={rotary_mode!r} not supported on CPU; only 'half'"
+            )
+        x1 = self[..., : self.shape[-1] // 2]
+        x2 = self[..., self.shape[-1] // 2 :]
+        rotated = torch.cat((-x2, x1), dim=-1)
+        out = (self * r1) + (rotated * r2)
+        return out.to(self.dtype)

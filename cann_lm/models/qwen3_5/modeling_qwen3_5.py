@@ -484,8 +484,10 @@ class Qwen3_5GatedDeltaNet(nn.Module):
         # prefill + decode 共用 cann_lm::chunk_gated_delta_rule (单 GE 算子,
         # 避免 torch.export 展开纯 torch for 循环 -> 19418 节点 -> GE segfault).
         # GE 映射 ge.ChunkGatedDeltaRule (手动定义, torchair 未生成).
-        core_attn_out_bh, last_recurrent_state_npu = torch.ops.cann_lm.chunk_gated_delta_rule(
-            query_bh, key_bh, value_bh, beta_bh, initial_state, actual_seq_lens, g_bh,
+        core_attn_out_bh, last_recurrent_state_npu = torch.ops.npu.npu_chunk_gated_delta_rule(
+            query_bh, key_bh, value_bh,
+            beta=beta_bh, initial_state=initial_state,
+            actual_seq_lengths=actual_seq_lens, g=g_bh,
         )
         # BHSD -> BSHD
         core_attn_out = core_attn_out_bh.transpose(1, 2)

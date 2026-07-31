@@ -47,7 +47,7 @@ def apply_rotary_pos_emb(
     rotary_dim = cos.shape[-1]
     x_rot = x[..., :rotary_dim]
     x_pass = x[..., rotary_dim:]
-    out = torch.ops.cann_lm.rotary_mul(x_rot, cos, sin, rotary_mode="half")
+    out = torch.ops.npu.npu_rotary_mul(x_rot, cos, sin, rotary_mode="half")
     if x_pass.shape[-1] > 0:
         return torch.cat([out, x_pass], dim=-1)
     return out
@@ -126,12 +126,12 @@ class Gemma4RMSNorm(nn.Module):
             self.register_buffer("weight", torch.ones(dim), persistent=False)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        y, _ = torch.ops.cann_lm.rms_norm(x, self.weight, epsilon=self.eps)
+        y, _ = torch.ops.npu.npu_rms_norm(x, self.weight, epsilon=self.eps)
         return y
 
     def forward_add(self, x1: torch.Tensor, x2: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """Fused add + rms_norm: returns (rms_norm(x1 + x2), x1 + x2)."""
-        y, _, residual = torch.ops.cann_lm.add_rms_norm(x1, x2, self.weight, epsilon=self.eps)
+        y, _, residual = torch.ops.npu.npu_add_rms_norm(x1, x2, self.weight, epsilon=self.eps)
         return y, residual
 
     def extra_repr(self):

@@ -12,48 +12,46 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""cann_lm::add_rms_norm - fused add + RMSNorm op (schema + meta + CPU eager kernel).
+"""npu::npu_add_rms_norm - fused add + RMSNorm op (schema + meta + CPU eager kernel).
 
-Mirrors torch_npu.npu_add_rms_norm(x1, x2, gamma, epsilon) -> (y, rstd, residual):
-one kernel computes ``rms_norm(x1 + x2)`` *and* the residual ``x1 + x2`` so the
-post-norm residual add (norm -> add -> next-norm) collapses to a single op.
+注册到 npu 命名空间 (torch.ops.npu.npu_add_rms_norm), torchair custom/ 的
+npu_add_rms_norm converter 自动注册 (ge.AddRmsNorm).
 """
 
 import torch
 
-from ._library import LIBRARY
+from ._library import NPU_LIB, _HAS_TORCH_NPU
 
-LIBRARY.define(
-    "add_rms_norm(Tensor x1, Tensor x2, Tensor gamma, *, float epsilon=1e-6) "
-    "-> (Tensor y, Tensor rstd, Tensor residual)"
-)
+if NPU_LIB is not None:
+    NPU_LIB.define(
+        "npu_add_rms_norm(Tensor x1, Tensor x2, Tensor gamma, float epsilon=1e-6) "
+        "-> (Tensor y, Tensor rstd, Tensor residual)"
+    )
 
+if not _HAS_TORCH_NPU:
 
-@torch.library.register_fake("cann_lm::add_rms_norm")
-def _add_rms_norm_meta(
-    x1: torch.Tensor,
-    x2: torch.Tensor,
-    gamma: torch.Tensor,
-    *,
-    epsilon: float = 1e-6,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    del x2, gamma, epsilon
-    y = torch.empty_like(x1)
-    rstd = x1.new_empty(x1.shape[:-1] + (1,), dtype=torch.float32)
-    residual = torch.empty_like(x1)
-    return y, rstd, residual
+    @torch.library.register_fake("npu::npu_add_rms_norm")
+    def _add_rms_norm_meta(
+        x1: torch.Tensor,
+        x2: torch.Tensor,
+        gamma: torch.Tensor,
+        epsilon: float = 1e-6,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        del x2, gamma, epsilon
+        y = torch.empty_like(x1)
+        rstd = x1.new_empty(x1.shape[:-1] + (1,), dtype=torch.float32)
+        residual = torch.empty_like(x1)
+        return y, rstd, residual
 
-
-@torch.library.impl("cann_lm::add_rms_norm", "cpu")
-def _add_rms_norm_cpu(
-    x1: torch.Tensor,
-    x2: torch.Tensor,
-    gamma: torch.Tensor,
-    *,
-    epsilon: float = 1e-6,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    s = x1 + x2
-    ms = s.float().pow(2).mean(dim=-1, keepdim=True)
-    rstd = torch.rsqrt(ms + epsilon)
-    y = ((s.float() * rstd) * gamma.float()).to(s.dtype)
-    return y, rstd, s
+    @torch.library.impl("npu::npu_add_rms_norm", "cpu")
+    def _add_rms_norm_cpu(
+        x1: torch.Tensor,
+        x2: torch.Tensor,
+        gamma: torch.Tensor,
+        epsilon: float = 1e-6,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        s = x1 + x2
+        ms = s.float().pow(2).mean(dim=-1, keepdim=True)
+        rstd = torch.rsqrt(ms + epsilon)
+        y = ((s.float() * rstd) * gamma.float()).to(s.dtype)
+        return y, rstd, s

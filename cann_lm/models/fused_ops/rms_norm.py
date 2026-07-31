@@ -12,38 +12,42 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""cann_lm::rms_norm - RMSNorm op (schema + meta + CPU eager kernel)."""
+"""npu::npu_rms_norm - RMSNorm op (schema + meta + CPU eager kernel).
+
+注册到 npu 命名空间 (torch.ops.npu.npu_rms_norm), torchair custom/ 的
+npu_rms_norm converter 自动注册 (ge.RmsNorm). stubs 环境 (无 torch_npu)
+自定义 schema + fake + CPU impl; 真实 torch_npu 由 torch_npu 提供 schema.
+"""
 
 import torch
 
-from ._library import LIBRARY
+from ._library import NPU_LIB, _HAS_TORCH_NPU
 
-LIBRARY.define(
-    "rms_norm(Tensor x, Tensor gamma, *, float epsilon=1e-6) -> (Tensor y, Tensor rstd)"
-)
+if NPU_LIB is not None:
+    NPU_LIB.define(
+        "npu_rms_norm(Tensor self, Tensor gamma, float epsilon=1e-6) -> (Tensor y, Tensor rstd)"
+    )
 
+if not _HAS_TORCH_NPU:
 
-@torch.library.register_fake("cann_lm::rms_norm")
-def _rms_norm_meta(
-    x: torch.Tensor,
-    gamma: torch.Tensor,
-    *,
-    epsilon: float = 1e-6,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    del gamma, epsilon
-    y = torch.empty_like(x)
-    rstd = x.new_empty(x.shape[:-1] + (1,), dtype=torch.float32)
-    return y, rstd
+    @torch.library.register_fake("npu::npu_rms_norm")
+    def _rms_norm_meta(
+        self: torch.Tensor,
+        gamma: torch.Tensor,
+        epsilon: float = 1e-6,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        del gamma, epsilon
+        y = torch.empty_like(self)
+        rstd = self.new_empty(self.shape[:-1] + (1,), dtype=torch.float32)
+        return y, rstd
 
-
-@torch.library.impl("cann_lm::rms_norm", "cpu")
-def _rms_norm_cpu(
-    x: torch.Tensor,
-    gamma: torch.Tensor,
-    *,
-    epsilon: float = 1e-6,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    ms = x.float().pow(2).mean(dim=-1, keepdim=True)
-    rstd = torch.rsqrt(ms + epsilon)
-    y = ((x.float() * rstd) * gamma.float()).to(x.dtype)
-    return y, rstd
+    @torch.library.impl("npu::npu_rms_norm", "cpu")
+    def _rms_norm_cpu(
+        self: torch.Tensor,
+        gamma: torch.Tensor,
+        epsilon: float = 1e-6,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        ms = self.float().pow(2).mean(dim=-1, keepdim=True) + epsilon
+        rstd = torch.rsqrt(ms)
+        y = ((self.float() * rstd) * gamma.float()).to(self.dtype)
+        return y, rstd

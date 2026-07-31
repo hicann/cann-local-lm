@@ -16,7 +16,7 @@
 
 import torch
 
-from ._library import LIBRARY
+from cann_lm.models.fused_ops._library import CANN_LM_LIB as LIBRARY
 
 LIBRARY.define(
     "beam_search(Tensor log_probs, Tensor top_tokens, Tensor top_probs) -> "

@@ -45,3 +45,8 @@ examples/export_*/
 
 # local file
 AGENTS.md
+
+# Quant artifacts (generated dopt GPTQ output + calibration data + dumps)
+cann_lm/converter/quant/quant_output/
+cann_lm/converter/quant/calibration.json
+*_dump/

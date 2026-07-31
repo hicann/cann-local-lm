@@ -1,0 +1,103 @@
+# Copyright 2026 The xLLM Authors. All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Weight int4 materialization (W4A8 s4, symmetric, per-group, unpack placeholder).
+
+Converts a fp16/bf16 nn.Linear weight [out, in] into a quantized int8 payload
+(int4 signed values stored 1/byte = unpack) + per-group fp32 scale along `in`
+(K dim). offset = 0 (symmetric).
+
+遗留: int4 编码 (signed [-8,7] vs unsigned [0,15])、packed (2/byte) vs unpack
+(1/byte)、scale 形状是 CANN QuantBatchMatmulV4 约定缺口（见
+docs/cann_lm_converter/quant_design.md "int4 物化的 CANN 约定"）。本模块为
+unpack+signed 占位实现，先跑通 Python 流程，CANN 对齐后续。
+"""
+
+import torch
+
+
+def materialize_int4(
+    weight: torch.Tensor,
+    group_size: int = 128,
+    signed: bool = True,
+    nbits: int = 4,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Materialize a Linear weight into (int4-as-int8 payload, per-group scale).
+
+    Args:
+        weight: fp16/bf16/fp32 weight in nn.Linear orientation ``[out, in]``.
+        group_size: K-axis (in) group size; ``in`` must be divisible by it.
+        signed: True -> signed symmetric range ``[-qmax, qmax]`` (qmax=7 for 4-bit);
+            False -> unsigned ``[0, 2*qmax+1]``.
+        nbits: bits per weight element (4 for int4).
+
+    Returns:
+        (weight_q: int8 ``[out, in]``, scale: fp32 ``[out, in//group]``).
+        Symmetric (offset=0), so no offset tensor.
+    """
+    w = weight.detach().float()
+    out_f, in_f = w.shape
+    if in_f % group_size != 0:
+        raise ValueError(
+            f"in_features ({in_f}) not divisible by group_size ({group_size})"
+        )
+    qmax = (1 << (nbits - 1)) - 1  # signed 4-bit -> 7
+    ng = in_f // group_size
+    wg = w.reshape(out_f, ng, group_size)
+    scale = (wg.abs().amax(dim=-1) / qmax).clamp(min=1e-8)  # [out, ng]
+    scale_exp = scale.repeat_interleave(group_size, dim=-1)  # [out, in]
+    q = torch.round(w / scale_exp)
+    if signed:
+        q = q.clamp(-qmax, qmax)
+    else:
+        q = q.clamp(0, 2 * qmax + 1)
+    return q.to(torch.int8), scale.to(torch.float32)
+
+
+def materialize_int4_with_scale(
+    weight: torch.Tensor,
+    scale: torch.Tensor,
+    group_size: int,
+    signed: bool = True,
+    nbits: int = 4,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Materialize using a PRECOMPUTED per-group scale (e.g., from dopt GPTQ).
+
+    Args:
+        weight: ``[out, in]`` (fp16/fp32, GPTQ-corrected).
+        scale: ``[out, in//group]`` (fp32, per output-channel × per K-group) — e.g.
+            the dopt ``quant_op.weight_quantizer.s`` reshaped from its flattened
+            ``[out * in//group]`` form back to 2D.
+        group_size: K-axis group size (must match the scale's grouping).
+
+    Returns:
+        (weight_q: int8 ``[out, in]``, scale: fp32 ``[out, in//group]``).
+        Symmetric (offset=0). The scale is returned as-is (already GPTQ-optimized).
+    """
+    w = weight.detach().float()
+    out_f, in_f = w.shape
+    if in_f % group_size != 0:
+        raise ValueError(f"in_features ({in_f}) not divisible by group_size ({group_size})")
+    if scale.shape != (out_f, in_f // group_size):
+        raise ValueError(
+            f"scale shape {tuple(scale.shape)} != ({out_f}, {in_f // group_size})"
+        )
+    qmax = (1 << (nbits - 1)) - 1  # signed 4-bit -> 7
+    scale_exp = scale.float().repeat_interleave(group_size, dim=-1)  # [out, in]
+    q = torch.round(w / scale_exp)
+    if signed:
+        q = q.clamp(-qmax, qmax)
+    else:
+        q = q.clamp(0, 2 * qmax + 1)
+    return q.to(torch.int8), scale.float()

@@ -177,6 +177,8 @@ def save_model_config(artifact: ModelArtifact, output_dir: Path) -> None:
         "config": config_dict,
         "hf_config": artifact.hf_config,
     }
+    if artifact.quant_info:
+        config_data["quant_info"] = artifact.quant_info
     path = output_dir / "model_config.json"
     with open(path, "w") as f:
         json.dump(config_data, f, indent=2, default=str)

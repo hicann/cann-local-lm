@@ -33,7 +33,7 @@
 
 - **输入**：HuggingFace 模型目录（`config.json` + safetensors 权重 + tokenizer 文件）
 - **输出**：epair 模型目录（`ep_json_with_ascend_ir.json` + 权重 bin + tokenizer + `model_config.json`），供 C++ 后端加载
-- **量化**：**未实现**。`fused_ops/quant_matmul` 是 fake-only 算子（schema + meta，export-only，无 eager 计算），`_quant_matmul_converter.py` 仅把 op 映射到 `ge.QuantBatchMatmulV4`（真实量化计算在 NPU/GE 侧）；无 calibration、无权重量化流程、无 A8W4/MXFP4 打包（a8w4 分支已去掉以去除 torch_npu 依赖）
+- **量化**：**进行中**（详见 [`quant_design.md`](./quant_design.md)）。方案 W4A8 s8s4（act s8 per-token 动态 + weight s4 per-group 对称）。已内置 `cann_lm/converter/quant/dopt_lm`（华为 GPTQ 权重 PTQ 框架，vendored），在 NPU/GPU 上对 HF 模型跑 GPTQ 产出 per-layer `group_scale` + GPTQ fp16 权重。`fused_ops/quant_matmul` 仍是 fake-only 算子（schema + meta，export-only，无 eager 计算，待补 cpu eager impl 做数值回归），`_quant_matmul_converter.py` 把 op 映射到 `ge.QuantBatchMatmulV4`。待补：物化 int4 payload + 导出用 QuantLinear + `reg_register.h` 注册 `QuantBatchMatmulV4`。
 
 对外只暴露一个入口 `cann-lm-converter.py`，模型类型从 HF `config.json` 自动探测，用户无需指定 `--model-type`。
 
@@ -60,7 +60,7 @@ cann_lm/converter/
 - **有 CPU eager kernel**（可 eager 跑 + 导出）：`add_rms_norm` / `rms_norm` / `rotary_mul`
 - **仅 fake/meta（export-only，无 eager 计算）**：`rope_in_place` / `quant_matmul` / `fused_infer_attention_score` / `beam_search` — 这类算子只占 schema/shape，真实计算靠 GE converter 映射到 NPU 算子（`ge.RopeInPlace` / `ge.QuantBatchMatmulV4` / `ge.FusedInferAttentionScore` / `BeamSearch` custom_op）。详见 `fused_ops/compositte_op.md`。
 
-> 量化**未实现真实模块**：`quant_matmul` 是 fake-only 算子（schema + meta，export-only，无 eager），`_quant_matmul_converter.py` 仅把 op 映射到 `ge.QuantBatchMatmulV4`（真实量化计算在 NPU/GE 侧）。无 calibration、无权重量化流程、无 A8W4/MXFP4 打包布局（a8w4 分支已去掉以去除 torch_npu 依赖）。不再走 `converter/quant/` 预留目录（实际不存在）。
+> 量化**进行中**（详见 [`quant_design.md`](./quant_design.md)）：`cann_lm/converter/quant/dopt_lm` 已内置 GPTQ 权重 PTQ 框架（NPU/GPU 上跑），产出 per-layer `group_scale` + GPTQ fp16 权重。`quant_matmul` 仍是 fake-only 算子（schema + meta，export-only，无 eager，待补 cpu impl），`_quant_matmul_converter.py` 映射到 `ge.QuantBatchMatmulV4`。待补：物化 int4 payload + 导出用 QuantLinear（调 `cann_lm::quant_matmul`）+ `reg_register.h` 注册 `QuantBatchMatmulV4`。
 
 ## 模型差异总览
 
@@ -1067,7 +1067,7 @@ td::EpairModelLoader decode_loader("decode_ep_json_with_ascend_ir.json",
 
 1. **统一 cache 签名（全量版）** — ExportWrapper 基类 + 每模型子类（**轻量版已实现**：基类 `forward`/`get_sample_inputs` + 3 个子类 `_drive_layers`，KV cache 显式图 I/O，见 saver 章节）；**全量版待做**（各 attention 加 scatter-write 路径，一张静态图覆盖 prefill+decode，见"目标导出方案"章节）
 2. ~~**prefill/decode 分离**~~ — **已实现**（`saver.save_epair_prefill_decode` + CLI `--mode prefill-decode`，见下方"prefill/decode 分离导出"章节）。gemma4 Python 导出 + C++ OM 编译全链路跑通（`prefill.om` + `decode.om` 各 9.4GB）
-3. **量化模块** — **未实现**。`fused_ops/quant_matmul` 是 fake-only 算子（schema + meta，export-only，无 eager 计算），`_quant_matmul_converter.py` 仅把 op 映射到 `ge.QuantBatchMatmulV4`（真实计算在 NPU/GE 侧）。待实现：calibration、权重量化（per-channel/per-token）、A8W4/MXFP4 打包布局（a8w4 分支当前为去 torch_npu 依赖已去掉）
+3. **量化模块** — **进行中**（详见 [`quant_design.md`](./quant_design.md)）。方案 W4A8 s8s4（act s8 per-token 动态 + weight s4 per-group 对称 offset=0），范围=全部 Linear（除 embed/lm_head），校准用 `quant/calibration.json`。已内置 `cann_lm/converter/quant/dopt_lm`（GPTQ 权重 PTQ 框架，NPU/GPU 上跑 HF 模型，产出 per-layer group_scale + GPTQ fp16 权重）。`quant_matmul` 仍 fake-only（待补 cpu eager impl 做数值回归），`_quant_matmul_converter.py` 映射到 `ge.QuantBatchMatmulV4`。待补：物化 int4 payload（materialize_int4）、导出用 QuantLinear（调 `cann_lm::quant_matmul`，存 weight_q/scale 为 buffer）、`reg_register.h` 注册 `QuantBatchMatmulV4`、CLI `--quant` 接入。int4 物化的 CANN 约定（编码 signed/unsigned、packed/unpack、x2_scale 形状）记遗留，先 unpack+signed 占位跑通 Python 流程。
 4. **分区模式** — 按 transformer layer 分区保存，支持多卡加载（TBD）
 
 ## 遗留任务

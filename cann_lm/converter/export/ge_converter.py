@@ -29,11 +29,36 @@ def register_ge_converters() -> None:
     # + import torch_npu 的 quantmatmul). 后续 cann_lm converter 覆盖之.
     from torchair._ge_concrete_graph.ge_converter import custom  # noqa: F401
     from torchair._ge_concrete_graph import ge_apis as ge
+    from torchair.ge import custom_op
 
     # quant_matmul: 注册到 npu (覆盖 torchair quantmatmul.py 的 import torch_npu converter,
     # 用简化版 _quant_matmul_converter 不依赖 torch_npu)
     from ._quant_matmul_converter import convert_quant_matmul
     register_fx_node_ge_converter(torch.ops.npu.npu_quant_matmul.default)(convert_quant_matmul)
+
+    @register_fx_node_ge_converter(torch.ops.npu.npu_dynamic_quant.default)
+    def _convert_npu_dynamic_quant(
+        input: Any,
+        *,
+        smooth_scales: Any = None,
+        group_index: Any = None,
+        dst_type: int | None = None,
+        quant_mode: str = "pertoken",
+        dst_type_max: float = 0.0,
+        meta_outputs: Any = None,
+    ) -> Any:
+        del meta_outputs, quant_mode, dst_type_max, dst_type
+        # Use custom_op (ir=None path) instead of ge.DynamicQuant: the latter passes
+        # ir=IrDef -> is_cann_compat -> _torchair.check_cann_compat, which queries the
+        # GE OperatorFactory and rejects ops not in the loaded CANN's registered set
+        # (DynamicQuant is absent in the CPU/stubs env -> "OperatorFactory find optype
+        # DynamicQuant failed"). custom_op skips that check (same pattern as the old
+        # rope_in_place/beam_search converters) and just records the op in the ep_json.
+        return custom_op(
+            "DynamicQuant",
+            inputs={"x": input, "smooth_scales": smooth_scales, "group_index": group_index},
+            outputs=["y", "scale"],
+        )
 
     @register_fx_node_ge_converter(torch.ops.aten.softplus.default)
     def _convert_softplus(x: Any, meta_outputs: Any = None) -> Any:

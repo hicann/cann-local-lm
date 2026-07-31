@@ -339,4 +339,53 @@ REG_OP(Swish)
     .ATTR(scale, Float, 1.0)
     .OP_END_FACTORY_REG(Swish)
 
+// ── Quantization ops (W4A8 s8s4 export path) ──────────────────────────────
+// QuantBatchMatmulV3: INTEGER int4/int8 matmul (act int8 + weight int4/int8),
+//   per-tensor/per-channel. Matches integer-int4 materialize (cann_lm
+//   materialize_int4 + npu_quant_matmul).
+REG_OP(QuantBatchMatmulV3)
+    .INPUT(x1, TensorType({DT_INT8, DT_INT4}))
+    .INPUT(x2, TensorType({DT_INT8, DT_INT4}))
+    .INPUT(scale, TensorType({DT_UINT64, DT_FLOAT, DT_INT64, DT_BF16}))
+    .OPTIONAL_INPUT(offset, TensorType({DT_FLOAT}))
+    .OPTIONAL_INPUT(bias, TensorType({DT_INT32, DT_BF16, DT_FLOAT16, DT_FLOAT}))
+    .OPTIONAL_INPUT(pertoken_scale, TensorType({DT_FLOAT}))
+    .OUTPUT(y, TensorType({DT_FLOAT16, DT_INT8, DT_BF16, DT_INT32}))
+    .REQUIRED_ATTR(dtype, Int)
+    .ATTR(transpose_x1, Bool, false)
+    .ATTR(transpose_x2, Bool, false)
+    .OP_END_FACTORY_REG(QuantBatchMatmulV3)
+
+// QuantBatchMatmulV4: MXFP path (FLOAT8_E4M3FN act + FLOAT4_E2M1 weight, per-group).
+//   NOTE: x2 dtype is microscaling float, NOT integer int4 — integer path should
+//   use V3 (above); aligning the converter/materialize is the int4-CANN 遗留.
+REG_OP(QuantBatchMatmulV4)
+    .INPUT(x1, TensorType({DT_FLOAT8_E4M3FN}))
+    .INPUT(x2, TensorType({DT_FLOAT4_E2M1}))
+    .OPTIONAL_INPUT(bias, TensorType({DT_BF16}))
+    .OPTIONAL_INPUT(x1_scale, TensorType({DT_BF16}))
+    .OPTIONAL_INPUT(x2_scale, TensorType({DT_BF16}))
+    .OPTIONAL_INPUT(y_scale, TensorType({DT_UINT64}))
+    .OPTIONAL_INPUT(x1_offset, TensorType({DT_BF16}))
+    .OPTIONAL_INPUT(x2_offset, TensorType({DT_BF16}))
+    .OPTIONAL_INPUT(y_offset, TensorType({DT_BF16}))
+    .OPTIONAL_INPUT(x2_table, TensorType({DT_INT8}))
+    .OUTPUT(y, TensorType({DT_BF16}))
+    .REQUIRED_ATTR(dtype, Int)
+    .ATTR(compute_type, Int, -1)
+    .ATTR(transpose_x1, Bool, false)
+    .ATTR(transpose_x2, Bool, false)
+    .ATTR(group_size, Int, -1)
+    .OP_END_FACTORY_REG(QuantBatchMatmulV4)
+
+// DynamicQuant: per-token dynamic act quant (fp16/bf16 x -> int8 y + fp32 scale).
+REG_OP(DynamicQuant)
+    .INPUT(x, TensorType({DT_FLOAT16, DT_BF16}))
+    .OPTIONAL_INPUT(smooth_scales, TensorType({DT_FLOAT16, DT_BF16}))
+    .OPTIONAL_INPUT(group_index, TensorType({DT_INT32}))
+    .OUTPUT(y, TensorType({DT_INT8, DT_FLOAT8_E5M2, DT_FLOAT8_E4M3FN, DT_HIFLOAT8}))
+    .OUTPUT(scale, TensorType({DT_FLOAT}))
+    .ATTR(dst_type, Int, DT_INT8)
+    .OP_END_FACTORY_REG(DynamicQuant)
+
 }  // namespace ge

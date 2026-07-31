@@ -17,6 +17,7 @@
 from . import (  # noqa: F401  (side-effect: define + register_fake/impl)
     add_rms_norm,
     chunk_gated_delta_rule,
+    dynamic_quant,
     quant_matmul,
     rms_norm,
     rotary_mul,

@@ -60,13 +60,13 @@ def convert_quant_matmul(
         output_dtype = 1
     dtype = torch_dtype_value_to_ge_type(output_dtype)
 
-    if x1_dtype is not None:
+    if x1_dtype is not None and x1 is not None:
         x1 = ge.Bitcast(x1, type=torch_dtype_value_to_ge_type(x1_dtype))
         x1.desc.dtype = torch_dtype_value_to_ge_proto_type(x1_dtype)
-    if x2_dtype is not None:
+    if x2_dtype is not None and x2 is not None:
         x2 = ge.Bitcast(x2, type=torch_dtype_value_to_ge_type(x2_dtype))
         x2.desc.dtype = torch_dtype_value_to_ge_proto_type(x2_dtype)
-    if pertoken_scale_dtype is not None:
+    if pertoken_scale is not None and pertoken_scale_dtype is not None:
         pertoken_scale = ge.Bitcast(
             pertoken_scale, type=torch_dtype_value_to_ge_type(pertoken_scale_dtype)
         )

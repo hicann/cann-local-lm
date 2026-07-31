@@ -23,6 +23,7 @@ class ModelArtifact:
     tokenizer_files: list[Path]
     model_type: str
     wrapper_cls: type  # ExportWrapper 子类 (从 ModelEntry 透传)
+    quant_info: dict | None = None  # 量化元信息 (scheme/group_size/scope/...), None=未量化
 
 
 def load_model(

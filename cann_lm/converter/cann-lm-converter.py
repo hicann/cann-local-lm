@@ -49,6 +49,9 @@ def convert(
     mode: str = "single",
     prefill_seq_len: int = 128,
     num_layers: int | None = None,
+    quant_path: str | None = None,
+    quant_group_size: int = 256,
+    quant_act: str = "w4a8",
 ) -> None:
     """程序化入口：HF 模型 → epair
 
@@ -56,6 +59,11 @@ def convert(
         mode: "single" — one shape-specialized graph (seq_len=sample_seq_len);
               "prefill-decode" — two graphs (prefill seq_len=prefill_seq_len
               + decode seq_len=1) with shared weights, for actual inference.
+        quant_path: dopt GPTQ output (safetensors/.pth/dir) for quantization.
+            If set, ports GPTQ weight+group_scale -> materialize int4 -> swap
+            QuantLinear before export (流程 C+D). GPTQ itself runs offline (NPU).
+        quant_group_size: K-axis group size (default 256, dopt Quant_act_weight_eco).
+        quant_act: "w4a8" (act int8 via npu_dynamic_quant) or "w4a16" (weight-only).
     """
     print(f"[1/3] Loading model from {hf_path}")
     artifact = load_model(hf_path, dtype=dtype, device=device)
@@ -75,6 +83,18 @@ def convert(
             raise ValueError(f"--num-layers must be >= 1, got {num_layers}")
         text_model.layers = text_model.layers[:num_layers]
         print(f"      Truncated to first {num_layers}/{total} layers (config.num_hidden_layers unchanged)")
+
+    if quant_path:
+        from cann_lm.converter.quant import swap_to_quant_linear_from_dopt
+        act_quant = quant_act == "w4a8"
+        print(f"      Quant: port dopt GPTQ from {quant_path} (group={quant_group_size}, "
+              f"{'W4A8' if act_quant else 'W4A16'}) -> materialize int4 -> swap QuantLinear")
+        info = swap_to_quant_linear_from_dopt(
+            artifact.model, quant_path,
+            group_size=quant_group_size, act_quant=act_quant,
+        )
+        artifact.quant_info = info
+        print(f"      Quantized {info['n_quantized']} linears (skipped {info['n_skipped_no_dopt_key']})")
 
     print(f"[2/3] Saving epair to {output_dir}")
     if mode == "prefill-decode":
@@ -145,7 +165,14 @@ def parse_args() -> argparse.Namespace:
                         help="Only export first N layers (slice/debug). None = all layers. "
                              "Truncates model.model.layers in place, config.num_hidden_layers unchanged "
                              "(PLE/delta_cache/layer_types stay full)")
-    # 量化参数: TBD
+    parser.add_argument("--quant-path", default=None,
+                        help="dopt GPTQ output (safetensors/.pth/dir) for W4A8/W4A16 quantization. "
+                             "Ports GPTQ weight+group_scale -> materialize int4 -> swap QuantLinear. "
+                             "GPTQ itself runs offline on NPU (dopt_lm); the converter ingests its output.")
+    parser.add_argument("--quant-group-size", type=int, default=256,
+                        help="K-axis group size (default 256, dopt Quant_act_weight_eco)")
+    parser.add_argument("--quant-act", default="w4a8", choices=["w4a8", "w4a16"],
+                        help="w4a8 (act int8 via npu_dynamic_quant) or w4a16 (weight-only)")
     return parser.parse_args()
 
 
@@ -163,6 +190,9 @@ def main() -> None:
         mode=args.mode,
         prefill_seq_len=args.prefill_seq_len,
         num_layers=args.num_layers,
+        quant_path=args.quant_path,
+        quant_group_size=args.quant_group_size,
+        quant_act=args.quant_act,
     )
 
 

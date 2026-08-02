@@ -71,11 +71,20 @@ class QuantLinear(nn.Module):
             # W4A16: weight-only, no activation quantization
             x_in = x
             x_scale = None
+        # CANN QuantBatchMatmulV4 InferShape (InferNDimWithBias) does NOT handle
+        # bias=nullptr — it tries to infer bias shape and fails. Pass a dummy
+        # zeros bias [out_features] so InferShape passes. Value 0 = no-op.
+        if self.bias is None:
+            n_out = self.weight_q.shape[0]  # [out, in] → out
+            dummy_bias = torch.zeros(n_out, dtype=x.dtype, device=x.device)
+        else:
+            dummy_bias = self.bias
         out = torch.ops.npu.npu_quant_matmul(
             x_in, w2, sc,
             pertoken_scale=x_scale,
+            bias=dummy_bias,
             output_dtype=_OUT_DTYPE_CODE.get(x.dtype, 5),
-            group_sizes=[1, 1, self.group_size],
+            group_sizes=[1, 1, self.group_size],  # K-G mode (per-group, matches 2D scale [out, in//group])
             transpose_x1=False,
             transpose_x2=False,
         )

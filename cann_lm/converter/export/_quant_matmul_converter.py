@@ -93,6 +93,19 @@ def convert_quant_matmul(
             )
         group_size = (group_m << 32) + (group_n << 16) + group_k
 
+    # Use ge.QuantBatchMatmulV4 (full IR with all inputs incl None placeholders) so the
+    # V4→V3 TBE fusion correctly maps x2_scale to V3's required scale input.
+    # The binary must have QuantBatchMatmulV4 registered (reg_register.h) for the
+    # C++ parser to create the op node without heap corruption.
+    if bias is None:
+        # CANN QuantBatchMatmulV4 InferShape (InferNDimWithBias) does NOT handle
+        # bias=nullptr — it tries to infer bias shape from x1's M dim and compares
+        # to N, failing with "dimensions a(M) and b(N) must be same".
+        # Workaround: create a dummy bias (zeros [N], float32) so InferShape passes.
+        # The bias value (0) does not affect the matmul result (out = x1@x2*scale + 0).
+        n = x2.shape[-1] if hasattr(x2, 'shape') else None
+        bias = ge.Const([0.0] * int(n), dtype=1) if n else None
+
     out = ge.QuantBatchMatmulV4(
         x1,
         x2,

@@ -171,9 +171,41 @@ def consolidated_weights_save(contents, output_dir: str | Path, *,
         print("  [skip] weights_*.bin + weight_info.json (save_weights=False)")
 
     ep_json_path = output_dir / ep_json_filename
+    _strip_none_input_descs(contents.ep_json)
     with open(ep_json_path, "w") as f:
         json.dump(contents.ep_json, f, indent=2)
     print(f"Saved: {ep_json_path}")
+
+
+def _strip_none_input_descs(ep_json: dict) -> None:
+    """Remove inputDesc entries with dtype=None from QuantBatchMatmulV4 ascend_ir ops.
+
+    QuantBatchMatmulV4's optional inputs (bias, y_scale, x1_offset, ...) are
+    emitted as inputDesc with dtype=None when not provided. The C++ GE graph
+    builder creates GE inputs for ALL inputDesc, including None-dtype ones.
+    The InferShape pass then fails on the None bias (shape=[] → dimension mismatch).
+
+    Only QuantBatchMatmulV4 is affected — other ops (Cast, Mul, etc.) must keep
+    their inputDesc intact (stripping those breaks the C++ parser).
+    """
+    graph = ep_json.get("graph_module", {}).get("graph", {})
+    for node in graph.get("nodes", []):
+        ai = node.get("ascend_ir")
+        if not isinstance(ai, dict):
+            continue
+        for op in ai.get("ops", []) or []:
+            if not isinstance(op, dict):
+                continue
+            if op.get("name", "") != "QuantBatchMatmulV4":
+                continue
+            desc = op.get("inputDesc")
+            inp = op.get("input")
+            if isinstance(desc, list) and isinstance(inp, list) and len(desc) == len(inp):
+                # Only strip entries that are BOTH dtype=None AND input ref is empty
+                keep = [(d, r) for d, r in zip(desc, inp)
+                        if not (d.get("dtype") is None and (r is None or r == ""))]
+                op["inputDesc"] = [d for d, _ in keep]
+                op["input"] = [r for _, r in keep]
 
 
 def _pack_weights_to_dir(contents, output_dir: Path, max_file_size: int) -> dict[str, list[dict]]:

@@ -51,7 +51,7 @@ if not _HAS_TORCH_NPU:
     ) -> tuple[torch.Tensor, torch.Tensor]:
         del smooth_scales, group_index, dst_type, quant_mode, dst_type_max
         y = input.new_empty(input.shape, dtype=torch.int8)
-        scale = input.new_empty(input.shape[:-1] + (1,), dtype=torch.float32)
+        scale = input.new_empty(input.shape[:-1], dtype=torch.float32)
         return y, scale
 
     @torch.library.impl("npu::npu_dynamic_quant", "cpu")

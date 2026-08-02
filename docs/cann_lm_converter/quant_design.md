@@ -250,20 +250,83 @@ Track 0 注册算子时核对 CANN REG_OP（`torchair/.../auto_generated_ge_raw_
 2. **dopt 物化数学对齐**：dopt `Quantizer` 的 `maxq=15` 无符号+zero-point 与 adapter 置零 offset 的组合；diag 已确认用 reshape`[out,in//group]`+signed`[-8,7]`+offset=0 物化，重建 vs GPTQ 权重 cos=1.0000（物化层无 bug）。剩"喂哪个 CANN op"（同 1）。
 3. **CPU-only 适配**：converter 侧 GPTQ 跑不了（需 NPU/GPU+校准）。**`--quant-path` 已作兜底**：离线机跑 dopt GPTQ 产出（`quant_output/model.safetensors` 或 `trained_quant_weight.pth`），converter 加载它只做物化+swap+导出（不跑 GPTQ）。dopt `opt_main` 在本机 NPU 上跑 GPTQ 曾静默卡住（step A 接入 converter 待解）。
 4. **`reg_register.h` 算子注册**——**已完成**（Track 0）：两文件加 `QuantBatchMatmulV3`+`QuantBatchMatmulV4`+`DynamicQuant`，配对平衡。op 定义须对齐目标真 NPU CANN 版本（ATTR 名/OUTPUT 个数/dtype 枚举如 DT_INT4/DT_FLOAT4_E2M1 是否定义）。
+5. **OM 编译验证（新遗留）**——见下节"OM 编译调试记录"。
 
 ---
 
-## 环境与执行顺序
+## OM 编译调试记录（W4A8 qwen3-0.6B 2 层）
+
+在 NPU（Ascend910_9362 / CANN 9.2.0）上对 quant epair 做 `aclgrphBuildModel`（OM 编译），逐步调试：
+
+### OM 编译步骤与状态
+
+| 步骤 | 状态 | 修复 |
+|------|------|------|
+| Step 1: EpairModelLoader | ✅ PASS | — |
+| Step 2: GetGEGraph | ✅ PASS（经多轮修复） | 见下"修复清单" |
+| Step 3: aclgrphBuildModel (TBE) | ❌ FAIL | `LxFusion: Unsupported platform socVersion[Ascend910_9362]` |
+
+### 修复清单（Step 2 GetGEGraph 从 FAIL → PASS）
+
+1. **重建 binary**：旧 binary 在 `reg_register.h` 加 V4 前构建 → 无 QuantBatchMatmulV4 注册 → C++ parser 创建未知 op → heap corruption（`corrupted size vs. prev_size`）。重建后 Step 2 PASS。
+
+2. **`is_cann_compat` monkey-patch**（`ge_converter.py`）：stub GE 的 `_torchair.check_cann_compat` 拒绝 DynamicQuant（`OperatorFactory find optype DynamicQuant failed`）。Patch `is_cann_compat = lambda *a, **k: ""` 绕过 → torchair 原生 `custom/npu_dynamic_quant.py` converter（用 `ge.DynamicQuant` 全 IR）加载并注册 → ep_json 含完整 IR。
+
+3. **删掉手写 DynamicQuant converter**：之前用 `custom_op("DynamicQuant")`（ir=None → 无 IR → TBE 编译器无法选 kernel）。改为依赖 torchair 原生 converter（`ge.DynamicQuant` 全 IR）。
+
+4. **`_quant_matmul_converter` 用 `ge.QuantBatchMatmulV4`（全 IR）**：`custom_op("QuantBatchMatmulV4")` 只 3 输入 → V4→V3 融合输入映射丢失 → `Assert (scale) != nullptr`。`ge.QuantBatchMatmulV4` 全 IR（10 输入含 None 占位）→ 融合正确映射。
+
+5. **`_strip_none_input_descs`（`epair_utils.py`）**：QBMM 的 OPTIONAL_INPUT bias/y_scale/offset 等 None inputDesc → C++ parser 创建 GE 输入（dtype=None, shape=[]）→ `InferShape: dimensions a(8) and b(2048) must be same`（bias 维度不匹配）。后处理：只对 QBMM strip `dtype=None AND input ref=""` 的 inputDesc + 对应 input 引用（不影响其他 op 如 Cast/Mul）。
+
+6. **dummy bias**（`quant_linear.py`）：QBMM `InferNDimWithBias` 不处理 bias=nullptr → 即使 strip 去掉 bias inputDesc，REG_OP 定义 bias 为 OPTIONAL_INPUT → InferShape 仍处理 → 报错。QuantLinear.forward 传 `dummy_bias = torch.zeros(n_out)` → bias 非空 → InferShape 通过。
+
+7. **DynamicQuant fake meta scale shape `(m,)`**（非 `(m,1)`）：V4 的 x1_scale 期望 1D `(m,)`（per-token），2D `(m,1)` 导致 InferShape 不匹配。
+
+### Step 3 TBE 编译失败根因
+
+```
+[WARNING] LxFusionFinalize: "Unsupported platform, socVersion[Ascend910_9362]"
+[ERROR] ProcessAllFailedCompileTasks: failed to recompile single op[QuantBatchMatmulV3_0_QuantBatchMatmulV4_*]
+```
+
+- V4→V3 融合后，TBE 尝试用 LxFusion 实时编译 V3 kernel → **LxFusion 不支持 Ascend910_9362** → 4/12 个 QBMM 编译失败（8 个用预编译 binary 通过）。
+- 这不是代码 bug——**CANN 9.2.0 的 LxFusion 编译器不支持本机芯片 Ascend910_9362**。
+- 需要更新 CANN 到支持 Ascend910_9362 的版本（或用预编译 kernel 覆盖）。
+
+### 关键 ep_json 修复效果对照
+
+| 修复 | ep_json QBMM inputDesc | InferShape 结果 |
+|------|----------------------|----------------|
+| 无修复（custom_op） | 3 个（x1,x2,x2_scale），无 IR | TBE: Assert scale!=nullptr |
+| ge.QuantBatchMatmulV4（全 IR，不 strip） | 10 个（含 None bias dtype=None, shape=[]） | InferShape: dimensions a(8) b(2048) |
+| ge.QuantBatchMatmulV4 + strip None | 4 个（x1,x2,x1_scale,x2_scale） | 同上（bias REG_OP 仍处理） |
+| ge.QuantBatchMatmulV4 + strip + dummy bias | 5 个（x1,x2,bias(DT_FLOAT16),x1_scale,x2_scale） | ✅ PASS → TBE: LxFusion unsupported |
+
+### 已验证的工具链（OM 编译路径）
+
+- ✅ `npu_convert_weight_to_int4pack` → `(k, n//8) int32`（顺序打包，非交错——0x11111111 = 8×int4=1）
+- ✅ `npu_trans_quant_param` → int64（但 bit-reinterpret `fp32.view(int32).to(int64)` 更接近正确值）
+- ✅ `npu_quant_matmul` eager W8A8 K-C（int8+int8+fp32 scale+fp32 pertoken → fp16）maxdiff=0
+- ✅ `npu_quant_matmul` eager A8W4 K-G（int8+int32+UINT64 scale+yOffset+group[0,0,256]）能执行，但 K-G kernel 把 x1 当 int4 → 真 INT8 x1 被错误拆包
+- ✅ torchair `custom/npu_dynamic_quant.py` converter（pertoken → `ge.DynamicQuant` 全 IR）
+- ✅ `_strip_none_input_descs` 只对 QBMM strip None+空引用的 inputDesc
+- ✅ `is_cann_compat` monkey-patch 让 stub GE 不拒绝 DynamicQuant/Bitcast 等
+- ❌ TBE LxFusion 不支持 Ascend910_9362（CANN 9.2.0 版本限制）
 
 ### 环境
 
 - **GPTQ（A 步）需 NPU/GPU**：dopt 依赖 `transformers.AutoModelForCausalLM` + `accelerate` dispatch + `autocast`/`GradScaler`，`DEVICE=cuda/npu`。当前 dev 机虽有 NPU，可跑；纯 CPU 机跑不了 GPTQ（见遗留 3）。
 - converter 导出（B–E 步）本身 CPU 可跑（torch.export + pack + cpu eager 回归），不依赖 NPU。
+- **OM 编译需 NPU + CANN**：`aclgrphBuildModel` 需真 NPU 环境（CANN toolkit + device）。本机 Ascend910_9362 + CANN 9.2.0 的 **LxFusion 不支持 910_9362** → V4→V3 融合 kernel 编译失败。需更新 CANN 版本。
+- **stub GE 限制**：converter 导出在 stub 环境（venv + torchair stubs）上，`check_cann_compat` 拒绝 DynamicQuant/Bitcast 等 → 需 `is_cann_compat` monkey-patch 绕过（见 OM 调试记录修复 #2）。
 
 ### 建议执行顺序（当前进度）
 
 1. ~~**Track 1（物化+QuantLinear）+ Track 2（cpu eager impl）**~~ —— **已完成**：`materialize_int4`/`materialize_int4_with_scale` + `QuantLinear`（W4A8/W4A16）+ `npu_quant_matmul`/`npu_dynamic_quant` cpu impl。qwen3-0.6B eager 回归（W4A8 cos 0.826、物化 diag cos 1.0000）。
 2. ~~**Track 3（CLI 接入）**~~ —— **已完成**：`cann-lm-converter.py` 加 `--quant-path`/`--quant-group-size`/`--quant-act`；`load_model` 后调 `swap_to_quant_linear_from_dopt`（port dopt 产物→物化→swap）；`model_config.json` 写 `quant_info`。qwen3-0.6B 端到端跑通，ep_json 含 `QuantBatchMatmulV4`+`DynamicQuant` IR。
 3. ~~**Track 0（C++ reg）**~~ —— **已完成**：两 `reg_register.h` 加 `QuantBatchMatmulV3`+`QuantBatchMatmulV4`+`DynamicQuant`（75/75 & 44/44 配对）。
-4. **攻遗留（int4 CANN 算子选型）** ← **下一步**：选 A（V3 整数 per-channel）/B（V4 mxfp4）/C（维持），对齐 `_quant_matmul_converter`（V4→V3 若选 A）+ `materialize_int4`（per-channel 若选 A / mxfp4 若选 B）。见"int4 物化的 CANN 约定"。
-5. **dopt GPTQ step A 接入 converter**（NPU）+ **真 NPU OM 编译验证**（需选型后 + Track 0 + 真 CANN）。
+4. ~~**OM 编译调试**~~ —— **InferShape PASS / TBE FAIL**：经 7 轮修复（binary 重建 + is_cann_compat patch + strip None + dummy bias + ge.QuantBatchMatmulV4 全 IR + DynamicQuant 用 torchair 原生 converter + fake meta scale shape），Step 1-2 PASS，Step 3 卡在 `LxFusion: Unsupported platform socVersion[Ascend910_9362]`（CANN 9.2.0 版本限制，非代码 bug）。详见"OM 编译调试记录"。
+5. **攻遗留（int4 CANN 算子选型 + LxFusion 版本）** ← **下一步**：
+   - 选 A（V3 整数 per-channel）/B（V4 mxfp4）/C（维持），对齐 `materialize_int4` + converter。
+   - 更新 CANN 到支持 Ascend910_9362 的版本（解决 LxFusion unsupported）。
+6. **dopt GPTQ step A 接入 converter**（NPU）+ 真 NPU OM 编译验证（需 CANN 更新后）。

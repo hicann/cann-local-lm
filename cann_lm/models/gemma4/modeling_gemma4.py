@@ -15,6 +15,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
+from ..fused_ops import ops as _fused_ops  # noqa: F401  (registers cann_lm fused ops)
 from .configuration_gemma4 import (
     Gemma4AudioConfig,
     Gemma4Config,
@@ -40,35 +41,16 @@ def apply_rotary_pos_emb(
     sin: torch.Tensor,
     unsqueeze_dim: int = 1,
 ) -> torch.Tensor:
-    """Apply RoPE to a single tensor (for use in both text and vision)."""
+    """Apply RoPE to a single tensor via cann_lm::rotary_mul (fused)."""
     cos = cos.unsqueeze(unsqueeze_dim)
     sin = sin.unsqueeze(unsqueeze_dim)
-    return (x * cos) + (rotate_half(x) * sin)
-
-
-def apply_rotary_pos_emb_qk(
-    q: torch.Tensor,
-    k: torch.Tensor,
-    cos: torch.Tensor,
-    sin: torch.Tensor,
-    unsqueeze_dim: int = 2,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """Apply RoPE to query and key tensors."""
-    cos = cos.unsqueeze(unsqueeze_dim)
-    sin = sin.unsqueeze(unsqueeze_dim)
-
-    # Handle partial rotary: only rotate rotary_dim channels
     rotary_dim = cos.shape[-1]
-    q_rot, q_pass = q[..., :rotary_dim], q[..., rotary_dim:]
-    k_rot, k_pass = k[..., :rotary_dim], k[..., rotary_dim:]
-
-    q_embed = (q_rot * cos) + (rotate_half(q_rot) * sin)
-    k_embed = (k_rot * cos) + (rotate_half(k_rot) * sin)
-
-    if q_pass.shape[-1] > 0:
-        q_embed = torch.cat([q_embed, q_pass], dim=-1)
-        k_embed = torch.cat([k_embed, k_pass], dim=-1)
-    return q_embed, k_embed
+    x_rot = x[..., :rotary_dim]
+    x_pass = x[..., rotary_dim:]
+    out = torch.ops.npu.npu_rotary_mul(x_rot, cos, sin, rotary_mode="half")
+    if x_pass.shape[-1] > 0:
+        return torch.cat([out, x_pass], dim=-1)
+    return out
 
 
 def repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
@@ -89,34 +71,34 @@ def eager_attention_forward(
     scaling: float,
     dropout: float = 0.0,
     softcap: float | None = None,
-    sliding_window: int | None = None,
     **_kwargs,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Eager (non-flash) scaled dot-product attention with optional soft-capping."""
+    """Eager (non-flash) scaled dot-product attention with optional soft-capping.
+
+    精度策略 (已验证, 不要改):
+    - Q@K matmul: 保持 bfloat16 (和 HF 一致, BLAS 舍入最接近)
+      float32 Q@K 反而更差: 和 HF 的 bfloat16 差异更大, 第一个 token 匹配率从 78% 降到 33%
+    - softmax: 用 float32 (npu_tuned_export 方案, 已有)
+      bfloat16 softmax 在 [6, 2048] (scatter-write buffer) 下有精度损失
+    - @v matmul: 保持 bfloat16 (已验证无差异)
+    scatter-write 下 head_dim=512 的 full_attention 层有 0.25 BLAS 舍入差异, 但无法消除
+    (float32 会引入更大差异), 7/9 第一个 token 与 HF 一致, 可接受
+    """
+    if scaling is None:
+        scaling = module.head_dim ** -0.5
 
     key_states = repeat_kv(key, module.num_key_value_groups)
     value_states = repeat_kv(value, module.num_key_value_groups)
-
     attn_weights = torch.matmul(query, key_states.transpose(2, 3)) * scaling
-
     if softcap is not None:
-        attn_weights = attn_weights / softcap
+        inv_softcap = torch.tensor(1.0 / softcap, dtype=attn_weights.dtype, device=attn_weights.device)
+        softcap_t = torch.tensor(softcap, dtype=attn_weights.dtype, device=attn_weights.device)
+        attn_weights = attn_weights * inv_softcap
         attn_weights = torch.tanh(attn_weights)
-        attn_weights = attn_weights * softcap
+        attn_weights = attn_weights * softcap_t
 
     if attention_mask is not None:
-        # Support both additive (float) and boolean masks
-        if attention_mask.dtype == torch.bool:
-            attn_weights = attn_weights.masked_fill(~attention_mask, float("-inf"))
-        else:
-            attn_weights = attn_weights + attention_mask
-
-    # Sliding window: mask out tokens outside the window
-    if sliding_window is not None:
-        seq_len = attn_weights.shape[-1]
-        window_mask = torch.ones(seq_len, seq_len, device=attn_weights.device, dtype=torch.bool).tril()
-        window_mask = window_mask.tril(-1) | window_mask.triu(seq_len - sliding_window + 1)
-        attn_weights = attn_weights.masked_fill(~window_mask.unsqueeze(0).unsqueeze(0), float("-inf"))
+        attn_weights = attn_weights + attention_mask
 
     attn_weights = F.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query.dtype)
     attn_weights = F.dropout(attn_weights, p=dropout, training=module.training)
@@ -130,7 +112,7 @@ def eager_attention_forward(
 # ════════════════════════════════════════════════════════════════════
 
 class Gemma4RMSNorm(nn.Module):
-    """RMSNorm matching the Gemma-4 convention (pow(-0.5) instead of rsqrt)."""
+    """RMSNorm matching the Gemma-4 convention, via cann_lm::rms_norm (fused)."""
 
     def __init__(self, dim: int, eps: float = 1e-6, with_scale: bool = True):
         super().__init__()
@@ -138,20 +120,36 @@ class Gemma4RMSNorm(nn.Module):
         self.with_scale = with_scale
         if with_scale:
             self.weight = nn.Parameter(torch.ones(dim))
-
-    def _norm(self, x: torch.Tensor) -> torch.Tensor:
-        mean_sq = x.pow(2).mean(-1, keepdim=True) + self.eps
-        return x * torch.pow(mean_sq, -0.5)
+        else:
+            # gamma is identically 1; pre-allocate a ones buffer so forward can pass
+            # a weight tensor to the fused op without allocating each call.
+            self.register_buffer("weight", torch.ones(dim), persistent=False)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        output = self._norm(x.float())
-        if self.with_scale:
-            output = output * self.weight.float()
-        return output.type_as(x)
+        y, _ = torch.ops.npu.npu_rms_norm(x, self.weight, epsilon=self.eps)
+        return y
+
+    def forward_add(self, x1: torch.Tensor, x2: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """Fused add + rms_norm: returns (rms_norm(x1 + x2), x1 + x2)."""
+        y, _, residual = torch.ops.npu.npu_add_rms_norm(x1, x2, self.weight, epsilon=self.eps)
+        return y, residual
 
     def extra_repr(self):
-        return f"{tuple(self.weight.shape) if self.with_scale else '()'}, eps={self.eps}"
+        return f"{tuple(self.weight.shape)}, eps={self.eps}"
 
+class Gemma4TextScaledWordEmbedding(nn.Embedding):
+    """
+    This module overrides nn.Embeddings' forward by multiplying with embeddings scale.
+    """
+
+    def __init__(self, num_embeddings: int, embedding_dim: int, padding_idx: int | None = None, embed_scale: float | None = None):
+        if embed_scale is None:
+            embed_scale = math.sqrt(embedding_dim)
+        super().__init__(num_embeddings, embedding_dim, padding_idx)
+        self.register_buffer("embed_scale", torch.tensor(embed_scale, dtype=torch.float32), persistent=False)
+
+    def forward(self, input_ids: torch.Tensor) -> torch.Tensor:
+        return super().forward(input_ids) * self.embed_scale.to(self.weight.dtype)
 
 # ════════════════════════════════════════════════════════════════════
 # Rotary Embeddings
@@ -168,7 +166,7 @@ class Gemma4TextRotaryEmbedding(nn.Module):
         nn.Module.__init__(self)
         self.config = config
         self.layer_types = set(config.layer_types)
-        self._attention_scalings: dict[str, float] = {}
+        self._rope_configs: dict[str, dict] = {}
 
         for layer_type in self.layer_types:
             rope_params = config.rope_parameters.get(layer_type)
@@ -180,23 +178,44 @@ class Gemma4TextRotaryEmbedding(nn.Module):
             partial_rotary_factor = rope_params.get("partial_rotary_factor", 1.0)
 
             if layer_type == "full_attention" and rope_type == "proportional":
-                dim = config.global_head_dim
+                head_dim = config.global_head_dim
             else:
-                dim = getattr(config, "head_dim", config.hidden_size // config.num_attention_heads)
+                head_dim = getattr(config, "head_dim", config.hidden_size // config.num_attention_heads)
 
-            dim = int(dim * partial_rotary_factor)
+            self._rope_configs[layer_type] = {
+                "rope_type": rope_type,
+                "base": base,
+                "partial_rotary_factor": partial_rotary_factor,
+                "head_dim": head_dim,
+            }
 
-            attention_factor = 1.0
-            inv_freq = 1.0 / (
-                base ** (torch.arange(0, dim, 2, dtype=torch.int64).to(device=device, dtype=torch.float) / dim)
-            )
-            self.register_buffer(f"{layer_type}_inv_freq", inv_freq, persistent=False)
-            self._attention_scalings[layer_type] = attention_factor
+    def _compute_inv_freq(self, layer_type: str, device: torch.device, dtype: torch.dtype = torch.float32) -> torch.Tensor:
+        rope_config = self._rope_configs[layer_type]
+        rope_type = rope_config["rope_type"]
+        base = rope_config["base"]
+        partial_rotary_factor = rope_config["partial_rotary_factor"]
+        head_dim = rope_config["head_dim"]
+
+        if rope_type == "proportional":
+            rope_angles = int(partial_rotary_factor * head_dim // 2)
+            inv_head_dim = torch.tensor(1.0 / head_dim, dtype=dtype, device=device)
+            exponents = torch.arange(0, 2 * rope_angles, 2, dtype=dtype, device=device) * inv_head_dim
+            inv_freq_rotated = torch.pow(base, -exponents)
+            nope_angles = head_dim // 2 - rope_angles
+            if nope_angles > 0:
+                return torch.cat((inv_freq_rotated, torch.zeros(nope_angles, dtype=dtype, device=device)), dim=0)
+            else:
+                return inv_freq_rotated
+        else:
+            dim = int(head_dim * partial_rotary_factor)
+            inv_dim = torch.tensor(1.0 / dim, dtype=dtype, device=device)
+            exponents = torch.arange(0, dim, 2, dtype=dtype, device=device) * inv_dim
+            return torch.pow(base, -exponents)
 
     @torch.no_grad()
     def forward(self, x: torch.Tensor, position_ids: torch.Tensor, layer_type: str = "full_attention"):
-        inv_freq = getattr(self, f"{layer_type}_inv_freq")
-        attn_scaling = self._attention_scalings[layer_type]
+        inv_freq = self._compute_inv_freq(layer_type, x.device, x.dtype)
+        attn_scaling = 1.0
 
         inv_freq_expanded = inv_freq[None, :, None].float().expand(position_ids.shape[0], -1, 1).to(x.device)
         position_ids_expanded = position_ids[:, None, :].float()
@@ -305,42 +324,65 @@ class Gemma4TextAttention(nn.Module):
         attention_mask: torch.Tensor | None = None,
         past_key_values: list | None = None,
         shared_kv_states: dict | None = None,
+        new_kv_cache_pos: torch.Tensor | None = None,
         **_kwargs,
     ) -> torch.Tensor:
         input_shape = hidden_states.shape[:-1]
-        hidden_shape = (*input_shape, -1, self.head_dim)
         cos, sin = position_embeddings
 
+        # Q uses num_attention_heads, k/v use num_key_value_heads
+        q_shape = (*input_shape, self.config.num_attention_heads, self.head_dim)
+        num_kv_heads = self.config.num_key_value_heads
+        kv_shape = (*input_shape, num_kv_heads, self.head_dim)
+
         # --- Q projection ---
-        query_states = self.q_proj(hidden_states).view(hidden_shape)
+        query_states = self.q_proj(hidden_states).view(q_shape)
         query_states = self.q_norm(query_states)
         query_states = apply_rotary_pos_emb(query_states, cos, sin, unsqueeze_dim=2)
         query_states = query_states.transpose(1, 2)
 
         # --- KV projection (or reuse shared) ---
         if self.is_kv_shared_layer and shared_kv_states is not None:
-            key_states, value_states = shared_kv_states[self.layer_type]
-            key_states = key_states.to(query_states.device)
-            value_states = value_states.to(query_states.device)
+            kv_key = self.layer_type
+            if kv_key not in shared_kv_states:
+                kv_key = next(iter(shared_kv_states), None)
+            if kv_key is not None:
+                key_states, value_states = shared_kv_states[kv_key]
+                key_states = key_states.to(query_states.device)
+                value_states = value_states.to(query_states.device)
         else:
-            key_states = self.k_proj(hidden_states).view(hidden_shape)
+            key_states = self.k_proj(hidden_states).view(kv_shape)
             key_states = self.k_norm(key_states)
             key_states = apply_rotary_pos_emb(key_states, cos, sin, unsqueeze_dim=2)
             key_states = key_states.transpose(1, 2)
 
             if self.v_proj is not None:
-                value_states = self.v_proj(hidden_states).view(hidden_shape)
+                value_states = self.v_proj(hidden_states).view(kv_shape)
             else:
                 value_states = key_states
             value_states = self.v_norm(value_states)
             value_states = value_states.transpose(1, 2)
 
-        # --- KV cache update ---
+        # --- KV cache update (scatter-write, fixed shape) ---
         if past_key_values is not None and not self.is_kv_shared_layer:
-            if past_key_values[self.layer_idx] is not None:
-                key_states = torch.cat([past_key_values[self.layer_idx][0], key_states], dim=2)
-                value_states = torch.cat([past_key_values[self.layer_idx][1], value_states], dim=2)
-            past_key_values[self.layer_idx] = (key_states, value_states)
+            cache_entry = past_key_values[self.layer_idx]
+            if cache_entry is not None and new_kv_cache_pos is not None:
+                cache_k, cache_v = cache_entry
+                # Scatter-write: write new KV at specified positions (non-in-place)
+                cache_k = cache_k.index_copy(2, new_kv_cache_pos, key_states)
+                cache_v = cache_v.index_copy(2, new_kv_cache_pos, value_states)
+                past_key_values[self.layer_idx] = (cache_k, cache_v)
+                # Use entire buffer for attention
+                key_states = cache_k
+                value_states = cache_v
+            elif cache_entry is not None:
+                # Fallback: torch.cat (backward compat, cache shape grows)
+                key_states = torch.cat([cache_entry[0], key_states], dim=2)
+                value_states = torch.cat([cache_entry[1], value_states], dim=2)
+                past_key_values[self.layer_idx] = (key_states, value_states)
+            else:
+                # No cache entry yet, store new KV
+                past_key_values[self.layer_idx] = (key_states, value_states)
 
         if self.store_full_length_kv and shared_kv_states is not None:
             shared_kv_states[self.layer_type] = (key_states, value_states)
@@ -354,7 +396,6 @@ class Gemma4TextAttention(nn.Module):
             attention_mask,
             scaling=self.scaling,
             dropout=self.attention_dropout if self.training else 0.0,
-            sliding_window=self.sliding_window,
         )
 
         attn_output = attn_output.reshape(*input_shape, -1).contiguous()
@@ -372,6 +413,8 @@ class Gemma4TextDecoderLayer(nn.Module):
     Norm layout matches Gemma-3/Gemma-4 convention:
       input -> input_layernorm -> attn -> post_attn_layernorm -> (+ residual)
             -> pre_ffn_layernorm -> mlp -> post_ffn_layernorm -> (+ residual)
+            -> per_layer_input_gate -> per_layer_projection -> post_per_layer_input_norm -> (+ residual)
+            -> * layer_scalar
     """
 
     def __init__(self, config: Gemma4TextConfig, layer_idx: int):
@@ -384,13 +427,33 @@ class Gemma4TextDecoderLayer(nn.Module):
         self.pre_feedforward_layernorm = Gemma4RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.post_feedforward_layernorm = Gemma4RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
 
+        self.hidden_size_per_layer_input = config.hidden_size_per_layer_input
+        if self.hidden_size_per_layer_input:
+            self.per_layer_input_gate = nn.Linear(config.hidden_size, config.hidden_size_per_layer_input, bias=False)
+            self.per_layer_projection = nn.Linear(config.hidden_size_per_layer_input, config.hidden_size, bias=False)
+            self.post_per_layer_input_norm = Gemma4RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.layer_scalar = nn.Parameter(torch.ones(1), requires_grad=False)
+
+    def _compute_per_layer_input(
+        self, 
+        per_layer_embeds: torch.Tensor,
+        per_layer_model_projection: nn.Linear,
+        per_layer_projection_norm: Gemma4RMSNorm,
+    ) -> torch.Tensor:
+        projected = per_layer_model_projection(per_layer_embeds.float())
+        projected = per_layer_projection_norm(projected)
+        return projected
+
     def forward(
         self,
         hidden_states: torch.Tensor,
-        position_embeddings: tuple[torch.Tensor, torch.Tensor],
+        per_layer_input: torch.Tensor | None = None,
+        shared_kv_states: dict | None = None,
+        position_embeddings: tuple[torch.Tensor, torch.Tensor] | None = None,
         attention_mask: torch.Tensor | None = None,
         past_key_values: list | None = None,
-        shared_kv_states: dict | None = None,
+        new_kv_cache_pos: torch.Tensor | None = None,
+        **kwargs,
     ) -> torch.Tensor:
         residual = hidden_states
         hidden_states = self.input_layernorm(hidden_states)
@@ -400,16 +463,24 @@ class Gemma4TextDecoderLayer(nn.Module):
             attention_mask=attention_mask,
             past_key_values=past_key_values,
             shared_kv_states=shared_kv_states,
+            new_kv_cache_pos=new_kv_cache_pos,
         )
         hidden_states = self.post_attention_layernorm(hidden_states)
-        hidden_states = residual + hidden_states
+        hidden_states, residual = self.pre_feedforward_layernorm.forward_add(residual, hidden_states)
 
-        residual = hidden_states
-        hidden_states = self.pre_feedforward_layernorm(hidden_states)
         hidden_states = self.mlp(hidden_states)
         hidden_states = self.post_feedforward_layernorm(hidden_states)
         hidden_states = residual + hidden_states
 
+        if self.hidden_size_per_layer_input and per_layer_input is not None:
+            residual = hidden_states
+            gated = self.per_layer_input_gate(hidden_states)
+            gelued = F.gelu(gated, approximate="tanh")
+            multiplied = gelued * per_layer_input
+            projected = self.per_layer_projection(multiplied)
+            normed = self.post_per_layer_input_norm(projected)
+            hidden_states = residual + normed
+        hidden_states = hidden_states * self.layer_scalar
         return hidden_states
 
 
@@ -419,13 +490,34 @@ class Gemma4TextModel(nn.Module):
     def __init__(self, config: Gemma4TextConfig):
         super().__init__()
         self.config = config
-        self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, config.pad_token_id)
+        self.embed_tokens = Gemma4TextScaledWordEmbedding(config.vocab_size, config.hidden_size, config.pad_token_id)
         self.layers = nn.ModuleList([
             Gemma4TextDecoderLayer(config, i) for i in range(config.num_hidden_layers)
         ])
         self.norm = Gemma4RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.rotary_emb = Gemma4TextRotaryEmbedding(config)
 
+        self.hidden_size_per_layer_input = config.hidden_size_per_layer_input
+        if self.hidden_size_per_layer_input:
+            ple_vocab_size = config.vocab_size_per_layer_input
+            ple_embed_dim = config.num_hidden_layers * config.hidden_size_per_layer_input
+            self.embed_tokens_per_layer = Gemma4TextScaledWordEmbedding(
+                ple_vocab_size, ple_embed_dim, config.pad_token_id,
+                embed_scale=config.hidden_size_per_layer_input ** 0.5,
+            )
+            self.per_layer_model_projection = nn.Linear(
+                config.hidden_size, config.num_hidden_layers * config.hidden_size_per_layer_input, bias=False
+            )
+            self.per_layer_projection_norm = Gemma4RMSNorm(config.hidden_size_per_layer_input, eps=config.rms_norm_eps)
+    
+    @property
+    def per_layer_input_scale(self) -> float:
+        return 2.0**-0.5
+    
+    @property
+    def per_layer_model_projection_scale(self) -> float:
+        return self.config.hidden_size**-0.5
+    
     def _prepare_position_ids(
         self,
         inputs_embeds: torch.Tensor,
@@ -441,16 +533,78 @@ class Gemma4TextModel(nn.Module):
         self,
         inputs_embeds: torch.Tensor,
         attention_mask: torch.Tensor | None = None,
+        layer_type: str = "sliding_attention",
+        new_kv_cache_pos: torch.Tensor | None = None,
     ) -> torch.Tensor | None:
-        if attention_mask is None:
-            return None
-        _, seq_len = inputs_embeds.shape[:2]
+        batch_size, seq_len = inputs_embeds.shape[:2]
+        device = inputs_embeds.device
+        dtype = inputs_embeds.dtype
+        min_dtype = torch.finfo(dtype).min
 
-        # Convert 2D mask to 4D attention mask
+        q_pos = torch.arange(seq_len, device=device)
+        key_pos = torch.arange(seq_len, device=device)
+        causal_mask = key_pos.unsqueeze(0) <= q_pos.unsqueeze(1)
+
+        if attention_mask is None:
+            if layer_type == "full_attention":
+                full_mask = causal_mask
+            elif layer_type == "sliding_attention":
+                sliding_window = getattr(self.config, "sliding_window", None)
+                if sliding_window is None:
+                    return None
+                diff = q_pos.unsqueeze(1) - key_pos.unsqueeze(0)
+                window_mask = (diff >= 0) & (diff <= sliding_window - 1)
+                full_mask = causal_mask & window_mask
+            else:
+                full_mask = causal_mask
+            mask = full_mask
+            return torch.where(mask, torch.tensor(0.0, device=device, dtype=dtype), torch.tensor(min_dtype, device=device, dtype=dtype)).unsqueeze(0).unsqueeze(0)
+
         if attention_mask.dim() == 2:
-            expanded_mask = attention_mask[:, None, None, :].to(dtype=inputs_embeds.dtype)
-            expanded_mask = (1.0 - expanded_mask) * torch.finfo(inputs_embeds.dtype).min
-            return expanded_mask
+            attention_mask = attention_mask.to(dtype=torch.bool)
+            key_valid = attention_mask[:, None, :] # [batch, 1, seq_len]
+            if layer_type == "full_attention":
+                full_mask = key_valid.expand(batch_size, seq_len, seq_len) & causal_mask
+            elif layer_type == "sliding_attention":
+                sliding_window = getattr(self.config, "sliding_window", None)
+                if sliding_window is not None:
+                    diff = q_pos.unsqueeze(1) - key_pos.unsqueeze(0)
+                    window_mask = (diff >= 0) & (diff <= sliding_window - 1)
+                    full_mask = (causal_mask & window_mask).unsqueeze(0) & key_valid 
+                else:
+                    full_mask = causal_mask.unsqueeze(0) & key_valid
+            else:
+                if attention_mask.all():
+                    return None
+                full_mask = key_valid.expand(batch_size, seq_len, seq_len)
+            
+            mask = full_mask
+            # 2D mask: [batch, seq, seq] → [batch, 1, seq, seq] (heads 维 broadcast)
+            return torch.where(mask, torch.tensor(0.0, device=device, dtype=dtype), torch.tensor(min_dtype, device=device, dtype=dtype)).unsqueeze(1)
+
+        # 4D mask: apply sliding window restriction for sliding_attention layers
+        if attention_mask.dim() == 4:
+            q_len = attention_mask.shape[-2]
+            kv_len = attention_mask.shape[-1]
+            if layer_type == "sliding_attention":
+                sliding_window = getattr(self.config, "sliding_window", None)
+                # q 的 buffer 写入位置: 用 new_kv_cache_pos (与 k_pos 同基准), 而非 arange(q_len).
+                # decode 时 arange(1)=[0] != 真实写入位置 (如 8), 会让 window 错误屏蔽所有 k_pos!=0.
+                # new_kv_cache_pos 是 q 写进 buffer 的位置, 直接对应 buffer 维度.
+                if sliding_window is not None and sliding_window > 0 and kv_len > sliding_window:
+                    min_dtype_val = torch.finfo(attention_mask.dtype).min
+                    if new_kv_cache_pos is not None:
+                        q_pos_buf = new_kv_cache_pos.to(device=attention_mask.device, dtype=attention_mask.dtype)
+                    else:
+                        q_pos_buf = torch.arange(q_len, device=attention_mask.device, dtype=attention_mask.dtype)
+                    k_pos = torch.arange(kv_len, device=attention_mask.device, dtype=attention_mask.dtype)
+                    diff = q_pos_buf.unsqueeze(1) - k_pos.unsqueeze(0)
+                    window_mask = ~((diff >= 0) & (diff <= sliding_window - 1))
+                    attention_mask = attention_mask.masked_fill(
+                        window_mask.unsqueeze(0).unsqueeze(0), min_dtype_val
+                    )
+            return attention_mask
+
         return attention_mask
 
     def _build_rope_embeddings_for_layers(
@@ -472,6 +626,8 @@ class Gemma4TextModel(nn.Module):
         past_key_values: list | None = None,
         inputs_embeds: torch.Tensor | None = None,
         shared_kv_states: dict | None = None,
+        output_hidden_states: bool = False,
+        new_kv_cache_pos: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, list, dict | None]:
         if inputs_embeds is None:
             inputs_embeds = self.embed_tokens(input_ids)
@@ -482,32 +638,67 @@ class Gemma4TextModel(nn.Module):
         if position_ids is None:
             position_ids = self._prepare_position_ids(inputs_embeds, past_key_values)
 
-        causal_mask = self._prepare_causal_mask(inputs_embeds, attention_mask)
+        causal_mask = self._prepare_causal_mask(inputs_embeds, attention_mask, new_kv_cache_pos=new_kv_cache_pos)
         rope_embs = self._build_rope_embeddings_for_layers(inputs_embeds, position_ids)
 
         if shared_kv_states is None:
             shared_kv_states = {}
 
+        per_layer_inputs = None
+        if self.hidden_size_per_layer_input:
+            per_layer_inputs = self._compute_per_layer_inputs(input_ids, inputs_embeds)
+            per_layer_inputs = self._project_per_layer_inputs(inputs_embeds, per_layer_inputs)
+
         hidden_states = inputs_embeds
+        all_hidden_states = (hidden_states,) if output_hidden_states else None
         for i, layer in enumerate(self.layers):
             layer_type = self.config.layer_types[i]
             pos_emb = rope_embs[layer_type]
 
-            mask = causal_mask
-            if layer_type == "sliding_attention":
-                mask = causal_mask  # sliding window is handled inside eager_attention_forward
+            mask = self._prepare_causal_mask(inputs_embeds, attention_mask, layer_type, new_kv_cache_pos=new_kv_cache_pos)
 
+            per_layer_input = per_layer_inputs[:, :, i, :] if per_layer_inputs is not None else None
             hidden_states = layer(
                 hidden_states,
+                per_layer_input,
+                shared_kv_states=shared_kv_states,
                 position_embeddings=pos_emb,
                 attention_mask=mask,
                 past_key_values=past_key_values,
-                shared_kv_states=shared_kv_states,
+                new_kv_cache_pos=new_kv_cache_pos,
             )
+            if output_hidden_states:
+                all_hidden_states = all_hidden_states + (hidden_states,)
 
         hidden_states = self.norm(hidden_states)
+        if output_hidden_states:
+            all_hidden_states = all_hidden_states + (hidden_states,)
+            return hidden_states, past_key_values, shared_kv_states, all_hidden_states
         return hidden_states, past_key_values, shared_kv_states
 
+    def _compute_per_layer_inputs(self,input_ids: torch.Tensor | None, inputs_embeds: torch.Tensor) -> torch.Tensor:
+        if input_ids is None:
+            with torch.no_grad():
+                mask = inputs_embeds[:, :, None, :] == self.embed_tokens.weight[None, None, :, :] * self.config.hidden_size**0.5
+                input_ids = mask.all(dim=3).nonzero()[:, 2].view(inputs_embeds.shape[:2])
+        token_identity = self.embed_tokens_per_layer(input_ids).reshape(
+            *input_ids.shape, self.config.num_hidden_layers, self.hidden_size_per_layer_input)
+        return token_identity
+    
+    def _project_per_layer_inputs(
+            self, 
+            inputs_embeds: torch.Tensor, 
+            per_layer_inputs: torch.Tensor,
+        ) -> torch.Tensor:
+        context_projection = self.per_layer_model_projection(inputs_embeds) * self.per_layer_model_projection_scale
+        context_projection = context_projection.reshape(
+            *inputs_embeds.shape[:-1], 
+            self.config.num_hidden_layers, 
+            self.hidden_size_per_layer_input,
+        )
+        context_projection = self.per_layer_projection_norm(context_projection)
+        combined = (context_projection + per_layer_inputs) * self.per_layer_input_scale
+        return combined
 
 # ════════════════════════════════════════════════════════════════════
 # CausalLM wrapper
@@ -536,20 +727,33 @@ class Gemma4ForCausalLM(nn.Module):
         inputs_embeds: torch.Tensor | None = None,
         labels: torch.Tensor | None = None,
         shared_kv_states: dict | None = None,
+        output_hidden_states: bool = False,
+        new_kv_cache_pos: torch.Tensor | None = None,
+        position_ids: torch.Tensor | None = None,
     ) -> dict:
-        hidden_states, past_key_values, shared_kv_states = self.model(
+        model_output = self.model(
             input_ids=input_ids,
             attention_mask=attention_mask,
             past_key_values=past_key_values,
             inputs_embeds=inputs_embeds,
             shared_kv_states=shared_kv_states,
+            output_hidden_states=output_hidden_states,
+            new_kv_cache_pos=new_kv_cache_pos,
+            position_ids=position_ids,
         )
+        if output_hidden_states:
+            hidden_states, past_key_values, shared_kv_states, all_hidden_states = model_output
+        else:
+            hidden_states, past_key_values, shared_kv_states = model_output
+            all_hidden_states = None
         logits = self.lm_head(hidden_states)
 
         if self.final_logit_softcapping is not None:
-            logits = logits / self.final_logit_softcapping
+            inv_softcap = torch.tensor(1.0 / self.final_logit_softcapping, dtype=logits.dtype, device=logits.device)
+            softcap = torch.tensor(self.final_logit_softcapping, dtype=logits.dtype, device=logits.device)
+            logits = logits * inv_softcap
             logits = torch.tanh(logits)
-            logits = logits * self.final_logit_softcapping
+            logits = logits * softcap
 
         loss = None
         if labels is not None:
@@ -566,6 +770,7 @@ class Gemma4ForCausalLM(nn.Module):
             "logits": logits,
             "past_key_values": past_key_values,
             "shared_kv_states": shared_kv_states,
+            "hidden_states": all_hidden_states if output_hidden_states else None,
         }
 
     @torch.no_grad()
@@ -685,9 +890,9 @@ def load_gemma4_weights(
         remapped = {}
         for k, v in state.items():
             new_k = k
-            # Strip "model." prefix
-            if new_k.startswith("model."):
-                new_k = new_k[6:]
+            # Replace "model.language_model." with "model."
+            if new_k.startswith("model.language_model."):
+                new_k = "model." + new_k[len("model.language_model."):]
             remapped[new_k] = v
 
         for key, value in remapped.items():
@@ -695,16 +900,26 @@ def load_gemma4_weights(
                 if dtype is not None:
                     value = value.to(dtype=dtype)
                 param = param_dict[key]
+                if param.shape != value.shape:
+                    print(f"[WARN] Shape mismatch for {key}: model {param.shape}, checkpoint {value.shape}. Skipping.")
+                    continue
                 with torch.no_grad():
                     param.copy_(value.to(device=device))
                 loaded_keys.add(key)
             elif key == "lm_head.weight":
-                # tie_word_embeddings: share with embed_tokens
                 embed_key = "embed_tokens.weight"
                 if embed_key in param_dict:
                     with torch.no_grad():
                         param_dict[embed_key].copy_(value.to(device=device, dtype=dtype or value.dtype))
+                    with torch.no_grad():
+                        model.lm_head.weight.data.copy_(param_dict[embed_key].data)
                     loaded_keys.add(embed_key)
+                    loaded_keys.add("lm_head.weight")
+
+    if "lm_head.weight" not in loaded_keys and "model.embed_tokens.weight" in loaded_keys:
+        with torch.no_grad():
+            model.lm_head.weight.data.copy_(param_dict["model.embed_tokens.weight"].data)
+        loaded_keys.add("lm_head.weight")
 
     missing = set(param_dict) - loaded_keys
     if missing:
@@ -723,7 +938,6 @@ __all__ = [
     "Gemma4TextRotaryEmbedding",
     "rotate_half",
     "apply_rotary_pos_emb",
-    "apply_rotary_pos_emb_qk",
     "repeat_kv",
     "eager_attention_forward",
     "load_gemma4_weights",

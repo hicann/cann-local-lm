@@ -1,2 +1,52 @@
 
 __pycache__/
+.claude/
+.opencode/
+*.pt
+*.safetensors
+*.pt2
+*.epair
+*.graph.py
+generate/
+
+# Build artifacts
+build/
+.cache/
+*.o
+*.so
+*.bin
+compile_commands.json
+CTestTestfile.cmake
+cmake_install.cmake
+CMakeCache.txt
+CMakeFiles/
+Testing/
+
+# GE compile artifacts
+kernel_meta/
+kernel_meta_*/
+kernel_meta_temp_*/
+ge_check_op.json
+buildPidInfo.json
+task_pid_*.txt
+
+# Generated fixtures and model artifacts
+fixtures/
+epair_model/
+input_*.bin
+*.pbtxt
+*.onnx
+*.om
+fusion_result.json
+weight_info.json
+examples/*/data/
+examples/*/epair_model/
+examples/export_*/
+
+# local file
+AGENTS.md
+
+# Quant artifacts (generated dopt GPTQ output + calibration data + dumps)
+cann_lm/converter/quant/quant_output/
+cann_lm/converter/quant/calibration.json
+*_dump/

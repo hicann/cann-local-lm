@@ -13,7 +13,7 @@
 - [量化策略](#量化策略)
 - [端到端流程](#端到端流程)
 - [待实现模块](#待实现模块)
-- [int4 物化的 CANN 约定（遗留）](#int4-物化的-cann-约定遗留)
+- [int4 物化的 CANN 约定（已定：V4 整数 int4）](#int4-物化的-cann-约定已定v4-整数-int4-per-group)
 - [遗留问题](#遗留问题)
 - [环境与执行顺序](#环境与执行顺序)
 
@@ -204,28 +204,35 @@ converter --quant
 
 ---
 
-## int4 物化的 CANN 约定（遗留，已具体化）
+## int4 物化的 CANN 约定（已定：V4 整数 int4 per-group）
 
-Track 0 注册算子时核对 CANN REG_OP（`torchair/.../auto_generated_ge_raw_ops.py`）发现：**CANN 没有"整数 int4 per-group + int8 act"的单算子**。两个候选算子格式不同：
+Track 0 注册算子时核对 CANN REG_OP（`torchair/.../auto_generated_ge_raw_ops.py`）发现 V4 的 REG_OP 定义列的是 MXFP dtype（DT_FLOAT8_E4M3FN / DT_FLOAT4_E2M1），曾据此误判"V4 = MXFP only，非整数 int4"。
 
-| CANN op | x1 (act) | x2 (weight) | scale | 粒度 | 备注 |
+**实测推翻此结论**：本机 CANN 9.2.0 的预编译 kernel 目录 `opp/built-in/op_impl/ai_core/tbe/kernel/ascend910_93/ops_nn/quant_batch_matmul_v4/` 下有 **7 个预编译 .o**，其中含整数 int4 组合（命名约定 `QuantBatchMatmulV4_{x1_fmt}_{x2_fmt}_{x1_dtype}_{x2_dtype}_{out_dtype}_{variant}`）：
+
+| 预编译 kernel | x1(act) | x2(weight) | out | 方案 | tilingKey |
 |---|---|---|---|---|---|
-| `QuantBatchMatmulV3` | DT_INT8 / DT_INT4 | DT_INT8 / DT_INT4 | DT_UINT64/DT_FLOAT/DT_INT64/DT_BF16 | per-tensor/per-channel（**无 group_size attr**） | 整数 int4/int8，匹配 `materialize_int4` 的整数物化 |
-| `QuantBatchMatmulV4` | DT_FLOAT8_E4M3FN | DT_FLOAT4_E2M1 | DT_BF16 等 | per-group（有 group_size） | **MXFP（微缩浮点）**，非整数 int4 |
+| `ND_ND_int4_int4_{bf16,fp16}` | int4 | int4 | bf16/fp16 | A4W4 | 1040 |
+| **`ND_ND_int8_int4_{bf16,fp16}`** | **int8** | **int4** | bf16/fp16 | **A8W4 = W4A8** | **24** |
+| `ND_ND_int8_int8_bf16` | int8 | int8 | bf16 | A8W8 = W8A8（已验证跑通）| 529 |
+| `ND_NZ_int8_int4_{bf16,fp16}` | int8 | int4(NZ) | bf16/fp16 | W4A8 (x2 NZ 格式) | 276 |
 
-**当前实现的不匹配（须对齐）**：`_quant_matmul_converter` 把 `npu::npu_quant_matmul` → `ge.QuantBatchMatmulV4`（mxfp4），但 `materialize_int4` 产出**整数 int4（int8 存）**。stub 上能导出（`ge.QuantBatchMatmulV4` 通过 `check_cann_compat`、`npu_dynamic_quant` 经 `custom_op` 绕过 check），但**真 NPU OM 编译会 dtype 报错**（V4 期望 FLOAT4_E2M1，给的是 int8）。
+→ **V4 同时支持整数 int4（`int8_int4` = W4A8）和 mxfp4**，REG_OP 只列了 mxfp 分支但 runtime kernel 覆盖整数 dtype。**V3（per-channel 无 group_size）不再必要**。
+
+**当前实现的对齐状态**：`_quant_matmul_converter` 把 `npu::npu_quant_matmul` → `ge.QuantBatchMatmulV4`，`materialize_int4` 产出**整数 int4（int8 unpack 存）**。x1=int8（DynamicQuant 产）、x2=int4、out=fp16 正好命中 `ND_ND_int8_int4_fp16` 预编译 kernel（tilingKey=24）。**待对齐的唯一未知**：V4 的 DT_INT4 期望的 x2 存储布局（unpack int8 还是 int4pack `(k,n//8) int32`），需实测。
 
 `DynamicQuant`（act int8）正确匹配（已注册、QuantLinear 已用 `npu_dynamic_quant`→`custom_op("DynamicQuant")`）。
 
-### 三条对齐路径（待选型）
+### 路径选型（已定：C'）
 
 | 路径 | 选用 op | 改动 | 取舍 |
 |---|---|---|---|
-| **A. 整数 int4 per-channel** | `QuantBatchMatmulV3` | converter V4→V3；`materialize_int4` 改 per-channel（group=in，去 per-group256） | 粒度粗一些，但匹配真实 CANN 整数算子；改动小 |
-| **B. MXFP4/MXFP8** | `QuantBatchMatmulV4` | `materialize_int4` 改产 `FLOAT4_E2M1`（mxfp4 packed）；act 改 mxfp8（非 DynamicQuant 的 int8） | V4 支持 per-group；改动大（mxfp4 物化+packed 布局） |
-| **C. 维持现状** | V4（已注册） | 无 | 导出能产 IR，但整数 int4 权重与 V4 mxfp4 dtype 不符 → 真 NPU OM 编译失败 |
+| **C'. V4 整数 int4 per-group（已选定）** | `QuantBatchMatmulV4` | 命中 `ND_ND_int8_int4` 预编译 kernel；确认 x2 存储布局（unpack vs int4pack）+ 可能设 `x2_dtype` 触发 Bitcast 到 DT_INT4 | 匹配真实 CANN 整数 int4 kernel，支持 per-group，无需 V3/无需 mxfp4 转换；预编译 kernel 跳过 LxFusion 重编 |
+| ~~A. V3 整数 per-channel~~ | — | — | 弃用：V4 已有 int8_int4 kernel，V3 per-channel 粒度粗没必要 |
+| ~~B. V4 mxfp4~~ | — | — | 弃用：V4 已支持整数 int4，无需转 mxfp4 |
+| ~~C. 维持现状（旧结论）~~ | — | — | 旧结论"V4=mxfp4 不符、真 NPU OM 编译失败"已被预编译 kernel 实测推翻 |
 
-**物化层已验证无 bug（diag）**：dopt 产物用 reshape `[out, in//group]` + signed `[-8,7]` + offset=0 物化，重建 vs GPTQ 权重 cosine=1.0000（与 dopt 一致）。即问题不在物化数学，而在"物化的整数 int4 该喂哪个 CANN op"（V3 还是改 mxfp4 喂 V4）。
+**物化层已验证无 bug（diag）**：dopt 产物用 reshape `[out, in//group]` + signed `[-8,7]` + offset=0 物化，重建 vs GPTQ 权重 cosine=1.0000（与 dopt 一致）。物化的整数 int4 直接喂 V4 的 `int8_int4` kernel（路径 C'）。
 
 ---
 
@@ -247,8 +254,8 @@ Track 0 注册算子时核对 CANN REG_OP（`torchair/.../auto_generated_ge_raw_
 
 ## 遗留问题
 
-1. **int4 CANN 算子选型（核心遗留，已具体化）**——见上节"int4 物化的 CANN 约定"。CANN 无"整数 int4 per-group + int8 act"单算子：`QuantBatchMatmulV3`（整数 int4/int8，per-channel，无 group_size）vs `QuantBatchMatmulV4`（MXFP FLOAT4_E2M1，per-group）。当前 converter→V4 与整数 int4 物化 dtype 不符（真 NPU OM 编译会失败）。**待选型 A（V3 整数 per-channel）/B（V4 mxfp4）/C（维持）**。
-2. **dopt 物化数学对齐**：dopt `Quantizer` 的 `maxq=15` 无符号+zero-point 与 adapter 置零 offset 的组合；diag 已确认用 reshape`[out,in//group]`+signed`[-8,7]`+offset=0 物化，重建 vs GPTQ 权重 cos=1.0000（物化层无 bug）。剩"喂哪个 CANN op"（同 1）。
+1. ~~**int4 CANN 算子选型（核心遗留，已具体化）**~~ — **[已解决，选 C']** 见上节"int4 物化的 CANN 约定"。实测 CANN 9.2.0 预编译 kernel 目录含 `QuantBatchMatmulV4_ND_ND_int8_int4_{bf16,fp16}_high_performance.o`（tilingKey=24），即 **V4 支持整数 int4 W4A8**（x1=int8, x2=int4），推翻旧结论"V4=MXFP only"。**已选路径 C'：V4 整数 int4 per-group**（无需 V3、无需 mxfp4 转换）。剩唯一未知：V4 DT_INT4 期望的 x2 存储布局（unpack int8 vs int4pack `(k,n//8) int32`），需实测。
+2. **dopt 物化数学对齐**：dopt `Quantizer` 的 `maxq=15` 无符号+zero-point 与 adapter 置零 offset 的组合；diag 已确认用 reshape`[out,in//group]`+signed`[-8,7]`+offset=0 物化，重建 vs GPTQ 权重 cos=1.0000（物化层无 bug）。物化的整数 int4 直接喂 V4 的 `int8_int4` kernel（路径 C'，同 1）。
    - **dopt 产物 bit/unsigned_quant/offset 现已可读+驱动**（`swap._read_dopt_quant_meta`）：实测 dopt `model.safetensors` 每个 QLinear `{name}.quant_op.weight_quantizer.{bit,unsigned_quant,offset}` 都在（bit=int64 标量=4、unsigned_quant=fp32 标量=0.0、offset=fp32 扁平`[out*groups]`同`s`布局）。`swap_to_quant_linear_from_dopt` 现读 bit→`materialize nbits`、读 offset→`QuantLinear.weight_offset` buffer（对称时全 0 归一化为 None，dormant plumbing，下游 GE converter `x2_offset`/CPU eager `w_fp+=offset` 已就绪）、读 unsigned_quant 校验必须=0（unsigned int4 不支持，非 0 报错，见下条）。E2E 验证 qwen3-0.6B 196 层 swap + forward 跑通。**unsigned_quant 仍遗留**：非 0（unsigned int4 `[0,15]`）触及 CANN int4 signed/unsigned 编码约定（见遗留 1 的 V4 选型），当前直接报错拒绝。
    - **offset 反量化语义未对齐（未来非对称才触发）**：dopt `QuantizerFuncIntOffset` 反量化 `w_fp=(q-offset)*scale`；当前 CPU eager kernel `_npu_quant_matmul_cpu` 用 `w_fp=q*scale+offset`（公式不符）且 offset 未按 group `repeat_interleave` 扩维。对称 offset=None 时不触发；非对称支持需先对齐 op 的 offset 语义+扩维。
 3. **CPU-only 适配**：converter 侧 GPTQ 跑不了（需 NPU/GPU+校准）。**`--quant-path` 已作兜底**：离线机跑 dopt GPTQ 产出（`quant_output/model.safetensors` 或 `trained_quant_weight.pth`），converter 加载它只做物化+swap+导出（不跑 GPTQ）。dopt `opt_main` 在本机 NPU 上跑 GPTQ 曾静默卡住（step A 接入 converter 待解）。
@@ -294,7 +301,8 @@ Track 0 注册算子时核对 CANN REG_OP（`torchair/.../auto_generated_ge_raw_
 
 - V4→V3 融合后，TBE 尝试用 LxFusion 实时编译 V3 kernel → **LxFusion 不支持 Ascend910_9362** → 4/12 个 QBMM 编译失败（8 个用预编译 binary 通过）。
 - 这不是代码 bug——**CANN 9.2.0 的 LxFusion 编译器不支持本机芯片 Ascend910_9362**。
-- 需要更新 CANN 到支持 Ascend910_9362 的版本（或用预编译 kernel 覆盖）。
+- **根因新解**（见上节"int4 物化的 CANN 约定"）：当时 converter 导出的 V4 节点 dtype/format 组合**没命中任何预编译 kernel**（7 个预编译 .o 见上节表），触发 LxFusion 重编（910_9362 不支持）→ 失败。**若让 dtype 组合命中 `ND_ND_int8_int4` 预编译 kernel（x1=int8, x2=int4, out=fp16/bf16，tilingKey=24），runtime 直接用预编译 binary，跳过 LxFusion**，OM 编译应能过。这是路径 C' 的关键依据。
+- 备选：更新 CANN 到支持 Ascend910_9362 的版本（让 LxFusion 也能用）。
 
 ### 关键 ep_json 修复效果对照
 
@@ -320,7 +328,7 @@ Track 0 注册算子时核对 CANN REG_OP（`torchair/.../auto_generated_ge_raw_
 
 - **GPTQ（A 步）需 NPU/GPU**：dopt 依赖 `transformers.AutoModelForCausalLM` + `accelerate` dispatch + `autocast`/`GradScaler`，`DEVICE=cuda/npu`。当前 dev 机虽有 NPU，可跑；纯 CPU 机跑不了 GPTQ（见遗留 3）。
 - converter 导出（B–E 步）本身 CPU 可跑（torch.export + pack + cpu eager 回归），不依赖 NPU。
-- **OM 编译需 NPU + CANN**：`aclgrphBuildModel` 需真 NPU 环境（CANN toolkit + device）。本机 Ascend910_9362 + CANN 9.2.0 的 **LxFusion 不支持 910_9362** → V4→V3 融合 kernel 编译失败。需更新 CANN 版本。
+- **OM 编译需 NPU + CANN**：`aclgrphBuildModel` 需真 NPU 环境（CANN toolkit + device）。本机 Ascend910_9362 + CANN 9.2.0 的 **LxFusion 不支持 910_9362**，但**预编译 kernel 不走 LxFusion**——只要 converter 导出的 V4 dtype 组合命中预编译 kernel（如 `ND_ND_int8_int4`，tilingKey=24），runtime 直接用预编译 binary，OM 编译应能过（见"int4 物化的 CANN 约定"路径 C'）。
 - **stub GE 限制**：converter 导出在 stub 环境（venv + torchair stubs）上，`check_cann_compat` 拒绝 DynamicQuant/Bitcast 等 → 需 `is_cann_compat` monkey-patch 绕过（见 OM 调试记录修复 #2）。
 
 ### 建议执行顺序（当前进度）
@@ -328,8 +336,11 @@ Track 0 注册算子时核对 CANN REG_OP（`torchair/.../auto_generated_ge_raw_
 1. ~~**Track 1（物化+QuantLinear）+ Track 2（cpu eager impl）**~~ —— **已完成**：`materialize_int4`/`materialize_int4_with_scale` + `QuantLinear`（W4A8/W4A16）+ `npu_quant_matmul`/`npu_dynamic_quant` cpu impl。qwen3-0.6B eager 回归（W4A8 cos 0.826、物化 diag cos 1.0000）。
 2. ~~**Track 3（CLI 接入）**~~ —— **已完成**：`cann-lm-converter.py` 加 `--quant-path`/`--quant-group-size`/`--quant-act`；`load_model` 后调 `swap_to_quant_linear_from_dopt`（port dopt 产物→物化→swap）；`model_config.json` 写 `quant_info`。qwen3-0.6B 端到端跑通，ep_json 含 `QuantBatchMatmulV4`+`DynamicQuant` IR。
 3. ~~**Track 0（C++ reg）**~~ —— **已完成**：两 `reg_register.h` 加 `QuantBatchMatmulV3`+`QuantBatchMatmulV4`+`DynamicQuant`（75/75 & 44/44 配对）。
-4. ~~**OM 编译调试**~~ —— **InferShape PASS / TBE FAIL**：经 7 轮修复（binary 重建 + is_cann_compat patch + strip None + dummy bias + ge.QuantBatchMatmulV4 全 IR + DynamicQuant 用 torchair 原生 converter + fake meta scale shape），Step 1-2 PASS，Step 3 卡在 `LxFusion: Unsupported platform socVersion[Ascend910_9362]`（CANN 9.2.0 版本限制，非代码 bug）。详见"OM 编译调试记录"。
-5. **攻遗留（int4 CANN 算子选型 + LxFusion 版本）** ← **下一步**：
-   - 选 A（V3 整数 per-channel）/B（V4 mxfp4）/C（维持），对齐 `materialize_int4` + converter。
-   - 更新 CANN 到支持 Ascend910_9362 的版本（解决 LxFusion unsupported）。
-6. **dopt GPTQ step A 接入 converter**（NPU）+ 真 NPU OM 编译验证（需 CANN 更新后）。
+4. ~~**OM 编译调试**~~ —— **InferShape PASS / TBE FAIL**：经 7 轮修复（binary 重建 + is_cann_compat patch + strip None + dummy bias + ge.QuantBatchMatmulV4 全 IR + DynamicQuant 用 torchair 原生 converter + fake meta scale shape），Step 1-2 PASS，Step 3 卡在 `LxFusion: Unsupported platform socVersion[Ascend910_9362]`（CANN 9.2.0 版本限制，非代码 bug）。
+5. ~~**int4 CANN 算子选型**~~ —— **[已解决，选 C']**：实测 CANN 9.2.0 预编译 kernel 目录含 `QuantBatchMatmulV4_ND_ND_int8_int4_{bf16,fp16}`（V4 支持整数 int4 W4A8），推翻旧"V4=MXFP only"结论。选路径 C'（V4 整数 int4 per-group，命中预编译 kernel 跳过 LxFusion）。
+6. **对齐 x2 存储布局命中预编译 kernel** ← **下一步**：
+   - 实测 V4 `int8_int4` kernel 期望的 x2(weight) 存储布局：unpack int8（1 int4/int8）还是 int4pack `(k,n//8) int32`。
+   - 若需 int4pack：物化后/导出侧调 `npu_convert_weight_to_int4pack`；若接受 unpack：直接喂。
+   - 必要时设 `x2_dtype` 触发 Bitcast 到 DT_INT4，确保 runtime 选到 tilingKey=24 的 `ND_ND_int8_int4` kernel。
+   - 重跑 OM 编译验证命中预编译 kernel（跳过 LxFusion）。
+7. **dopt GPTQ step A 接入 converter**（NPU）+ 真 NPU OM 编译验证（需命中预编译 kernel 或更新 CANN）。

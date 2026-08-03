@@ -558,22 +558,22 @@ REG_OP(QuantBatchMatmulV3)
     .ATTR(transpose_x2, Bool, false)
     .OP_END_FACTORY_REG(QuantBatchMatmulV3)
 
-// QuantBatchMatmulV4: MXFP path (act FLOAT8_E4M3FN + weight FLOAT4_E2M1) with
-//   per-group group_size. Currently used by _quant_matmul_converter; NOTE its
-//   x2 dtype (FLOAT4_E2M1, microscaling float) does NOT match integer-int4
-//   materialize — switching the integer path to V3 (above) is the alignment task.
+// QuantBatchMatmulV4: A8W4 / MxA8W4 / A8W8 / A4W4 per-group matmul (antiquant+matmul fusion).
+//   Per official proto (cann/ops-nn quant_batch_matmul_v4_proto.h): x1 supports
+//   int8/int4 (integer) + float8 (mxfp8); x2 supports int4/int8 (integer) + float4_e2m1 (mxfp4).
+//   W4A8 = x1 DT_INT8 + x2 DT_INT4 (prebuilt ND_ND_int8_int4 kernel, tilingKey=24).
 REG_OP(QuantBatchMatmulV4)
-    .INPUT(x1, TensorType({DT_FLOAT8_E4M3FN}))
-    .INPUT(x2, TensorType({DT_FLOAT4_E2M1}))
-    .OPTIONAL_INPUT(bias, TensorType({DT_BF16}))
-    .OPTIONAL_INPUT(x1_scale, TensorType({DT_BF16}))
-    .OPTIONAL_INPUT(x2_scale, TensorType({DT_BF16}))
+    .INPUT(x1, TensorType({DT_FLOAT8_E5M2, DT_FLOAT8_E4M3FN, DT_INT8, DT_INT4}))
+    .INPUT(x2, TensorType({DT_FLOAT4_E2M1, DT_INT4, DT_INT8}))
+    .OPTIONAL_INPUT(bias, TensorType({DT_BF16, DT_FLOAT16, DT_FLOAT32}))
+    .OPTIONAL_INPUT(x1_scale, TensorType({DT_FLOAT16, DT_BF16, DT_FLOAT8_E8M0, DT_FLOAT32}))
+    .OPTIONAL_INPUT(x2_scale, TensorType({DT_FLOAT16, DT_BF16, DT_FLOAT8_E8M0, DT_UINT64, DT_FLOAT32}))
     .OPTIONAL_INPUT(y_scale, TensorType({DT_UINT64}))
-    .OPTIONAL_INPUT(x1_offset, TensorType({DT_BF16}))
-    .OPTIONAL_INPUT(x2_offset, TensorType({DT_BF16}))
-    .OPTIONAL_INPUT(y_offset, TensorType({DT_BF16}))
+    .OPTIONAL_INPUT(x1_offset, TensorType({DT_FLOAT16, DT_BF16}))
+    .OPTIONAL_INPUT(x2_offset, TensorType({DT_FLOAT16, DT_BF16}))
+    .OPTIONAL_INPUT(y_offset, TensorType({DT_FLOAT16, DT_BF16, DT_FLOAT32}))
     .OPTIONAL_INPUT(x2_table, TensorType({DT_INT8}))
-    .OUTPUT(y, TensorType({DT_BF16}))
+    .OUTPUT(y, TensorType({DT_FLOAT16, DT_BF16}))
     .REQUIRED_ATTR(dtype, Int)
     .ATTR(compute_type, Int, -1)
     .ATTR(transpose_x1, Bool, false)

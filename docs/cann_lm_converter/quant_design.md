@@ -219,7 +219,19 @@ Track 0 注册算子时核对 CANN REG_OP（`torchair/.../auto_generated_ge_raw_
 
 → **V4 同时支持整数 int4（`int8_int4` = W4A8）和 mxfp4**，REG_OP 只列了 mxfp 分支但 runtime kernel 覆盖整数 dtype。**V3（per-channel 无 group_size）不再必要**。
 
-**当前实现的对齐状态**：`_quant_matmul_converter` 把 `npu::npu_quant_matmul` → `ge.QuantBatchMatmulV4`，`materialize_int4` 产出**整数 int4（int8 unpack 存）**。x1=int8（DynamicQuant 产）、x2=int4、out=fp16 正好命中 `ND_ND_int8_int4_fp16` 预编译 kernel（tilingKey=24）。**待对齐的唯一未知**：V4 的 DT_INT4 期望的 x2 存储布局（unpack int8 还是 int4pack `(k,n//8) int32`），需实测。
+**当前实现的对齐状态**：`_quant_matmul_converter` 把 `npu::npu_quant_matmul` → `ge.QuantBatchMatmulV4`，`materialize_int4` 产出**整数 int4（int8 unpack 存）**。x1=int8（DynamicQuant 产）、out=fp16 命中 `ND_ND_int8_int4_fp16`（tilingKey=24）。**proto（`cann/ops-nn` 官方 `quant_batch_matmul_v4_proto.h`）暴露两个 converter 须对齐点**：
+
+| 项 | proto 要求（A8W4） | converter 现状 | 对齐 |
+|---|---|---|---|
+| x2(weight) dtype | `DT_INT4`（proto `INPUT(x2, {DT_FLOAT4_E2M1, DT_INT4, DT_INT8})` 明列 int4 for A8W4）| 不设 `x2_dtype` → x2 留 `DT_INT8`（unpack 存） | ❌ 须设 `x2_dtype` 触发 `ge.Bitcast`→`DT_INT4` |
+| transpose_x2 | proto 注释："Currently, it should **always be true**"；true 时 x2 shape `(n,k)`、x2_scale `(n, k/group)` | 硬编码 `transpose_x2=False`，预转置 x2=`[K,N]`、scale=`[K//group,N]` | ❌ 可能须改 True（不预转置） |
+| x1(act) dtype | `DT_INT8` | DynamicQuant 产 int8 | ✅ |
+| x2_scale dtype | `DT_FLOAT32`/`DT_UINT64` | fp32 | ✅ |
+| x1_scale(pertoken) | `DT_FLOAT32` shape `(m,)` | fp32 `(m,)` | ✅ |
+| compute_type attr | -1(auto, 整数 int4 走 int8_int4 kernel) / 4(f8f4, mxfp) | 默认 -1 | ✅ |
+| dtype attr | 1=fp16, 27=bf16 | output_dtype=5(fp16)→映射 | 需验映射 |
+
+→ converter 的 `transpose_x2=False` + 不设 `x2_dtype` 可能就是 OM 编译没命中 `int8_int4` 预编译 kernel 的原因。**待实测确认**：(a) x2 用 `DT_INT4`（unpack int8 存 or int4pack `(k,n//8) int32`）+ `transpose_x2=True` 是否命中 tilingKey=24 预编译 kernel；(b) unpack int8 存储是否被 DT_INT4 接受（还是须 int4pack）。
 
 `DynamicQuant`（act int8）正确匹配（已注册、QuantLinear 已用 `npu_dynamic_quant`→`custom_op("DynamicQuant")`）。
 

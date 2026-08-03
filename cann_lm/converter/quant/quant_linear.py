@@ -41,10 +41,17 @@ class QuantLinear(nn.Module):
         weight_scale: fp32 tensor ``[out, in//group]`` (per output-channel × per K-group).
         group_size: K-axis group size.
         bias: optional bias (fp16/bf16/fp32); None if the source Linear had bias=None.
+        offset: optional weight zero-point ``[out, in//group]`` (fp32). None for
+            symmetric (offset=0). When non-None, transposed to ``[in//group, out]``
+            and passed to ``npu_quant_matmul`` as ``offset`` (GE: ``x2_offset``).
+            Note: dopt symmetric outputs always have offset=0 -> caller normalizes
+            to None; asymmetric offset semantics (vs op dequant formula) unverified.
+        act_quant: True for W4A8 (act int8 via npu_dynamic_quant), False for W4A16.
     """
 
     def __init__(self, weight_q: torch.Tensor, weight_scale: torch.Tensor,
                  group_size: int, bias: torch.Tensor | None = None,
+                 offset: torch.Tensor | None = None,
                  act_quant: bool = True):
         super().__init__()
         self.group_size = group_size
@@ -55,12 +62,18 @@ class QuantLinear(nn.Module):
             self.register_buffer("bias", bias.to(weight_scale.dtype))
         else:
             self.bias = None
+        if offset is not None:
+            self.register_buffer("weight_offset", offset.to(torch.float32))
+        else:
+            self.weight_offset = None
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # pre-transpose weight+scale to [K=in, N=out] / [K//group, N]; transpose_x2=False
         # (the GE converter _quant_matmul_converter hardcodes transpose_x2=False)
         w2 = self.weight_q.transpose(-1, -2).contiguous()
         sc = self.weight_scale.transpose(-1, -2).contiguous()
+        off = (self.weight_offset.transpose(-1, -2).contiguous()
+               if self.weight_offset is not None else None)
         if self.act_quant:
             # W4A8: npu_dynamic_quant (fused op, GE-convertible to ge.DynamicQuant) produces
             # int8 activation + per-token scale — replaces the aten.abs/amax/clamp/div chain
@@ -81,6 +94,7 @@ class QuantLinear(nn.Module):
             dummy_bias = self.bias
         out = torch.ops.npu.npu_quant_matmul(
             x_in, w2, sc,
+            offset=off,
             pertoken_scale=x_scale,
             bias=dummy_bias,
             output_dtype=_OUT_DTYPE_CODE.get(x.dtype, 5),

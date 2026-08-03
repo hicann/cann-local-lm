@@ -4,7 +4,7 @@
 >
 > 量化方案：**W4A8 s8s4**（激活 s8 per-token 动态对称 + 权重 s4 per-group 对称）
 >
-> 最后更新: 2026-07-31
+> 最后更新: 2026-08-03
 
 ## 目录
 
@@ -182,8 +182,9 @@ converter --quant
       return weight_q_int8, scale_fp32
   ```
   - **占位实现**：先 `unpack + signed[-8,7]` 跑通 Python 流程；CANN 对齐（packed/signed）放遗留。
-- **`QuantLinear`**（`cann_lm/models/fused_ops/quant_linear.py` 或 `quant/`）：持 `weight_q`/`weight_scale` buffer，forward 调 `cann_lm::quant_matmul`（签名见上）。
+- **`QuantLinear`**（`cann_lm/models/fused_ops/quant_linear.py` 或 `quant/`）：持 `weight_q`/`weight_scale` buffer，forward 调 `cann_lm::quant_matmul`（签名见上）。**可选 `offset` 参数**：非 None 时存为 `weight_offset` buffer、forward 转置后传给 `npu_quant_matmul`（GE converter `x2_offset`/CPU eager `w_fp+=offset` 已就绪）；对称时传 None（dormant plumbing，非对称 offset 语义见遗留 2）。
 - **`swap_to_quant_linear(model, scope)`**：遍历目标 `nn.Linear`（除 embed/lm_head），按名 port 物化的 int4+scale，替换为 `QuantLinear`。接入 `loader.load_model` 后、`save_epair` 前（`--quant` 触发）。
+- **`swap_to_quant_linear_from_dopt` 现读 dopt 产物的 `bit`/`unsigned_quant`/`offset`**（`swap._read_dopt_quant_meta`）：bit→`materialize nbits`、offset→`QuantLinear.weight_offset`（全 0 归一化为 None）、unsigned_quant 校验=0（非 0 报错，unsigned int4 仍遗留）。dopt 产物 key 实测：`{name}.quant_op.weight_quantizer.{bit,int64 标量}/{unsigned_quant,fp32 标量}/{offset,fp32 [out*groups]同 s}`。
 
 ### Track 2 — CPU eager impl（数值回归）  ✅ 已完成
 
@@ -248,6 +249,8 @@ Track 0 注册算子时核对 CANN REG_OP（`torchair/.../auto_generated_ge_raw_
 
 1. **int4 CANN 算子选型（核心遗留，已具体化）**——见上节"int4 物化的 CANN 约定"。CANN 无"整数 int4 per-group + int8 act"单算子：`QuantBatchMatmulV3`（整数 int4/int8，per-channel，无 group_size）vs `QuantBatchMatmulV4`（MXFP FLOAT4_E2M1，per-group）。当前 converter→V4 与整数 int4 物化 dtype 不符（真 NPU OM 编译会失败）。**待选型 A（V3 整数 per-channel）/B（V4 mxfp4）/C（维持）**。
 2. **dopt 物化数学对齐**：dopt `Quantizer` 的 `maxq=15` 无符号+zero-point 与 adapter 置零 offset 的组合；diag 已确认用 reshape`[out,in//group]`+signed`[-8,7]`+offset=0 物化，重建 vs GPTQ 权重 cos=1.0000（物化层无 bug）。剩"喂哪个 CANN op"（同 1）。
+   - **dopt 产物 bit/unsigned_quant/offset 现已可读+驱动**（`swap._read_dopt_quant_meta`）：实测 dopt `model.safetensors` 每个 QLinear `{name}.quant_op.weight_quantizer.{bit,unsigned_quant,offset}` 都在（bit=int64 标量=4、unsigned_quant=fp32 标量=0.0、offset=fp32 扁平`[out*groups]`同`s`布局）。`swap_to_quant_linear_from_dopt` 现读 bit→`materialize nbits`、读 offset→`QuantLinear.weight_offset` buffer（对称时全 0 归一化为 None，dormant plumbing，下游 GE converter `x2_offset`/CPU eager `w_fp+=offset` 已就绪）、读 unsigned_quant 校验必须=0（unsigned int4 不支持，非 0 报错，见下条）。E2E 验证 qwen3-0.6B 196 层 swap + forward 跑通。**unsigned_quant 仍遗留**：非 0（unsigned int4 `[0,15]`）触及 CANN int4 signed/unsigned 编码约定（见遗留 1 的 V4 选型），当前直接报错拒绝。
+   - **offset 反量化语义未对齐（未来非对称才触发）**：dopt `QuantizerFuncIntOffset` 反量化 `w_fp=(q-offset)*scale`；当前 CPU eager kernel `_npu_quant_matmul_cpu` 用 `w_fp=q*scale+offset`（公式不符）且 offset 未按 group `repeat_interleave` 扩维。对称 offset=None 时不触发；非对称支持需先对齐 op 的 offset 语义+扩维。
 3. **CPU-only 适配**：converter 侧 GPTQ 跑不了（需 NPU/GPU+校准）。**`--quant-path` 已作兜底**：离线机跑 dopt GPTQ 产出（`quant_output/model.safetensors` 或 `trained_quant_weight.pth`），converter 加载它只做物化+swap+导出（不跑 GPTQ）。dopt `opt_main` 在本机 NPU 上跑 GPTQ 曾静默卡住（step A 接入 converter 待解）。
 4. **`reg_register.h` 算子注册**——**已完成**（Track 0）：两文件加 `QuantBatchMatmulV3`+`QuantBatchMatmulV4`+`DynamicQuant`，配对平衡。op 定义须对齐目标真 NPU CANN 版本（ATTR 名/OUTPUT 个数/dtype 枚举如 DT_INT4/DT_FLOAT4_E2M1 是否定义）。
 5. **OM 编译验证（新遗留）**——见下节"OM 编译调试记录"。

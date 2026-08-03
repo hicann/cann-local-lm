@@ -91,6 +91,32 @@ def load_dopt_state_dict(dopt_path: str | Path) -> dict:
     return torch.load(str(p), map_location="cpu")
 
 
+def _read_dopt_quant_meta(
+    sd: dict, name: str, out_f: int, in_f: int, group_size: int
+) -> tuple[int, float, torch.Tensor | None]:
+    """Read dopt quantizer buffers (bit/unsigned_quant/offset) for one Linear.
+
+    dopt saves these alongside ``s`` under
+    ``{name}.quant_op.weight_quantizer.{bit,unsigned_quant,offset}`` (verified:
+    bit=int64 scalar, unsigned_quant=fp32 scalar, offset=fp32 flattened
+    [out*groups], same layout as ``s``).
+
+    Returns (bit, unsigned_quant, offset_2d). Falls back to (4, 0.0, None)
+    when the buffers are absent (older dopt outputs that only saved weight+s).
+    offset is reshaped from [out*groups] to [out, in//group] (same as scale).
+    """
+    pre = f"{name}.quant_op.weight_quantizer"
+    bit_key = f"{pre}.bit"
+    uq_key = f"{pre}.unsigned_quant"
+    off_key = f"{pre}.offset"
+    if bit_key not in sd or uq_key not in sd or off_key not in sd:
+        return 4, 0.0, None
+    bit = int(sd[bit_key].item())
+    uq = float(sd[uq_key].item())
+    offset = sd[off_key].float().reshape(out_f, in_f // group_size)
+    return bit, uq, offset
+
+
 def swap_to_quant_linear_from_dopt(
     model: nn.Module,
     dopt_path: str | Path,
@@ -111,6 +137,7 @@ def swap_to_quant_linear_from_dopt(
     sd = load_dopt_state_dict(dopt_path)
     n_q = 0
     n_skip = 0
+    bit = uq = None
     for name, m in list(model.named_modules()):
         if not isinstance(m, nn.Linear):
             continue
@@ -129,8 +156,21 @@ def swap_to_quant_linear_from_dopt(
                 f"{name}: in_features ({in_f}) not divisible by group_size ({group_size})"
             )
         scale2d = s_flat.reshape(out_f, in_f // group_size)
-        weight_q, weight_scale = materialize_int4_with_scale(w_gptq, scale2d, group_size)
-        ql = QuantLinear(weight_q, weight_scale, group_size, bias=m.bias, act_quant=act_quant)
+        bit, uq, offset = _read_dopt_quant_meta(sd, name, out_f, in_f, group_size)
+        if uq != 0.0:
+            raise ValueError(
+                f"{name}: unsigned_quant={uq} (unsigned int4 not supported; "
+                "only symmetric uq=0). Re-run dopt with a signed-symmetric strategy."
+            )
+        if offset is not None and offset.abs().max().item() == 0.0:
+            offset = None  # symmetric no-op: don't store a zeros buffer
+        weight_q, weight_scale = materialize_int4_with_scale(
+            w_gptq, scale2d, group_size, signed=True, nbits=bit
+        )
+        ql = QuantLinear(
+            weight_q, weight_scale, group_size, bias=m.bias,
+            offset=offset, act_quant=act_quant,
+        )
         parent, child = _resolve_parent(model, name)
         setattr(parent, child, ql)
         n_q += 1
@@ -144,4 +184,7 @@ def swap_to_quant_linear_from_dopt(
         "n_skipped_no_dopt_key": n_skip,
         "dopt_path": str(dopt_path),
         "weight_int4_encoding": "unpack+signed[-8,7] placeholder (CANN convention TBD)",
+        "dopt_bit": bit,
+        "dopt_unsigned_quant": uq,
+        "offset_supported": "read+pass-through (symmetric zeros normalized to None)",
     }

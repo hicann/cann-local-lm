@@ -56,10 +56,15 @@ output_dir/
 ├── weight_info.json               # 张量索引（含 bin 文件名引用）
 ├── weights_0.bin                  # 拼接的原始张量数据（文件 0）
 ├── weights_1.bin                  # 拼接的原始张量数据（文件 1，切分时产生）
-└── ...                            # 更多 bin 文件（按需切分）
+├── ...                            # 更多 bin 文件（按需切分）
+├── host_weights_info.json         # (仅 use_embeddings=True) host 查表权重索引
+└── host_weights_0.bin             # (仅 use_embeddings=True) host 查表权重数据
+                                   # embed_tokens / gemma4 embed_tokens_per_layer
 ```
 
 所有文件直接写入 `output_dir/`，不再创建 `data/` 子目录。
+
+> `host_weights_*` 仅在 `use_embeddings=True`（纯 embeddings 导出）时产生。`saver` 在 `torch.export` 前调用 `wrapper.detach_externalized_lookups()` 把外置查表子模块（`embed_tokens` / gemma4 `embed_tokens_per_layer`）从模型 `del` 掉 → torch.export 不 lift 它们 → `weights_*.bin` / `weight_info.json` **不含**查表权重（≈ OM，无冗余；GE 编译本就剪掉它们）。`consolidated_weights_save` 经 `host_side_weights` 把查表权重（`embed_tokens.weight`，gemma4 加 `embed_tokens_per_layer.weight`）单独打包到 `host_weights_info.json` + `host_weights_*.bin`（带 dtype/shape）供 host 查表。C++ `GeWeightLoader` 只读 `weight_info.json`，对 host 文件零感知。tied 模型：del `embed_tokens` 后 `lm_head.weight`（同数据）仍在 weights（被 OM bake），host 从 host_weights 拿 `embed_tokens.weight` 查表。
 
 ### ep_json_with_ascend_ir.json
 
@@ -142,7 +147,7 @@ weights_1.bin: [tensor_2: 6000B]                   → 6000B (单独文件，超
 3. 张量数据按 `numpy.tobytes()` 序列化
 4. 按切分规则依次写入 bin 文件，构建索引（name/file/offset/size）
 
-### consolidated_weights_save(contents, output_dir, *, save_weights=True, max_file_size=5120)
+### consolidated_weights_save(contents, output_dir, *, save_weights=True, max_file_size=5120, ep_json_filename="ep_json_with_ascend_ir.json", host_side_weights=None)
 
 将 `EpairContents` 写入磁盘。
 
@@ -151,12 +156,15 @@ weights_1.bin: [tensor_2: 6000B]                   → 6000B (单独文件，超
 - `output_dir`: 输出目录（文件直接写入此目录，不创建子目录）
 - `save_weights`: 为 `True` 时调用 `pack_weights` 生成 `weights_*.bin` 和 `weight_info.json`；为 `False` 时只写 EP JSON
 - `max_file_size`: 单个 bin 文件最大字节数，传递给 `pack_weights`
+- `ep_json_filename`: EP JSON 文件名（默认 `ep_json_with_ascend_ir.json`；prefill/decode 分离时分别传 `prefill_...` / `decode_...`）
+- `host_side_weights`: 可选 `list[(name, tensor)]`，纯 embeddings 导出（`use_embeddings=True`）时的 host 查表权重（`embed_tokens.weight`，gemma4 加 `embed_tokens_per_layer.weight`）。非空时由 `_pack_host_side_weights_to_dir` 写入独立的 `host_weights_*.bin` + `host_weights_info.json`（条目含 `name/offset/size/dtype/shape`）。与 `weights_*.bin` 独立，C++ `GeWeightLoader` 零感知。
 
 内部流程：
 1. 若 `save_weights=True`，调用 `pack_weights(contents, max_file_size=...)` 得到 `ConsolidatedWeights`
 2. 依次写入 `weights_0.bin`、`weights_1.bin`、...（受 `save_weights` 控制）
 3. 写入 `weight_info.json`（受 `save_weights` 控制）
-4. 从 `contents.ep_json` 写入 `ep_json_with_ascend_ir.json`（始终写入）
+4. 若 `host_side_weights` 非空，写入 `host_weights_0.bin`、... + `host_weights_info.json`
+5. 从 `contents.ep_json` 写入 `<ep_json_filename>`（始终写入）
 
 ## C++ 加载接口
 

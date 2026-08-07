@@ -8,6 +8,7 @@
 
 ## 目录
 
+- [端到端流程总览 (pipeline_walkthrough.md)](./pipeline_walkthrough.md) — 模型构建 → 注册 → 加载 → 导出 epair → C++ OM 编译的完整步骤
 - [能力边界](#能力边界)
 - [目录结构](#目录结构)
 - [模型差异总览](#模型差异总览)
@@ -314,7 +315,9 @@ def collect_tokenizer_files(hf_path: str) -> list[Path]:
 
 支持 **两种 embedding 模式**：
 - `use_embeddings=False`（默认）：传 `input_ids`，图内含 `embed_tokens` 节点
-- `use_embeddings=True`：传 `embeddings`，图内不含 `embed_tokens`（embedding 量化用，查表在 host 侧做）
+- `use_embeddings=True`（纯 embeddings）：`input_ids` **不入图**（None placeholder），host 算好 `embeddings` 传入；model forward 收到 `inputs_embeds` 跳过 `embed_tokens` 查表。gemma4 因 PLE（Per-Layer Embedding）的 `embed_tokens_per_layer` 查表也外置，**额外传 `per_layer_token_identity`**（host 算好的 token identity）；qwen3/qwen3_5 无 PLE，仅传 `embeddings`。
+
+> 注：`use_embeddings=True` 时 `saver` 在 `get_sample_inputs`（用它算 sample）+ host 权重抽取**之后**、`torch.export` **之前** 调用 `wrapper.detach_externalized_lookups()` 把外置查表子模块（`embed_tokens`，gemma4 加 `embed_tokens_per_layer`）从模型 `del` 掉 → torch.export 不 lift 它们 → `weights_*.bin` **不含**冗余查表权重（≈ OM，GE 编译本就剪掉它们），查表权重单独打包到 `host_weights_info.json` + `host_weights_*.bin` 给 host（带 dtype/shape）。依赖纯 embeddings forward 不访问这些子模块（`embed_tokens` 被 `inputs_embeds` 跳过、gemma4 `embed_tokens_per_layer` 被实例方法替换跳过）；`saver` 导出后断言它们不在 `inputs_to_parameters` 兜底。tied qwen3：del `embed_tokens` 后 `lm_head.weight`（同数据）仍在 → 被 OM bake；host 从 `host_weights` 拿 `embed_tokens.weight` 查表（lm_head/embed_tokens 双角色，非冗余）。详见 [export_design.md](./cann_lm_conveter_export/export_design.md)。
 
 基类位于 `cann_lm/converter/export_wrapper.py`，子类位于各模型目录（如 `cann_lm/models/qwen3/export_wrapper.py`）。
 
@@ -335,13 +338,14 @@ class ExportWrapper(nn.Module):
 
     def forward(
         self,
-        input_ids=None,            # input_ids 或 embeddings 二选一
+        input_ids=None,            # use_embeddings=False 时传; =True 时 None (不入图)
         attention_mask=None,
         position_ids=None,
         past_key_values=None,
         new_kv_cache_pos=None,
-        embeddings=None,           # ← 外部 embedding (量化用)
+        embeddings=None,           # ← use_embeddings=True: host 算好的 embeddings
         output_pos=None,           # ← 选位：decode 时只算最后一个 token 的 logits
+        per_layer_token_identity=None,  # ← 仅 gemma4 (PLE): host 算好的 token identity
     ):
         logits, past_kv_flat = self._drive_layers(
             input_ids, attention_mask, position_ids,
@@ -376,12 +380,17 @@ class ExportWrapper(nn.Module):
 
 ```
 输入:
-  input_ids          [batch, seq_len] int64               ← 与 embeddings 二选一
-  embeddings         [batch, seq_len, hidden] float16    ← 图外查表 (量化用)
+  input_ids          [batch, seq_len] int64               ← use_embeddings=False 时传;
+                                                           =True 时 None (不入图)
+  embeddings         [batch, seq_len, hidden] float16    ← use_embeddings=True: host 算好的
+                                                           embed_tokens 查表结果
+  per_layer_token_identity  [batch, seq_len, L, h_pl] float   ← 仅 gemma4 (PLE):
+                                                           host 算好的 embed_tokens_per_layer
+                                                           查表结果 (reshape 后)
   attention_mask     [batch, 1, seq_len, kv_cache_max_len]    ← 4D 预构造 mask
   position_ids       [batch, seq_len] int64
   past_key_values    list of (key_buf, value_buf) per layer   ← 每层一对预分配 buffer
-                     shape: [kv_cache_max_len, kv_head, batch, head_dim]
+                      shape: [kv_cache_max_len, kv_head, batch, head_dim]
   new_kv_cache_pos   [seq_len] int64                           ← scatter 写入位置
   output_pos         [1] int32 (可选)                          ← 只算哪个位置的 logits
 
@@ -405,13 +414,16 @@ class Qwen3ExportWrapper(ExportWrapper):
     """qwen3 子类：调原生 forward + 提取 logits + 展平 list[(k,v)] cache"""
 
     def _drive_layers(self, input_ids, attention_mask, position_ids,
-                      past_key_values, new_kv_cache_pos, embeddings=None):
+                      past_key_values, new_kv_cache_pos, embeddings=None,
+                      per_layer_token_identity=None):  # qwen3 无 PLE, 忽略
         kwargs = {
             "attention_mask": attention_mask,
             "position_ids": position_ids,
             "past_key_values": past_key_values,
-            "use_cache": True,
+            "new_kv_cache_pos": new_kv_cache_pos,
         }
+        # 纯 embeddings: embeddings 提供时只传 inputs_embeds (不传 input_ids),
+        # model forward `if inputs_embeds is None` 跳过 embed_tokens 查表 → input_ids 不入图。
         if embeddings is not None:
             kwargs["inputs_embeds"] = embeddings   # 图外查表
         else:
@@ -426,15 +438,17 @@ class Qwen3ExportWrapper(ExportWrapper):
         return logits, past_kv_flat
 ```
 
+> gemma4 子类（`Gemma4ExportWrapper`）在纯 embeddings 分支额外处理 PLE：用**实例方法替换**把 `text_model._compute_per_layer_inputs` 临时替换为返回 host 算好的 `per_layer_token_identity`，使 model.forward 跳过 `embed_tokens_per_layer(input_ids)` 查表 + bf16 反查，而层循环/mask/rope/lm_head 仍复用 model.forward（不改 modeling）。`_build_external_extras` 算 `per_layer_token_identity = embed_tokens_per_layer(input_ids).reshape(b,s,L,h_pl)`。详见 `models/gemma4/export_wrapper.py`。
+
 ### 三个子类的差异
 
 | 子类 | 文件位置 | 原生 cache 类型 | forward kwargs 差异 | 特殊处理 |
 |------|---------|----------------|---------------------|---------|
-| Qwen3ExportWrapper | `models/qwen3/export_wrapper.py` | `list[(k,v), ...]` | `position_ids` 外部传入 | 无 |
-| Gemma4ExportWrapper | `models/gemma4/export_wrapper.py` | `list[(k,v), ...]` | `position_ids` 外部传入 | `shared_kv_states=None` |
-| Qwen3_5ExportWrapper | `models/qwen3_5/export_wrapper.py` | `SimpleKVCache` | `delta_cache`、`use_cache` | list → SimpleKVCache 转换；`delta_cache=None` |
+| Qwen3ExportWrapper | `models/qwen3/export_wrapper.py` | `list[(k,v), ...]` | `position_ids` 外部传入 | 无 PLE；`per_layer_token_identity` 忽略 |
+| Gemma4ExportWrapper | `models/gemma4/export_wrapper.py` | `list[(k,v), ...]` | `position_ids` 外部传入 | `shared_kv_states=None`；**纯 embeddings 时实例方法替换 `_compute_per_layer_inputs` 外置 PLE 查表**，收 `per_layer_token_identity` |
+| Qwen3_5ExportWrapper | `models/qwen3_5/export_wrapper.py` | `SimpleKVCache` | `delta_cache`、`use_cache` | list → SimpleKVCache 转换；`delta_cache=None`；无 PLE |
 
-三个子类都支持 `embeddings` 参数：非 None 时传 `inputs_embeds`，None 时传 `input_ids`。
+三个子类都支持纯 embeddings：`embeddings` 非 None 时只传 `inputs_embeds`（不传 `input_ids`，input_ids 不入图），None 时传 `input_ids`（图内查表）。gemma4 额外用 `per_layer_token_identity` 外置 PLE。
 
 ### 轻量 vs 全量
 
@@ -547,6 +561,8 @@ attention_mask = mask.unsqueeze(0).unsqueeze(0).expand(batch, 1, seq_len, kv_max
 非 scatter 模型（仍用 `torch.cat` 拼接 past+new，K 维度 = kv_max + seq_len）导出会因维度不匹配报 broadcast 错误 — 见遗留任务 5。
 
 其余输入：input_ids（random）、position_ids（arange）、new_kv_cache_pos（arange）、output_pos（`[seq_len-1]`）、past_key_values（每层一对零 buffer，per-layer head_dim 由 `_get_layer_head_dim` 决定）。
+
+纯 embeddings 模式（`use_embeddings=True`）：`input_ids` 不入位置参数（None placeholder），改由 `embeddings = embed_tokens(input_ids).detach()`（host 算）；gemma4 经 `_build_external_extras` 额外追加 `per_layer_token_identity`。返回 7-tuple（qwen3/qwen3_5）或 8-tuple（gemma4，末位 `per_layer_token_identity`），对齐 `forward` 签名（`per_layer_token_identity` 默认 None，7-tuple 时取默认）。
 
 ### save_model_config
 
@@ -768,13 +784,17 @@ output_dir/
 ├── weight_info.json               # 权重索引 {bin文件名: [{name, offset, size}]}
 ├── weights_0.bin                  # 权重数据 (按 max_file_size 切分, 默认 50GB)
 ├── weights_1.bin
-├── model_config.json              # 自定义 config + HF 元信息
+├── model_config.json              # 自定义 config + HF 元信息 + use_embeddings 标记
 ├── tokenizer.json                 # 从 HF 复制
 ├── tokenizer_config.json          # 从 HF 复制
-└── special_tokens_map.json        # 从 HF 复制
+├── special_tokens_map.json        # 从 HF 复制
+├── host_weights_info.json         # (仅 use_embeddings=True) host 查表权重索引 {bin: [{name,offset,size,dtype,shape}]}
+└── host_weights_0.bin             # (仅 use_embeddings=True) embed_tokens / gemma4 embed_tokens_per_layer
 ```
 
 > `save_epair` **不输出** `.pt2`（Python 回环验证）和 `input_N.bin`（C++ 验证输入），二者由 verify 脚本另行生成，不纳入正式产物（与 prefill-decode 模式一致，见下方"不保存 .pt2 / input_N.bin"）。`generation_config.json` 也不再由 converter 复制（见遗留任务 1）。
+>
+> `host_weights_*` 仅 `use_embeddings=True` 时产生：`saver.detach_externalized_lookups()` 在导出前把外置查表子模块（`embed_tokens` / gemma4 `embed_tokens_per_layer`）从模型 del 掉 → torch.export 不 lift → `weights_*.bin` **不含**它们（≈ OM，无冗余）；查表权重单独打包到 `host_weights_*`（带 dtype/shape）供 host 查表。`model_config.json` 的 `use_embeddings` 字段记录导出模式，供下游判断图第一输入是 `input_ids` 还是 `embeddings`。C++ `GeWeightLoader` 只读 `weight_info.json`，对 host 文件零感知。
 
 ## C++ 加载侧
 
@@ -981,13 +1001,22 @@ python cann_lm/converter/cann-lm-converter.py \
     --dtype float16 \
     --sample-seq-len 8
 
-# 模式 B: 图外查表 (embedding 量化用, 图内不含 embed_tokens)
+# 模式 B: 图外查表 (embedding 量化用, 图内不含 embed_tokens; input_ids 不入图)
 python cann_lm/converter/cann-lm-converter.py \
     --hf-path /path/to/qwen3-0.6B \
     --output-dir /path/to/output \
     --dtype float16 \
     --sample-seq-len 8 \
     --use-embeddings
+
+# 模式 B 验证: ep 回环 (host 用 embed_tokens 查表喂 embeddings) vs in-graph wrapper vs HF
+#   EP-EMB==WR==HF 三者一致即通过; gemma4 同理 (PLE per_layer_token_identity 由 host 算)
+python examples/export_llm_model/llm_engine_on_cpu/debug_qwen3/verify_qwen3_epair.py \
+    --use-embeddings --num-steps 10
+
+# 模式 B C++ OM 编译: 纯 embeddings epair → .om (与模式 A 同一 main)
+./examples/export_llm_model/build/export_llm_model \
+    output/ep_json_with_ascend_ir.json output/weight_info.json output
 
 # 模式 C: prefill/decode 分离 (推理用, prefill+decode 两图 + 共享权重)
 #         详见下方 "prefill/decode 分离导出" 章节
@@ -1062,6 +1091,8 @@ td::EpairModelLoader decode_loader("decode_ep_json_with_ascend_ir.json",
 ### 全链路已通（Python 导出 + C++ OM 编译）
 
 遗留任务 6（`aten.index_copy.default` GE converter 缺失）已解决：在 `converter/export/ge_converter.py` 用 `ge.InplaceUpdate` + `ge.TransposeD` 实现了 converter。converter CLI 导出 gemma4 prefill/decode + C++ `main.cpp` 加载编译 OM 全链路跑通（`examples/export_gemma4/`，prefill 6079 节点 / decode 6044 节点 / `prefill.om` + `decode.om` 各 9.4GB）。详见遗留任务 6 的完整修复链。
+
+**纯 embeddings（`--use-embeddings`）全链路已通**：converter CLI 导出 + C++ `main.cpp` OM 编译跑通——qwen3-0.6B（`qwen3_pure_emb.om` 374MB，weights ≈ OM）+ gemma4-E2B（5B 参数 35 层含 PLE，`gemma4_e2b_pure.om` 4.57GB，ep_json 19MB / weights 4.56GB ≈ OM / host_weights 5.5GB 查表权重给 host）。`saver.detach_externalized_lookups()` 在导出前 del 外置查表子模块 → torch.export 不 lift → `weights_*.bin` 不含冗余查表权重（≈ OM，无 5.5GB 冗余）。Python ep 回环验证（`verify_qwen3_epair.py --use-embeddings` / `verify_gemma4_epair.py --use-embeddings`）：纯 embeddings ep（host 用 `embed_tokens` / gemma4 `embed_tokens_per_layer` 查表喂 `embeddings` + `per_layer_token_identity`）== in-graph wrapper，3-prompt 全一致；gemma4 PLE 实例方法替换经 torch.export tracing 存活、`ep.module()` vs eager max_diff=0。HF 文本一致（token 级偶有 bf16 差异，in-graph 模式同样存在，非本特性问题）。详见上方"使用示例"模式 B。
 
 ## 待实现功能
 

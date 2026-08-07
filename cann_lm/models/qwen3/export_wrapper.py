@@ -18,6 +18,7 @@ class Qwen3ExportWrapper(ExportWrapper):
         past_key_values: list,
         new_kv_cache_pos: torch.Tensor,
         embeddings: torch.Tensor | None = None,
+        per_layer_token_identity: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, list[torch.Tensor]]:
         # None → [None]*N 触发模型内部 cache 创建 (N = 实际层数, 支持 --num-layers 截断)
         num_layers = self._num_layers()
@@ -30,14 +31,14 @@ class Qwen3ExportWrapper(ExportWrapper):
             "past_key_values": past_key_values,
             "new_kv_cache_pos": new_kv_cache_pos,
         }
-        # 总是传 input_ids (PLE 用, 不反查); embeddings 非 None 时也传 inputs_embeds (图外查表)
-        # - use_embeddings=False (embeddings=None): 只传 input_ids, model 查 embed_tokens
-        # - use_embeddings=True (embeddings=真实): 传 input_ids + inputs_embeds, model 用
-        #   inputs_embeds (不查 embed_tokens), PLE 用 input_ids (不反查, 避开 bfloat16 == 精度问题)
-        if input_ids is not None:
-            kwargs["input_ids"] = input_ids
+        # qwen3 无 PLE: embeddings 提供时走纯 embeddings (inputs_embeds), 不传 input_ids
+        # → model forward `if inputs_embeds is None` 跳过 embed_tokens 查表, input_ids 不入图。
+        # - use_embeddings=False (embeddings=None): 传 input_ids, model 查 embed_tokens
+        # - use_embeddings=True  (embeddings=真实): 传 inputs_embeds, 不传 input_ids
         if embeddings is not None:
             kwargs["inputs_embeds"] = embeddings
+        else:
+            kwargs["input_ids"] = input_ids
 
         outputs = self.model(**kwargs)
         logits = outputs["logits"]

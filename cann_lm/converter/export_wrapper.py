@@ -24,6 +24,10 @@ class ExportWrapper(nn.Module):
     两种 embedding 模式：
     - use_embeddings=False: 传 input_ids, 图内含 embed_tokens (默认)
     - use_embeddings=True:  传 embeddings, 图内不含 embed_tokens (embedding 量化用)
+      纯 embeddings 模式 — input_ids 不作为图输入 (None placeholder)。
+      gemma4 因 PLE (Per-Layer Embedding) 的 embed_tokens_per_layer 查表也外置,
+      额外传 per_layer_token_identity (host 算好的 token identity); qwen3/qwen3_5
+      无 PLE, 仅传 embeddings。
     """
 
     def __init__(self, model: nn.Module, *, kv_cache_max_len: int = 2048, batch: int = 1):
@@ -50,6 +54,7 @@ class ExportWrapper(nn.Module):
         new_kv_cache_pos: torch.Tensor = None,
         embeddings: torch.Tensor | None = None,
         output_pos: torch.Tensor | None = None,
+        per_layer_token_identity: torch.Tensor | None = None,
     ):
         logits, past_kv_flat = self._drive_layers(
             input_ids,
@@ -58,6 +63,7 @@ class ExportWrapper(nn.Module):
             past_key_values,
             new_kv_cache_pos,
             embeddings,
+            per_layer_token_identity,
         )
         if output_pos is not None:
             logits = logits[:, output_pos, :]
@@ -71,8 +77,12 @@ class ExportWrapper(nn.Module):
         past_key_values: Any,
         new_kv_cache_pos: torch.Tensor,
         embeddings: torch.Tensor | None = None,
+        per_layer_token_identity: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, list[torch.Tensor]]:
-        """子类实现：统一 I/O → 原生 forward kwargs → 提取 logits + 展平 KV cache"""
+        """子类实现：统一 I/O → 原生 forward kwargs → 提取 logits + 展平 KV cache
+
+        per_layer_token_identity 仅 gemma4 (PLE) 使用; qwen3/qwen3_5 忽略。
+        """
         raise NotImplementedError
 
     def get_sample_inputs(self, seq_len: int = 128, use_embeddings: bool = False) -> tuple:
@@ -122,24 +132,24 @@ class ExportWrapper(nn.Module):
             past_key_values.append((k, v))
 
         if use_embeddings:
-            # use_embeddings=True: 图外查表 (embed_tokens 不在图内), 但 PLE 仍需 input_ids
-            # → 同时返回 input_ids + embeddings. _drive_layers 同时传两者给 model:
-            # model 用 inputs_embeds (不查 embed_tokens), PLE 用 input_ids (不反查),
-            # 避开 bfloat16 下 inputs_embeds == weight 反查的精度问题.
+            # 纯 embeddings 模式: input_ids 不作为图输入 (None placeholder)。
+            # host 用 embed_tokens 查表算出 embeddings (+ gemma4 的 per_layer_token_identity);
+            # model forward 收到 inputs_embeds → 跳过 embed_tokens(input_ids), input_ids 不入图。
             embeddings = self.model.model.embed_tokens(input_ids).detach()
+            extras = self._build_external_extras(input_ids)
             return (
-                input_ids,
+                None,
                 attention_mask,
                 position_ids,
                 past_key_values,
                 new_kv_cache_pos,
                 embeddings,
                 output_pos,
+                *extras,
             )
         else:
             # use_embeddings=False: 图内查表, embeddings=None.
-            # _drive_layers 判断 embeddings is None → 不传 inputs_embeds, 只传 input_ids,
-            # model 走 input_ids 路径 (embed_tokens 查表), PLE 有 input_ids 不反查.
+            # _drive_layers 判断 embeddings is None → 只传 input_ids, model 走 embed_tokens 查表。
             # torchair export_to_epair 已接受 None placeholder (不再 AssertionError).
             return (
                 input_ids,
@@ -162,6 +172,42 @@ class ExportWrapper(nn.Module):
         （sliding 层用 head_dim，full 层用 global_head_dim）。
         """
         return self.config.head_dim
+
+    def _build_external_extras(self, input_ids: torch.Tensor) -> tuple[torch.Tensor, ...]:
+        """纯 embeddings 模式下, 除 embeddings 外额外的 host 算好图输入 (默认空)。
+
+        子类若有除 embed_tokens 外的、依赖 input_ids 的查表 (如 gemma4 的 PLE
+        embed_tokens_per_layer), override 此方法返回 host 算好的张量, 使该查表
+        外置、input_ids 不入图。
+        """
+        return ()
+
+    def host_side_weight_names(self) -> list[str]:
+        """纯 embeddings 模式下, 需作为 host-side extra 打包的查表权重 state_dict FQN。
+
+        FQN 用 wrapper 层路径 (与 ep.graph_signature 一致): wrapper.model = ForCausalLM,
+        ForCausalLM.model = TextModel, TextModel.embed_tokens → 'model.model.embed_tokens.weight'。
+        这些权重因查表外置而不在图中 (pack_weights 不打包); 打包成独立的
+        host_weights_info.json + host_weights_*.bin 供 host 推理时查表。
+        默认 embed_tokens.weight (tie 时按 storage identity 自动去重 — 仍经 lm_head 留在图内)。
+        gemma4 等 override 追加模型特有的查表权重 (embed_tokens_per_layer)。
+        """
+        return ["model.model.embed_tokens.weight"]
+
+    def detach_externalized_lookups(self) -> None:
+        """Detach 外置的查表子模块, 使 torch.export 不 lift 它们 (纯 embeddings 模式)。
+
+        torch.export 会 lift 全部注册 Parameter (含未用的 embed_tokens), 导致 weights_*.bin
+        携带 OM 编译时本就剪掉的冗余查表权重。detach 子模块后, 它不进 state_dict → 不 lift
+        → weights_*.bin ≈ OM, 无冗余, C++ 也不用为它建 Data 节点。
+
+        必须在 get_sample_inputs (用它算 sample) + host 权重抽取 **之后**、torch.export **之前** 调用。
+        依赖: 纯 embeddings 下 forward 不访问这些子模块 (embed_tokens 被 inputs_embeds 跳过)。
+        gemma4 override 追加 embed_tokens_per_layer (PLE, 被实例方法替换跳过)。
+        """
+        text_model = self.model.model
+        if hasattr(text_model, "embed_tokens"):
+            del text_model.embed_tokens
 
     def make_sample_inputs(self, seq_len: int = 8, dtype: torch.dtype | None = None) -> tuple:
         """构造 ONNX 导出用示例输入（带预分配 KV buffer 的全量版）。

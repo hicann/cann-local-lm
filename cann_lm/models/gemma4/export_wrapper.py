@@ -47,6 +47,7 @@ class Gemma4ExportWrapper(ExportWrapper):
         past_key_values: list,
         new_kv_cache_pos: torch.Tensor,
         embeddings: torch.Tensor | None = None,
+        per_layer_token_identity: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, list[torch.Tensor]]:
         # None → [None]*N 触发模型内部创建 cache (N = 实际层数, 支持 --num-layers 截断)
         num_layers = self._num_layers()
@@ -60,8 +61,6 @@ class Gemma4ExportWrapper(ExportWrapper):
             kv_list = [(past_key_values[i], past_key_values[i + 1]) for i in range(0, len(past_key_values), 2)]
 
         # shared_kv_states: 传 None, model forward 内部新建 {} (store 层填, 共享层读, 单次 forward 内流转).
-        # 不持久化跨调用 (store 层 decode 时会用最新 cache_k 重填, 持久与否结果一致;
-        # 且持久化会触发 torch.export "tensor assigned during export" 报错).
         kwargs = {
             "attention_mask": attention_mask,
             "past_key_values": kv_list,
@@ -70,16 +69,27 @@ class Gemma4ExportWrapper(ExportWrapper):
             "new_kv_cache_pos": new_kv_cache_pos,
             "position_ids": position_ids,
         }
-        # 总是传 input_ids (PLE 用, 不反查); embeddings 非 None 时也传 inputs_embeds (图外查表)
-        # - use_embeddings=False (embeddings=None): 只传 input_ids, model 查 embed_tokens
-        # - use_embeddings=True (embeddings=真实): 传 input_ids + inputs_embeds, model 用
-        #   inputs_embeds (不查 embed_tokens), PLE 用 input_ids (不反查, 避开 bfloat16 == 精度问题)
-        if input_ids is not None:
-            kwargs["input_ids"] = input_ids
-        if embeddings is not None:
-            kwargs["inputs_embeds"] = embeddings
+        if embeddings is not None and per_layer_token_identity is not None:
+            # 纯 embeddings 模式: embed_tokens + embed_tokens_per_layer (PLE) 查表都外置到 host。
+            # 用实例方法替换让 model.forward 的 _compute_per_layer_inputs 直接返回 host 算好的
+            # per_layer_token_identity, 跳过 embed_tokens_per_layer(input_ids) 查表 + bf16 反查;
+            # model 仍走完整 forward (层循环/mask/rope/lm_head 全复用), 不改 modeling。
+            text_model = self.model.model
+            orig = text_model._compute_per_layer_inputs
+            text_model._compute_per_layer_inputs = lambda input_ids_, inputs_embeds_: per_layer_token_identity
+            try:
+                kwargs["inputs_embeds"] = embeddings
+                outputs = self.model(**kwargs)
+            finally:
+                text_model._compute_per_layer_inputs = orig
+        else:
+            # 非纯 embeddings (图内查表 embeddings=None, 或旧式双传): 保留原行为。
+            if input_ids is not None:
+                kwargs["input_ids"] = input_ids
+            if embeddings is not None:
+                kwargs["inputs_embeds"] = embeddings
+            outputs = self.model(**kwargs)
 
-        outputs = self.model(**kwargs)
         logits = outputs["logits"]
         updated_kv = outputs["past_key_values"]
 
@@ -91,3 +101,29 @@ class Gemma4ExportWrapper(ExportWrapper):
                     past_kv_flat.append(layer_kv[0])
                     past_kv_flat.append(layer_kv[1])
         return logits, past_kv_flat
+
+    def _build_external_extras(self, input_ids: torch.Tensor) -> tuple[torch.Tensor, ...]:
+        """gemma4 PLE: host 算好 per_layer_token_identity (embed_tokens_per_layer 查表结果),
+        外置 PLE 对 input_ids 的依赖。shape [batch, seq, num_hidden_layers, hidden_size_per_layer_input]。
+        num_hidden_layers 取 config 全量值 (per_layer_model_projection 按 full 维度建), 与
+        _compute_per_layer_inputs 一致; --num-layers 截断时多余切片在层循环里被忽略。
+        """
+        m = self.model.model
+        token_identity = m.embed_tokens_per_layer(input_ids).reshape(
+            *input_ids.shape, m.config.num_hidden_layers, m.hidden_size_per_layer_input
+        ).detach()
+        return (token_identity,)
+
+    def host_side_weight_names(self) -> list[str]:
+        """gemma4 纯 embeddings: embed_tokens + embed_tokens_per_layer (PLE) 查表都外置到 host。
+        FQN 用 wrapper 层路径 (与 ep.graph_signature 一致, 见基类文档)。
+        """
+        return ["model.model.embed_tokens.weight", "model.model.embed_tokens_per_layer.weight"]
+
+    def detach_externalized_lookups(self) -> None:
+        """gemma4: 额外 detach embed_tokens_per_layer (PLE 查表, 被实例方法替换跳过)。"""
+        text_model = self.model.model
+        if hasattr(text_model, "embed_tokens"):
+            del text_model.embed_tokens
+        if hasattr(text_model, "embed_tokens_per_layer"):
+            del text_model.embed_tokens_per_layer

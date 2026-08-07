@@ -21,6 +21,7 @@ _prepare_causal_mask attention_mask=None 用 total_len; prefill past=[None]*N。
   python verify_qwen3_epair.py --dynamic              # 动态 shape 导出
   python verify_qwen3_epair.py --sampling --no-vs-hf  # sampling, 不对比 HF
   python verify_qwen3_epair.py --prompt "Hello"
+  python verify_qwen3_epair.py --use-embeddings       # 纯 embeddings: ep 外置查表 vs wrapper/HF
 
 环境变量:
   source /home/developer/Ascend/cann/set_env.sh
@@ -112,19 +113,29 @@ def load_model(hf_path, dtype):
     return wrapper, config
 
 
-def export_for_seq_len(wrapper, seq_len):
-    sample_inputs = wrapper.get_sample_inputs(seq_len=seq_len)
+def export_for_seq_len(wrapper, seq_len, use_embeddings=False):
+    sample_inputs = wrapper.get_sample_inputs(seq_len=seq_len, use_embeddings=use_embeddings)
     ep = torch.export.export(wrapper, sample_inputs, strict=False)
     return ep, sample_inputs
 
 
 def generate_ep(ep, wrapper, sample_inputs, input_ids, num_steps, dtype,
-                sampling, temp, top_k, top_p, eos_set):
+                sampling, temp, top_k, top_p, eos_set, use_embeddings=False):
+    """ep 回环推理: prefill (ep.module) + decode (wrapper direct).
+
+    use_embeddings=True 时走纯 embeddings: host 用 embed_tokens 查表算 embeddings
+    喂给图 (prefill: traced_inputs[5]; decode: wrapper(None, ..., dec_emb, ...)),
+    input_ids 不入图。用于验证 embedding 外置后数值与 in-graph / HF 一致。
+    """
     module = ep.module()
     seq_len = input_ids.shape[1]
-
+    embed_tokens = wrapper.model.model.embed_tokens
     traced_inputs = list(sample_inputs)
-    traced_inputs[0] = input_ids
+    if use_embeddings:
+        # 纯 embeddings: host 查表喂 embeddings (pos 5); input_ids (pos 0) 保持 None
+        traced_inputs[5] = embed_tokens(input_ids).to(dtype).detach()
+    else:
+        traced_inputs[0] = input_ids
 
     with torch.no_grad():
         out = module(*traced_inputs)
@@ -149,7 +160,11 @@ def generate_ep(ep, wrapper, sample_inputs, input_ids, num_steps, dtype,
         pos_id = torch.tensor([[cached_len]], dtype=torch.long)
         new_pos = torch.tensor([cached_len], dtype=torch.long)
         with torch.no_grad():
-            logits, *kv_flat = wrapper(next_token, mask_dec, pos_id, kv, new_pos, None, None)
+            if use_embeddings:
+                dec_emb = embed_tokens(next_token).to(dtype).detach()
+                logits, *kv_flat = wrapper(None, mask_dec, pos_id, kv, new_pos, dec_emb, None)
+            else:
+                logits, *kv_flat = wrapper(next_token, mask_dec, pos_id, kv, new_pos, None, None)
         kv = reconstruct_kv(kv_flat)
     return tokens
 
@@ -280,6 +295,9 @@ def main():
     parser.add_argument("--temp", type=float, default=1.0)
     parser.add_argument("--top-k", type=int, default=64)
     parser.add_argument("--top-p", type=float, default=0.95)
+    parser.add_argument("--use-embeddings", action="store_true",
+                        help="纯 embeddings 导出: input_ids 不入图, host 用 embed_tokens 查表喂 embeddings。"
+                             "对比 ep(embeddings) vs wrapper(in-graph) vs HF, 验证 embedding 外置数值一致。")
     args = parser.parse_args()
 
     dtype = torch.bfloat16
@@ -298,7 +316,8 @@ def main():
     wrapper, config = load_model(HF_PATH, dtype)
     print(f"  params: {sum(p.numel() for p in wrapper.model.parameters()):,}")
     print(f"  Layers: {config.num_hidden_layers}")
-    print(f"  mode: {args.mode}, sampling: {sampling}, vs_hf: {args.vs_hf}")
+    print(f"  mode: {args.mode}, sampling: {sampling}, vs_hf: {args.vs_hf}, "
+          f"use_embeddings: {args.use_embeddings}")
 
     eos_set = get_eos_set(config)
 
@@ -328,25 +347,28 @@ def main():
         tokens_ep = None
         if args.mode == "ep":
             if seq_len not in ep_cache:
-                print(f"  Exporting for seq_len={seq_len}...")
-                ep_cache[seq_len] = export_for_seq_len(wrapper, seq_len)
+                print(f"  Exporting for seq_len={seq_len} "
+                      f"(use_embeddings={args.use_embeddings})...")
+                ep_cache[seq_len] = export_for_seq_len(wrapper, seq_len, args.use_embeddings)
             ep, sample_inputs = ep_cache[seq_len]
             print(f"  nodes: {len(ep.graph.nodes)}")
             tokens_ep = generate_ep(
                 ep, wrapper, sample_inputs, input_ids, args.num_steps,
                 dtype, sampling, args.temp, args.top_k, args.top_p, eos_set,
+                use_embeddings=args.use_embeddings,
             )
             text_ep = tokenizer.decode(tokens_ep, skip_special_tokens=True)
-            print(f"\n  EP (ep.module prefill + wrapper decode): \"{text_ep}\"")
+            tag = "EP-EMB" if args.use_embeddings else "EP"
+            print(f"\n  {tag} (ep.module prefill + wrapper decode): \"{text_ep}\"")
             tokens_w = generate_wrapper(
                 wrapper, input_ids, args.num_steps,
                 dtype, sampling, args.temp, args.top_k, args.top_p, eos_set,
             )
             text_w = tokenizer.decode(tokens_w, skip_special_tokens=True)
-            print(f"  WR (wrapper direct):                   \"{text_w}\"")
+            print(f"  WR (wrapper direct, in-graph):        \"{text_w}\"")
             match = tokens_ep == tokens_w
             all_pass = all_pass and match
-            print(f"\n  EP==WR: {match}")
+            print(f"\n  {tag}==WR: {match}")
         else:
             tokens_w = generate_wrapper(
                 wrapper, input_ids, args.num_steps,
@@ -363,7 +385,8 @@ def main():
             text_hf = tokenizer.decode(tokens_hf, skip_special_tokens=True)
             print(f"  HF:                                     \"{text_hf}\"")
             if args.mode == "ep":
-                print(f"  HF==EP: {tokens_hf == tokens_ep}   HF==WR: {tokens_hf == tokens_w}")
+                ep_tag = "EP-EMB" if args.use_embeddings else "EP"
+                print(f"  HF=={ep_tag}: {tokens_hf == tokens_ep}   HF==WR: {tokens_hf == tokens_w}")
                 all_pass = all_pass and (tokens_hf == tokens_ep)
             else:
                 print(f"  HF==WR: {tokens_hf == tokens_w}")
@@ -371,10 +394,14 @@ def main():
 
     print(f"\n{'='*60}")
     print(f"[3/3] Summary: mode={args.mode}, sampling={sampling}, "
-          f"steps={args.num_steps}, vs_hf={args.vs_hf}")
+          f"steps={args.num_steps}, vs_hf={args.vs_hf}, use_embeddings={args.use_embeddings}")
     print(f"{'='*60}")
     if all_pass:
-        tag = "ep 回环 vs wrapper 一致" if args.mode == "ep" else "wrapper 推理完成"
+        if args.mode == "ep":
+            tag = "ep-embeddings 回环" if args.use_embeddings else "ep 回环"
+            tag += " vs wrapper 一致"
+        else:
+            tag = "wrapper 推理完成"
         if args.vs_hf:
             tag += " + HF 一致"
         print(f"[PASS] {tag}")

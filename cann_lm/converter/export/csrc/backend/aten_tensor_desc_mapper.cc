@@ -84,6 +84,27 @@ ge::DataType AtenTensorDescMapper::MapGeDtypeString(const std::string &dtype, Va
   if (dtype == "DT_BOOL") {
     return ge::DT_BOOL;
   }
+  if (dtype == "DT_UINT32") {
+    return ge::DT_UINT32;
+  }
+  if (dtype == "DT_UINT64") {
+    return ge::DT_UINT64;
+  }
+  if (dtype == "DT_INT4") {
+    return ge::DT_INT4;
+  }
+  if (dtype == "DT_FLOAT8_E5M2") {
+    return ge::DT_FLOAT8_E5M2;
+  }
+  if (dtype == "DT_FLOAT8_E4M3FN") {
+    return ge::DT_FLOAT8_E4M3FN;
+  }
+  if (dtype == "DT_FLOAT8_E8M0") {
+    return ge::DT_FLOAT8_E8M0;
+  }
+  if (dtype == "DT_FLOAT4_E2M1") {
+    return ge::DT_FLOAT4_E2M1;
+  }
   AddError(result, "UNSUPPORTED_GE_DTYPE", "Unsupported GE dtype string", context + ":" + dtype);
   return ge::DT_UNDEFINED;
 }

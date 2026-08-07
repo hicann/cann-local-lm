@@ -592,4 +592,18 @@ REG_OP(DynamicQuant)
     .ATTR(dst_type, Int, DT_INT8)
     .OP_END_FACTORY_REG(DynamicQuant)
 
+// Bitcast: reinterpret tensor bytes as another dtype (e.g. int8 storage -> DT_INT4
+//   for quantized weight feeding QuantBatchMatmulV4 x2). Per official proto
+//   (opp/built-in/op_graph/inc/transformation_ops.h).
+REG_OP(Bitcast)
+    .INPUT(x, TensorType({DT_BOOL, DT_FLOAT16, DT_FLOAT, DT_INT4, DT_INT8, DT_INT32, DT_UINT32, DT_UINT8,
+                          DT_INT64, DT_UINT64, DT_INT16, DT_UINT16, DT_DOUBLE, DT_COMPLEX64,
+                          DT_COMPLEX128, DT_QINT8, DT_QUINT8, DT_QINT16, DT_QUINT16, DT_QINT32}))
+    .OUTPUT(y, TensorType({DT_BOOL, DT_FLOAT16, DT_FLOAT, DT_INT4, DT_INT8, DT_INT32, DT_UINT32, DT_UINT8,
+                           DT_INT64, DT_UINT64, DT_INT16, DT_UINT16, DT_DOUBLE, DT_COMPLEX64,
+                           DT_COMPLEX128, DT_QINT8, DT_QUINT8, DT_QINT16, DT_QUINT16, DT_QINT32}))
+    .REQUIRED_ATTR(type, Type)
+    .ATTR(keep_dim, Bool, false)
+    .OP_END_FACTORY_REG(Bitcast)
+
 }  // namespace ge

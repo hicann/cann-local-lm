@@ -36,6 +36,19 @@ class ExportWrapper(nn.Module):
         self.config = model.config
         self.kv_cache_max_len = kv_cache_max_len
         self.batch = batch
+        self._model_dtype = next(model.parameters()).dtype
+        # quant-embeddings 模式: {fqn: (int8_weight, per_channel_scale)} by set_quant_embeddings
+        self._quant_embeddings: dict[str, tuple[torch.Tensor, torch.Tensor]] = {}
+
+    def set_quant_embeddings(self, quant: dict[str, tuple[torch.Tensor, torch.Tensor]]) -> None:
+        """注入 host 查表的 int8 + per-channel scale (quant-embeddings 模式)。
+
+        key = state_dict FQN (如 'model.model.embed_tokens.weight')；value =
+        (int8_weight [vocab, hidden], scale [vocab])，来自 dopt Quant_Embed_MinMax
+        产物经 materialize_int8_per_channel。get_sample_inputs(quant_embeddings=True)
+        用它 gather int8+scale 喂图；图入口 dequant 回 float (见 forward)。
+        """
+        self._quant_embeddings = dict(quant)
 
     def _num_layers(self) -> int:
         """实际导出层数(支持 --num-layers 截断).
@@ -55,7 +68,14 @@ class ExportWrapper(nn.Module):
         embeddings: torch.Tensor | None = None,
         output_pos: torch.Tensor | None = None,
         per_layer_token_identity: torch.Tensor | None = None,
+        embeddings_scale: torch.Tensor | None = None,
     ):
+        # quant-embeddings: int8 embeddings + per-token (gathered per-vocab) scale
+        # -> float (model dtype)。signed, 无 zero-point (dopt offset=0)。
+        # dequant 在 base forward 做, 子类 _drive_layers 收 float embeddings, 无感。
+        if embeddings is not None and embeddings_scale is not None:
+            dt = self._model_dtype
+            embeddings = embeddings.to(dt) * embeddings_scale.to(dt).unsqueeze(-1)
         logits, past_kv_flat = self._drive_layers(
             input_ids,
             attention_mask,
@@ -85,7 +105,8 @@ class ExportWrapper(nn.Module):
         """
         raise NotImplementedError
 
-    def get_sample_inputs(self, seq_len: int = 128, use_embeddings: bool = False) -> tuple:
+    def get_sample_inputs(self, seq_len: int = 128, use_embeddings: bool = False,
+                          quant_embeddings: bool = False) -> tuple:
         """构造导出用示例输入 (scatter-write 模式)
 
         预分配零 KV buffer [batch, heads, kv_cache_max_len, head_dim] +
@@ -132,11 +153,29 @@ class ExportWrapper(nn.Module):
             past_key_values.append((k, v))
 
         if use_embeddings:
-            # 纯 embeddings 模式: input_ids 不作为图输入 (None placeholder)。
+            extras = self._build_external_extras(input_ids)
+            ple = extras[0] if extras else None  # per_layer_token_identity (gemma4 PLE; qwen3=None)
+            if quant_embeddings:
+                # int8 per-channel: host gather int8_weight[input_ids] + scale[input_ids]
+                # 图输入 int8 [b,s,hidden] + scale [b,s]；图入口 dequant (base forward)
+                q_w, q_s = self._quant_embeddings["model.model.embed_tokens.weight"]
+                emb_q = q_w[input_ids]            # int8 [b, s, hidden]
+                emb_scale = q_s[input_ids]         # [b, s]
+                return (
+                    None,
+                    attention_mask,
+                    position_ids,
+                    past_key_values,
+                    new_kv_cache_pos,
+                    emb_q,
+                    output_pos,
+                    ple,
+                    emb_scale,
+                )
+            # 纯 embeddings (float): input_ids 不作为图输入 (None placeholder)。
             # host 用 embed_tokens 查表算出 embeddings (+ gemma4 的 per_layer_token_identity);
             # model forward 收到 inputs_embeds → 跳过 embed_tokens(input_ids), input_ids 不入图。
             embeddings = self.model.model.embed_tokens(input_ids).detach()
-            extras = self._build_external_extras(input_ids)
             return (
                 None,
                 attention_mask,

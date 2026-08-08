@@ -52,6 +52,8 @@ def convert(
     quant_path: str | None = None,
     quant_group_size: int = 256,
     quant_act: str = "w4a8",
+    quant_embeddings: bool = False,
+    no_quant_linears: bool = False,
 ) -> None:
     """程序化入口：HF 模型 → epair
 
@@ -84,7 +86,7 @@ def convert(
         text_model.layers = text_model.layers[:num_layers]
         print(f"      Truncated to first {num_layers}/{total} layers (config.num_hidden_layers unchanged)")
 
-    if quant_path:
+    if quant_path and not no_quant_linears:
         from cann_lm.converter.quant import swap_to_quant_linear_from_dopt
         act_quant = quant_act == "w4a8"
         print(f"      Quant: port dopt GPTQ from {quant_path} (group={quant_group_size}, "
@@ -95,6 +97,21 @@ def convert(
         )
         artifact.quant_info = info
         print(f"      Quantized {info['n_quantized']} linears (skipped {info['n_skipped_no_dopt_key']})")
+    elif no_quant_linears:
+        print(f"      [skip] Linear W4A8 swap (--no-quant-linears); dopt 仅用于 embed scale")
+
+    embed_quant = None
+    if quant_embeddings:
+        from cann_lm.converter.quant import swap_embeddings_from_dopt, load_dopt_state_dict
+        if not quant_path:
+            raise ValueError("--quant-embeddings 需 --quant-path (dopt 产物, 含 embed scale)")
+        print(f"      Quant-embeddings: port dopt Quant_Embed_MinMax from {quant_path}"
+              " -> materialize int8 per-channel (signed)")
+        sd = load_dopt_state_dict(quant_path)
+        embed_quant = swap_embeddings_from_dopt(sd, artifact.model)
+        if not embed_quant:
+            raise ValueError("dopt 产物不含 embed_tokens scale; 需重跑 dopt 加 Quant_Embed_MinMax 策略")
+        print(f"      Embedding int8: {list(embed_quant)}")
 
     print(f"[2/3] Saving epair to {output_dir}")
     if mode == "prefill-decode":
@@ -106,6 +123,8 @@ def convert(
             kv_cache_max_len=kv_cache_max_len,
             prefill_seq_len=prefill_seq_len,
             use_embeddings=use_embeddings,
+            quant_embeddings=quant_embeddings,
+            embed_quant=embed_quant,
         )
     else:
         print(f"      single graph, seq_len={sample_seq_len}")
@@ -116,6 +135,8 @@ def convert(
             kv_cache_max_len=kv_cache_max_len,
             sample_seq_len=sample_seq_len,
             use_embeddings=use_embeddings,
+            quant_embeddings=quant_embeddings,
+            embed_quant=embed_quant,
         )
 
     print(f"[3/3] Verifying output")
@@ -173,6 +194,13 @@ def parse_args() -> argparse.Namespace:
                         help="K-axis group size (default 256, dopt Quant_act_weight_eco)")
     parser.add_argument("--quant-act", default="w4a8", choices=["w4a8", "w4a16"],
                         help="w4a8 (act int8 via npu_dynamic_quant) or w4a16 (weight-only)")
+    parser.add_argument("--quant-embeddings", action="store_true",
+                        help="Quantize embedding (embed_tokens / gemma4 embed_tokens_per_layer) to "
+                             "int8 per-channel (dopt Quant_Embed_MinMax). Host gathers int8+scale, "
+                             "graph dequant at entry. Requires --quant-path + --use-embeddings.")
+    parser.add_argument("--no-quant-linears", action="store_true",
+                        help="Skip Linear W4A8 swap even with --quant-path (isolate embed quant; "
+                             "dopt product used only for embed scale).")
     return parser.parse_args()
 
 
@@ -193,6 +221,8 @@ def main() -> None:
         quant_path=args.quant_path,
         quant_group_size=args.quant_group_size,
         quant_act=args.quant_act,
+        quant_embeddings=args.quant_embeddings,
+        no_quant_linears=args.no_quant_linears,
     )
 
 

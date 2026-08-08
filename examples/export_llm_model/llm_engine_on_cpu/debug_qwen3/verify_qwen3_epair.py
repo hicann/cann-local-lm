@@ -52,6 +52,7 @@ from cann_lm.converter.export.epair_utils import consolidated_weights_save
 from transformers import AutoTokenizer
 
 HF_PATH = "/mnt/workspace/data/models/qwen3-0.6B"
+DOPT_PATH = "/mnt/workspace/project/CANN-LM_5883/cann_lm/converter/quant/quant_output/model.safetensors"
 PAD_TOKEN_ID = 0
 KV_CACHE_MAX_LEN = 2048
 DYN_OUT_DIR = Path(__file__).resolve().parent / "generate" / "qwen3_dynamic"
@@ -113,26 +114,33 @@ def load_model(hf_path, dtype):
     return wrapper, config
 
 
-def export_for_seq_len(wrapper, seq_len, use_embeddings=False):
-    sample_inputs = wrapper.get_sample_inputs(seq_len=seq_len, use_embeddings=use_embeddings)
+def export_for_seq_len(wrapper, seq_len, use_embeddings=False, quant_embeddings=False):
+    sample_inputs = wrapper.get_sample_inputs(
+        seq_len=seq_len, use_embeddings=use_embeddings, quant_embeddings=quant_embeddings)
     ep = torch.export.export(wrapper, sample_inputs, strict=False)
     return ep, sample_inputs
 
 
 def generate_ep(ep, wrapper, sample_inputs, input_ids, num_steps, dtype,
-                sampling, temp, top_k, top_p, eos_set, use_embeddings=False):
+                sampling, temp, top_k, top_p, eos_set, use_embeddings=False,
+                quant_embeddings=False):
     """ep 回环推理: prefill (ep.module) + decode (wrapper direct).
 
-    use_embeddings=True 时走纯 embeddings: host 用 embed_tokens 查表算 embeddings
-    喂给图 (prefill: traced_inputs[5]; decode: wrapper(None, ..., dec_emb, ...)),
-    input_ids 不入图。用于验证 embedding 外置后数值与 in-graph / HF 一致。
+    use_embeddings=True: 纯 embeddings (host 查表喂 float embeddings)。
+    quant_embeddings=True: int8 per-channel (host gather int8+scale, 图入口 dequant)。
     """
     module = ep.module()
     seq_len = input_ids.shape[1]
     embed_tokens = wrapper.model.model.embed_tokens
+    q_w = q_s = None
+    if quant_embeddings:
+        q_w, q_s = wrapper._quant_embeddings["model.model.embed_tokens.weight"]
     traced_inputs = list(sample_inputs)
-    if use_embeddings:
-        # 纯 embeddings: host 查表喂 embeddings (pos 5); input_ids (pos 0) 保持 None
+    if quant_embeddings:
+        # int8+scale: host gather int8_weight[input_ids] + scale[input_ids]
+        traced_inputs[5] = q_w[input_ids]            # int8 [b,s,hidden]
+        traced_inputs[8] = q_s[input_ids]            # [b,s]
+    elif use_embeddings:
         traced_inputs[5] = embed_tokens(input_ids).to(dtype).detach()
     else:
         traced_inputs[0] = input_ids
@@ -160,7 +168,12 @@ def generate_ep(ep, wrapper, sample_inputs, input_ids, num_steps, dtype,
         pos_id = torch.tensor([[cached_len]], dtype=torch.long)
         new_pos = torch.tensor([cached_len], dtype=torch.long)
         with torch.no_grad():
-            if use_embeddings:
+            if quant_embeddings:
+                dec_q = q_w[next_token]
+                dec_s = q_s[next_token]
+                logits, *kv_flat = wrapper(None, mask_dec, pos_id, kv, new_pos,
+                                           dec_q, None, None, dec_s)
+            elif use_embeddings:
                 dec_emb = embed_tokens(next_token).to(dtype).detach()
                 logits, *kv_flat = wrapper(None, mask_dec, pos_id, kv, new_pos, dec_emb, None)
             else:
@@ -298,6 +311,9 @@ def main():
     parser.add_argument("--use-embeddings", action="store_true",
                         help="纯 embeddings 导出: input_ids 不入图, host 用 embed_tokens 查表喂 embeddings。"
                              "对比 ep(embeddings) vs wrapper(in-graph) vs HF, 验证 embedding 外置数值一致。")
+    parser.add_argument("--quant-embeddings", action="store_true",
+                        help="embedding int8 per-channel 量化 (dopt Quant_Embed_MinMax): host gather "
+                             "int8+scale, 图入口 dequant。验证 int8 embedding 精度 vs HF。需 dopt 产物。")
     args = parser.parse_args()
 
     dtype = torch.bfloat16
@@ -317,7 +333,18 @@ def main():
     print(f"  params: {sum(p.numel() for p in wrapper.model.parameters()):,}")
     print(f"  Layers: {config.num_hidden_layers}")
     print(f"  mode: {args.mode}, sampling: {sampling}, vs_hf: {args.vs_hf}, "
-          f"use_embeddings: {args.use_embeddings}")
+          f"use_embeddings: {args.use_embeddings}, quant_embeddings: {args.quant_embeddings}")
+
+    if args.quant_embeddings:
+        from safetensors import safe_open
+        from cann_lm.converter.quant.materialize import materialize_int8_per_channel
+        print(f"  Loading dopt embed int8+scale from {DOPT_PATH}")
+        with safe_open(DOPT_PATH, "pt") as sf:
+            int8_w, scale = materialize_int8_per_channel(
+                sf.get_tensor("model.embed_tokens.weight"),
+                sf.get_tensor("model.embed_tokens.quant_op.weight_quantizer.s"))
+        wrapper.set_quant_embeddings({"model.model.embed_tokens.weight": (int8_w, scale)})
+        print(f"  embed int8: {list(int8_w.shape)} + scale {list(scale.shape)}")
 
     eos_set = get_eos_set(config)
 
@@ -349,16 +376,18 @@ def main():
             if seq_len not in ep_cache:
                 print(f"  Exporting for seq_len={seq_len} "
                       f"(use_embeddings={args.use_embeddings})...")
-                ep_cache[seq_len] = export_for_seq_len(wrapper, seq_len, args.use_embeddings)
+                ep_cache[seq_len] = export_for_seq_len(
+                    wrapper, seq_len, args.use_embeddings, args.quant_embeddings)
             ep, sample_inputs = ep_cache[seq_len]
             print(f"  nodes: {len(ep.graph.nodes)}")
             tokens_ep = generate_ep(
                 ep, wrapper, sample_inputs, input_ids, args.num_steps,
                 dtype, sampling, args.temp, args.top_k, args.top_p, eos_set,
                 use_embeddings=args.use_embeddings,
+                quant_embeddings=args.quant_embeddings,
             )
             text_ep = tokenizer.decode(tokens_ep, skip_special_tokens=True)
-            tag = "EP-EMB" if args.use_embeddings else "EP"
+            tag = "EP-QEMB" if args.quant_embeddings else ("EP-EMB" if args.use_embeddings else "EP")
             print(f"\n  {tag} (ep.module prefill + wrapper decode): \"{text_ep}\"")
             tokens_w = generate_wrapper(
                 wrapper, input_ids, args.num_steps,
@@ -385,7 +414,8 @@ def main():
             text_hf = tokenizer.decode(tokens_hf, skip_special_tokens=True)
             print(f"  HF:                                     \"{text_hf}\"")
             if args.mode == "ep":
-                ep_tag = "EP-EMB" if args.use_embeddings else "EP"
+                ep_tag = ("EP-QEMB" if args.quant_embeddings
+                          else ("EP-EMB" if args.use_embeddings else "EP"))
                 print(f"  HF=={ep_tag}: {tokens_hf == tokens_ep}   HF==WR: {tokens_hf == tokens_w}")
                 all_pass = all_pass and (tokens_hf == tokens_ep)
             else:

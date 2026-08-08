@@ -101,3 +101,36 @@ def materialize_int4_with_scale(
     else:
         q = q.clamp(0, 2 * qmax + 1)
     return q.to(torch.int8), scale.float()
+
+
+def materialize_int8_per_channel(
+    weight: torch.Tensor,
+    scale: torch.Tensor,
+    signed: bool = True,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Materialize an embedding weight into (int8 signed, per-channel scale).
+
+    8-bit per-row (per-vocab-channel) symmetric quantization, matching dopt
+    ``Quant_Embed_MinMax`` (weight_algo=min_max, bit=8, per_channel=True, sym).
+
+    Args:
+        weight: ``[vocab, hidden]`` (fp, dopt fakequant = q*scale stored as float).
+        scale: ``[vocab]`` (fp32, per-vocab-row scale from dopt
+            ``quant_op.weight_quantizer.s``). dopt offset=0 (sym).
+        signed: True -> signed ``[-128, 127]`` (dequant = q*scale, no zero-point).
+
+    Returns:
+        (weight_q: int8 ``[vocab, hidden]``, scale: fp32 ``[vocab]``).
+        dopt weight is fakequant = q*scale, so round(w/scale[:,None]) = q exactly
+        (maxdiff=0 reconstruction); clamp guards against fp drift.
+    """
+    w = weight.detach().float()
+    vocab, hidden = w.shape
+    if scale.shape != (vocab,):
+        raise ValueError(f"scale shape {tuple(scale.shape)} != ({vocab},)")
+    # signed int8 range [-128, 127]; dopt embed uses offset=0 sym, q can hit -128
+    qmin, qmax = (-128, 127) if signed else (0, 255)
+    s = scale.float().unsqueeze(1)  # [vocab, 1] broadcast over hidden
+    q = torch.round(w / s)
+    q = q.clamp(qmin, qmax)
+    return q.to(torch.int8), scale.float()

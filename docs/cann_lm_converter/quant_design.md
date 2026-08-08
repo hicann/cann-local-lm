@@ -14,6 +14,7 @@
 - [已有 dopt_lm 框架盘点](#已有-dopt_lm-框架盘点)
 - [量化策略](#量化策略)
 - [端到端流程](#端到端流程)
+- [一步化流程（GPTQ + 导出内存链路，待实现）](#一步化流程gptq--导出内存链路待实现)
 - [待实现模块](#待实现模块)
 - [int4 物化的 CANN 约定（已定：V4 整数 int4）](#int4-物化的-cann-约定已定v4-整数-int4-per-group)
 - [方案 A — 自研 quant_matmul_s8s4 算子规格](#方案-a--自研-quant_matmul_s8s4-算子规格)
@@ -168,6 +169,54 @@ converter --quant
 - `ge_graph_builder.PreparePlaceholders` 通用喂权重常量到任意算子输入（`ReadTensorData`→Const 节点）→ `QuantBatchMatmulV4` 的 `x2`/`x2_scale`/`x2_offset` 自动喂入。
 - `ge_weight_loader` 支持 int8/uint8/fp32 等 dtype（`ElementSizeForPt2Dtype` / `Pt2DtypeFromGeString`）。
 - **缺口**：`examples/export_llm_model/reg_register.h` 未注册 `QuantBatchMatmulV4`（只有 `MatMul`/`BatchMatMul`）→ OM 编译报 `UNMAPPED_OPERATOR`。见 [待实现模块](#待实现模块) Track 0。
+
+---
+
+## 一步化流程（GPTQ + 导出内存链路，待实现）
+
+> 现状两步：① dopt GPTQ 跑在 HF `AutoModelForCausalLM`（NPU），产出磁盘 state_dict；② converter 载 cann_lm 模型，按层名 port 该 state_dict → 物化 → swap → 导出。两步靠磁盘桥接。
+>
+> 根因：dopt GPTQ 依赖 transformers `AutoModelForCausalLM`（`weight_quant_loop` 用 `model.model.layers`/Catcher/hooks，写死 HF 模型结构），无法直接跑在 cann_lm 自定义模型上；故 GPTQ（HF 模型）与导出（cann_lm 模型）是两个模型实例，磁盘 state_dict 作桥。
+
+### 目标命令（一条）
+
+```bash
+DEVICE=npu python cann-lm-converter.py \
+  --hf-path /path/to/hf --output-dir /path/to/out --dtype float16 \
+  --quant-gptq --quant-group-size 256
+# 进程内：GPTQ(NPU) → 内存 dopt_sd → swap → export，无磁盘往返
+```
+
+`--quant-path`（消费磁盘产物，CPU-only 机用）保留作兜底，两者并存。
+
+### 三处改动点
+
+| # | 文件:行 | 改动 |
+|---|---|---|
+| 1 | `dopt_lm/opt_funcs/eco_stage/train.py:524-571` | 把 `ptq_quant_pipline` 的"产出 state_dict"与"落盘"拆开：新增 `ptq_quant_produce_state_dict(base_model, config) -> dict`（GPTQ + swap-to-QLinear + 注入 group_scale，**返回** `dopt_model.state_dict()`，不落盘）；`ptq_quant_pipline` 改为调它再落盘 |
+| 2 | `cann_lm/converter/quant/swap.py:145-216` | `swap_to_quant_linear_from_dopt` 拆成：`swap_to_quant_linear_from_sd(model, sd: dict, ...)`（收内存 dict）+ `swap_to_quant_linear_from_dopt(model, dopt_path, ...)`（前者 load 后转发）。`swap_embeddings_from_dopt` 已直接收 sd，无需改 |
+| 3 | `cann-lm-converter.py:89-99,189` | `convert()` 加 `quant_gptq` 分支（与 `quant_path` 并列）：调 `ptq_quant_produce_state_dict(hf_path, dopt_cfg)` → `swap_to_quant_linear_from_sd(...)`；CLI 加 `--quant-gptq`（store_true）+ 可选 `--dopt-config`/`--dopt-optimize-config`（默认 `cann_lm/converter/quant/dopt_config.json`+`config.yaml`） |
+
+省内存变体（#1 可选优化）：绕过 `dopt_model` 重建，直接从 `weight_quant_loop` 返回的 `(quantizers, weight_q_weight)` 拼 sd——`{name}.weight` 已在 `weight_q_weight`，`{name}.quant_op.weight_quantizer.s = quantizers[name].group_scale.flatten()`，bit/unsigned_quant/offset 手填。省一份 HF 模型拷贝，但需在 converter 侧复制 `weight_q_params_adapter_into_dopt` 的 key 格式。
+
+### 必须处理的两个细节
+
+1. **calibration 路径**：`config.yaml` 的 `train_files: ["calibration.json"]` 相对 CWD。converter 从项目根跑时需把 calibration 绝对化，或 `chdir` 到 `cann_lm/converter/quant/` 再调 GPTQ（否则 `get_loaders` 找不到文件）。
+2. **环境**：converter 进程须 `DEVICE=npu` + `torch_npu` 可 import（GPTQ 段需要）。dopt 内部已自行做 layer CPU↔NPU 搬移，export 段仍在 CPU（`load_model` 默认 `device="cpu"`）。
+
+### 内存权衡
+
+进程内同时持有：cann_lm 模型（export）+ dopt 内部 2 份 HF 模型拷贝（GPTQ + dopt_model）+ 提取出的 sd dict ≈ **3–4× 模型大小**峰值。0.6B 无虞；7B+ 需 `del dopt_model; gc.collect()` 顺序释放，或退回 `--quant-path` 两步。省内存变体可降到 ~2×。
+
+### 兜底（不改代码）
+
+shell 一条龙（仍两步、有磁盘往返，但一条命令）：
+```bash
+DEVICE=npu python -m dopt_lm.opt_main --model-path HF \
+  --dopt-config .../dopt_config.json --optimize-config .../config.yaml \
+  --output-dir .../quant_output --hf_type_save && \
+python cann-lm-converter.py --hf-path HF --output-dir OUT --quant-path .../quant_output
+```
 
 ---
 

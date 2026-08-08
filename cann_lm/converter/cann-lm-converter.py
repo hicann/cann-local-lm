@@ -46,7 +46,7 @@ def convert(
     kv_cache_max_len: int = 2048,
     sample_seq_len: int = 128,
     use_embeddings: bool = False,
-    mode: str = "single",
+    mode: str = "prefill-decode",
     prefill_seq_len: int = 128,
     num_layers: int | None = None,
     quant_path: str | None = None,

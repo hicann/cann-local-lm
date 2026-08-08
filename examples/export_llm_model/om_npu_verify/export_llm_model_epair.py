@@ -18,7 +18,7 @@ from pathlib import Path
 
 import torch
 
-_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+_PROJECT_ROOT = Path(__file__).resolve().parents[3]
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
@@ -90,7 +90,14 @@ def export_model(
         # 纯 embeddings: 走 wrapper.get_sample_inputs (含 gemma4 PLE 的 per_layer_token_identity)
         sample_inputs = wrapper.get_sample_inputs(seq_len=seq_len, use_embeddings=True)
     else:
-        sample_inputs = _build_simple_sample_inputs(wrapper, seq_len)
+        # 非 embeddings: 同样走 wrapper.get_sample_inputs (适配各 wrapper 自身 forward 签名,
+        # 如 gemma4 新 wrapper 的 mask_full/mask_sliding 10 参; 旧 _build_simple_sample_inputs
+        # 7 参仅适配 base forward, 对 scatter+host-mask 的 wrapper 不兼容)
+        sample_inputs = wrapper.get_sample_inputs(seq_len=seq_len, use_embeddings=False)
+    # 纯 embeddings: detach 外置查表子模块 (embed_tokens / gemma4 embed_tokens_per_layer),
+    # 使 torch.export 不 lift 它们 → weights_*.bin 不含冗余查表权重 (对齐 saver.py)
+    if use_embeddings:
+        wrapper.detach_externalized_lookups()
 
     print(f"[5/5] Exporting to epair (seq_len={seq_len})")
     exported = torch.export.export(wrapper, sample_inputs, strict=False)

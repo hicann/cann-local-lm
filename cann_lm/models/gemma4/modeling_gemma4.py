@@ -54,12 +54,19 @@ def apply_rotary_pos_emb(
 
 
 def repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
-    """Expand KV heads for GQA: (b, kv_heads, s, d) -> (b, heads, s, d)."""
+    """Expand KV heads for GQA: (b, kv_heads, s, d) -> (b, heads, s, d).
+
+    用 reshape+cat+view (npu_tuned 方案) 替代 expand, 使导出图里是 ConcatV2 而非 BroadcastTo。
+    先 reshape 到 [b*kv, 1, s, d] (kv 并入 dim0, dim1 留 size-1 给 cat), 再 cat([x]*n_rep, dim=1)
+    物化 n_rep 份, 最后 view 回 [b, kv*n_rep, s, d]。头序 kv_head-major (kv 外层, n_rep 内层),
+    与 expand+reshape 逐元素一致; naive cat([x]*n_rep, dim=1) 是 rep-major 会与 q 错位, 不可用。
+    """
     batch, num_kv_heads, slen, head_dim = hidden_states.shape
     if n_rep == 1:
         return hidden_states
-    hidden_states = hidden_states[:, :, None, :, :].expand(batch, num_kv_heads, n_rep, slen, head_dim)
-    return hidden_states.reshape(batch, num_kv_heads * n_rep, slen, head_dim)
+    hidden_states = hidden_states.reshape(batch * num_kv_heads, 1, slen, head_dim)
+    hidden_states = torch.cat([hidden_states] * n_rep, dim=1)
+    return hidden_states.view(batch, num_kv_heads * n_rep, slen, head_dim)
 
 
 def eager_attention_forward(
@@ -168,6 +175,9 @@ class Gemma4TextRotaryEmbedding(nn.Module):
         self.layer_types = set(config.layer_types)
         self._rope_configs: dict[str, dict] = {}
 
+        dev = device if device is not None else torch.device("cpu")
+        max_seq = config.max_position_embeddings
+
         for layer_type in self.layer_types:
             rope_params = config.rope_parameters.get(layer_type)
             if rope_params is None:
@@ -188,6 +198,16 @@ class Gemma4TextRotaryEmbedding(nn.Module):
                 "partial_rotary_factor": partial_rotary_factor,
                 "head_dim": head_dim,
             }
+
+            # 预缓存 cos/sin 表 (init 算: inv_freq + outer + cat + cos/sin, 全在 init, 不进图)。
+            # forward 只 Gather (cos_cached[position_ids]), 消除 Pow/Neg/Cos/Sin 动态算子
+            # (npu_tuned 2.3: 预缓存表 + Gather over 常量表)。
+            inv_freq = self._compute_inv_freq(layer_type, dev, torch.float32)
+            t = torch.arange(max_seq, device=dev, dtype=torch.float32)
+            freqs = torch.outer(t, inv_freq)
+            emb = torch.cat((freqs, freqs), dim=-1)
+            self.register_buffer(f"cos_cached_{layer_type}", emb.cos(), persistent=False)
+            self.register_buffer(f"sin_cached_{layer_type}", emb.sin(), persistent=False)
 
     def _compute_inv_freq(self, layer_type: str, device: torch.device, dtype: torch.dtype = torch.float32) -> torch.Tensor:
         rope_config = self._rope_configs[layer_type]
@@ -214,17 +234,11 @@ class Gemma4TextRotaryEmbedding(nn.Module):
 
     @torch.no_grad()
     def forward(self, x: torch.Tensor, position_ids: torch.Tensor, layer_type: str = "full_attention"):
-        inv_freq = self._compute_inv_freq(layer_type, x.device, x.dtype)
-        attn_scaling = 1.0
-
-        inv_freq_expanded = inv_freq[None, :, None].float().expand(position_ids.shape[0], -1, 1).to(x.device)
-        position_ids_expanded = position_ids[:, None, :].float()
-
-        freqs = (inv_freq_expanded.float() @ position_ids_expanded.float()).transpose(1, 2)
-        emb = torch.cat((freqs, freqs), dim=-1)
-        cos = emb.cos() * attn_scaling
-        sin = emb.sin() * attn_scaling
-
+        # Gather over 预缓存常量表 (cos_cached[position_ids])。无 inv_freq/cos/sin/pow/neg 动态算子。
+        cos_cached = getattr(self, f"cos_cached_{layer_type}")  # [max_seq, dim] 常量
+        sin_cached = getattr(self, f"sin_cached_{layer_type}")
+        cos = cos_cached[position_ids]   # -> [batch, seq, dim]
+        sin = sin_cached[position_ids]
         return cos.to(dtype=x.dtype), sin.to(dtype=x.dtype)
 
 

@@ -9,7 +9,7 @@ import torch
 
 from .common_tools.log import Logger as logger
 from .modules.qlinear import QLinear
-from .modules.qembed import QEmbedding
+from .modules.qembed import QEmbedding, QGemma4ScaledEmbedding
 from .quantizer.strategy import get_optimize_cfg
 
 from .builder import init_builder
@@ -24,6 +24,7 @@ visible_type_dict = {
     "embedding_min_max": QEmbedding,
     torch.nn.Linear: QLinear,
     "Linear": QLinear,
+    "Gemma4TextScaledWordEmbedding": QGemma4ScaledEmbedding,
 }
 
 invisible_type_dict = {}

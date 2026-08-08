@@ -57,6 +57,15 @@ strategy_dict = {
             "fp16"          : True,
         }
     },
+    "Quant_Gemma4_Embed" : {
+        "weight" : {
+            "bit"           : 8,
+            "per_channel"   : True,
+            "weight_algo"   : "min_max",
+            "fp16"          : True,
+            "tie_lmhead"    : False,
+        }
+    },
     "Quant_Dummy": {"quant_info": "default version"},
     "Quant_lm_head" : {
             "weight" : {

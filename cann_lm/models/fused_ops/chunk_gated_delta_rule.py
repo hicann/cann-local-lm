@@ -59,9 +59,9 @@ if not _HAS_TORCH_NPU:
         g: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         del key, beta, actual_seq_lengths, g, scale
-        # out: [B, H, seq, v_dim] (query 前几维 + value 最后一维)
-        out = query.new_empty(query.shape[:-1] + (value.shape[-1],))
-        # final_state: like initial_state [B, H, v_dim, k_dim]
+        # out: THD (T, Nv, Dv) — T from query[0], Nv/Dv from value
+        out = query.new_empty((query.shape[0], value.shape[1], value.shape[2]))
+        # final_state: like initial_state (B, Nv, Dv, Dk)
         final_state = initial_state.new_empty(initial_state.shape)
         return out, final_state
 
@@ -78,22 +78,27 @@ def _chunk_gated_delta_rule_cpu(
     scale: float | None = None,
     g: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """CPU eager: 转换 BHSD -> BSHD 调用纯 torch torch_chunk_gated_delta_rule.
+    """CPU eager: 转换 THD -> BSHD 调用纯 torch torch_chunk_gated_delta_rule.
 
-    NPU 算子签名 (BHSD): query/key/value [B,H,seq,dim], beta/g [B,H,seq],
-    initial_state [B,H,v_dim,k_dim]. 纯 torch torch_chunk 期望 BSHD ([B,seq,H,dim]) +
-    initial_state [B,H,k_dim,v_dim], 故需 transpose.
+    算子签名 (THD, 与 npu_recurrent_gated_delta_rule 一致):
+      query/key (T, Nk, Dk), value (T, Nv, Dv), beta/g (T, Nv),
+      initial_state (B, Nv, Dv, Dk). T = sum batch seq len (B*seq 拼接).
+    纯 torch torch_chunk 期望 BSHD ([B,seq,H,dim]) + initial_state [B,H,k_dim,v_dim],
+    故 THD -> BSHD reshape (T=B*seq) + initial_state transpose(-1,-2).
     """
-    del actual_seq_lengths, scale
+    del scale
     from cann_lm.models.qwen3_5.modeling_qwen3_5 import torch_chunk_gated_delta_rule
 
-    # BHSD -> BSHD (transpose dim 1,2)
-    q_bshd = query.transpose(1, 2)
-    k_bshd = key.transpose(1, 2)
-    v_bshd = value.transpose(1, 2)
-    beta_bshd = beta.transpose(1, 2)
-    g_bshd = g.transpose(1, 2) if g is not None else None
-    # initial_state NPU [B,H,v_dim,k_dim] -> torch_chunk [B,H,k_dim,v_dim]
+    # THD (T,N,D) -> BSHD (B,seq,N,D): T=B*seq, 从 actual_seq_lengths 推 B
+    b = actual_seq_lengths.shape[0] if actual_seq_lengths is not None else 1
+    t = query.shape[0]
+    seq = t // b
+    q_bshd = query.reshape(b, seq, query.shape[1], query.shape[2])
+    k_bshd = key.reshape(b, seq, key.shape[1], key.shape[2])
+    v_bshd = value.reshape(b, seq, value.shape[1], value.shape[2])
+    beta_bshd = beta.reshape(b, seq, beta.shape[1]) if beta is not None else None
+    g_bshd = g.reshape(b, seq, g.shape[1]) if g is not None else None
+    # initial_state NPU (B,Nv,Dv,Dk) -> torch_chunk (B,Nv,Dk,Dv)
     init_bshd = initial_state.transpose(-1, -2)
 
     out_bshd, final_state = torch_chunk_gated_delta_rule(
@@ -101,10 +106,11 @@ def _chunk_gated_delta_rule_cpu(
         initial_state=init_bshd,
         output_final_state=True,
         use_qk_l2norm_in_kernel=True,
+        apply_scale=False,
     )
 
-    # out BSHD [B,seq,H,v_dim] -> BHSD [B,H,seq,v_dim]
-    out = out_bshd.transpose(1, 2).contiguous()
-    # final_state torch_chunk [B,H,k_dim,v_dim] -> NPU [B,H,v_dim,k_dim]
+    # out BSHD (B,seq,Nv,Dv) -> THD (T,Nv,Dv)
+    out = out_bshd.reshape(t, out_bshd.shape[2], out_bshd.shape[3])
+    # final_state torch_chunk (B,Nv,Dk,Dv) -> NPU (B,Nv,Dv,Dk)
     final_state_npu = final_state.transpose(-1, -2).contiguous() if final_state is not None else initial_state
     return out, final_state_npu

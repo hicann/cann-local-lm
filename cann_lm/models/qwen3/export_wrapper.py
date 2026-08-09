@@ -19,7 +19,8 @@ class Qwen3ExportWrapper(ExportWrapper):
         new_kv_cache_pos: torch.Tensor,
         embeddings: torch.Tensor | None = None,
         per_layer_token_identity: torch.Tensor | None = None,
-    ) -> tuple[torch.Tensor, list[torch.Tensor]]:
+        delta_states: tuple[list[torch.Tensor], list[torch.Tensor]] | None = None,
+    ) -> tuple[torch.Tensor, list[torch.Tensor], list[torch.Tensor]]:
         # None → [None]*N 触发模型内部 cache 创建 (N = 实际层数, 支持 --num-layers 截断)
         num_layers = self._num_layers()
         if past_key_values is None:
@@ -50,4 +51,4 @@ class Qwen3ExportWrapper(ExportWrapper):
                 if layer_kv is not None:
                     past_kv_flat.append(layer_kv[0])
                     past_kv_flat.append(layer_kv[1])
-        return logits, past_kv_flat
+        return logits, past_kv_flat, []

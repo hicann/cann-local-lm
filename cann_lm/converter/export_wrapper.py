@@ -69,6 +69,7 @@ class ExportWrapper(nn.Module):
         output_pos: torch.Tensor | None = None,
         per_layer_token_identity: torch.Tensor | None = None,
         embeddings_scale: torch.Tensor | None = None,
+        delta_states: tuple[list[torch.Tensor], list[torch.Tensor]] | None = None,
     ):
         # quant-embeddings: int8 embeddings + per-token (gathered per-vocab) scale
         # -> float (model dtype)。signed, 无 zero-point (dopt offset=0)。
@@ -76,7 +77,7 @@ class ExportWrapper(nn.Module):
         if embeddings is not None and embeddings_scale is not None:
             dt = self._model_dtype
             embeddings = embeddings.to(dt) * embeddings_scale.to(dt).unsqueeze(-1)
-        logits, past_kv_flat = self._drive_layers(
+        logits, past_kv_flat, delta_out_flat = self._drive_layers(
             input_ids,
             attention_mask,
             position_ids,
@@ -84,10 +85,11 @@ class ExportWrapper(nn.Module):
             new_kv_cache_pos,
             embeddings,
             per_layer_token_identity,
+            delta_states,
         )
         if output_pos is not None:
             logits = logits[:, output_pos, :]
-        return logits, *past_kv_flat
+        return logits, *past_kv_flat, *delta_out_flat
 
     def _drive_layers(
         self,
@@ -98,10 +100,14 @@ class ExportWrapper(nn.Module):
         new_kv_cache_pos: torch.Tensor,
         embeddings: torch.Tensor | None = None,
         per_layer_token_identity: torch.Tensor | None = None,
-    ) -> tuple[torch.Tensor, list[torch.Tensor]]:
-        """子类实现：统一 I/O → 原生 forward kwargs → 提取 logits + 展平 KV cache
+        delta_states: tuple[list[torch.Tensor], list[torch.Tensor]] | None = None,
+    ) -> tuple[torch.Tensor, list[torch.Tensor], list[torch.Tensor]]:
+        """子类实现：统一 I/O → 原生 forward kwargs → 提取 logits + 展平 KV cache + 展平 delta
 
         per_layer_token_identity 仅 gemma4 (PLE) 使用; qwen3/qwen3_5 忽略。
+        delta_states 仅 qwen3_5 (linear attention recurrent state) 使用; 其他返回 []。
+        delta_states = (conv_flat, recurrent_flat): 每层 conv_state / recurrent_state
+        展平图输入 (decode 导出用, 避 SimpleDeltaNetCache 对象被 export 当常量 mutate)。
         """
         raise NotImplementedError
 

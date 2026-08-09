@@ -13,6 +13,8 @@ om_npu_verify/
 ├── CMakeLists.txt            # 构建 main.cpp (链 ge_compiler/ge_runner/acl_rt + torch_delegate_backend)
 ├── build/export_llm_model   # 编译好的可执行 (aarch64)
 ├── epair_gemma4/             # 导出产物 (ep_json + weight_info + weights_*.bin)
+├── run_gemma4_om.py          # ACL python OM 运行验证 (单 OM vs eager)
+├── run_gemma4_gen.py         # ACL python OM 文本生成 (prefill+decode pipeline, 吐字)
 ├── gemma4.om                 # 默认融合 OM (4.7G, 新 rope, AUB 开, 对比用)
 └── gemma4_noaub.om           # 关 AUB OM (4.7G, 新 rope, **推荐用**)
 ```
@@ -191,6 +193,62 @@ export GE_FUSION_SWITCH_FILE=/tmp/fusion_autoub_off.cfg   # 见上 "3. 编译" �
 | 共享 KV | 40 | [1,1,2048,head_dim] | MemcpyAddrAsync | 20 共享层(15-34)×2,透传 |
 
 > head_dim 逐层不同:gemma4 的 full_attention 层用 `global_head_dim=512`、sliding 层用 `head_dim=256`(modeling_gemma4.py:278-280),KV buffer 跟着各层 attention head_dim 走。真实 e2b 的 full 层在 4,9,14,19,24,29,34(每 5 层一个)。
+
+## ACL python 运行 OM
+
+两个 python 脚本用 CANN `acl` python 接口(`acl.mdl.load_from_file` + `acl.mdl.execute`)在 NPU 上运行 OM,不依赖 torch_export/torchair。
+
+### 环境
+
+```bash
+source /home/developer/Ascend/cann/set_env.sh
+export PYTHONPATH=/home/developer/Ascend/cann-9.2.0/python.site-packages:/mnt/workspace/project/CANN-LM_5883:${PYTHONPATH:-}
+```
+
+用系统 Python(`/opt/buildtools/Python-3.11.4/bin/python3`),含 `acl` + `torch_npu` + `transformers`。
+
+### run_gemma4_om.py — 单 OM vs eager 验证
+
+验证 OM 运行机制正确性:用 `Gemma4ExportWrapper.get_sample_inputs` 构造 77 输入(mask_full/mask_sliding/position_ids/70kv/new_kv_cache_pos/embeddings/output_pos/per_layer_token_identity),展平后 `acl.mdl.execute`,读 logits,对比 eager wrapper(NPU)输出。
+
+```bash
+cd examples/export_llm_model/om_npu_verify
+/opt/buildtools/Python-3.11.4/bin/python3 run_gemma4_om.py
+```
+
+- OM logits vs eager logits maxdiff < 1.0 → MATCH(运行机制正确)
+- 关键:`acl.init` 需容错(torch_npu 可能已 init,ret=100002)
+- bf16 字节处理:`tensor.view(int16).numpy().tobytes()`(H2D)+ `frombuffer(int16).view(bfloat16)`(D2H)
+
+### run_gemma4_gen.py — prefill+decode 文本生成(吐字)
+
+完整生成 pipeline:prefill OM(seq=128)处理 prompt → logits + 70 kv;decode OM(seq=1)逐 token 生成。支持超长 prompt 分 chunk prefill。
+
+```bash
+cd examples/export_llm_model/om_npu_verify
+/opt/buildtools/Python-3.11.4/bin/python3 run_gemma4_gen.py "Hello, my name is"
+/opt/buildtools/Python-3.11.4/bin/python3 run_gemma4_gen.py "Please explain the theory of relativity in detail."
+```
+
+**prompt 自动套 chat template**(`tok.apply_chat_template`),确保模型正常对话生成(裸 prompt 会退化成重复输出)。
+
+**流程**:
+1. chat template tokenize → input_ids
+2. 按 PREFILL_SEQ(128)切块,逐块跑 prefill OM(KV 累积:上一块输出→下一块输入)
+3. 最后一块得首字 logits → argmax → next token
+4. decode loop:每步用 wrapper mask helpers 构造 decode 输入(seq=1,新 token embeddings/PLE + 上步 KV + mask[k≤cached_len])→ decode OM → logits + KV → argmax → 吐字
+5. EOS 或 MAX_NEW 步停止 → decode tokens → text
+
+**超长 prompt 支持(prompt > 128 token)**:
+- 分 chunk:chunk 0 tokens[0:128] → KV 输出;chunk 1 tokens[128:...] → 用 chunk 0 的 KV → ...
+- 每块的 `new_kv_cache_pos`/`position_ids` 按 `start_pos` 偏移;mask 用 `wrapper._build_mask_full/sliding(PREFILL_SEQ, KV_MAX, dtype, new_kv_cache_pos)`(q 位=buffer 绝对位)
+- KV_MAX=2048(prompt > 2048 截断+警告)
+
+**关键设计点**:
+- 用 `wrapper.get_sample_inputs` 的 mask/kv 约定(gemma4 shared KV 要求 pad 位不被 all-mask,否则污染 store 层 KV → 共享层输出错误)
+- prefill OM 的 77 输入 = wrapper sample 展平(跳过 None input_ids/embeddings_scale,70 kv 拆开)
+- OM 产物路径在脚本常量 `PREFILL_OM`/`DECODE_OM` 里(当前指向 `/tmp/opencode/gemma4_pd/`)
+- 需先导出 prefill+decode OM:`cann-lm-converter.py --mode prefill-decode --use-embeddings` → C++ `main.cpp` 编译两图
 
 ## 注意事项
 

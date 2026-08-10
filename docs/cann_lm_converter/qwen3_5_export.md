@@ -50,9 +50,9 @@ Qwen3.5-0.8B 是**混合架构**：6 层 full_attention（标准 GQA + KV cache�
 | Python ep 回环 | ✅ PASS | `verify_qwen3_5_epair.py` ep vs wrapper vs HF 一致（prefill+decode） |
 | **C++ OM 编译（prefill）** | ✅ **PASS** | `qwen3_5.om` 2.03GB（[4.3](#43-om-编译维度约定错误已修复) 维度修复 + [4.4](#44-delta_cache-tensor-化) tensor 化） |
 | **C++ OM 编译（decode）** | ✅ **PASS** | `qwen3_5_decode.om` 2.03GB（delta_states 图输入输出） |
-| **ACL 运行 OM（NPU）** | ⚠️ execute 成功，真实 input 不 nan，但 OM vs EP maxdiff=15.78 | acl 能加载执行（89 输入 49 输出）；random input 全 nan，真实 input 不 nan；OM(NPU) vs EP(CPU) 差异 15.78，已定位非 ChunkGatedDeltaRule（scale 被 norm 吸收），疑在别的算子，见 [8](#8-acl-运行-om--数值差异调试) |
+| **ACL 运行 OM（NPU）** | ✅ 真实 input 不 nan，OM vs EP maxdiff=0.28，三方 top5 一致 | acl 加载执行（89 输入 49 输出）；修复 npu_chunk 前 l2norm + scale（参考 cann-recipes-infer），OM vs EP 0.28 / OM vs HF 0.375，top5_overlap 5/5，见 [8](#8-acl-运行-om--数值差异调试) |
 
-> 历史：`debug_qwen3_5/README.md` 曾称"遗留任务 3 已解决"，但那只到 epair 导出层；2026-08-09 跑 C++ OM 编译暴露维度约定 bug（[4.3](#43-om-编译维度约定错误已修复)），同日修复；又暴露 delta_cache 对象在 export 路径的 dict 赋值 copy + in-place mutate 问题（[4.4](#44-delta_cache-tensor-化)），全链 tensor 化修复；prefill+decode 双图 OM 编译打通；ACL 运行 OM 发现 random input nan（真实 input 不 nan），且 OM(NPU) vs EP(CPU) 数值差异 15.78，定位到非 chunk 算子（见 [8](#8-acl-运行-om--数值差异调试)）。
+> 历史：`debug_qwen3_5/README.md` 曾称"遗留任务 3 已解决"，但那只到 epair 导出层；2026-08-09 跑 C++ OM 编译暴露维度约定 bug（[4.3](#43-om-编译维度约定错误已修复)），同日修复；又暴露 delta_cache 对象在 export 路径的 dict 赋值 copy + in-place mutate 问题（[4.4](#44-delta_cache-tensor-化)），全链 tensor 化修复；prefill+decode 双图 OM 编译打通；2026-08-09~10 ACL 运行 OM 发现 random input nan + OM vs EP 15.78，逐算子定位到 ChunkGatedDeltaRule kernel 未做 l2norm + scale 默认 1.0（参考 cann-recipes-infer 修复：modeling 前 l2norm + 传 scale），OM vs EP 0.28 / OM vs HF 0.375，三方 top5 一致（见 [8](#8-acl-运行-om--数值差异调试)）。
 
 ---
 
@@ -446,14 +446,168 @@ scale 修复让单算子 chunk 一致（maxdiff 0.006），但**全模型 OM vs 
 
 但发现：零/非零 initial_state 输出**逐位相同**（`out[0,0,:5]` 和 `final_state[0,0,0,:3]` 完全一致），说明 initial_state input 可能没生效（kernel 未读 init，或被 zero 覆盖）。独立问题，待查证。
 
-### 8.7 下一步：逐算子定位全模型 15.78
+### 8.7 逐算子定位全模型 15.78（2026-08-09）
 
-chunk 算子已排除（scale 修复后一致），全模型 15.78 来自别的算子。OM 只有最终输出，难直接看中间，两个可行方向：
+chunk 已排除（scale 修复后一致），全模型 15.78 来自别的算子。用**逐层 mini model 二分**定位差异起点层。
 
-1. **逐算子单测**（Conv2D depthwise / RmsNorm / SoftmaxV2-BatchMatMul）：各自 `atc --singleop` 编译 + NPU vs CPU 对比，定位哪个算子 NPU kernel 偏离
-2. **逐层 mini model**：构造只含 embed+1层的 mini model，OM 编译 vs EP 对比，逐步加层定位差异起点层
+#### 逐层 mini model 二分
 
-Conv2D depthwise（groups=6144，18 层）最可疑——depthwise 大 groups 的 NPU 实现可能和 CPU 不同。
+构造截断前 N 层的 mini model（`mini_model_test.py` export + EP dump，`run_mini_om.py` OM run 对比）：
+
+| N（层数） | OM vs EP maxdiff | 层类型（0..N-1） |
+|---|---|---|
+| 24（全） | 15.78 | 6 full + 18 linear |
+| 12 | 9.82 | 前 12 层 |
+| 6 | 11.70 | 前 6 层 |
+| 3 | 9.66 | 0,1,2 linear |
+| **1** | **6.05** | layer 0 linear |
+
+→ 差异在第 1 层（layer 0, GatedDeltaNet）就有 6.05，不随层单调累积（截断后 norm+lm_head 放大效应）。
+
+#### 逐算子单测（layer 0）
+
+对 layer 0 的各算子，venv dump 输入/weight/输出，系统 Python NPU eager 跑对比：
+
+| 算子 | NPU eager vs CPU maxdiff | 结论 |
+|---|---|---|
+| **ChunkGatedDeltaRule** | 0.006（apply_scale=False） | ✅ 排除（scale 根因已确认，被 norm 吸收） |
+| **Conv2D depthwise**（conv1d, groups=6144） | 0.0 | ✅ 排除 |
+| **RMSNorm**（gdn_norm + final_norm） | 0.016 / 0.0 | ✅ 排除 |
+| **MatMul**（in_qkv/in_z/out_proj/lm_head） | 0.031 / 0.031 / 0.004 / 0.125 | ✅ 排除（bf16 正常精度） |
+
+→ **所有单算子 NPU eager vs CPU 差异都小（< 0.125）**，但 mini1 OM vs EP 6.05。
+
+#### 关 AUB 实验
+
+试关 `AutomaticBufferFusionOp`（`GE_FUSION_SWITCH_FILE` + `{"Switch":{"UBFusion":{"AutomaticUbFusion":"off"}}}`）编译 mini1 OM：
+
+- 关 AUB 后 mini1 OM **nan**（has_nan=True）
+- 有 AUB 时 mini1 OM maxdiff=6.05（不 nan）
+
+→ AUB 不是差异源（关 AUB 反而 nan，AUB 融合帮助不 nan）。
+
+#### 当前结论
+
+mini1 OM vs EP 6.05 差异**不在单算子 NPU eager 实现**（都 < 0.125），而在**图编译层面**：
+
+1. **图算子 ≠ eager 实现**：OM 用 CANN 编译后的 GE kernel，NPU eager 用 torch_npu 的 eager 实现，两者可能不同（单测 eager 一致不代表图 kernel 一致）
+2. **bf16 累积路径差异**：OM 图有 Cast 32 + MatMul 9 + Mul 10，bf16 运算累积路径可能和 EP（CPU trace）不同
+3. **关 AUB nan**：说明图融合对稳定性有影响，但非 6.05 差异源
+
+#### 下一步
+
+- 用 `atc --singleop` 编译单算子 OM（图 kernel），对比 CPU（而非 NPU eager）
+- 或改 OM 加中间层输出，逐层对比 mini1 OM vs EP
+- 或对比 mini1 OM 的 GE 图（ep_json）vs EP torch 图结构，找算子顺序/融合差异
+
+#### atc --singleop 图 kernel 对比（2026-08-10）
+
+对 mini1 的关键算子，用 `atc --singleop` 编译单算子 OM（CANN 图 kernel），NPU 跑对比 CPU：
+
+| 算子 | 图 kernel vs CPU maxdiff | 结论 |
+|---|---|---|
+| MatMul（in_qkv, 2D） | 0.0625 | ✅ 排除 |
+| Swish（silu） | 0.0086 | ✅ 排除 |
+
+→ MatMul/Swish 图 kernel 和 NPU eager 一致，排除。
+
+#### chunk context 对比（关键定位）
+
+单算子 chunk random 输入一致（maxdiff 0.006），但 **context 输入（layer 0 实际值）不一致**：
+
+| 测试 | OM vs EP maxdiff |
+|---|---|
+| 单算子 random 输入 | 0.006（一致） |
+| **context 输入（layer 0）** | **0.35（不一致！）** |
+
+```
+OM out[:3]=[-1.45e-7, -8.3e-8, 2.4e-6]  (值小 ~10倍)
+EP out[:3]=[-2.77e-6, -1.59e-6, 4.67e-5]
+比值 mean=0.55
+```
+
+context 输入值特征（layer 0）：
+- g: min=-5.98, max≈0, mean=-0.64（含接近 0 值）
+- beta: 0.047~0.99
+- q absmax=4.69, k absmax=1.59, v absmax=5.03
+
+**根因定位**：ChunkGatedDeltaRule kernel 对 **context 实际输入**（g≈0 + 实际 beta/q/k/v 组合）行为和 CPU torch_chunk 不同。单算子 random（g 范围 -585~-0.08）一致，但 context（g 范围 -5.98~0）触发偏离——说明触发条件在 context 输入的值范围（疑似 g≈0 或 g_cum_exp 处理）。
+
+**mini1 OM vs EP 6.05 差异的主要来源**：chunk kernel context 偏离 0.35，累积 18 层 + RMSNorm/lm_head 放大到 6.05。
+
+#### 下一步（chunk kernel context 偏离）
+
+- 深入查 chunk kernel 对 context 输入的偏离点：g_cum_exp 处理 / delta rule 公式 / beta 缩放
+- 对比 kernel 源码（`arch22/chunk_gated_delta_rule_stage*.h`）和 CPU `torch_chunk_gated_delta_rule` 的中间步骤
+- 构造 controlled 输入（单独变化 g/beta/q）定位哪个参数触发偏离
+
+#### 根因确认 + 修复（2026-08-10）
+
+参考 cann-recipes-infer `modeling_qwen3_5_moe.py`（`_forward_prefill_with_fused_kernel` line 1428-1451）发现：
+
+**参考实现 npu_chunk 调用前手动 l2norm + 传 scale**：
+```python
+query = F.normalize(query, p=2, dim=-1)   # line 1428
+key = F.normalize(key, p=2, dim=-1)       # line 1429
+scale = 1.0 / (self.head_k_dim ** 0.5)     # line 1430
+core_attn_out = torch_npu.npu_chunk_gated_delta_rule(..., scale=scale, ...)
+```
+
+**我们的 bug**：modeling 未在 npu_chunk 前 l2norm（靠 CPU impl 的 `use_qk_l2norm_in_kernel=True` 在 torch_chunk 内部做），但 **NPU kernel 无 `use_qk_l2norm` 参数，不做 l2norm**！且未传 scale（converter 默认 1.0）。导致 NPU query/key 未归一化 + 未缩放，与 CPU（l2norm + scale）偏离。
+
+**修复**（3 处）：
+
+1. `modeling_qwen3_5.py` npu_chunk 调用前加 l2norm + 传 scale：
+```python
+# 用 mean*Dk 替代 sum (ge converter 不支持 aten.sum fallback cpu; ReduceMean 支持)
+_dk = self.head_k_dim
+q_inv = torch.rsqrt((query_t * query_t).mean(dim=-1, keepdim=True) * _dk + 1e-6)
+k_inv = torch.rsqrt((key_t * key_t).mean(dim=-1, keepdim=True) * _dk + 1e-6)
+query_t = query_t * q_inv
+key_t = key_t * k_inv
+scale = 1.0 / (self.head_k_dim ** 0.5)
+core_attn_out_t, ... = torch.ops.npu.npu_chunk_gated_delta_rule(..., scale=scale)
+```
+> 注：用 `mean(dim)*Dk` 替代 `sum(dim)`，因 ge converter 不支持 `aten.sum`（fallback 为 `cpu` op，C++ GetGEGraph 失败）；`ReduceMean` 支持。数学等价 `sum(x) = mean(x)*n`。
+
+2. `chunk_gated_delta_rule.py` CPU impl 改 `apply_scale=True` + `use_qk_l2norm_in_kernel=False`（modeling 前已 l2norm，不内部重复）。
+
+**修复后结果**（全模型 24 层，真实 input "Hello, my name is"）：
+
+| 对比 | 修复前 | 修复后 |
+|---|---|---|
+| OM vs EP maxdiff | 15.78 | **0.281** |
+| OM vs HF maxdiff | 15.75 | **0.375** |
+| top5_overlap (OM vs EP) | 0/5 | **5/5** |
+| top5_overlap (OM vs HF) | 0/5 | **5/5** |
+| has_nan (真实 input) | False | False |
+
+OM top5 = EP top5 = HF top5 = [198, 271, 0, 353, 2921] **三方一致**。
+
+**额外发现（cann-recipes-infer 参考）**：参考实现 prefill 用 `npu_chunk_gated_delta_rule`，decode 用 `npu_recurrent_gated_delta_rule`（两个算子）。我们当前 prefill+decode 都用 `npu_chunk_gated_delta_rule`。prefill 精度已修复，decode 路径后续可考虑改用 recurrent 算子（与参考实现对齐）。
+
+#### past KV 优化：24对 → 6对（2026-08-10）
+
+**问题**：prefill `get_sample_inputs` 按基类构造 24 对 past KV（全层），但 linear_attention 层用 `delta_states` 不用 KV——18 linear 层的 past KV 是冗余零 buffer（不读不写，72MB 无用 IO）。
+
+**修复**（`qwen3_5/export_wrapper.py`）：
+1. `get_sample_inputs`：past KV 从基类 24 对减到 full_attn 6 对（`base_list[3] = [base_list[3][i] for i in full_idx]`）
+2. `_drive_layers`：prefill+decode 统一按 `idx` 配 `full_attn_indices`（去掉 prefill 24对按 layer_idx 分支）
+
+**效果**：prefill OM 输入 89 → 53（减 36 冗余 KV），prefill + decode past KV 结构完全一致（6 对 full_attn）。精度不变（OM vs EP 0.281，OM vs HF 0.375，top5 5/5），生成文本一致。
+
+#### decode 精度验证（2026-08-10）
+
+重新 export decode 图 + atc 编译 decode OM（l2norm+scale 修复后），跑 decode OM vs EP（seq_len=1, past 6对零, delta 36零, decode mask, input_ids=[9419]）：
+
+| 阶段 | OM vs EP maxdiff | top5_overlap | has_nan |
+|---|---|---|---|
+| prefill | 0.281 | 5/5 | False |
+| **decode** | **0.203** | **5/5** | **False** |
+
+decode top5 = EP top5 = [30263, 95256, 96507, 177498, 132578]，delta 输出（18 conv + 18 recurrent）也不 nan。
+
+**prefill + decode 双图精度都通过**。decode 用 chunk 算子（seq_len=1 时 chunk 内 pad 63x 计算浪费但结果正确），与 EP（CPU）一致。chunk 算子共用 prefill+decode 可行（虽 decode 效率不如 recurrent 算子）。
 
 ### 8.8 相关脚本
 

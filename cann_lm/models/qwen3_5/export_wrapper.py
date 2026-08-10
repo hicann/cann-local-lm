@@ -65,11 +65,17 @@ class Qwen3_5ExportWrapper(ExportWrapper):
 
     def get_sample_inputs(self, seq_len: int = 128, use_embeddings: bool = False,
                           quant_embeddings: bool = False) -> tuple:
-        """qwen3_5 override: prefill 也传 delta_states (零, 图输入), 统一 prefill+decode delta 流."""
+        """qwen3_5 override: prefill 也传 delta_states (零, 图输入), 统一 prefill+decode delta 流.
+
+        past KV 只构造 full_attention 层 (6 对), linear 层用 delta_states 不用 KV —
+        与 decode 一致, 避免基类 24 对全层 KV 的冗余零 buffer.
+        """
         base = super().get_sample_inputs(seq_len, use_embeddings, quant_embeddings)
-        delta = self._build_zero_delta_states()
-        # base 是前 N 参 (7/8/9), 补 None 到第 9, 加 delta 第 10 (对齐 forward 10 参)
         base_list = list(base)
+        # past KV: 基类构造 num_layers 对(全层), 减到 full_attn 层(与 decode 一致)
+        full_idx = self._get_full_attn_layer_indices()
+        base_list[3] = [base_list[3][i] for i in full_idx]
+        delta = self._build_zero_delta_states()
         while len(base_list) < 9:
             base_list.append(None)
         base_list.append(delta)
@@ -88,16 +94,10 @@ class Qwen3_5ExportWrapper(ExportWrapper):
     ) -> tuple[torch.Tensor, list[torch.Tensor], list[torch.Tensor]]:
         cache = SimpleKVCache()
         if past_key_values is not None:
+            # prefill + decode 统一: past KV 只 full_attn 层(6 对), 按 idx 配 full_attn_indices
             full_attn_indices = self._get_full_attn_layer_indices()
-            if len(past_key_values) == len(full_attn_indices):
-                # decode (reconstruct_kv 输出, 6 对, 只 full_attn, 顺序 full_attn_indices)
-                for idx, (k, v) in enumerate(past_key_values):
-                    cache.update(k, v, full_attn_indices[idx])
-            else:
-                # prefill (get_sample_inputs 输出, 24 对, 全层, 按 layer_idx 取 full_attn 层)
-                for layer_idx in full_attn_indices:
-                    k, v = past_key_values[layer_idx]
-                    cache.update(k, v, layer_idx)
+            for idx, (k, v) in enumerate(past_key_values):
+                cache.update(k, v, full_attn_indices[idx])
 
         # delta_states: forward 参数 (export tuple) 或 _delta_cache_box (eager/prefill, SimpleDeltaNetCache)
         ds = delta_states if delta_states is not None else self._delta_cache_box[0]

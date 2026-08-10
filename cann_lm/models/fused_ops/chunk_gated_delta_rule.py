@@ -105,8 +105,8 @@ def _chunk_gated_delta_rule_cpu(
         q_bshd, k_bshd, v_bshd, g=g_bshd, beta=beta_bshd,
         initial_state=init_bshd,
         output_final_state=True,
-        use_qk_l2norm_in_kernel=True,
-        apply_scale=False,
+        use_qk_l2norm_in_kernel=False,
+        apply_scale=True,
     )
 
     # out BSHD (B,seq,Nv,Dv) -> THD (T,Nv,Dv)

@@ -502,10 +502,20 @@ class Qwen3_5GatedDeltaNet(nn.Module):
         # prefill + decode 共用 cann_lm::chunk_gated_delta_rule (单 GE 算子,
         # 避免 torch.export 展开纯 torch for 循环 -> 19418 节点 -> GE segfault).
         # GE 映射 ge.ChunkGatedDeltaRule (手动定义, torchair 未生成).
+        # NPU kernel 不做 l2norm (无 use_qk_l2norm 参数), 需在调用前手动 l2norm query/key
+        # (参考 cann-recipes-infer modeling_qwen3_5_moe.py:1428-1430); 传 scale=1/sqrt(Dk).
+        # 用 mean*Dk 替代 sum (ge converter 不支持 aten.sum, fallback cpu; ReduceMean 支持)
+        _dk = self.head_k_dim
+        q_inv = torch.rsqrt((query_t * query_t).mean(dim=-1, keepdim=True) * _dk + 1e-6)
+        k_inv = torch.rsqrt((key_t * key_t).mean(dim=-1, keepdim=True) * _dk + 1e-6)
+        query_t = query_t * q_inv
+        key_t = key_t * k_inv
+        scale = 1.0 / (self.head_k_dim ** 0.5)
         core_attn_out_t, last_recurrent_state_npu = torch.ops.npu.npu_chunk_gated_delta_rule(
             query_t, key_t, value_t,
             beta=beta_t, initial_state=initial_state,
             actual_seq_lengths=actual_seq_lens, g=g_t,
+            scale=scale,
         )
         # THD (T,Nv,Dv) -> BSHD (B,seq,Nv,Dv)
         core_attn_out = core_attn_out_t.reshape(batch_size, seq_len, *core_attn_out_t.shape[1:])

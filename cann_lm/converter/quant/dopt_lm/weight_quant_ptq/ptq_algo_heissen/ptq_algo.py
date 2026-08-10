@@ -100,10 +100,19 @@ class WeightQuantHeissen:
         damp = percdamp * torch.mean(torch.diag(heissen_mat))
         diag = torch.arange(self.columns, device=self.dev)
         heissen_mat[diag, diag] += damp
-        heissen_mat = torch.linalg.cholesky(heissen_mat)
-        heissen_mat = torch.cholesky_inverse(heissen_mat)
-        heissen_mat = torch.linalg.cholesky(heissen_mat, upper=True)
-        hinv = heissen_mat
+        if os.getenv("DEVICE", "cuda") == 'npu':
+            heissen_cpu = heissen_mat.cpu()
+            del heissen_mat
+            heissen_cpu = torch.linalg.cholesky(heissen_cpu)
+            heissen_cpu = torch.cholesky_inverse(heissen_cpu)
+            heissen_cpu = torch.linalg.cholesky(heissen_cpu, upper=True)
+            hinv = heissen_cpu.to(self.dev)
+            del heissen_cpu
+        else:
+            heissen_mat = torch.linalg.cholesky(heissen_mat)
+            heissen_mat = torch.cholesky_inverse(heissen_mat)
+            heissen_mat = torch.linalg.cholesky(heissen_mat, upper=True)
+            hinv = heissen_mat
 
         for i1 in range(0, self.columns, blocksize): 
             i2 = min(i1 + blocksize, self.columns)
@@ -161,12 +170,12 @@ class WeightQuantHeissen:
             self.quantizer.group_scale = self.quantizer.group_scale[:, invperm].view(self.rows, -1, groupsize).mean(dim=2)
             self.quantizer.group_zero = self.quantizer.group_zero[:, invperm].view(self.rows, -1, groupsize).mean(dim=2)
 
-        self.quantizer.group_scale = self.quantizer.group_scale.flatten().unsqueeze(1)
-        self.quantizer.group_zero = self.quantizer.group_zero.flatten().unsqueeze(1)
+        self.quantizer.group_scale = self.quantizer.group_scale.flatten().unsqueeze(1).cpu()
+        self.quantizer.group_zero = self.quantizer.group_zero.flatten().unsqueeze(1).cpu()
 
         if isinstance(self.layer, transformers.Conv1D): 
             quantized_w_matrix = quantized_w_matrix.t()
-        self.layer.weight.data = quantized_w_matrix.reshape(self.layer.weight.shape).to(self.layer.weight.data.dtype)
+        self.layer.weight.data = quantized_w_matrix.reshape(self.layer.weight.shape).to(self.layer.weight.data.dtype).to(self.dev)
 
     def free(self): 
         self.heissen_matrix = None

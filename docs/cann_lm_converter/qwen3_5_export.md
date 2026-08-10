@@ -28,6 +28,11 @@
   - [8.5 全模型差异归属修正：非 chunk](#85-全模型差异归属修正非-chunk)
   - [8.6 initial_state 未生效（独立问题）](#86-initial_state-未生效独立问题)
   - [8.7 下一步：逐算子定位全模型 15.78](#87-下一步逐算子定位全模型-1578)
+  - [8.8 相关脚本](#88-相关脚本)
+  - [8.9 复现](#89-复现)
+  - [8.10 embeddings 入图验证](#810-embeddings-入图验证2026-08-10)
+
+- [9. npu-op-elimination 改造（2026-08-10）](#9-npu-op-elimination-改造2026-08-10)
 
 ---
 
@@ -51,6 +56,7 @@ Qwen3.5-0.8B 是**混合架构**：6 层 full_attention（标准 GQA + KV cache�
 | **C++ OM 编译（prefill）** | ✅ **PASS** | `qwen3_5.om` 2.03GB（[4.3](#43-om-编译维度约定错误已修复) 维度修复 + [4.4](#44-delta_cache-tensor-化) tensor 化） |
 | **C++ OM 编译（decode）** | ✅ **PASS** | `qwen3_5_decode.om` 2.03GB（delta_states 图输入输出） |
 | **ACL 运行 OM（NPU）** | ✅ 真实 input 不 nan，OM vs EP maxdiff=0.28，三方 top5 一致 | acl 加载执行（89 输入 49 输出）；修复 npu_chunk 前 l2norm + scale（参考 cann-recipes-infer），OM vs EP 0.28 / OM vs HF 0.375，top5_overlap 5/5，见 [8](#8-acl-运行-om--数值差异调试) |
+| **embeddings 入图** | ✅ PASS | `--use-embeddings`：input_ids 不入图，host 查表 embeddings 喂 OM；OM vs HF 0.375 / top5 5/5，与 input_ids 入图数值等价，见 [8.10](#810-embeddings-入图验证2026-08-10) |
 
 > 历史：`debug_qwen3_5/README.md` 曾称"遗留任务 3 已解决"，但那只到 epair 导出层；2026-08-09 跑 C++ OM 编译暴露维度约定 bug（[4.3](#43-om-编译维度约定错误已修复)），同日修复；又暴露 delta_cache 对象在 export 路径的 dict 赋值 copy + in-place mutate 问题（[4.4](#44-delta_cache-tensor-化)），全链 tensor 化修复；prefill+decode 双图 OM 编译打通；2026-08-09~10 ACL 运行 OM 发现 random input nan + OM vs EP 15.78，逐算子定位到 ChunkGatedDeltaRule kernel 未做 l2norm + scale 默认 1.0（参考 cann-recipes-infer 修复：modeling 前 l2norm + 传 scale），OM vs EP 0.28 / OM vs HF 0.375，三方 top5 一致（见 [8](#8-acl-运行-om--数值差异调试)）。
 
@@ -609,6 +615,65 @@ decode top5 = EP top5 = [30263, 95256, 96507, 177498, 132578]，delta 输出（1
 
 **prefill + decode 双图精度都通过**。decode 用 chunk 算子（seq_len=1 时 chunk 内 pad 63x 计算浪费但结果正确），与 EP（CPU）一致。chunk 算子共用 prefill+decode 可行（虽 decode 效率不如 recurrent 算子）。
 
+#### chunked prefill + mask minv 修复（2026-08-10）
+
+实现长 prompt chunked prefill（仿 `run_gemma4_gen.py`，`run_qwen3_5_gen.py` 加 `build_prefill` 支持分块 + KV/delta 累积传递）。
+
+**nan 根因**：mask 的 minv 用 `finfo(bf16).min`（-3.4e38），NPU SoftmaxV2 对 bf16 min + 多 attend 位置（chunk 1 attend buffer[0..8]，mask buffer[9..]=minv）溢出 nan。chunk 0（attend 少位置）不触发。
+
+**修复**：mask minv 用 `-1e4`（足够 mask，不溢出）：
+```python
+# run_qwen3_5_gen.py build_prefill
+minv = torch.tensor(-1e4, dtype=dtype)  # 而非 torch.finfo(dtype).min
+```
+
+**验证**：
+| prompt | chunks | 生成 |
+|---|---|---|
+| "Hello, my name is"（5 token） | 1 | "John. I am a 20-year-old male. I am a student at a university." |
+| "The capital of China is Beijing and the capital of Japan is Tokyo today"（14 token） | 2 | 连贯复述 + 续写 |
+
+prefill+decode 双图 + chunked prefill（长 prompt 分块累积 KV/delta）全链路验证通过。
+
+#### actual_seq_lengths 分析（2026-08-10）
+
+尝试把 `actual_seq_lengths` 从 modeling 内部 `torch.full` 常量改为 **wrapper 图输入**（支持 chunked 变长），结论：**不可行，需回退**。
+
+**CANN 算子约定**：THD 布局把 batch 维折叠进 T 维，`T = Σ actual_seq_lengths`：
+```
+query shape = [T, N, D]   ← T 维 = 所有 batch token 拼接
+actual_seq_lengths = [B]  ← 每个 batch 的长度, T = Σ
+```
+batch=1 时 `actual_seq_lengths[0] == query.shape[0] == T`（**必须相等**）。
+
+**tiling 源码确认**（`chunk_gated_delta_rule_tiling.cpp`）：
+```cpp
+t = queryShape[0];      // T 直接从 query shape 取
+b = stateShape[0];      // batch 数从 state shape 取
+// 约定: t == Σ actual_seq_lengths (算子用 actual_seq_lengths 做 batch 切分)
+```
+
+**尝试 [real_len] 的矛盾**：
+- OM seq=8 特化 → query 固定 `[8, N, D]`（T=8，含 pad 补到 8）
+- chunked 最后一块 real<8，但 query pad 到 8（T=8）
+- 传 `actual_seq_lengths=[real_len]`（如 [5]）但 query `[8]` → **T=8 与 [5] 矛盾**
+- 算子按 [5] 只处理前 5 token，后 3 pad 位未定义 → recurrent_state 累积异常
+
+**实验验证**（`actual_seq_lengths=[real_len]` 图输入）：
+
+| actual_seq_lengths | 短 prompt 生成 | 分析 |
+|---|---|---|
+| [8]（=T，含 pad） | "John. I am a 20-year-old male..."（和 HF 前 15 一致）✅ | 算子处理 8 token，pad 参与 chunk 但 mask 屏蔽，output_pos 取 real 位 |
+| [5]（=real_len） | "John is a very good friend..."（和 HF 不一致）❌ | T=8 与 [5] 矛盾，算子切分错位 |
+
+长 prompt（复述）生成不变——复述由 full_attn KV 驱动，actual_seq_lengths 只影响 linear_attn delta。
+
+**结论**：
+- `actual_seq_lengths[0]` **必须 = query.shape[0] = T = 8**（seq=8 特化）
+- 当前 pad 到 8，actual_seq_lengths=[8]（常量）正确
+- 要支持 `[real_len]`，需 query 也 `[real_len]`（不 pad）→ **动态 seq OM**（dynamic shape export），当前不支持
+- **已回退** actual_seq_lengths 图输入改动，恢复为 modeling 内部 `torch.full` 常量 [8]（OM 53 输入，无 actual_seq_lengths 输入）
+
 ### 8.8 相关脚本
 
 | 脚本 | 作用 |
@@ -641,6 +706,221 @@ export TORCH_DELEGATE_ENABLE_FALLBACK_CODEGEN=0
 /opt/buildtools/Python-3.11.4/bin/python3 debug_chunk_om.py    # 存 chunk_om_dump.npz
 /mnt/workspace/torch-delegate-harmony/.venv/bin/python cpu_chunk_compare.py  # 对比 → PASS (maxdiff 0.006)
 ```
+
+### 8.10 embeddings 入图验证（2026-08-10）
+
+把 `embeddings` 作为图输入（`input_ids` 不入图，`embed_tokens` 查表外置到 host），参考 gemma4 的 `--use-embeddings` 路径，但 qwen3.5 无 PLE（少 `per_layer_token_identity`）。
+
+#### cann_lm 代码已支持（无需改 cann_lm）
+
+qwen3.5 的 `Qwen3_5ExportWrapper` 已支持 `use_embeddings=True`（基类 `ExportWrapper` 统一处理）：
+
+| 能力 | 实现位置 | 说明 |
+|------|----------|------|
+| `get_sample_inputs(use_embeddings=True)` | 基类 + qwen3.5 override | 基类返回 `(None, mask, pos, past, new_kv, embeddings, output_pos, *extras)`；qwen3.5 override 把 past 减到 6 对 + 追加 `None`（PLE placeholder）/`None`（scale）/`delta_states` = 10 元素 |
+| `_drive_layers` 收 embeddings | qwen3.5 override | `embeddings is not None` → `kwargs["inputs_embeds"] = embeddings`（不传 input_ids），model forward 跳过 embed_tokens 查表 |
+| `_build_external_extras` | 基类默认返回 `()` | qwen3.5 无 PLE，extras 空（对比 gemma4 返回 `per_layer_token_identity`） |
+| `host_side_weight_names` | 基类默认 `["model.model.embed_tokens.weight"]` | tie_word_embeddings=True，detach 后 lm_head 仍留图内（storage identity 去重） |
+| `detach_externalized_lookups` | 基类默认删 `embed_tokens` | torch.export 不 lift embed_tokens → weights_*.bin 不含冗余查表权重 |
+
+#### tie_word_embeddings 处理
+
+qwen3.5 `tie_word_embeddings=true`：`embed_tokens` 与 `lm_head` 共享 storage。`--use-embeddings` 路径 `detach_externalized_lookups` 删 `embed_tokens` 后，`lm_head` 仍留在图内（lm_head weight 经 storage identity 去重保留）。OM 图内无 embed_tokens 查表，host 验证用 CPU 模型 `model.model.embed_tokens(input_ids)` 查表算 embeddings 喂 OM。
+
+#### 导出 + 编译 + 验证
+
+```bash
+# 1. 导出 embeddings 入图 epair（venv, CPU）
+source /home/developer/Ascend/cann/set_env.sh
+export LD_LIBRARY_PATH=/mnt/workspace/torchair/build/stubs:${ASCEND_HOME_PATH}/lib64:${LD_LIBRARY_PATH:-}
+export TORCH_DELEGATE_HOME=/mnt/workspace/torch-delegate-harmony
+export PYTHONPATH=/mnt/workspace/project/CANN-LM_5883:${PYTHONPATH:-}
+export TORCH_DEVICE_BACKEND_AUTOLOAD=0
+export TORCH_DELEGATE_ENABLE_FALLBACK_CODEGEN=0
+cd examples/export_llm_model/om_npu_verify
+/mnt/workspace/torch-delegate-harmony/.venv/bin/python export_llm_model_epair.py \
+  --model qwen3_5 --hf-path /mnt/workspace/data/models/Qwen3.5-0.8B \
+  --seq-len 8 --dtype bfloat16 --output-dir epair_qwen3_5_emb --use-embeddings
+
+# 2. 编译 OM（系统环境，关 AUB，cfg 格式 {"Switch":{"UBFusion":{"AutomaticUbFusion":"off"}}}）
+export GE_FUSION_SWITCH_FILE=/tmp/fusion_autoub_off.cfg
+export SOC_VERSION=Ascend910_9362
+./build/export_llm_model epair_qwen3_5_emb/ep_json_with_ascend_ir.json \
+  epair_qwen3_5_emb/weight_info.json qwen3_5_emb_noaub
+
+# 3. 验证（系统 Python, NPU acl + HF 对比）
+export PYTHONPATH=/home/developer/Ascend/cann-9.2.0/python.site-packages:${PYTHONPATH:-}
+/opt/buildtools/Python-3.11.4/bin/python3 run_qwen3_5_om_emb.py
+# → OM vs HF maxdiff=0.375, top5_overlap=5/5, MATCH
+```
+
+#### OM I/O（seq_len=8 特化，embeddings 入图）
+
+**输入 53 个**（对比 input_ids 入图：input_ids → embeddings 替换）：
+
+| 输入 | 形状 | dtype | 说明 |
+|---|---|---|---|
+| **embeddings** | [1,8,1024] | bf16 | host 查表 embed_tokens 结果（**替代 input_ids**） |
+| attention_mask | [1,1,8,2048] | bf16 | causal-over-buffer |
+| position_ids | [1,8] | int64 | |
+| past_key_values_0_0..5_1（12） | [1,2,2048,256] | bf16 | 6 对 full_attn KV |
+| new_kv_cache_pos | [8] | int64 | KV scatter 写入位 |
+| output_pos | [1] | int32 | =[7] 选最后 token |
+| delta_states_0_0..17（18） | [1,6144,4] | bf16 | 18 conv_state |
+| delta_states_1_0..17（18） | [1,16,128,128] | bf16 | 18 recurrent_state |
+
+**输出 49 个**：logits [1,1,248320] + 12 KV（6 对）+ 36 delta（18 conv + 18 recurrent 交替）。
+
+#### 验证结果（真实 input "Hello, my name is"）
+
+| OM | AUB 开 (`qwen3_5_emb.om`) | AUB 关 (`qwen3_5_emb_noaub.om`) |
+|----|---|---|
+| OM vs HF maxdiff | 0.375 | 0.375 |
+| top5_overlap (OM vs HF) | 5/5 | 5/5 |
+| has_nan | False | False |
+| delta 输出 nan | False | False |
+| OM top5 | [198, 271, 0, 353, 2921] | [198, 271, 0, 353, 2921] |
+
+OM top5 = HF top5 = [198, 271, 0, 353, 2921]，**与 [8.4](#84-chunkgateddeltarule-单算子对比scale-根因确认) 的 input_ids 入图结果完全一致**——embeddings 入图与 input_ids 入图数值等价（`embeddings = embed_tokens(input_ids)`，cann_lm embed_tokens weight 来自 HF）。AUB 开/关数值一致（AUB 只融合元素算子，不改语义）。
+
+#### 修复
+
+- `export_llm_model_epair.py` input_0 保存：`use_embeddings=True` 时 `inp` 是 bfloat16，`numpy.tofile` 不支持 bfloat16 → 改 `arr.view(torch.int16).numpy().tofile()`（与 acl 验证脚本 `t_bytes`/`b2t` 一致）。
+- fusion switch cfg 首编失败（`aclgrphBuildInitialize failed, status: 4294967295`）：疑 GE session 残留状态，重试成功。cfg 格式 `{"Switch":{"UBFusion":{"AutomaticUbFusion":"off"}}}` 可用（[4.3](#43-om-编译维度约定错误已修复) "额外发现"称旧格式 Switch 被拒不准，实测可用）。
+
+#### 相关脚本
+
+| 脚本 | 作用 |
+|------|------|
+| `export_llm_model_epair.py --use-embeddings`（venv） | 导出 embeddings 入图 epair |
+| `run_qwen3_5_om_emb.py`（系统 Python） | host 查表 embeddings + OM (acl) run + vs HF（支持 `QWEN35_OM` env 切换 OM） |
+
+---
+
+## 9. npu-op-elimination 改造（2026-08-10）
+
+参考 [`skills/npu-op-elimination/SKILL.md`](skills/npu-op-elimination/SKILL.md) 把 qwen3.5 导出图里 NPU 不支持/低效的算子改造成 NPU 友好形式。SKILL 跨模型适用性表标注 qwen3.5 三处"待应用"，本次落地改造 2 + 改造 3（改造 1 host mask 已应用，见[第 3 节](#3-mask-4d-透传)）。
+
+### 改造 1：host 预构 mask（已应用）
+
+见[第 3 节](#3-mask-4d-透传)——`_create_causal_mask` 第 691 行 `if attention_mask.dim() == 4: return attention_mask` 4D 透传，图内无 `ge.MaskedFill`。OM 算子表 `MaskedFill=0` ✓。
+
+### 改造 2：repeat_kv reshape+cat（BroadcastTo → ConcatV2D）
+
+`modeling_qwen3_5.py:repeat_kv` 原用 `expand`（生成 `BroadcastTo`），改 `reshape+cat+view`（kv_head-major，生成 `ConcatV2D`）：
+
+```python
+def repeat_kv(hidden_states, n_rep):
+    batch, num_kv_heads, slen, head_dim = hidden_states.shape
+    if n_rep == 1:
+        return hidden_states
+    hidden_states = hidden_states.reshape(batch * num_kv_heads, 1, slen, head_dim)
+    hidden_states = torch.cat([hidden_states] * n_rep, dim=1)
+    return hidden_states.view(batch, num_kv_heads * n_rep, slen, head_dim)
+```
+
+数值恒等（maxdiff=0，`expand+reshape` 与 `reshape+cat+view` 逐元素相等）。
+
+### 改造 3：RoPE 预缓存表 + Gather（Pow/Cos/Sin → Gather）
+
+`modeling_qwen3_5.py:Qwen3_5TextRotaryEmbedding` 原在 `forward` 动态算 cos/sin（`inv_freq = base^exp` → `freqs = inv_freq @ position_ids` → `apply_interleaved_mrope` → `emb.cos()/sin()`），生成 `Pow`/`Neg`/`Cos`/`Sin`。改为 `__init__` 预缓存 cos/sin 表 + `forward` Gather。
+
+qwen3.5 是 **mRoPE**（multimodal RoPE，3 维 position），`TextModel.forward:790` 把 position_ids reshape 成 3D `[3,batch,seq]`（文本模式 3 维相同 via `expand`）。预缓存表按单维 position 算（3 维相同时等价于原 3D 动态算 + `apply_interleaved_mrope` 交错），`forward` 对 3D position_ids 取 `[0]` 索引：
+
+```python
+def __init__(self, config, device=None):
+    ...  # inv_freq 计算保留 (init 算, 不进图)
+    cos_cached, sin_cached = self._build_cos_sin_cache(self.max_seq_len_cached, device)
+    self.register_buffer("cos_cached", cos_cached, persistent=False)
+    self.register_buffer("sin_cached", sin_cached, persistent=False)
+
+def _build_cos_sin_cache(self, max_seq, device):
+    """预算 [max_seq, dim] 表 (文本模式: 3 维 position 相同, mRoPE 退化)."""
+    pos = torch.arange(max_seq, device=device, dtype=torch.float32)[None, :]  # [1, max_seq]
+    pos_3d = pos[None, ...].expand(3, 1, max_seq)  # [3, 1, max_seq]
+    inv_exp = self.inv_freq[None, None, :, None].float().expand(3, 1, -1, 1)
+    pos_exp = pos_3d[:, :, None, :].float()
+    freqs = (inv_exp @ pos_exp).transpose(2, 3)  # [3, 1, max_seq, dim/2]
+    freqs = self.apply_interleaved_mrope(freqs, self.mrope_section)  # [1, max_seq, dim/2]
+    emb = torch.cat((freqs, freqs), dim=-1)  # [1, max_seq, dim]
+    cos = (emb.cos() * self.attention_scaling).squeeze(0)  # [max_seq, dim]
+    sin = (emb.sin() * self.attention_scaling).squeeze(0)
+    return cos.to(torch.float32), sin.to(torch.float32)
+
+def forward(self, x, position_ids):
+    # 文本模式: position_ids 3D [3,batch,seq] (3 维相同) 或 2D [batch,seq]
+    if position_ids.ndim == 3:
+        position_ids = position_ids[0]  # 取第 0 维 (3 维相同)
+    cos = self.cos_cached[position_ids]  # Gather, 无动态算子
+    sin = self.sin_cached[position_ids]
+    return cos.to(x.dtype), sin.to(x.dtype)
+```
+
+- `max_position_embeddings=262144`，`partial_rotary_factor=0.25` → dim=64，cos+sin 表 [262144,64]×2 float32 ≈ 128MB（`persistent=False` 不进 state_dict，但 register_buffer → 图内 Const）
+- 数值恒等（maxdiff=0，2D/3D position_ids 路径均验证）
+
+### 验证
+
+#### eager 数值验证（恒等变换）
+
+| 改造 | 验证 | maxdiff | 结论 |
+|------|------|---------|------|
+| repeat_kv expand→reshape+cat | old expand vs new cat | 0.00 | PASS |
+| RotaryEmbedding 动态→预缓存+Gather (2D pos) | old 动态 vs new Gather | 0.00 | PASS |
+| RotaryEmbedding 3D pos (TextModel 路径) | old 3D 动态 vs new 取[0]+Gather | 0.00 | PASS |
+
+#### OM 算子表（关 AUB，改造前 vs 后）
+
+| 算子 | 改造前 | 改造后 | 说明 |
+|------|---:|---:|------|
+| **Pow** | >0 | **0** ✓ | inv_freq=`base^exp` 消除（init 算） |
+| **Cos/Sin** | 各1 | **0** ✓ | 动态 cos/sin 消除（预缓存表 Gather） |
+| **BroadcastTo** | 0 | **0** ✓ | TextModel.forward position_ids `expand(4,...)` → `cat` 消除（见改造 4） |
+| **ConcatV2D** | 43 | **55** | repeat_kv cat(+11) + position_ids cat(+1) |
+| **GatherV2/Index** | 1/1 | 1/3 | RoPE cos/sin Gather（Index 增 2） |
+| **Const** | 348 | 342 | 含 cos/sin 预缓存表（~128MB） |
+| Neg | 30 | 30 | apply_rotary_pos_emb 的 `rotate_half(-x2)`，**不在改造 3 范围**（gemma4 用 `npu_rotary_mul` 融合算子消除，qwen3.5 用纯 torch apply_rotary_pos_emb 保留） |
+| total ops | 2307 | 2266 | |
+
+**改造 3 核心目标达成**：Pow/Cos/Sin 全消除。Neg(30) 来自 `apply_rotary_pos_emb.rotate_half`（`torch.cat((-x2, x1))` 的取负），不在 SKILL 改造 3 范围（SKILL 改造 3 只改 `RotaryEmbedding.forward` 的动态算子，不改 `apply_rotary_pos_emb`/`rotate_half`）。gemma4 用 `npu_rotary_mul` 融合算子替代整个 apply_rotary_pos_emb 消除 Neg，qwen3.5 未用融合算子（后续可考虑）。
+
+### 改造 4：TextModel position_ids expand → cat（消除残留 BroadcastTo）
+
+改造 2/3 后残留 1 个 `BroadcastTo`，来自 `TextModel.forward:794` 的 mRoPE 4 维 position_ids 构造：
+
+```python
+position_ids = position_ids.view(1, 1, -1).expand(4, batch_size, -1)  # [1,1,seq] -> [4,batch,seq]
+```
+
+改造 3 把 `RotaryEmbedding.forward` 简化为纯 Gather（无 expand）后，这个 `expand(4,...)` 失去融合机会，独立暴露成 BroadcastTo（改造前被 RotaryEmbedding 内部 expand 一起常量折叠）。改 `cat` 替代 `expand`（和 repeat_kv 同思路）：
+
+```python
+position_ids = position_ids.view(1, 1, -1)
+position_ids = torch.cat([position_ids] * 4, dim=0)        # dim0 1->4 (text + 3 mrope, 4 维相同)
+if batch_size > 1:
+    position_ids = torch.cat([position_ids] * batch_size, dim=1)  # dim1 1->batch_size
+```
+
+数值等价（`expand` 与 `cat` 都是复制 4 份相同 position）。BroadcastTo 1→0 ✓，ConcatV2D 54→55。
+
+#### OM 精度验证（embeddings 入图，真实 input "Hello, my name is"）
+
+| 对比 | 改造前 | 改造后 |
+|------|---|---|
+| OM vs HF maxdiff | 0.375 | **0.195** |
+| top5_overlap (OM vs HF) | 5/5 | 5/5 |
+| OM top5 | [198,271,0,353,2921] | [198,271,0,353,2921] |
+| has_nan | False | False |
+
+改造后**精度提升**（0.375→0.195）：RoPE 预缓存表用 float32 算 cos/sin（init 时高精度），原动态算在 forward 里有 bfloat16 中间精度损失。top5 仍 5/5 一致。
+
+### 文件
+
+| 文件 | 改动 |
+|------|------|
+| `cann_lm/models/qwen3_5/modeling_qwen3_5.py:repeat_kv` | 改造 2（expand→reshape+cat） |
+| `cann_lm/models/qwen3_5/modeling_qwen3_5.py:Qwen3_5TextRotaryEmbedding` | 改造 3（`__init__` 预缓存 + `_build_cos_sin_cache` + `forward` Gather，处理 3D position_ids） |
+| `cann_lm/models/qwen3_5/modeling_qwen3_5.py:Qwen3_5TextModel.forward` | 改造 4（position_ids `expand(4,...)` → `cat`，消除残留 BroadcastTo） |
 
 ---
 

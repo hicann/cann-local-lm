@@ -117,10 +117,15 @@ def export_model(
     print(f"Saved: {pt2_path}")
 
     # 保存主用户输入供 C++ 验证: use_embeddings 时存 embeddings (pos 5), 否则 input_ids (pos 0)
+    # bfloat16 numpy 不支持, view int16 落盘 (与 acl 验证脚本 t_bytes/b2t 一致)
     inp = sample_inputs[5] if use_embeddings else sample_inputs[0]
     inp_path = out.parent / f"input_0_{out.name}.bin"
-    inp.cpu().detach().numpy().tofile(inp_path)
-    print(f"Saved input[0] shape={list(inp.shape)} -> {inp_path}")
+    arr = inp.cpu().detach()
+    if arr.dtype == torch.bfloat16:
+        arr.view(torch.int16).numpy().tofile(inp_path)
+    else:
+        arr.numpy().tofile(inp_path)
+    print(f"Saved input[0] shape={list(inp.shape)} dtype={inp.dtype} -> {inp_path}")
     print(f"\nDone. Output: {out}")
 
 

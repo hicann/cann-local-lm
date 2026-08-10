@@ -63,26 +63,39 @@ class Qwen3_5TextRotaryEmbedding(nn.Module):
         self.register_buffer("inv_freq", inv_freq, persistent=False)
         self.attention_scaling = 1.0
         self.mrope_section = rope_params.get("mrope_section", [11, 11, 10])
+        # 预缓存 cos/sin 表 (init 算: inv_freq + outer + mrope + cat + cos/sin, 全在 init, 不进图)
+        # forward 只 Gather (cos_cached[position_ids]), 消除 Pow/Neg/Cos/Sin 动态算子
+        cos_cached, sin_cached = self._build_cos_sin_cache(self.max_seq_len_cached, device)
+        self.register_buffer("cos_cached", cos_cached, persistent=False)
+        self.register_buffer("sin_cached", sin_cached, persistent=False)
+
+    def _build_cos_sin_cache(self, max_seq: int, device) -> tuple[torch.Tensor, torch.Tensor]:
+        """预算 [max_seq, dim] cos/sin 表 (文本模式: 3 维 position 相同, mRoPE 退化)。
+
+        batch=1 对齐原 forward 文本路径 (position_ids [1, max_seq] → expand [3,1,max_seq]),
+        squeeze 后 [max_seq, dim] 供 forward Gather。
+        """
+        dtype = torch.float32
+        pos = torch.arange(max_seq, device=device, dtype=dtype)[None, :]        # [1, max_seq]
+        pos_3d = pos[None, ...].expand(3, 1, max_seq)                            # [3, 1, max_seq]
+        inv_exp = self.inv_freq[None, None, :, None].float().expand(3, 1, -1, 1) # [3, 1, dim/2, 1]
+        pos_exp = pos_3d[:, :, None, :].float()                                  # [3, 1, 1, max_seq]
+        freqs = (inv_exp @ pos_exp).transpose(2, 3)                              # [3, 1, max_seq, dim/2]
+        freqs = self.apply_interleaved_mrope(freqs, self.mrope_section)          # [1, max_seq, dim/2]
+        emb = torch.cat((freqs, freqs), dim=-1)                                  # [1, max_seq, dim]
+        cos = (emb.cos() * self.attention_scaling).squeeze(0)                    # [max_seq, dim]
+        sin = (emb.sin() * self.attention_scaling).squeeze(0)                    # [max_seq, dim]
+        return cos.to(dtype), sin.to(dtype)
 
     @torch.no_grad()
     def forward(self, x: torch.Tensor, position_ids: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        if position_ids.ndim == 2:
-            position_ids = position_ids[None, ...].expand(3, position_ids.shape[0], -1)
-        inv_freq_expanded = (
-            self.inv_freq[None, None, :, None].float()
-            .expand(3, position_ids.shape[1], -1, 1)
-            .to(x.device)
-        )
-        position_ids_expanded = position_ids[:, :, None, :].float()
-
-        device_type = x.device.type if isinstance(x.device.type, str) and x.device.type != "mps" else "cpu"
-        with torch.amp.autocast(device_type=device_type, enabled=False):
-            freqs = (inv_freq_expanded.float() @ position_ids_expanded.float()).transpose(2, 3)
-            freqs = self.apply_interleaved_mrope(freqs, self.mrope_section)
-            emb = torch.cat((freqs, freqs), dim=-1)
-            cos = emb.cos() * self.attention_scaling
-            sin = emb.sin() * self.attention_scaling
-
+        # Gather over 预缓存常量表, 无 inv_freq/cos/sin/pow/neg 动态算子
+        # 文本模式: position_ids 3D [3,batch,seq] (mRoPE 3 维相同, TextModel forward expand 出来)
+        # 或 2D [batch,seq]; 3 维相同时取 [0] 等价单维, 与原动态算 apply_interleaved_mrope 一致
+        if position_ids.ndim == 3:
+            position_ids = position_ids[0]
+        cos = self.cos_cached[position_ids]   # [batch, seq, dim]
+        sin = self.sin_cached[position_ids]
         return cos.to(dtype=x.dtype), sin.to(dtype=x.dtype)
 
     def apply_interleaved_mrope(self, freqs: torch.Tensor, mrope_section: list[int]) -> torch.Tensor:
@@ -120,11 +133,18 @@ def apply_rotary_pos_emb(
 
 
 def repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
+    """Expand KV heads for GQA: (b, kv_heads, s, d) -> (b, heads, s, d)。
+
+    用 reshape+cat+view 替代 expand, 导出图里是 ConcatV2D 而非 BroadcastTo。
+    kv_head-major: 先 reshape 到 [b*kv, 1, s, d] (kv 并 dim0), cat n_rep 份, view 回 [b, kv*n_rep, s, d],
+    与 expand+reshape 逐元素相等 (naive cat 不 reshape 是 rep-major 会与 q 错位, 不可用)。
+    """
     batch, num_kv_heads, slen, head_dim = hidden_states.shape
     if n_rep == 1:
         return hidden_states
-    hidden_states = hidden_states[:, :, None, :, :].expand(batch, num_kv_heads, n_rep, slen, head_dim)
-    return hidden_states.reshape(batch, num_kv_heads * n_rep, slen, head_dim)
+    hidden_states = hidden_states.reshape(batch * num_kv_heads, 1, slen, head_dim)
+    hidden_states = torch.cat([hidden_states] * n_rep, dim=1)
+    return hidden_states.view(batch, num_kv_heads * n_rep, slen, head_dim)
 
 
 def eager_attention_forward(
@@ -771,7 +791,12 @@ class Qwen3_5TextModel(nn.Module):
         if position_ids is None:
             past_len = past_key_values.get_seq_length() if past_key_values is not None else 0
             position_ids = torch.arange(past_len, past_len + seq_len, device=inputs_embeds.device)
-            position_ids = position_ids.view(1, 1, -1).expand(4, batch_size, -1)
+            # mRoPE: 扩 4 维 position (1 text + 3 mrope, 文本模式 4 维相同)
+            # cat 替代 expand 消除 BroadcastTo (dim0 1->4; dim1 1->batch_size, batch=1 时无操作)
+            position_ids = position_ids.view(1, 1, -1)
+            position_ids = torch.cat([position_ids] * 4, dim=0)
+            if batch_size > 1:
+                position_ids = torch.cat([position_ids] * batch_size, dim=1)
 
         if position_ids.ndim == 3 and position_ids.shape[0] == 4:
             text_position_ids = position_ids[0]

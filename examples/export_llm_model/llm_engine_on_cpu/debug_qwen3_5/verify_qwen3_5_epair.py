@@ -159,12 +159,14 @@ def generate_ep(ep, wrapper, sample_inputs, input_ids, num_steps, dtype, eos_set
     # delta_cache 现已更新 (wrapper._delta_cache_box[0] 非 None)
 
     # 2. ep.module prefill (scatter, sample_inputs 形状特化 real_seq_len)
+    # ep 输出: logits + 6 对 KV (12) + 36 delta (18 conv + 18 recurrent); 只取 KV, delta 忽略
+    # (step 3 decode 用 _delta_cache_box 来自 step 1 wrapper prefill, 非 ep delta 输出)
     traced = list(sample_inputs)
     traced[0] = input_ids
     with torch.no_grad():
         out = module(*traced)
         logits_ep = out[0]
-        kv_flat_ep = list(out[1:])
+        kv_flat_ep = list(out[1:13])  # 前 12 = 6 对 full_attn KV
     kv_ep = reconstruct_kv(kv_flat_ep)
 
     # 验证 ep prefill logits vs wrapper prefill logits (最后一 token)

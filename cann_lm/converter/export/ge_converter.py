@@ -84,8 +84,10 @@ def register_ge_converters() -> None:
         # 手动创建 ge.ChunkGatedDeltaRule (torchair auto_generated 未生成此算子,
         # npu_chunk_gated_delta_rule converter 直接 raise RuntimeError, 此处覆盖).
         # CANN op_info: aic-ascend910_93-ops-info-transformer.json "ChunkGatedDeltaRule"
-        # inputs: query/key/value/beta/initial_state/actual_seq_lengths + g(optional)
-        # outputs: out/final_state, attr: scale_value
+        # 维度约定 THD 3D (与 npu_recurrent_gated_delta_rule 一致, 见 tiling.cpp
+        # CheckDim QKV_DIM_NUM=3): query/key (T,Nk,Dk), value (T,Nv,Dv), beta/g (T,Nv),
+        # initial_state (B,Nv,Dv,Dk), actual_seq_lengths (B,), out (T,Nv,Dv), final_state
+        # (B,Nv,Dv,Dk). modeling 已传 THD, converter 直接透传 (参考 recurrent converter).
         from torchair.ge._ge_graph import get_default_ge_graph, next_unique_name, Tensor, get_invalid_desc
         op = get_default_ge_graph().op.add()
         op.type = "ChunkGatedDeltaRule"

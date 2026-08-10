@@ -1,10 +1,12 @@
 # 量化接入 Converter 设计文档
 
-> 将 HuggingFace 模型经 GPTQ 权重量化后导出为含 `QuantBatchMatmulV4` 算子的 epair 格式
+> 将 HuggingFace 模型经 GPTQ 权重量化后导出为含 s8s4 量化 matmul 算子的 epair 格式
 >
 > 量化方案：**W4A8 s8s4**（激活 s8 per-token 动态对称 + 权重 s4 per-group 对称）
 >
-> 最后更新: 2026-08-03
+> 算子实现：路径 C'（复用 CANN V4 整数 int8/int4）经实测不可达 s8s4 正确结果，转方案 A 自研 `quant_matmul_s8s4`（详见下文"方案 A"一节）
+>
+> 最后更新: 2026-08-06
 
 ## 目录
 
@@ -12,8 +14,10 @@
 - [已有 dopt_lm 框架盘点](#已有-dopt_lm-框架盘点)
 - [量化策略](#量化策略)
 - [端到端流程](#端到端流程)
+- [一步化流程（GPTQ + 导出内存链路，待实现）](#一步化流程gptq--导出内存链路待实现)
 - [待实现模块](#待实现模块)
-- [int4 物化的 CANN 约定（遗留）](#int4-物化的-cann-约定遗留)
+- [int4 物化的 CANN 约定（已定：V4 整数 int4）](#int4-物化的-cann-约定已定v4-整数-int4-per-group)
+- [方案 A — 自研 quant_matmul_s8s4 算子规格](#方案-a--自研-quant_matmul_s8s4-算子规格)
 - [遗留问题](#遗留问题)
 - [环境与执行顺序](#环境与执行顺序)
 
@@ -42,12 +46,12 @@
 
 ### 入口与主流程
 
-| 文件 | 作用 |
-|------|------|
-| `opt_main.py` | CLI 入口。两步：① 不存在 dopt_config 时 `generate_config` 生成脚手架并退出；② 调 `llm_quant_pipline` → `weight_quant_pipline`。 |
+| 文件　　　　　　　　　　　　　 | 作用　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　|
+| --------------------------------| -----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `opt_main.py`　　　　　　　　　| CLI 入口。两步：① 不存在 dopt_config 时 `generate_config` 生成脚手架并退出；② 调 `llm_quant_pipline` → `weight_quant_pipline`。　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　 |
 | `opt_funcs/eco_stage/train.py` | `weight_quant_pipline`：有 KD 走 `train`，否则走 `ptq_quant_pipline`。`ptq_quant_pipline` 调 `weight_quant_loop` 跑 GPTQ，再 `prepare_model`→`optimize_model` 把 `nn.Linear→QLinear`，注入 scale，存 `trained_quant_weight.pth`。 |
-| `do_opt.py` | `optimize_model(model, config_file)`：按 `layer_strategy` 把目标 module wrap 成 `QLinear`/`QEmbedding`，`replace_module_by_names` 做模块替换。`set_quant_state`/`set_calibrate_state` 切换 fakequant 开关。 |
-| `builder.py` | `init_builder()` 注册 `modules` + `quantizer`（`Register` 模式）。 |
+| `do_opt.py`　　　　　　　　　　| `optimize_model(model, config_file)`：按 `layer_strategy` 把目标 module wrap 成 `QLinear`/`QEmbedding`，`replace_module_by_names` 做模块替换。`set_quant_state`/`set_calibrate_state` 切换 fakequant 开关。　　　　　　　　　　　 |
+| `builder.py`　　　　　　　　　 | `init_builder()` 注册 `modules` + `quantizer`（`Register` 模式）。　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　|
 
 ### GPTQ 产出
 
@@ -168,6 +172,54 @@ converter --quant
 
 ---
 
+## 一步化流程（GPTQ + 导出内存链路，待实现）
+
+> 现状两步：① dopt GPTQ 跑在 HF `AutoModelForCausalLM`（NPU），产出磁盘 state_dict；② converter 载 cann_lm 模型，按层名 port 该 state_dict → 物化 → swap → 导出。两步靠磁盘桥接。
+>
+> 根因：dopt GPTQ 依赖 transformers `AutoModelForCausalLM`（`weight_quant_loop` 用 `model.model.layers`/Catcher/hooks，写死 HF 模型结构），无法直接跑在 cann_lm 自定义模型上；故 GPTQ（HF 模型）与导出（cann_lm 模型）是两个模型实例，磁盘 state_dict 作桥。
+
+### 目标命令（一条）
+
+```bash
+DEVICE=npu python cann-lm-converter.py \
+  --hf-path /path/to/hf --output-dir /path/to/out --dtype float16 \
+  --quant-gptq --quant-group-size 256
+# 进程内：GPTQ(NPU) → 内存 dopt_sd → swap → export，无磁盘往返
+```
+
+`--quant-path`（消费磁盘产物，CPU-only 机用）保留作兜底，两者并存。
+
+### 三处改动点
+
+| # | 文件:行 | 改动 |
+|---|---|---|
+| 1 | `dopt_lm/opt_funcs/eco_stage/train.py:524-571` | 把 `ptq_quant_pipline` 的"产出 state_dict"与"落盘"拆开：新增 `ptq_quant_produce_state_dict(base_model, config) -> dict`（GPTQ + swap-to-QLinear + 注入 group_scale，**返回** `dopt_model.state_dict()`，不落盘）；`ptq_quant_pipline` 改为调它再落盘 |
+| 2 | `cann_lm/converter/quant/swap.py:145-216` | `swap_to_quant_linear_from_dopt` 拆成：`swap_to_quant_linear_from_sd(model, sd: dict, ...)`（收内存 dict）+ `swap_to_quant_linear_from_dopt(model, dopt_path, ...)`（前者 load 后转发）。`swap_embeddings_from_dopt` 已直接收 sd，无需改 |
+| 3 | `cann-lm-converter.py:89-99,189` | `convert()` 加 `quant_gptq` 分支（与 `quant_path` 并列）：调 `ptq_quant_produce_state_dict(hf_path, dopt_cfg)` → `swap_to_quant_linear_from_sd(...)`；CLI 加 `--quant-gptq`（store_true）+ 可选 `--dopt-config`/`--dopt-optimize-config`（默认 `cann_lm/converter/quant/dopt_config.json`+`config.yaml`） |
+
+省内存变体（#1 可选优化）：绕过 `dopt_model` 重建，直接从 `weight_quant_loop` 返回的 `(quantizers, weight_q_weight)` 拼 sd——`{name}.weight` 已在 `weight_q_weight`，`{name}.quant_op.weight_quantizer.s = quantizers[name].group_scale.flatten()`，bit/unsigned_quant/offset 手填。省一份 HF 模型拷贝，但需在 converter 侧复制 `weight_q_params_adapter_into_dopt` 的 key 格式。
+
+### 必须处理的两个细节
+
+1. **calibration 路径**：`config.yaml` 的 `train_files: ["calibration.json"]` 相对 CWD。converter 从项目根跑时需把 calibration 绝对化，或 `chdir` 到 `cann_lm/converter/quant/` 再调 GPTQ（否则 `get_loaders` 找不到文件）。
+2. **环境**：converter 进程须 `DEVICE=npu` + `torch_npu` 可 import（GPTQ 段需要）。dopt 内部已自行做 layer CPU↔NPU 搬移，export 段仍在 CPU（`load_model` 默认 `device="cpu"`）。
+
+### 内存权衡
+
+进程内同时持有：cann_lm 模型（export）+ dopt 内部 2 份 HF 模型拷贝（GPTQ + dopt_model）+ 提取出的 sd dict ≈ **3–4× 模型大小**峰值。0.6B 无虞；7B+ 需 `del dopt_model; gc.collect()` 顺序释放，或退回 `--quant-path` 两步。省内存变体可降到 ~2×。
+
+### 兜底（不改代码）
+
+shell 一条龙（仍两步、有磁盘往返，但一条命令）：
+```bash
+DEVICE=npu python -m dopt_lm.opt_main --model-path HF \
+  --dopt-config .../dopt_config.json --optimize-config .../config.yaml \
+  --output-dir .../quant_output --hf_type_save && \
+python cann-lm-converter.py --hf-path HF --output-dir OUT --quant-path .../quant_output
+```
+
+---
+
 ## 待实现模块
 
 ### Track 1 — 物化 + 导出 QuantLinear（Python 侧）  ✅ 已完成
@@ -204,28 +256,47 @@ converter --quant
 
 ---
 
-## int4 物化的 CANN 约定（遗留，已具体化）
+## int4 物化的 CANN 约定（已定：V4 整数 int4 per-group）
 
-Track 0 注册算子时核对 CANN REG_OP（`torchair/.../auto_generated_ge_raw_ops.py`）发现：**CANN 没有"整数 int4 per-group + int8 act"的单算子**。两个候选算子格式不同：
+Track 0 注册算子时核对 CANN REG_OP（`torchair/.../auto_generated_ge_raw_ops.py`）发现 V4 的 REG_OP 定义列的是 MXFP dtype（DT_FLOAT8_E4M3FN / DT_FLOAT4_E2M1），曾据此误判"V4 = MXFP only，非整数 int4"。
 
-| CANN op | x1 (act) | x2 (weight) | scale | 粒度 | 备注 |
+**实测推翻此结论**：本机 CANN 9.2.0 的预编译 kernel 目录 `opp/built-in/op_impl/ai_core/tbe/kernel/ascend910_93/ops_nn/quant_batch_matmul_v4/` 下有 **7 个预编译 .o**，其中含整数 int4 组合（命名约定 `QuantBatchMatmulV4_{x1_fmt}_{x2_fmt}_{x1_dtype}_{x2_dtype}_{out_dtype}_{variant}`）：
+
+| 预编译 kernel | x1(act) | x2(weight) | out | 方案 | tilingKey |
 |---|---|---|---|---|---|
-| `QuantBatchMatmulV3` | DT_INT8 / DT_INT4 | DT_INT8 / DT_INT4 | DT_UINT64/DT_FLOAT/DT_INT64/DT_BF16 | per-tensor/per-channel（**无 group_size attr**） | 整数 int4/int8，匹配 `materialize_int4` 的整数物化 |
-| `QuantBatchMatmulV4` | DT_FLOAT8_E4M3FN | DT_FLOAT4_E2M1 | DT_BF16 等 | per-group（有 group_size） | **MXFP（微缩浮点）**，非整数 int4 |
+| `ND_ND_int4_int4_{bf16,fp16}` | int4 | int4 | bf16/fp16 | A4W4 | 1040 |
+| **`ND_ND_int8_int4_{bf16,fp16}`** | **int8** | **int4** | bf16/fp16 | **A8W4 = W4A8** | **24** |
+| `ND_ND_int8_int8_bf16` | int8 | int8 | bf16 | A8W8 = W8A8（已验证跑通）| 529 |
+| `ND_NZ_int8_int4_{bf16,fp16}` | int8 | int4(NZ) | bf16/fp16 | W4A8 (x2 NZ 格式) | 276 |
 
-**当前实现的不匹配（须对齐）**：`_quant_matmul_converter` 把 `npu::npu_quant_matmul` → `ge.QuantBatchMatmulV4`（mxfp4），但 `materialize_int4` 产出**整数 int4（int8 存）**。stub 上能导出（`ge.QuantBatchMatmulV4` 通过 `check_cann_compat`、`npu_dynamic_quant` 经 `custom_op` 绕过 check），但**真 NPU OM 编译会 dtype 报错**（V4 期望 FLOAT4_E2M1，给的是 int8）。
+→ **V4 同时支持整数 int4（`int8_int4` = W4A8）和 mxfp4**，REG_OP 只列了 mxfp 分支但 runtime kernel 覆盖整数 dtype。**V3（per-channel 无 group_size）不再必要**。
+
+**当前实现的对齐状态**：`_quant_matmul_converter` 把 `npu::npu_quant_matmul` → `ge.QuantBatchMatmulV4`，`materialize_int4` 产出**整数 int4（int8 unpack 存）**。x1=int8（DynamicQuant 产）、out=fp16 命中 `ND_ND_int8_int4_fp16`（tilingKey=24）。**proto（`cann/ops-nn` 官方 `quant_batch_matmul_v4_proto.h`）暴露两个 converter 须对齐点**：
+
+| 项 | proto 要求（A8W4） | converter 现状 | 对齐 |
+|---|---|---|---|
+| x2(weight) dtype | `DT_INT4`（proto `INPUT(x2, {DT_FLOAT4_E2M1, DT_INT4, DT_INT8})` 明列 int4 for A8W4）| 不设 `x2_dtype` → x2 留 `DT_INT8`（unpack 存） | ❌ 须设 `x2_dtype` 触发 `ge.Bitcast`→`DT_INT4` |
+| transpose_x2 | proto 注释："Currently, it should **always be true**"；true 时 x2 shape `(n,k)`、x2_scale `(n, k/group)` | 硬编码 `transpose_x2=False`，预转置 x2=`[K,N]`、scale=`[K//group,N]` | ❌ 可能须改 True（不预转置） |
+| x1(act) dtype | `DT_INT8` | DynamicQuant 产 int8 | ✅ |
+| x2_scale dtype | `DT_FLOAT32`/`DT_UINT64` | fp32 | ✅ |
+| x1_scale(pertoken) | `DT_FLOAT32` shape `(m,)` | fp32 `(m,)` | ✅ |
+| compute_type attr | -1(auto, 整数 int4 走 int8_int4 kernel) / 4(f8f4, mxfp) | 默认 -1 | ✅ |
+| dtype attr | 1=fp16, 27=bf16 | output_dtype=5(fp16)→映射 | 需验映射 |
+
+→ converter 的 `transpose_x2=False` + 不设 `x2_dtype` 可能就是 OM 编译没命中 `int8_int4` 预编译 kernel 的原因。**待实测确认**：(a) x2 用 `DT_INT4`（unpack int8 存 or int4pack `(k,n//8) int32`）+ `transpose_x2=True` 是否命中 tilingKey=24 预编译 kernel；(b) unpack int8 存储是否被 DT_INT4 接受（还是须 int4pack）。
 
 `DynamicQuant`（act int8）正确匹配（已注册、QuantLinear 已用 `npu_dynamic_quant`→`custom_op("DynamicQuant")`）。
 
-### 三条对齐路径（待选型）
+### 路径选型（已定：C'）
 
 | 路径 | 选用 op | 改动 | 取舍 |
 |---|---|---|---|
-| **A. 整数 int4 per-channel** | `QuantBatchMatmulV3` | converter V4→V3；`materialize_int4` 改 per-channel（group=in，去 per-group256） | 粒度粗一些，但匹配真实 CANN 整数算子；改动小 |
-| **B. MXFP4/MXFP8** | `QuantBatchMatmulV4` | `materialize_int4` 改产 `FLOAT4_E2M1`（mxfp4 packed）；act 改 mxfp8（非 DynamicQuant 的 int8） | V4 支持 per-group；改动大（mxfp4 物化+packed 布局） |
-| **C. 维持现状** | V4（已注册） | 无 | 导出能产 IR，但整数 int4 权重与 V4 mxfp4 dtype 不符 → 真 NPU OM 编译失败 |
+| **C'. V4 整数 int4 per-group（已选定）** | `QuantBatchMatmulV4` | 命中 `ND_ND_int8_int4` 预编译 kernel；确认 x2 存储布局（unpack vs int4pack）+ 可能设 `x2_dtype` 触发 Bitcast 到 DT_INT4 | 匹配真实 CANN 整数 int4 kernel，支持 per-group，无需 V3/无需 mxfp4 转换；预编译 kernel 跳过 LxFusion 重编 |
+| ~~A. V3 整数 per-channel~~ | — | — | 弃用：V4 已有 int8_int4 kernel，V3 per-channel 粒度粗没必要 |
+| ~~B. V4 mxfp4~~ | — | — | 弃用：V4 已支持整数 int4，无需转 mxfp4 |
+| ~~C. 维持现状（旧结论）~~ | — | — | 旧结论"V4=mxfp4 不符、真 NPU OM 编译失败"已被预编译 kernel 实测推翻 |
 
-**物化层已验证无 bug（diag）**：dopt 产物用 reshape `[out, in//group]` + signed `[-8,7]` + offset=0 物化，重建 vs GPTQ 权重 cosine=1.0000（与 dopt 一致）。即问题不在物化数学，而在"物化的整数 int4 该喂哪个 CANN op"（V3 还是改 mxfp4 喂 V4）。
+**物化层已验证无 bug（diag）**：dopt 产物用 reshape `[out, in//group]` + signed `[-8,7]` + offset=0 物化，重建 vs GPTQ 权重 cosine=1.0000（与 dopt 一致）。物化的整数 int4 直接喂 V4 的 `int8_int4` kernel（路径 C'）。
 
 ---
 
@@ -247,8 +318,8 @@ Track 0 注册算子时核对 CANN REG_OP（`torchair/.../auto_generated_ge_raw_
 
 ## 遗留问题
 
-1. **int4 CANN 算子选型（核心遗留，已具体化）**——见上节"int4 物化的 CANN 约定"。CANN 无"整数 int4 per-group + int8 act"单算子：`QuantBatchMatmulV3`（整数 int4/int8，per-channel，无 group_size）vs `QuantBatchMatmulV4`（MXFP FLOAT4_E2M1，per-group）。当前 converter→V4 与整数 int4 物化 dtype 不符（真 NPU OM 编译会失败）。**待选型 A（V3 整数 per-channel）/B（V4 mxfp4）/C（维持）**。
-2. **dopt 物化数学对齐**：dopt `Quantizer` 的 `maxq=15` 无符号+zero-point 与 adapter 置零 offset 的组合；diag 已确认用 reshape`[out,in//group]`+signed`[-8,7]`+offset=0 物化，重建 vs GPTQ 权重 cos=1.0000（物化层无 bug）。剩"喂哪个 CANN op"（同 1）。
+1. ~~**int4 CANN 算子选型（核心遗留，已具体化）**~~ — **[已解决，选 C']** 见上节"int4 物化的 CANN 约定"。实测 CANN 9.2.0 预编译 kernel 目录含 `QuantBatchMatmulV4_ND_ND_int8_int4_{bf16,fp16}_high_performance.o`（tilingKey=24），即 **V4 支持整数 int4 W4A8**（x1=int8, x2=int4），推翻旧结论"V4=MXFP only"。**已选路径 C'：V4 整数 int4 per-group**（无需 V3、无需 mxfp4 转换）。剩唯一未知：V4 DT_INT4 期望的 x2 存储布局（unpack int8 vs int4pack `(k,n//8) int32`），需实测。
+2. **dopt 物化数学对齐**：dopt `Quantizer` 的 `maxq=15` 无符号+zero-point 与 adapter 置零 offset 的组合；diag 已确认用 reshape`[out,in//group]`+signed`[-8,7]`+offset=0 物化，重建 vs GPTQ 权重 cos=1.0000（物化层无 bug）。物化的整数 int4 直接喂 V4 的 `int8_int4` kernel（路径 C'，同 1）。
    - **dopt 产物 bit/unsigned_quant/offset 现已可读+驱动**（`swap._read_dopt_quant_meta`）：实测 dopt `model.safetensors` 每个 QLinear `{name}.quant_op.weight_quantizer.{bit,unsigned_quant,offset}` 都在（bit=int64 标量=4、unsigned_quant=fp32 标量=0.0、offset=fp32 扁平`[out*groups]`同`s`布局）。`swap_to_quant_linear_from_dopt` 现读 bit→`materialize nbits`、读 offset→`QuantLinear.weight_offset` buffer（对称时全 0 归一化为 None，dormant plumbing，下游 GE converter `x2_offset`/CPU eager `w_fp+=offset` 已就绪）、读 unsigned_quant 校验必须=0（unsigned int4 不支持，非 0 报错，见下条）。E2E 验证 qwen3-0.6B 196 层 swap + forward 跑通。**unsigned_quant 仍遗留**：非 0（unsigned int4 `[0,15]`）触及 CANN int4 signed/unsigned 编码约定（见遗留 1 的 V4 选型），当前直接报错拒绝。
    - **offset 反量化语义未对齐（未来非对称才触发）**：dopt `QuantizerFuncIntOffset` 反量化 `w_fp=(q-offset)*scale`；当前 CPU eager kernel `_npu_quant_matmul_cpu` 用 `w_fp=q*scale+offset`（公式不符）且 offset 未按 group `repeat_interleave` 扩维。对称 offset=None 时不触发；非对称支持需先对齐 op 的 offset 语义+扩维。
 3. **CPU-only 适配**：converter 侧 GPTQ 跑不了（需 NPU/GPU+校准）。**`--quant-path` 已作兜底**：离线机跑 dopt GPTQ 产出（`quant_output/model.safetensors` 或 `trained_quant_weight.pth`），converter 加载它只做物化+swap+导出（不跑 GPTQ）。dopt `opt_main` 在本机 NPU 上跑 GPTQ 曾静默卡住（step A 接入 converter 待解）。
@@ -294,7 +365,8 @@ Track 0 注册算子时核对 CANN REG_OP（`torchair/.../auto_generated_ge_raw_
 
 - V4→V3 融合后，TBE 尝试用 LxFusion 实时编译 V3 kernel → **LxFusion 不支持 Ascend910_9362** → 4/12 个 QBMM 编译失败（8 个用预编译 binary 通过）。
 - 这不是代码 bug——**CANN 9.2.0 的 LxFusion 编译器不支持本机芯片 Ascend910_9362**。
-- 需要更新 CANN 到支持 Ascend910_9362 的版本（或用预编译 kernel 覆盖）。
+- **根因新解**（见上节"int4 物化的 CANN 约定"）：当时 converter 导出的 V4 节点 dtype/format 组合**没命中任何预编译 kernel**（7 个预编译 .o 见上节表），触发 LxFusion 重编（910_9362 不支持）→ 失败。**若让 dtype 组合命中 `ND_ND_int8_int4` 预编译 kernel（x1=int8, x2=int4, out=fp16/bf16，tilingKey=24），runtime 直接用预编译 binary，跳过 LxFusion**，OM 编译应能过。这是路径 C' 的关键依据。
+- 备选：更新 CANN 到支持 Ascend910_9362 的版本（让 LxFusion 也能用）。
 
 ### 关键 ep_json 修复效果对照
 
@@ -320,7 +392,7 @@ Track 0 注册算子时核对 CANN REG_OP（`torchair/.../auto_generated_ge_raw_
 
 - **GPTQ（A 步）需 NPU/GPU**：dopt 依赖 `transformers.AutoModelForCausalLM` + `accelerate` dispatch + `autocast`/`GradScaler`，`DEVICE=cuda/npu`。当前 dev 机虽有 NPU，可跑；纯 CPU 机跑不了 GPTQ（见遗留 3）。
 - converter 导出（B–E 步）本身 CPU 可跑（torch.export + pack + cpu eager 回归），不依赖 NPU。
-- **OM 编译需 NPU + CANN**：`aclgrphBuildModel` 需真 NPU 环境（CANN toolkit + device）。本机 Ascend910_9362 + CANN 9.2.0 的 **LxFusion 不支持 910_9362** → V4→V3 融合 kernel 编译失败。需更新 CANN 版本。
+- **OM 编译需 NPU + CANN**：`aclgrphBuildModel` 需真 NPU 环境（CANN toolkit + device）。本机 Ascend910_9362 + CANN 9.2.0 的 **LxFusion 不支持 910_9362**，但**预编译 kernel 不走 LxFusion**——只要 converter 导出的 V4 dtype 组合命中预编译 kernel（如 `ND_ND_int8_int4`，tilingKey=24），runtime 直接用预编译 binary，OM 编译应能过（见"int4 物化的 CANN 约定"路径 C'）。
 - **stub GE 限制**：converter 导出在 stub 环境（venv + torchair stubs）上，`check_cann_compat` 拒绝 DynamicQuant/Bitcast 等 → 需 `is_cann_compat` monkey-patch 绕过（见 OM 调试记录修复 #2）。
 
 ### 建议执行顺序（当前进度）
@@ -328,8 +400,487 @@ Track 0 注册算子时核对 CANN REG_OP（`torchair/.../auto_generated_ge_raw_
 1. ~~**Track 1（物化+QuantLinear）+ Track 2（cpu eager impl）**~~ —— **已完成**：`materialize_int4`/`materialize_int4_with_scale` + `QuantLinear`（W4A8/W4A16）+ `npu_quant_matmul`/`npu_dynamic_quant` cpu impl。qwen3-0.6B eager 回归（W4A8 cos 0.826、物化 diag cos 1.0000）。
 2. ~~**Track 3（CLI 接入）**~~ —— **已完成**：`cann-lm-converter.py` 加 `--quant-path`/`--quant-group-size`/`--quant-act`；`load_model` 后调 `swap_to_quant_linear_from_dopt`（port dopt 产物→物化→swap）；`model_config.json` 写 `quant_info`。qwen3-0.6B 端到端跑通，ep_json 含 `QuantBatchMatmulV4`+`DynamicQuant` IR。
 3. ~~**Track 0（C++ reg）**~~ —— **已完成**：两 `reg_register.h` 加 `QuantBatchMatmulV3`+`QuantBatchMatmulV4`+`DynamicQuant`（75/75 & 44/44 配对）。
-4. ~~**OM 编译调试**~~ —— **InferShape PASS / TBE FAIL**：经 7 轮修复（binary 重建 + is_cann_compat patch + strip None + dummy bias + ge.QuantBatchMatmulV4 全 IR + DynamicQuant 用 torchair 原生 converter + fake meta scale shape），Step 1-2 PASS，Step 3 卡在 `LxFusion: Unsupported platform socVersion[Ascend910_9362]`（CANN 9.2.0 版本限制，非代码 bug）。详见"OM 编译调试记录"。
-5. **攻遗留（int4 CANN 算子选型 + LxFusion 版本）** ← **下一步**：
-   - 选 A（V3 整数 per-channel）/B（V4 mxfp4）/C（维持），对齐 `materialize_int4` + converter。
-   - 更新 CANN 到支持 Ascend910_9362 的版本（解决 LxFusion unsupported）。
-6. **dopt GPTQ step A 接入 converter**（NPU）+ 真 NPU OM 编译验证（需 CANN 更新后）。
+4. ~~**OM 编译调试**~~ —— **InferShape PASS / TBE FAIL**：经 7 轮修复（binary 重建 + is_cann_compat patch + strip None + dummy bias + ge.QuantBatchMatmulV4 全 IR + DynamicQuant 用 torchair 原生 converter + fake meta scale shape），Step 1-2 PASS，Step 3 卡在 `LxFusion: Unsupported platform socVersion[Ascend910_9362]`（CANN 9.2.0 版本限制，非代码 bug）。
+5. ~~**int4 CANN 算子选型**~~ —— **[已解决，选 C']**：实测 CANN 9.2.0 预编译 kernel 目录含 `QuantBatchMatmulV4_ND_ND_int8_int4_{bf16,fp16}`（V4 支持整数 int4 W4A8），推翻旧"V4=MXFP only"结论。选路径 C'（V4 整数 int4 per-group，命中预编译 kernel 跳过 LxFusion）。
+6. **对齐 x2 存储布局命中预编译 kernel** ← **下一步**：
+   - 实测 V4 `int8_int4` kernel 期望的 x2(weight) 存储布局：unpack int8（1 int4/int8）还是 int4pack `(k,n//8) int32`。
+   - 若需 int4pack：物化后/导出侧调 `npu_convert_weight_to_int4pack`；若接受 unpack：直接喂。
+   - 必要时设 `x2_dtype` 触发 Bitcast 到 DT_INT4，确保 runtime 选到 tilingKey=24 的 `ND_ND_int8_int4` kernel。
+   - 重跑 OM 编译验证命中预编译 kernel（跳过 LxFusion）。
+7. **dopt GPTQ step A 接入 converter**（NPU）+ 真 NPU OM 编译验证（需命中预编译 kernel 或更新 CANN）。
+
+---
+
+## 方案 A — 自研 quant_matmul_s8s4 算子规格
+
+> 路径 C'（复用 CANN V4 整数 int8/int4）经实测不可达 s8s4 正确结果：
+> - eager 路径 `npu_quant_matmul` int8/int4 结果错——x2_scale 要求 **uint64 deqScale（FP19 定点 + int9 offset 位打包）**，非 fp32 `q*scale` 语义（`trans_quant_param_v2.h:23-24,270-304`、预编译 kernel JSON `x2_scale dtype=uint64`）；
+> - OM 编译路径经 V4→V3 融合 pass 降级（int8/int4 既非 MxA8W4 亦非 A8W8GB，见附录 A.2.2 `MeetRequirements`），而 V3 无 `int8_int4` 预编译 kernel → LxFusion 重编 → 910_9362 不支持（见上节"OM 编译调试记录"）。
+>
+> 故转方案 A：自研 AscendC kernel `quant_matmul_s8s4`，用 **fp32 scale** 做 `q*scale` 反量化，绕开 CANN V4 的 uint64/FP19 与 V4→V3 融合降级。本节给定算子输入输出与计算语义，供实现方对齐；**kernel 内部流水为实现方自由**。
+
+### 计算语义（s8s4 对称，offset=0）
+
+记激活 `x1` `[b, m, k]`、权重 `x2` `[n, k]`（nn.Linear 自然朝向）、group_size `g`（`k%g==0`）：
+
+```
+y[b,m,n] = Σ_k ( x1_q[b,m,k] · x1_scale[b,m] ) · ( x2_q[n,k] · x2_scale[n, k//g] ) + bias[n]
+```
+
+- `x1_q` int8（per-token 动态对称，每行一个 scale）、`x2_q` int4（per-channel×per-group 对称，每 (n,group) 一个 scale）。
+- `x1_scale[b,m]` 是 per-token，**可提到 k 求和之外**（kernel 里后乘即可）。
+- `x2_scale[n, k//g]` 是 per-group，**在 k 求和之内**（每组 g 个元素共用一个，反量化时按组广播，无法提到求和之外）。
+
+### 推荐算子签名
+
+| 方向 | 名称 | dtype | shape | 语义/来源 |
+|---|---|---|---|---|
+| in | `x1` | int8 | `[b, m, k]` | 来自 DynamicQuant 的已量化激活 |
+| in | `x1_scale` | fp32 | `[b, m]` | per-token scale，来自 DynamicQuant |
+| in | `x2` | int4（packed） | `[n, k]` 逻辑 ≈ `[n, k//2]` int8 物理 | nn.Linear 权重物化后的 int4 |
+| in | `x2_scale` | fp32 | `[n, k//g]` | per-channel×per-group，来自 GPTQ |
+| in（opt） | `bias` | 同输出 | `[n]` | 融合 add，省一个节点 |
+| attr | `group_size` | int | — | K 轴分组 g |
+| attr | `output_dtype` | int | — | 1=fp16 / 27=bf16 |
+| attr | `transpose_x1` | bool | — | 默认 False（激活恒不转） |
+| attr | `transpose_x2` | bool | — | 默认 True（x2 给 `[n,k]`，kernel 内部转置喂 cube，对齐 CANN 约定） |
+| out | `y` | fp16/bf16 | `[b, m, n]` | — |
+
+### 硬需求 vs 设计选择
+
+> 经验教训：勿把"现状数据格式"抬成"算子对齐目标"。下表区分给定 spec（不可改）与实现方设计选择（可调）。
+
+- **硬需求（s8s4 spec，不可改）**：`x1=int8 per-token 对称`、`x2=int4 per-channel×per-group 对称`、输出 fp16/bf16、offset=0。
+- **设计选择（推荐，实现方可改）**：
+  1. **激活量化拆出 op 外**：DynamicQuant 独立（已可用、已注册 `ge.DynamicQuant`），本 op 只做"已量化 int8×int4 → fp16"。权衡：若要更少图节点可把 per-token max/div 融进 op，但 cube+vector 混合融合更复杂。
+  2. **scale 用 fp32**：精度参考 W8A8 已验证路径（`examples/verify_quant_matmul_v4_w8a8.py` maxdiff≈0 用 fp32 pertoken）；x2_scale 沿用 dopt/GPTQ 产出的 fp32。fp16 占带宽更小但有精度风险，实现方可据 kernel 实测定。
+  3. **x2 nibble-packed `[n, k//2] int8`**：比 unpack 省 2x 带宽。kernel 内部 L1/L0B 的具体布局是实现方自由（CANN 用 NZ/int4pack，不必照搬）。
+  4. **transpose_x2=True**：让 converter 不必预转置权重（更干净），kernel 在 L1 load 时处理转置。
+  5. **不带 offset 输入**：对称=0；非对称未来再加 dormant 字段。
+
+### kernel 内部流水参考（非 I/O 约束）
+
+权重侧 per-group scale 在 k 求和之内，故 kernel 须在 cube 累加前把 int4 权重按组反量化。推荐流水（供实现方参考）：
+
+1. L1/L0B load 时 int4→int8 unpack，按组取 `x2_scale` 广播；
+2. cube 做 **int8×int8 → int32** 累加（命中 W8A8 已验证的 int8 cube 路径，规避 FP19/uint64）；
+3. fixpipe 阶段乘 `x1_scale`（per-row，可后乘）+ `bias` → cast fp16/bf16。
+
+此流水让 s8s4 数值落在"int8 cube + fp32 scale 反量化"语义上，是绕开 CANN V4 失败点的关键。
+
+### 与现有 converter 链路的接续（当前流程 vs 方案 A 的差距）
+
+当前导出流程是"路径 C' 形态"（`QuantLinear` 预转置权重 + `npu::npu_quant_matmul` → `ge.QuantBatchMatmulV4`），与方案 A 签名有 **7 处不匹配**，按下表改动。**已匹配项**（无需改）：DynamicQuant 拆出、`x1_scale`/`x2_scale` dtype=fp32、`offset=None`（对称）、`output_dtype` 语义。
+
+| # | 文件:行 | 当前（路径 C' 形态） | 改为（对齐方案 A） |
+|---|---|---|---|
+| 1 | `materialize.py:65` | 产出 unpack int8 `[out,in]` | nibble-packed int8 `[n,k//2]` |
+| 2 | `quant_linear.py:73-74` | 预转置 `w2/sc=...transpose()` | 删预转置，权重/scale 自然朝向 `[n,k]`/`[n,k//g]` |
+| 3 | `quant_linear.py:101` | `group_sizes=[1,1,g]`（V4 的 48 位 m/n/k 编码） | `group_size=g`（单 int attr） |
+| 4 | `quant_linear.py:90-94` | 恒传 dummy `zeros[n_out]`（V4 InferShape workaround） | 源 Linear 无 bias 时传 None |
+| 5 | `quant_linear.py:95,103` | `npu::npu_quant_matmul` + `transpose_x2=False` | `cann_lm::quant_matmul_s8s4` + `transpose_x2=True` |
+| 6 | `_quant_matmul_converter.py:109-124` | 映射到 `ge.QuantBatchMatmulV4`（`transpose_x2` 硬编码 False、不设 `x2_dtype`） | 改映射到本 op 的自定义 GE op/graph |
+| 7 | `reg_register.h`（`examples/export_llm_model/` + `examples/export_and_load_epair/` 两文件） | 注册 `QuantBatchMatmulV4` | 注册新 op（替换/并存 V4） |
+
+**无需改**：`ge_graph_builder.PreparePlaceholders` 通用喂权重常量到任意算子输入（weight_q/scale 自动进 bin、作 Const 喂 x2/x2_scale）；`pack_weights` 通用序列化（int8/fp32 自动落盘）；`swap_to_quant_linear_from_dopt` 的 dopt 产物 port 逻辑复用，仅下游 buffer 朝向/packing 跟随 #1#2 调整。
+
+> 注：上文"建议执行顺序"第 5 项（"已解决，选 C'"）与第 6 项（"对齐 x2 存储布局命中预编译 kernel"）已被本节方案 A 取代——C' 路径不可达，不再追求命中 V4 预编译 kernel。
+
+---
+
+## 附录 A — CANN QuantBatchMatmulV3 / V4 op_graph 源码分析
+
+> 源码位置：`cann/ops-nn/matmul/quant_batch_matmul_v3/op_graph/` 与 `cann/ops-nn/matmul/quant_batch_matmul_v4/op_graph/`
+>
+> 本附录记录对 CANN 官方 V3/V4 op_graph 层代码的逐文件分析，作为 converter 选型与对齐的依据。
+
+### A.1 QuantBatchMatmulV3 op_graph 结构
+
+```
+quant_batch_matmul_v3/op_graph/
+├── CMakeLists.txt                                      构建脚本
+├── quant_batch_matmul_v3_proto.h                       算子原型注册
+├── quant_batch_matmul_v3_op_graph.cpp                  OpSelectFormat 实现
+├── quant_batch_matmul_v3_fallback.cpp                  Host 侧 fallback 执行
+└── fusion_pass/
+    ├── quant_batch_matmul_v3_transpose_fusion_pass.{h,cpp}  Transpose 融合 pass
+    └── z_z_matmul_t_qbmmv3_fusion_pass.{h,cpp}             MatMul→QBMMV3 融合 pass
+```
+
+#### A.1.1 算子原型（quant_batch_matmul_v3_proto.h）
+
+通过 `REG_OP(QuantBatchMatmulV3)` 注册，定义：
+
+- **输入**：`x1`、`x2`（必选）；`scale`、`offset`、`bias`、`pertoken_scale`（可选）
+  - x1/x2 类型：int8, int4, hifloat8, float8_e5m2, float8_e4m3fn, float4_e2m1
+  - scale 类型：uint64, float32, int64, bfloat16, float8_e8m0
+- **属性**：
+  - `dtype`（必选 Int）：输出类型（0=float32, 1=float16, 2=int8, 3=int32, 27=bfloat16）
+  - `transpose_x1`/`transpose_x2`（Bool，默认 false）
+  - `group_size`（Int，默认 0）：48 位编码（k/n/m 各 16 位）
+- **输出**：`y`（float16/int8/bfloat16/int32/float32）
+
+proto 注释详细说明了各平台（Atlas Inference、A2/A3、Ascend 950）支持的 dtype 组合与 quant 模式表。
+
+#### A.1.2 OpSelectFormat（quant_batch_matmul_v3_op_graph.cpp）
+
+根据 `x2` 是否为常量输入，动态生成 `OpSelectFormat` 结果（JSON 描述的 dtype/format 组合表）：
+
+- `listWeightNZ`：x2 为常量（常量折叠场景），weight 只保留 NZ 格式
+- `listQbmmV3`：非常量场景，与原始算子信息库一致
+
+`QbmmV3OpCheckHelper` 构造函数根据 `context->IsConstInput("x2")` 选择列表；`OpSelectFormat` 用 lambda 抽取每个张量的 dtype/format/unknownshapeFormat 列表，组装成 `TensorSpec`，用 `nlohmann::json` 序列化为字符串返回。
+
+通过 `IMPL_OP(QuantBatchMatmulV3).OpSelectFormat(QbmmV3OpSelectFormat)` 注册到 optiling。
+
+#### A.1.3 Host 侧 Fallback（quant_batch_matmul_v3_fallback.cpp）
+
+当算子在设备侧无法直接执行时，通过 `IMPL_OP(QuantBatchMatmulV3).OpExecuteFunc(...)` 注册 Host 回退函数 `QuantBatchMatmulV3ExecuteFunc`，根据输入 dtype/shape 路由到 `aclnnQuantMatmulV5` 或 `aclnnQuantMatmulV4`：
+
+**V5 路径**：当满足以下任一条件时调用 `aclnnQuantMatmulV5`：
+- x1 dtype ∈ {FLOAT8_E4M3FN, FLOAT8_E5M2, HIFLOAT8, FLOAT4_E2M1}（v5 输入类型）
+- 或为 "A8W8GB" 场景：x1/x2=int8、y=bf16、pertoken_scale/scale=float32、bias 为 null 或 float，且 x1 与 pertoken_scale、x2 与 scale 的存储维度数一致
+
+V5 调用还会读取 `group_size` 属性并传入，且补齐 yScale/x1Offset/yOffset 为 nullptr。
+
+**V4 路径**：其余情况调用 `aclnnQuantMatmulV4`。
+
+属性索引硬编码：`transpose_x1=1`、`transpose_x2=2`、`group_size=3`。
+
+#### A.1.4 Transpose 融合 Pass（quant_batch_matmul_v3_transpose_fusion_pass）
+
+**目标**：删除 `QuantBatchMatmulV3` 之前的 `Transpose`/`TransposeD`/`Reshape`（以及 Bitcast 模式下的同类节点），并翻转 `transpose_x1`/`transpose_x2` 属性。
+
+两个 Pass 类：
+- `QuantBatchMatmulV3TransposeFusionPass`：常规 pass
+- `QuantBatchMatmulV3TransposeLimitFusionPass`：继承前者，在"禁止关闭融合规则"场景下兜底，允许在内轴 > 65535 而外轴 ≤ 65535 时强制融合
+
+主要流程：
+1. 版本检查（仅 GE compiler ≥ 9.1.0 才生效）
+2. 前置检查：校验是 QBMMV3 节点、平台能力（supportL12btBf16、supportMmadS8S4）、dtype 合法性、shape 维度 ≥ 2、是否动态 shape、是否 Bitcast 模式
+3. 查找待删节点：根据内轴/外轴与 65535 的关系、平台是否支持 l12bt-bf16、x2 是否 NZ，决定 isDelTransx1/isDelTransx2；取出 x1/x2 上的 Transpose 节点；进一步尝试取 scale 上的等价 Transpose/Reshape（对 mx 量化的 FLOAT8_E8M0 scale 做了特殊等价判定）
+4. 执行融合：翻转 transpose 属性、绕过 Transpose 重连上游节点、上报融合、删节点
+
+#### A.1.5 MatMul→QBMMV3 融合 Pass（z_z_matmul_t_qbmmv3_fusion_pass）
+
+**目标**：把 `MatMul / MatMulV2 / MatMulV3 / BatchMatMul / BatchMatMulV2 / BatchMatMulV3` 转换成 `QuantBatchMatmulV3`，用一个常量 `scale=1.0`（`0x3F800000`）当作"伪量化"输入，从而复用 QBMMV3 的高性能实现。
+
+模式与构造：`Patterns()` 为 2/3/4 输入构造 6 类共 18 个匹配 pattern。
+
+准入条件：GE compiler 版本 ≥ 9.0.0；排除 hifloat8；Ascend950 平台还排除 `int8+int8→int32` 组合。
+
+替换流程：读取原节点的转置属性映射到 QBMMV3 的 `transpose_x1/transpose_x2`；创建常量 scale（uint64 1.0，shape={1}）；调用 `QuantBatchMatmulV3(...)` 生成新节点；更新输入/输出 desc；复制其他属性。
+
+### A.2 QuantBatchMatmulV4 op_graph 结构
+
+```
+quant_batch_matmul_v4/op_graph/
+├── CMakeLists.txt                                      构建脚本
+├── quant_batch_matmul_v4_proto.h                       算子原型注册
+└── fusion_pass/
+    ├── quant_batch_matmul_v4_to_v3_fusion_pass.{h,cpp}     V4 → V3 转换 pass
+    └── quant_batch_matmul_v4_transpose_fusion_pass.{h,cpp}  Transpose 融合 pass
+```
+
+相比 V3 的 op_graph，V4 这里**只包含算子原型和两个融合 pass**，没有 `OpSelectFormat` 和 `fallback` 实现——因为 V4 在 fallback 时会被转成 V3。
+
+#### A.2.1 算子原型（quant_batch_matmul_v4_proto.h）
+
+通过 `REG_OP(QuantBatchMatmulV4)` 注册，注释定位为"antiquant + matmul 的融合算子，支持 A8W4 / MxA8W4 / A8W8 / A4W4"。
+
+**输入（10 个，2 必选 + 8 可选）**：
+
+| Index | 名称 | 必选 | 类型 |
+|---|---|---|---|
+| 0 | `x1` | 是 | float8_e5m2 / float8_e4m3fn / int8 / int4 |
+| 1 | `x2` | 是 | float4_e2m1 / int4 / int8 |
+| 2 | `bias` | 否 | bfloat16 / float16 / float32 |
+| 3 | `x1_scale` | 否 | float16 / bfloat16 / float8_e8m0 / float32 |
+| 4 | `x2_scale` | 否 | float16 / bfloat16 / float8_e8m0 / uint64 / float32 |
+| 5 | `y_scale` | 否 | uint64 |
+| 6 | `x1_offset` | 否 | float16 / bfloat16（not supported yet） |
+| 7 | `x2_offset` | 否 | float16 / bfloat16 |
+| 8 | `y_offset` | 否 | float16 / bfloat16 / float32（not supported yet） |
+| 9 | `x2_table` | 否 | int8（not supported yet） |
+
+**属性**：
+- `dtype`（必选 Int）：输出类型，仅支持 1(float16) 和 27(bfloat16)
+- `compute_type`（Int，默认 -1）：-1(auto) 或 4(f8f4)
+- `transpose_x1`（Bool，默认 false）：注释说明"目前应当总是 false"
+- `transpose_x2`（Bool，默认 false）：注释说明"目前应当总是 true"
+- `group_size`（Int，默认 **-1**）：注意 V3 默认 0，V4 默认 -1
+
+**与 V3 的关键差异**：V4 把 scale 拆成了 `x1_scale`/`x2_scale`/`y_scale`/`x1_offset`/`x2_offset`/`y_offset`/`x2_table` 共 8 个可选输入，对应"反量化 + matmul"融合语义。
+
+#### A.2.2 V4→V3 转换 Pass（quant_batch_matmul_v4_to_v3_fusion_pass）
+
+**目标**：当 V4 在当前平台/场景下无需独立实现时，把它重写为 V3。
+
+**索引映射**（V4_V3_INDEX_MAP）：
+
+| V4 输入 | V4 idx | → | V3 输入 | V3 idx |
+|---|---|---|---|---|
+| x1 | 0 | → | x1 | 0 |
+| x2 | 1 | → | x2 | 1 |
+| bias | 2 | → | bias | 4 |
+| x1_scale | 3 | → | pertoken_scale | 5 |
+| x2_scale | 4 | → | scale | 2 |
+| x2_offset | 7 | → | offset | 3 |
+
+V4 的 `y_scale / x1_offset / y_offset / x2_table` 在转 V3 时被丢弃。
+
+**Patterns**：构造 9 个 pattern（optionalInputNumber 从 0 到 8），匹配 V4 节点不同可选输入数目的实际形态。
+
+**MeetRequirements**——决定是否需要把 V4 转 V3。两个"无需转换"的条件，满足任一则 `return false`（不做融合）：
+
+1. **V4 原生支持（MxA8W4）**：
+   ```
+   x1 == FLOAT8_E4M3FN && (x2 == FLOAT4_E2M1 || x2 == FLOAT) && (y == BF16 || y == FLOAT16)
+   ```
+   即 MxA8W4/MxA8W8FP 场景，V4 本身能跑，不需要降级。
+
+2. **A8W8 G-B 量化**：当 x1/x2 scale 都存在，且
+   ```
+   x1=int8, x2=int8, x1_scale=float32, x2_scale=float32, y=bf16
+   && x1 与 x1_scale 维度数相同 && x2 与 x2_scale 维度数相同
+   ```
+   即 perblock/pergroup 量化，V4 本身能跑。
+
+否则返回 true，进入 `Replacement` 把 V4 重写为 V3。
+
+**Replacement**：用 `EsGraphBuilder` 建新子图；遍历 `V4_V3_INDEX_MAP`，对每个 V4 实际存在的输入在 V3 侧按序创建输入端口；读取 V4 属性（`group_size` 为 -1 时改为 0）；调用 `es::QuantBatchMatmulV3(...)` 生成新节点；按映射表回写各输入 desc 和输出 desc。
+
+#### A.2.3 V4 Transpose 融合 Pass（quant_batch_matmul_v4_transpose_fusion_pass）
+
+**目标**：删除 `QuantBatchMatmulV4` 的 `x2` 与 `x2_scale` 输入前的 `Transpose` / `Reshape`（含动态 shape 的 `Pack-Gather-Shape` 链），并翻转 `transpose_x2` 属性。
+
+与 V3 transpose pass 的差异：
+- V3 pass 同时处理 x1/x2/scale/pertoken_scale 四个候选；V4 pass **只处理 x2 和 x2_scale**
+- V4 pass 仅支持 `x1=FLOAT8_E4M3FN`、`x2 ∈ {FLOAT4_E2M1, FLOAT}`、`y ∈ {BF16, FLOAT16}`（即 MxA8W4 场景）
+- V4 pass 额外处理了**动态 shape 下的 `Reshape(Shape→Gather→Pack)` 链**
+
+### A.3 V4 与 V3 的整体关系
+
+| 维度 | V3 op_graph | V4 op_graph |
+|---|---|---|
+| 算子原型 | scale/offset/pertoken_scale 3 量化输入 | 拆成 x1_scale/x2_scale/y_scale/x1_offset/x2_offset/y_offset/x2_table 8 个可选 |
+| OpSelectFormat | 有（按 weight 是否常量分两表） | **无**（直接用算子信息库） |
+| Fallback | 有，路由到 aclnnQuantMatmulV4/V5 | **无**（V4 通过 V4→V3 pass 走 V3 的 fallback） |
+| Transpose 融合 | x1/x2/x2_scale/pertoken_scale 四候选，Bitcast 模式，平台 l12bt/mmad 能力判定 | 仅 x2/x2_scale 两候选，仅 MxA8W4 dtype，额外处理 Pack-Gather-Shape 动态链 |
+| MatMul→V3 融合 | 有（z_z_matmul_t_qbmmv3，scale=1.0） | 无对应 |
+| V4→V3 转换 | 不适用 | 有（核心 pass，按 dtype/场景决定是否降级） |
+
+**整体设计**：V4 是更新的"反量化+matmul 融合"算子，原生支持 MxA8W4/A8W8GB 等新场景；当场景超出当前平台 V4 实现能力时，由 `QuantBatchMatmulV4ToV3FusionPass` 降级到 V3 走老路径。
+
+**两个 V4 pass 的互斥性**：`QuantBatchMatmulV4TransposeFusionPass` 的合法 dtype 恰好等于 to_v3 pass 里 `isV4Supported` 的条件。满足 MxA8W4 → transpose 融合 pass 生效，to_v3 pass 不生效；不满足 MxA8W4 且非 A8W8GB → to_v3 pass 生效，transpose 融合 pass 不生效。
+
+### A.4 MxA8W4 与 A8W8GB 场景详解
+
+这两个名字是量化场景的缩写，规则是 `<scale-mode>A<xbits>W<ybits>`：
+
+- **A8 / W4 / W8**：Activation 是 8-bit、Weight 是 4-bit 或 8-bit。这里的"8/4"指的是数据位宽，不限定 int 还是 float——float8_e4m3fn 算 8-bit，float4_e2m1 算 4-bit。
+- **Mx 前缀**：Microscaling 量化模式，使用低比特浮点（float8/float4）做激活和权重、用 float8_e8m0 做 scale，scale 按 k 轴 32 元素一组（对应 V3 proto 里 `mx quant` 表，group_size `[1,1,32]`）。
+- **GB 后缀**：Group-Block，即 pergroup-perblock 或 perblock-perblock 量化（V3 proto 里 group_size `[1,128,128]` / `[128,128,128]`）。区别于 perchannel/pertensor（scale 是 1D），GB 模式 scale 的形状与数据同维数。
+
+| 场景 | x1 | x2 | scale | 输出 |
+|---|---|---|---|---|
+| MxA8W4 | float8_e4m3fn（8b float） | float4_e2m1（4b float） | x1_scale/x2_scale 一般是 float8_e8m0 | bf16/fp16 |
+| A8W8GB | int8 | int8 | float32（与 x1/x2 同维数） | bf16 |
+
+**A8W8GB 的判定关键**：scale 的维数必须和数据相同。
+- perchannel/pertensor 时 scale 是 1D（如 `(n,)`），与 x2 的 2D 不匹配 → 不算 GB
+- perblock/pergroup 时 scale 是 2D（如 `(ceil(k/128), ceil(n/128))`），与 x2 同是 2D → 命中 GB
+
+**完整路径**：
+
+| 场景 | 图算子 | 最终 opapi |
+|---|---|---|
+| MxA8W4 / A8W8GB | **保留 V4**（不融合） | V4 自己的 tiling/kernel |
+| 其他场景 | V4 → V3（to_v3 pass） | V3 fallback → `aclnnQuantMatmulV4`（多数情况） |
+
+### A.5 V3 的 perchannel 量化支持
+
+V3 支持 perchannel 量化。proto 里明确列了两种含 perchannel 的量化模式（针对 Ascend 950）：
+
+命名规则是 `<x1-side>-<x2-side>`，对应 proto 里 x1 用 `pertoken_scale`、x2 用 `scale`：
+- `pertensor-perchannel`：x1=pertensor（或 null），x2=perchannel
+- `pertoken-perchannel`：x1=pertoken，x2=perchannel
+
+**perchannel 时 scale 的形状**（`quant_batch_matmul_v3_proto.h:59-62`）：
+```
+When the quant mode of x2 is perchannel or pertensor, the shape is 1D (t,),
+with t equal to 1 or n, where n is the same as that of x2.
+```
+- `t = n`：真正的 perchannel（每通道一个 scale）
+- `t = 1`：实际是 pertensor
+
+**与 V4 的关系**：V4 的 A8W8GB 判定（`quant_batch_matmul_v4_to_v3_fusion_pass.cpp:127-128`）要求 scale 维数与数据相同，这**排除了 perchannel**——因为 perchannel 时 scale 是 1D，而 x2 是 2D/3D，维数不等。所以 A8W8 的 perchannel/pertensor 场景下，V4 会被转成 V3 来执行。
+
+| A8W8 量化模式 | scale 形状 | V4 处理方式 |
+|---|---|---|
+| pertensor | 1D, t=1 | V4→V3 转换（走 V3 路径） |
+| perchannel | 1D, t=n | V4→V3 转换（走 V3 路径） |
+| perblock/pergroup | 2D/3D（同维数） | 保留 V4（A8W8GB） |
+
+### A.6 pertoken / pergroup / perchannel / perblock 概念
+
+用一句话概括：**这几个"per-X"就是回答"多少个元素共用一个 scale（缩放因子）"的问题。颗粒度从粗到细排列。**
+
+假设激活矩阵 x1 形状是 `(m, k)`（m 行 k 列），权重矩阵 x2 形状是 `(n, k)`。
+
+```
+pertensor  —— 整个矩阵共用 1 个 scale
+┌────────────────────┐
+│  全部用 S0          │   → 1 个 scale
+└────────────────────┘
+
+pertoken   —— 每一行（每个 token）一个 scale
+┌────────────────────┐
+│  S0 S0 S0 S0 S0 S0 S0 S0 │  ← 第 0 行用 S0
+│  S1 S1 S1 S1 S1 S1 S1 S1 │  ← 第 1 行用 S1
+│  S2 S2 S2 S2 S2 S2 S2 S2 │
+│  S3 S3 S3 S3 S3 S3 S3 S3 │
+└────────────────────┘   → m 个 scale
+
+perchannel —— 每一列（每个 output channel）一个 scale
+┌────────────────────┐
+│ S0 S1 S2 S3 S4 S5 S6 S7│  ← 第 0 列用 S0, 第 1 列用 S1...
+│ S0 S1 S2 S3 S4 S5 S6 S7│
+│ S0 S1 S2 S3 S4 S5 S6 S7│
+│ S0 S1 S2 S3 S4 S5 S6 S7│
+└────────────────────┘   → k 个 scale（或 n 个，取决于谁被当"channel"）
+
+pergroup   —— 沿某一轴每连续 group_size（如 128）个元素一个 scale
+┌────────────────────┐
+│ S0 S0 S0 S0 S1 S1 S1 S1│  ← 每 4 个一组（示意，实际是 128）
+│ S2 S2 S2 S2 S3 S3 S3 S3│
+│ S4 S4 S4 S4 S5 S5 S5 S5│
+│ S6 S6 S6 S6 S7 S7 S7 S7│
+└────────────────────┘   → m × ceil(k/group) 个 scale
+
+perblock   —— 切成 2D 小块，每块一个 scale
+┌───────┬───────┐
+│  S0   │  S1   │   ← 左上 4×4 块用 S0, 右上 4×4 块用 S1
+├───────┼───────┤
+│  S2   │  S3   │
+└───────┴───────┘   → ceil(m/gs) × ceil(k/gs) 个 scale
+```
+
+| 模式 | 谁共用一个 scale | scale 数量 | 颗粒度 |
+|---|---|---|---|
+| **pertensor** | 整个张量 | 1 | 最粗 |
+| **perchannel** | 同一通道（一整列/一整行） | n 或 k | 中 |
+| **pertoken** | 同一行（同一个 token） | m | 中 |
+| **perblock** | 一个 2D 小块（如 128×128） | ceil(m/128)×ceil(k/128) | 较细 |
+| **pergroup** | 沿某轴连续一维的一段（如每 128 个） | m×ceil(k/128) | 最细 |
+
+**在 V3 里谁用哪个**：
+- **x1（激活）** 用 `pertoken_scale`：可选 pertoken / pertensor / perblock / pergroup
+- **x2（权重）** 用 `scale`：可选 perchannel / pertensor / perblock
+
+V3 权重侧没有"pergroup"模式——最细就是 **perblock**（按 K 和 N 两个轴都分组）。如果只想沿 K 轴分组、N 轴不分组，V3 没有现成模式支持。
+
+### A.7 pergroup 的判定机制
+
+pergroup 是通过**两个东西组合判定**的：scale 张量的**形状** + 算子的 **group_size 属性**。没有任何显式的"quant_mode"枚举字段。
+
+#### 判定依据 1：pertoken_scale 的形状
+
+对比 x1（激活）侧四种模式的 pertoken_scale 形状（`quant_batch_matmul_v3_proto.h:77-83`）：
+
+| 模式 | pertoken_scale 形状 | 关键特征 |
+|---|---|---|
+| pertensor | 1D `(1,)` | 只有一个值 |
+| pertoken | 1D `(m,)` | 每行一个值 |
+| **pergroup** | 3D `(batch, m, ceil(k/128))` | **m 是完整的，k 被分组** |
+| perblock | 3D `(batch, ceil(m/128), ceil(k/128))` | m 和 k 都被分组 |
+
+pergroup 和 perblock 的**唯一形状差异**：
+
+```
+pergroup :  (batch, m          , ceil(k/128))   ← m 没除 128
+perblock :  (batch, ceil(m/128), ceil(k/128))   ← m 也除了 128
+```
+
+#### 判定依据 2：group_size 属性
+
+`group_size` 是一个 48 位编码的 int 属性（`quant_batch_matmul_v3_proto.h:93-105`）：
+
+```
+bits  0-15  → group_size_k   （沿 K 轴分组大小）
+bits 16-31  → group_size_n   （沿 N 轴分组大小）
+bits 32-47  → group_size_m   （沿 M 轴分组大小）
+```
+
+pergroup vs perblock 由 **group_size_m** 决定：
+
+| group_size_m | 含义 | x1 模式 |
+|---|---|---|
+| **1** | M 轴不分组（每组 1 个 m → 等价于不分组） | **pergroup** |
+| **128** | M 轴每 128 个一组 | perblock |
+
+支持表（`:231-243`）也印证：
+
+```
+pergroup-perblock : [group_size_m, group_size_n, group_size_k] = [1,   128, 128]
+perblock-perblock : [group_size_m, group_size_n, group_size_k] = [128, 128, 128]
+```
+
+两者 x2 侧都是 perblock（n=128, k=128），**唯一区别就是 group_size_m 是 1 还是 128**。
+
+#### 判定依据 3：dtype 限制
+
+pergroup-perblock 模式还要求特定 dtype（`:212-218`）：
+
+```
+| x1                       | x2                       | pertoken_scale | scale  |
+| float8_e4m3fn/float8_e5m2 | float8_e4m3fn/float8_e5m2 | float32        | float32 |
+| hifloat8                  | hifloat8                 | float32        | float32 |
+```
+
+#### 总结：pergroup 是怎么被"看出来"的
+
+当图编译器看到一个 V3 节点时，它通过下面这套组合判断 x1 是不是 pergroup：
+
+```
+pertoken_scale 是 3D && 第 2 维 == m（完整，没除 128）&& 第 3 维 == ceil(k/128)
+    && group_size 属性解出 group_size_m == 1
+    && dtype ∈ {float8_e4m3fn, float8_e5m2, hifloat8} + float32 scale
+        → 判定为 pergroup
+```
+
+没有任何一个字段直接写着"pergroup"，全靠**形状结构 + group_size 编码 + dtype** 三者联合推断。
+
+### A.8 W4A8 pergroup + pertoken 场景的可行性分析
+
+如果权重使用 W4A8 的 pergroup 量化、激活使用 pertoken 量化，需要澄清以下关键点：
+
+#### 问题 1："pergroup for weight" 在 V3 里不是独立模式
+
+V3 对 x2（weight）侧只支持三种量化模式：
+- pertensor：scale 1D `(1,)`
+- perchannel：scale 1D `(n,)`
+- perblock：scale `(batch, ceil(k/128), ceil(n/128))`
+
+而"pergroup"在 V3 里是 **x1（activation）侧**的模式。"weight pergroup（沿 K 轴每 128 个一组）"最接近的是 x2 的 **perblock**（但 perblock 同时按 K 和 N 分组）。V3 不支持只按 K 分组、不按 N 分组的 x2 量化。
+
+#### 问题 2：int8/int4（W4A8）的 dtype 组合不被支持
+
+V3 和 V4 的支持表中，x1 和 x2 的 dtype 必须**成对相同**：
+
+| 平台 | int8 行 | int4 行 |
+|---|---|---|
+| A2/A3 | int8/int8 | int4/int4 |
+| 950 | int8/int8 | 无 int4 |
+
+**没有 int8/int4 这一行**。V4 虽然注册了 `x1=DT_INT8` 和 `x2=DT_INT4`，但 proto 注释里 A8W4 场景的 x2 是 `float4_e2m1`（float4），不是 int4；int4 只在 A4W4（int4/int4）里出现。
+
+#### 可行的替代方案
+
+| 方案 | x1 dtype | x2 dtype | 量化模式 | 平台 | 说明 |
+|---|---|---|---|---|---|
+| A. MxA8W4（V4 原生） | float8_e4m3fn | float4_e2m1 | Mx（float8_e8m0 scale） | 950 | x1_scale/x2_scale 是 float8_e8m0，group_size [1,1,32] |
+| B. A4W4 pertoken-perchannel（V3） | int4 | int4 | pertoken + perchannel | A2/A3 | x1 必须也是 int4，scale 1D |
+| C. int8/int4 pergroup | — | — | — | — | **当前 V3/V4 均不支持** |
+
+> **注意**：本项目的 converter 已选定路径 C'（V4 整数 int4 per-group），实测 CANN 9.2.0 预编译 kernel 目录含 `QuantBatchMatmulV4_ND_ND_int8_int4_{bf16,fp16}`（tilingKey=24），即 V4 runtime kernel 覆盖了整数 int8/int4 组合。proto 的 REG_OP dtype 列表与 runtime kernel 的覆盖范围不完全一致，proto 只列了 mxfp 分支但 runtime kernel 覆盖整数 dtype。详见上文"int4 物化的 CANN 约定"一节。

@@ -20,11 +20,36 @@ from pathlib import Path
 import torch
 import torch.nn as nn
 
-from .materialize import materialize_int4, materialize_int4_with_scale
+from .materialize import materialize_int4, materialize_int4_with_scale, materialize_int8_per_channel
 from .quant_linear import QuantLinear
 
 # names containing any of these substrings are NOT quantized
 DEFAULT_SKIP = ("embed_tokens", "lm_head", "embed_tokens_per_layer")
+
+
+def swap_embeddings_from_dopt(
+    sd: dict, model: nn.Module
+) -> dict[str, tuple[torch.Tensor, torch.Tensor]]:
+    """Port dopt Quant_Embed_MinMax embed int8+per-channel scale for host lookup.
+
+    遍历 model 的 nn.Embedding (embed_tokens + gemma4 embed_tokens_per_layer 子类),
+    从 dopt sd 读 {name}.weight (fakequant) + {name}.quant_op.weight_quantizer.s
+    (per-channel [vocab]), materialize_int8_per_channel → (int8 [vocab,hidden], scale [vocab])。
+    返回 {wrapper_fqn: (int8, scale)} (wrapper.model = ForCausalLM → 'model.' 前缀)。
+    **不** swap 成图模块 — embedding 外置给 host gather (区别于 Linear→QuantLinear)。
+    跳过 sd 里无 scale 的 (如 gemma4 embed_tokens_per_layer 未量化时)。
+    """
+    out: dict[str, tuple[torch.Tensor, torch.Tensor]] = {}
+    for name, m in model.named_modules():
+        if not isinstance(m, nn.Embedding):
+            continue
+        wkey = f"{name}.weight"
+        skey = f"{name}.quant_op.weight_quantizer.s"
+        if wkey not in sd or skey not in sd:
+            continue
+        int8, scale = materialize_int8_per_channel(sd[wkey], sd[skey])
+        out[f"model.{name}.weight"] = (int8, scale)  # wrapper-level FQN
+    return out
 
 
 def _resolve_parent(model: nn.Module, dotted_name: str) -> tuple[nn.Module, str]:

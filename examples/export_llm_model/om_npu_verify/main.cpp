@@ -24,6 +24,11 @@ std::map<ge::AscendString, ge::AscendString> GlobalOptionsWithSoc(const std::str
   if (!soc_version.empty()) {
     opts.emplace(ge::AscendString("ge.socVersion"), ge::AscendString(soc_version.c_str()));
   }
+  // fusion switch 文件 (ge.fusionSwitchFile): 关/开指定 GraphFusion/UBFusion pass。
+  // env GE_FUSION_SWITCH_FILE=/path/cfg; cfg 格式见 CANN 图融合文档 (Switch.GraphFusion.ALL=off 等)。
+  if (const char *v = std::getenv("GE_FUSION_SWITCH_FILE")) {
+    opts.emplace(ge::AscendString("ge.fusionSwitchFile"), ge::AscendString(v));
+  }
   return opts;
 }
 
@@ -108,6 +113,17 @@ int main(int argc, char *argv[]) {
   ge::ModelBufferData model;
   std::map<ge::AscendString, ge::AscendString> build_options;
   build_options.emplace(ge::AscendString("input_format"), ge::AscendString("ND"));
+  // env 开关 (免重编即可调图优化): GE_BUFFER_OPT=off_optimize/l1_optimize/l2_optimize,
+  // GE_OO_LEVEL=O1/O3, GE_OPT_SWITCH="pass:off;..."。便于实验 AutomaticBufferFusionOp 等融合开关。
+  if (const char *v = std::getenv("GE_BUFFER_OPT")) {
+    build_options.emplace(ge::AscendString("ge.bufferOptimize"), ge::AscendString(v));
+  }
+  if (const char *v = std::getenv("GE_OO_LEVEL")) {
+    build_options.emplace(ge::AscendString("ge.oo.level"), ge::AscendString(v));
+  }
+  if (const char *v = std::getenv("GE_OPT_SWITCH")) {
+    build_options.emplace(ge::AscendString("ge.optimizationSwitch"), ge::AscendString(v));
+  }
   ge::graphStatus build_status = aclgrphBuildModel(graph, build_options, model);
   if (build_status != ge::GRAPH_SUCCESS) {
     std::cerr << "[ERROR] aclgrphBuildModel failed, status: " << build_status << std::endl;

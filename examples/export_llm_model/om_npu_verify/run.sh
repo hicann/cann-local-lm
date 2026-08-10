@@ -9,7 +9,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "${ROOT_DIR}/../.." && pwd)"
+PROJECT_ROOT="$(cd "${ROOT_DIR}/../../.." && pwd)"
 VENV_DIR="${VENV_DIR:-/mnt/workspace/torch-delegate-harmony/.venv}"
 PYTHON="${VENV_DIR}/bin/python3"
 
@@ -40,7 +40,7 @@ for m in ${MODELS}; do
   echo "========================================"
   out="${ROOT_DIR}/epair_${m}"
   rm -rf "${out}" "${out}.pt2" "${ROOT_DIR}/input_0_epair_${m}.bin"
-  "${PYTHON}" export_llm_model_epair.py \
+  "${PYTHON}" "${ROOT_DIR}/export_llm_model_epair.py" \
     --model "${m}" \
     --hf-path "${HF_PATHS[$m]}" \
     --seq-len 8 \

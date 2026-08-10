@@ -40,6 +40,47 @@ class Qwen3_5ExportWrapper(ExportWrapper):
         n = len(self.model.model.layers)
         return [i for i, lt in enumerate(layer_types) if lt == "full_attention" and i < n]
 
+    def _linear_layer_indices(self) -> list[int]:
+        """linear_attention 层索引 (截断到实际层数)."""
+        layer_types = getattr(self.config, "layer_types", [])
+        n = len(self.model.model.layers)
+        return [i for i, lt in enumerate(layer_types) if lt == "linear_attention" and i < n]
+
+    def _build_zero_delta_states(self):
+        """构造零 delta_states (conv_flat, recurrent_flat) 供 prefill 图输入.
+
+        prefill 首次无历史 state, conv_state=零 等价 nn.Conv1d(padding=K-1) 的 zero padding
+        (depthwise conv: conv_state 零替代 padding 零, output[K-1+k]==eager output[k]).
+        让 prefill 也走 export 路径 (delta 图输入输出), 统一 prefill+decode delta tensor 流.
+        """
+        lin = next(l.linear_attn for l in self.model.model.layers
+                   if l.layer_type == "linear_attention")
+        dtype = next(self.model.parameters()).dtype
+        n_linear = len(self._linear_layer_indices())
+        conv_flat = [torch.zeros(self.batch, lin.conv_dim, lin.conv_kernel_size, dtype=dtype)
+                     for _ in range(n_linear)]
+        rec_flat = [torch.zeros(self.batch, lin.num_v_heads, lin.head_k_dim, lin.head_v_dim, dtype=dtype)
+                    for _ in range(n_linear)]
+        return (conv_flat, rec_flat)
+
+    def get_sample_inputs(self, seq_len: int = 128, use_embeddings: bool = False,
+                          quant_embeddings: bool = False) -> tuple:
+        """qwen3_5 override: prefill 也传 delta_states (零, 图输入), 统一 prefill+decode delta 流.
+
+        past KV 只构造 full_attention 层 (6 对), linear 层用 delta_states 不用 KV —
+        与 decode 一致, 避免基类 24 对全层 KV 的冗余零 buffer.
+        """
+        base = super().get_sample_inputs(seq_len, use_embeddings, quant_embeddings)
+        base_list = list(base)
+        # past KV: 基类构造 num_layers 对(全层), 减到 full_attn 层(与 decode 一致)
+        full_idx = self._get_full_attn_layer_indices()
+        base_list[3] = [base_list[3][i] for i in full_idx]
+        delta = self._build_zero_delta_states()
+        while len(base_list) < 9:
+            base_list.append(None)
+        base_list.append(delta)
+        return tuple(base_list)
+
     def _drive_layers(
         self,
         input_ids: torch.Tensor | None,
@@ -48,42 +89,39 @@ class Qwen3_5ExportWrapper(ExportWrapper):
         past_key_values: list,
         new_kv_cache_pos: torch.Tensor,
         embeddings: torch.Tensor | None = None,
-    ) -> tuple[torch.Tensor, list[torch.Tensor]]:
+        per_layer_token_identity: torch.Tensor | None = None,
+        delta_states: tuple[list[torch.Tensor], list[torch.Tensor]] | None = None,
+    ) -> tuple[torch.Tensor, list[torch.Tensor], list[torch.Tensor]]:
         cache = SimpleKVCache()
         if past_key_values is not None:
+            # prefill + decode 统一: past KV 只 full_attn 层(6 对), 按 idx 配 full_attn_indices
             full_attn_indices = self._get_full_attn_layer_indices()
-            if len(past_key_values) == len(full_attn_indices):
-                # decode (reconstruct_kv 输出, 6 对, 只 full_attn, 顺序 full_attn_indices)
-                for idx, (k, v) in enumerate(past_key_values):
-                    cache.update(k, v, full_attn_indices[idx])
-            else:
-                # prefill (get_sample_inputs 输出, 24 对, 全层, 按 layer_idx 取 full_attn 层)
-                for layer_idx in full_attn_indices:
-                    k, v = past_key_values[layer_idx]
-                    cache.update(k, v, layer_idx)
+            for idx, (k, v) in enumerate(past_key_values):
+                cache.update(k, v, full_attn_indices[idx])
 
+        # delta_states: forward 参数 (export tuple) 或 _delta_cache_box (eager/prefill, SimpleDeltaNetCache)
+        ds = delta_states if delta_states is not None else self._delta_cache_box[0]
         kwargs = {
             "attention_mask": attention_mask,
             "past_key_values": cache,
-            "delta_cache": self._delta_cache_box[0],
-            "inputs_embeds": None,
+            "delta_states": ds,
             "labels": None,
             "use_cache": True,
             "new_kv_cache_pos": new_kv_cache_pos,
         }
-        # 总是传 input_ids (PLE 用, 不反查); embeddings 非 None 时也传 inputs_embeds (图外查表)
-        # - use_embeddings=False (embeddings=None): 只传 input_ids, model 查 embed_tokens
-        # - use_embeddings=True (embeddings=真实): 传 input_ids + inputs_embeds, model 用
-        #   inputs_embeds (不查 embed_tokens), PLE 用 input_ids (不反查, 避开 bfloat16 == 精度问题)
-        if input_ids is not None:
-            kwargs["input_ids"] = input_ids
+        # qwen3_5 无 PLE: embeddings 提供时走纯 embeddings (inputs_embeds), 不传 input_ids
+        # → model forward `if inputs_embeds is None` 跳过 embed_tokens 查表, input_ids 不入图。
         if embeddings is not None:
             kwargs["inputs_embeds"] = embeddings
+        else:
+            kwargs["input_ids"] = input_ids
 
         outputs = self.model(**kwargs)
         logits = outputs["logits"]
         updated_cache = outputs["past_key_values"]
-        self._delta_cache_box[0] = outputs.get("delta_cache")   # 持久 delta_cache (跨调用)
+        updated_delta = outputs.get("delta_cache")
+        if delta_states is None:
+            self._delta_cache_box[0] = updated_delta   # 持久 delta_cache (eager 跨调用)
 
         past_kv_flat: list[torch.Tensor] = []
         if updated_cache is not None:
@@ -91,4 +129,12 @@ class Qwen3_5ExportWrapper(ExportWrapper):
                 if updated_cache.keys[layer_idx] is not None:
                     past_kv_flat.append(updated_cache.keys[layer_idx])
                     past_kv_flat.append(updated_cache.values[layer_idx])
-        return logits, past_kv_flat
+
+        # export 路径: updated_delta=(new_conv_list, new_rec_list), 展平供 host 下次 decode
+        delta_out_flat: list[torch.Tensor] = []
+        if delta_states is not None and isinstance(updated_delta, tuple):
+            new_conv_list, new_rec_list = updated_delta
+            for c, r in zip(new_conv_list, new_rec_list):
+                delta_out_flat.append(c)
+                delta_out_flat.append(r)
+        return logits, past_kv_flat, delta_out_flat

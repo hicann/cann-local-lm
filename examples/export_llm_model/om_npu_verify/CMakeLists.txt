@@ -6,7 +6,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 get_filename_component(EXAMPLE_DIR "${CMAKE_CURRENT_SOURCE_DIR}" ABSOLUTE)
-get_filename_component(PROJECT_ROOT "${EXAMPLE_DIR}/../.." ABSOLUTE)
+get_filename_component(PROJECT_ROOT "${EXAMPLE_DIR}/../../.." ABSOLUTE)
 
 # Backend library
 set(CANN_LM_CSRC_DIR "${PROJECT_ROOT}/cann_lm/converter/export/csrc")

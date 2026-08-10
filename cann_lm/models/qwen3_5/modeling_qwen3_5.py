@@ -63,26 +63,39 @@ class Qwen3_5TextRotaryEmbedding(nn.Module):
         self.register_buffer("inv_freq", inv_freq, persistent=False)
         self.attention_scaling = 1.0
         self.mrope_section = rope_params.get("mrope_section", [11, 11, 10])
+        # 预缓存 cos/sin 表 (init 算: inv_freq + outer + mrope + cat + cos/sin, 全在 init, 不进图)
+        # forward 只 Gather (cos_cached[position_ids]), 消除 Pow/Neg/Cos/Sin 动态算子
+        cos_cached, sin_cached = self._build_cos_sin_cache(self.max_seq_len_cached, device)
+        self.register_buffer("cos_cached", cos_cached, persistent=False)
+        self.register_buffer("sin_cached", sin_cached, persistent=False)
+
+    def _build_cos_sin_cache(self, max_seq: int, device) -> tuple[torch.Tensor, torch.Tensor]:
+        """预算 [max_seq, dim] cos/sin 表 (文本模式: 3 维 position 相同, mRoPE 退化)。
+
+        batch=1 对齐原 forward 文本路径 (position_ids [1, max_seq] → expand [3,1,max_seq]),
+        squeeze 后 [max_seq, dim] 供 forward Gather。
+        """
+        dtype = torch.float32
+        pos = torch.arange(max_seq, device=device, dtype=dtype)[None, :]        # [1, max_seq]
+        pos_3d = pos[None, ...].expand(3, 1, max_seq)                            # [3, 1, max_seq]
+        inv_exp = self.inv_freq[None, None, :, None].float().expand(3, 1, -1, 1) # [3, 1, dim/2, 1]
+        pos_exp = pos_3d[:, :, None, :].float()                                  # [3, 1, 1, max_seq]
+        freqs = (inv_exp @ pos_exp).transpose(2, 3)                              # [3, 1, max_seq, dim/2]
+        freqs = self.apply_interleaved_mrope(freqs, self.mrope_section)          # [1, max_seq, dim/2]
+        emb = torch.cat((freqs, freqs), dim=-1)                                  # [1, max_seq, dim]
+        cos = (emb.cos() * self.attention_scaling).squeeze(0)                    # [max_seq, dim]
+        sin = (emb.sin() * self.attention_scaling).squeeze(0)                    # [max_seq, dim]
+        return cos.to(dtype), sin.to(dtype)
 
     @torch.no_grad()
     def forward(self, x: torch.Tensor, position_ids: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        if position_ids.ndim == 2:
-            position_ids = position_ids[None, ...].expand(3, position_ids.shape[0], -1)
-        inv_freq_expanded = (
-            self.inv_freq[None, None, :, None].float()
-            .expand(3, position_ids.shape[1], -1, 1)
-            .to(x.device)
-        )
-        position_ids_expanded = position_ids[:, :, None, :].float()
-
-        device_type = x.device.type if isinstance(x.device.type, str) and x.device.type != "mps" else "cpu"
-        with torch.amp.autocast(device_type=device_type, enabled=False):
-            freqs = (inv_freq_expanded.float() @ position_ids_expanded.float()).transpose(2, 3)
-            freqs = self.apply_interleaved_mrope(freqs, self.mrope_section)
-            emb = torch.cat((freqs, freqs), dim=-1)
-            cos = emb.cos() * self.attention_scaling
-            sin = emb.sin() * self.attention_scaling
-
+        # Gather over 预缓存常量表, 无 inv_freq/cos/sin/pow/neg 动态算子
+        # 文本模式: position_ids 3D [3,batch,seq] (mRoPE 3 维相同, TextModel forward expand 出来)
+        # 或 2D [batch,seq]; 3 维相同时取 [0] 等价单维, 与原动态算 apply_interleaved_mrope 一致
+        if position_ids.ndim == 3:
+            position_ids = position_ids[0]
+        cos = self.cos_cached[position_ids]   # [batch, seq, dim]
+        sin = self.sin_cached[position_ids]
         return cos.to(dtype=x.dtype), sin.to(dtype=x.dtype)
 
     def apply_interleaved_mrope(self, freqs: torch.Tensor, mrope_section: list[int]) -> torch.Tensor:
@@ -120,11 +133,18 @@ def apply_rotary_pos_emb(
 
 
 def repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
+    """Expand KV heads for GQA: (b, kv_heads, s, d) -> (b, heads, s, d)。
+
+    用 reshape+cat+view 替代 expand, 导出图里是 ConcatV2D 而非 BroadcastTo。
+    kv_head-major: 先 reshape 到 [b*kv, 1, s, d] (kv 并 dim0), cat n_rep 份, view 回 [b, kv*n_rep, s, d],
+    与 expand+reshape 逐元素相等 (naive cat 不 reshape 是 rep-major 会与 q 错位, 不可用)。
+    """
     batch, num_kv_heads, slen, head_dim = hidden_states.shape
     if n_rep == 1:
         return hidden_states
-    hidden_states = hidden_states[:, :, None, :, :].expand(batch, num_kv_heads, n_rep, slen, head_dim)
-    return hidden_states.reshape(batch, num_kv_heads * n_rep, slen, head_dim)
+    hidden_states = hidden_states.reshape(batch * num_kv_heads, 1, slen, head_dim)
+    hidden_states = torch.cat([hidden_states] * n_rep, dim=1)
+    return hidden_states.view(batch, num_kv_heads * n_rep, slen, head_dim)
 
 
 def eager_attention_forward(
@@ -166,14 +186,19 @@ def torch_causal_conv1d_update(
     weight: torch.Tensor,
     bias: torch.Tensor | None = None,
     activation: str | None = None,
-) -> torch.Tensor:
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """decode conv1d: state 滚动 + depthwise conv1d + SiLU. 函数式 (不 in-place mutate).
+
+    返回 (out, new_conv_state): new_conv_state = 滚动后的 state (新 token 进, 旧 token 出),
+    供 host 下次 decode 用 (避 in-place copy_ 被 export 当常量 mutate)。
+    """
     _, hidden_size, seq_len = hidden_states.shape
     state_len = conv_state.shape[-1]
     hidden_states_new = torch.cat([conv_state, hidden_states], dim=-1).to(weight.dtype)
-    conv_state.copy_(hidden_states_new[:, :, -state_len:])
-    out = F.conv1d(hidden_states_new, weight.unsqueeze(1), bias, padding=0, groups=hidden_size)
+    new_conv_state = hidden_states_new[:, :, -state_len:]
+    out = F.conv1d(hidden_states_new, weight, bias, padding=0, groups=hidden_size)
     out = F.silu(out[:, :, -seq_len:])
-    return out.to(hidden_states.dtype)
+    return out.to(hidden_states.dtype), new_conv_state
 
 
 def torch_chunk_gated_delta_rule(
@@ -186,6 +211,7 @@ def torch_chunk_gated_delta_rule(
     initial_state: torch.Tensor | None = None,
     output_final_state: bool = False,
     use_qk_l2norm_in_kernel: bool = False,
+    apply_scale: bool = True,
 ) -> tuple[torch.Tensor, torch.Tensor | None]:
     initial_dtype = query.dtype
     if use_qk_l2norm_in_kernel:
@@ -205,7 +231,8 @@ def torch_chunk_gated_delta_rule(
     g = F.pad(g, (0, pad_size))
     total_sequence_length = sequence_length + pad_size
     scale = 1 / (query.shape[-1] ** 0.5)
-    query = query * scale
+    if apply_scale:
+        query = query * scale
 
     v_beta = value * beta.unsqueeze(-1)
     k_beta = key * beta.unsqueeze(-1)
@@ -417,13 +444,17 @@ class Qwen3_5GatedDeltaNet(nn.Module):
         hidden_states: torch.Tensor,
         cache_params: SimpleDeltaNetCache | None = None,
         attention_mask: torch.Tensor | None = None,
-    ) -> torch.Tensor:
+        conv_state: torch.Tensor | None = None,
+        recurrent_state: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         hidden_states = apply_mask_to_padding_states(hidden_states, attention_mask)
         batch_size, seq_len, _ = hidden_states.shape
 
-        use_precomputed_states = cache_params is not None and cache_params.has_previous_state(self.layer_idx)
-
-        if use_precomputed_states:
+        # export 路径 (conv_state tensor 图输入) 或 eager 路径 (cache_params SimpleDeltaNetCache)
+        use_export = conv_state is not None
+        use_eager = cache_params is not None and cache_params.has_previous_state(self.layer_idx)
+        use_precomputed = use_export or use_eager
+        if use_eager and not use_export:
             conv_state = cache_params.layers[self.layer_idx]["conv_states"]
             recurrent_state = cache_params.layers[self.layer_idx]["recurrent_states"]
 
@@ -436,19 +467,24 @@ class Qwen3_5GatedDeltaNet(nn.Module):
         b = self.in_proj_b(hidden_states)
         a = self.in_proj_a(hidden_states)
 
-        if use_precomputed_states and seq_len == 1:
-            mixed_qkv = torch_causal_conv1d_update(
-                mixed_qkv, conv_state, self.conv1d.weight.squeeze(1), self.conv1d.bias, self.activation,
+        if use_precomputed and seq_len == 1:
+            mixed_qkv, new_conv_state = torch_causal_conv1d_update(
+                mixed_qkv, conv_state, self.conv1d.weight, self.conv1d.bias, self.activation,
             )
         else:
-            if use_precomputed_states:
+            if use_precomputed:
                 mixed_qkv = torch.cat([conv_state, mixed_qkv], dim=-1)
-            if cache_params is not None:
-                new_conv_state = F.pad(mixed_qkv, (self.conv_kernel_size - mixed_qkv.shape[-1], 0))
-                cache_params.update_conv_state(new_conv_state, self.layer_idx)
+            # new_conv_state: conv_state (最近 K 个 token), length>=K 用 slice, <K 用 F.pad
+            kv_len = mixed_qkv.shape[-1]
+            if kv_len >= self.conv_kernel_size:
+                new_conv_state = mixed_qkv[:, :, -self.conv_kernel_size:]
+            else:
+                new_conv_state = F.pad(mixed_qkv, (self.conv_kernel_size - kv_len, 0))
             mixed_qkv = F.silu(self.conv1d(mixed_qkv)[:, :, : mixed_qkv.shape[-1]])
-            if use_precomputed_states:
+            if use_precomputed:
                 mixed_qkv = mixed_qkv[:, :, -seq_len:]
+        if cache_params is not None:
+            cache_params.update_conv_state(new_conv_state, self.layer_idx)
 
         mixed_qkv = mixed_qkv.transpose(1, 2)
         query, key, value = torch.split(mixed_qkv, [self.key_dim, self.key_dim, self.value_dim], dim=-1)
@@ -464,17 +500,19 @@ class Qwen3_5GatedDeltaNet(nn.Module):
             query = query.repeat_interleave(self.num_v_heads // self.num_k_heads, dim=2)
             key = key.repeat_interleave(self.num_v_heads // self.num_k_heads, dim=2)
 
-        # BHSD 准备 (NPU npu_chunk_gated_delta_rule 签名: query/key/value [B,H,seq,dim])
-        query_bh = query.transpose(1, 2)
-        key_bh = key.transpose(1, 2)
-        value_bh = value.transpose(1, 2)
-        beta_bh = beta.transpose(1, 2)
-        g_bh = g.transpose(1, 2)
+        # THD 准备 (CANN npu_chunk_gated_delta_rule 签名, 与 npu_recurrent_gated_delta_rule 一致):
+        # query/key (T,Nk,Dk), value (T,Nv,Dv), beta/g (T,Nv), T=B*seq (batch 拼接无 batch 维).
+        t = batch_size * seq_len
+        query_t = query.reshape(t, query.shape[2], query.shape[3])
+        key_t = key.reshape(t, key.shape[2], key.shape[3])
+        value_t = value.reshape(t, value.shape[2], value.shape[3])
+        beta_t = beta.reshape(t, beta.shape[2])
+        g_t = g.reshape(t, g.shape[2])
         actual_seq_lens = torch.full(
             (batch_size,), seq_len, dtype=torch.int32, device=hidden_states.device,
         )
-        # initial_state NPU [B,H,v_dim,k_dim] (recurrent_states 存 [B,H,k_dim,v_dim])
-        if use_precomputed_states and recurrent_state is not None:
+        # initial_state CANN (B,Nv,Dv,Dk) (recurrent_states 存 [B,Nv,Dk,Dv])
+        if use_precomputed and recurrent_state is not None:
             initial_state = recurrent_state.transpose(-1, -2)
         else:
             initial_state = torch.zeros(
@@ -484,16 +522,25 @@ class Qwen3_5GatedDeltaNet(nn.Module):
         # prefill + decode 共用 cann_lm::chunk_gated_delta_rule (单 GE 算子,
         # 避免 torch.export 展开纯 torch for 循环 -> 19418 节点 -> GE segfault).
         # GE 映射 ge.ChunkGatedDeltaRule (手动定义, torchair 未生成).
-        core_attn_out_bh, last_recurrent_state_npu = torch.ops.npu.npu_chunk_gated_delta_rule(
-            query_bh, key_bh, value_bh,
-            beta=beta_bh, initial_state=initial_state,
-            actual_seq_lengths=actual_seq_lens, g=g_bh,
+        # NPU kernel 不做 l2norm (无 use_qk_l2norm 参数), 需在调用前手动 l2norm query/key
+        # (参考 cann-recipes-infer modeling_qwen3_5_moe.py:1428-1430); 传 scale=1/sqrt(Dk).
+        # 用 mean*Dk 替代 sum (ge converter 不支持 aten.sum, fallback cpu; ReduceMean 支持)
+        _dk = self.head_k_dim
+        q_inv = torch.rsqrt((query_t * query_t).mean(dim=-1, keepdim=True) * _dk + 1e-6)
+        k_inv = torch.rsqrt((key_t * key_t).mean(dim=-1, keepdim=True) * _dk + 1e-6)
+        query_t = query_t * q_inv
+        key_t = key_t * k_inv
+        scale = 1.0 / (self.head_k_dim ** 0.5)
+        core_attn_out_t, last_recurrent_state_npu = torch.ops.npu.npu_chunk_gated_delta_rule(
+            query_t, key_t, value_t,
+            beta=beta_t, initial_state=initial_state,
+            actual_seq_lengths=actual_seq_lens, g=g_t,
+            scale=scale,
         )
-        # BHSD -> BSHD
-        core_attn_out = core_attn_out_bh.transpose(1, 2)
-        # final_state NPU [B,H,v_dim,k_dim] -> recurrent [B,H,k_dim,v_dim]
+        # THD (T,Nv,Dv) -> BSHD (B,seq,Nv,Dv)
+        core_attn_out = core_attn_out_t.reshape(batch_size, seq_len, *core_attn_out_t.shape[1:])
+        # final_state CANN (B,Nv,Dv,Dk) -> recurrent (B,Nv,Dk,Dv)
         last_recurrent_state = last_recurrent_state_npu.transpose(-1, -2)
-
         if cache_params is not None:
             cache_params.update_recurrent_state(last_recurrent_state, self.layer_idx)
 
@@ -503,7 +550,7 @@ class Qwen3_5GatedDeltaNet(nn.Module):
         core_attn_out = core_attn_out.reshape(batch_size, seq_len, -1)
 
         output = self.out_proj(core_attn_out)
-        return output
+        return output, new_conv_state, last_recurrent_state
 
 
 class Qwen3_5Attention(nn.Module):
@@ -606,17 +653,27 @@ class Qwen3_5DecoderLayer(nn.Module):
         position_embeddings: tuple[torch.Tensor, torch.Tensor],
         attention_mask: torch.Tensor | None = None,
         past_key_values: SimpleKVCache | None = None,
-        delta_cache: SimpleDeltaNetCache | None = None,
+        delta_states=None,
         new_kv_cache_pos: torch.Tensor | None = None,
-    ) -> torch.Tensor:
+    ) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor | None]:
+        # delta_states: (conv_state, recurrent_state) tuple (export) | SimpleDeltaNetCache (eager) | None
         residual = hidden_states
         hidden_states = self.input_layernorm(hidden_states)
 
+        new_conv = new_rec = None
         if self.layer_type == "linear_attention":
-            hidden_states = self.linear_attn(
+            conv_st = rec_st = None
+            cache_params = None
+            if isinstance(delta_states, tuple):
+                conv_st, rec_st = delta_states
+            elif isinstance(delta_states, SimpleDeltaNetCache):
+                cache_params = delta_states
+            hidden_states, new_conv, new_rec = self.linear_attn(
                 hidden_states=hidden_states,
-                cache_params=delta_cache,
+                cache_params=cache_params,
                 attention_mask=attention_mask,
+                conv_state=conv_st,
+                recurrent_state=rec_st,
             )
         elif self.layer_type == "full_attention":
             hidden_states, _ = self.self_attn(
@@ -634,7 +691,7 @@ class Qwen3_5DecoderLayer(nn.Module):
         hidden_states = self.mlp(hidden_states)
         hidden_states = residual + hidden_states
 
-        return hidden_states
+        return hidden_states, new_conv, new_rec
 
 
 def _create_causal_mask(
@@ -694,11 +751,12 @@ class Qwen3_5TextModel(nn.Module):
         attention_mask: torch.Tensor | None = None,
         position_ids: torch.Tensor | None = None,
         past_key_values: SimpleKVCache | None = None,
-        delta_cache: SimpleDeltaNetCache | None = None,
+        delta_states=None,
         inputs_embeds: torch.Tensor | None = None,
         use_cache: bool = False,
         new_kv_cache_pos: torch.Tensor | None = None,
-    ) -> tuple[torch.Tensor, SimpleKVCache | None, SimpleDeltaNetCache | None]:
+    ):
+        # delta_states: (conv_list, rec_list) tuple (export) | SimpleDeltaNetCache (eager) | None
         if (input_ids is None) and (inputs_embeds is None):
             raise ValueError("You must specify either input_ids or inputs_embeds")
         if input_ids is not None and inputs_embeds is not None:
@@ -711,14 +769,14 @@ class Qwen3_5TextModel(nn.Module):
 
         if use_cache and past_key_values is None:
             past_key_values = SimpleKVCache()
-        if use_cache and delta_cache is None:
-            # 自动创建 delta_cache (linear attention recurrent state), 对齐 generate 逻辑
+        if use_cache and delta_states is None:
+            # eager 自动创建 delta_cache (linear attention recurrent state), 对齐 generate 逻辑
             first_linear_layer_idx = next(
                 (i for i, lt in enumerate(self.config.layer_types)
                  if lt == "linear_attention"), None)
             if first_linear_layer_idx is not None:
                 gdn = self.layers[first_linear_layer_idx].linear_attn
-                delta_cache = SimpleDeltaNetCache(
+                delta_states = SimpleDeltaNetCache(
                     num_layers=self.config.num_hidden_layers,
                     conv_dim=gdn.conv_dim,
                     conv_kernel_size=gdn.conv_kernel_size,
@@ -733,7 +791,12 @@ class Qwen3_5TextModel(nn.Module):
         if position_ids is None:
             past_len = past_key_values.get_seq_length() if past_key_values is not None else 0
             position_ids = torch.arange(past_len, past_len + seq_len, device=inputs_embeds.device)
-            position_ids = position_ids.view(1, 1, -1).expand(4, batch_size, -1)
+            # mRoPE: 扩 4 维 position (1 text + 3 mrope, 文本模式 4 维相同)
+            # cat 替代 expand 消除 BroadcastTo (dim0 1->4; dim1 1->batch_size, batch=1 时无操作)
+            position_ids = position_ids.view(1, 1, -1)
+            position_ids = torch.cat([position_ids] * 4, dim=0)
+            if batch_size > 1:
+                position_ids = torch.cat([position_ids] * batch_size, dim=1)
 
         if position_ids.ndim == 3 and position_ids.shape[0] == 4:
             text_position_ids = position_ids[0]
@@ -752,27 +815,41 @@ class Qwen3_5TextModel(nn.Module):
 
         linear_attn_mask = attention_mask
         # decode 步 (有 cache) 不需要 linear mask; prefill 步保留 mask
-        # 注意: 原始代码用 torch.all(mask==1) 检查是否全 1 (无 padding),
-        # 但 torch.all 是数据依赖的, torch.export 无法追踪, 这里简化为仅检查 cache 状态
         if past_key_values is not None and past_key_values.get_seq_length() > 0:
             linear_attn_mask = None
 
         hidden_states = inputs_embeds
         position_embeddings = self.rotary_emb(hidden_states, position_ids)
 
+        # export 路径: delta_states=(conv_list, rec_list); eager 路径: SimpleDeltaNetCache 对象
+        is_export_delta = isinstance(delta_states, tuple)
+        conv_list, rec_list = delta_states if is_export_delta else ([], [])
+        new_conv_list: list[torch.Tensor] = []
+        new_rec_list: list[torch.Tensor] = []
+        lin_idx = 0
         for i, decoder_layer in enumerate(self.layers):
             layer_mask = linear_attn_mask if self.config.layer_types[i] == "linear_attention" else causal_mask
-            hidden_states = decoder_layer(
+            layer_delta = None
+            if is_export_delta and self.config.layer_types[i] == "linear_attention" and i < len(self.layers):
+                layer_delta = (conv_list[lin_idx], rec_list[lin_idx])
+                lin_idx += 1
+            elif not is_export_delta:
+                layer_delta = delta_states
+            hidden_states, nc, nr = decoder_layer(
                 hidden_states,
                 position_embeddings=position_embeddings,
                 attention_mask=layer_mask,
                 past_key_values=past_key_values,
-                delta_cache=delta_cache,
+                delta_states=layer_delta,
                 new_kv_cache_pos=new_kv_cache_pos,
             )
+            if nc is not None:
+                new_conv_list.append(nc)
+                new_rec_list.append(nr)
 
         hidden_states = self.norm(hidden_states)
-        return hidden_states, past_key_values, delta_cache
+        delta_out = (new_conv_list, new_rec_list) if is_export_delta else delta_states
+        return hidden_states, past_key_values, delta_out
 
 
 class Qwen3_5ForCausalLM(nn.Module):
@@ -790,17 +867,17 @@ class Qwen3_5ForCausalLM(nn.Module):
         input_ids: torch.Tensor | None = None,
         attention_mask: torch.Tensor | None = None,
         past_key_values: SimpleKVCache | None = None,
-        delta_cache: SimpleDeltaNetCache | None = None,
+        delta_states=None,
         inputs_embeds: torch.Tensor | None = None,
         labels: torch.Tensor | None = None,
         use_cache: bool = False,
         new_kv_cache_pos: torch.Tensor | None = None,
     ) -> dict:
-        hidden_states, past_key_values, delta_cache = self.model(
+        hidden_states, past_key_values, delta_out = self.model(
             input_ids=input_ids,
             attention_mask=attention_mask,
             past_key_values=past_key_values,
-            delta_cache=delta_cache,
+            delta_states=delta_states,
             inputs_embeds=inputs_embeds,
             use_cache=use_cache,
             new_kv_cache_pos=new_kv_cache_pos,
@@ -821,7 +898,7 @@ class Qwen3_5ForCausalLM(nn.Module):
             "loss": loss,
             "logits": logits,
             "past_key_values": past_key_values,
-            "delta_cache": delta_cache,
+            "delta_cache": delta_out,
         }
 
     @torch.no_grad()
@@ -863,7 +940,7 @@ class Qwen3_5ForCausalLM(nn.Module):
             input_ids=input_ids,
             attention_mask=attention_mask,
             past_key_values=past_kv,
-            delta_cache=delta_cache,
+            delta_states=delta_cache,
             use_cache=True,
         )
         past_kv = out["past_key_values"]
@@ -892,7 +969,7 @@ class Qwen3_5ForCausalLM(nn.Module):
                 input_ids=next_token,
                 attention_mask=attention_mask,
                 past_key_values=past_kv,
-                delta_cache=delta_cache,
+                delta_states=delta_cache,
                 use_cache=True,
             )
             past_kv = out["past_key_values"]

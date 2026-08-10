@@ -12,13 +12,13 @@ npu_tuned_export 是标准 transformers qwen3 的一个** fork**，经过手术�
 
 ## 1. Config 差异
 
-| 方面 | npu_tuned | transformers 标准 |
-|------|-----------|-------------------|
-| 风格 | 经典 `__init__` + 位置参数 | `@strict` dataclass + `__post_init__` |
-| RoPE 配置 | `rope_scaling=None`（旧式 dict） | `rope_parameters: RopeParameters`（结构化类型） |
-| `layer_types` | 无此字段 | 有，`__post_init__` 中计算 |
-| `sliding_window` | 始终 `=4096`（int） | `int | None`，根据 `use_sliding_window` 动态设置 |
-| `kv_cache_max_len` | **不在 config 中**，导出时 monkey-patch | 无此字段 |
+| 方面　　　　　　　 | npu_tuned　　　　　　　　　　　　　　　 | transformers 标准　　　　　　　　　　　　　　　 | 　　　　　　　　　　　　　　　　　　　　　|
+| --------------------| -----------------------------------------| -------------------------------------------------| -------------------------------------------|
+| 风格　　　　　　　 | 经典 `__init__` + 位置参数　　　　　　　| `@strict` dataclass + `__post_init__`　　　　　 | 　　　　　　　　　　　　　　　　　　　　　|
+| RoPE 配置　　　　　| `rope_scaling=None`（旧式 dict）　　　　| `rope_parameters: RopeParameters`（结构化类型） | 　　　　　　　　　　　　　　　　　　　　　|
+| `layer_types`　　　| 无此字段　　　　　　　　　　　　　　　　| 有，`__post_init__` 中计算　　　　　　　　　　　| 　　　　　　　　　　　　　　　　　　　　　|
+| `sliding_window`　 | 始终 `=4096`（int）　　　　　　　　　　 | `int　　　　　　　　　　　　　　　　　　　　　　| None`，根据 `use_sliding_window` 动态设置 |
+| `kv_cache_max_len` | **不在 config 中**，导出时 monkey-patch | 无此字段　　　　　　　　　　　　　　　　　　　　| 　　　　　　　　　　　　　　　　　　　　　|
 
 关键：npu_tuned config 是一个**旧版快照**，不新增 config 字段。`kv_cache_max_len` 在导出脚本中直接 `config.kv_cache_max_len = 2048` 注入。
 
@@ -77,12 +77,12 @@ hidden_states = torch.cat(rep_list, dim=1)  # 物化重复
 
 ### 2.6 Attention — 核心改造
 
-| 方面 | transformers | npu_tuned |
-|------|-------------|-----------|
-| KV cache 写入 | `past_key_values.update(k, v, layer_idx)` — 不透明 Cache 对象 | **scatter-write 到预分配 buffer**：`past_key_value[0][new_kv_cache_pos] = k.transpose(0,2)` |
-| KV cache 读取 | Cache 返回更新后的 tensor | **读回整个 buffer**：`key_states = past_key_value[0].transpose(0,2)` |
-| Attention 计算 | 调度到 `ALL_ATTENTION_FUNCTIONS` | 内联：`matmul(q, k.T) * scale → softmax → matmul(attn, v)` |
-| 返回 | `(attn_output, attn_weights)` | `(attn_output, attn_weights, past_key_value)` ← cache 是输出 |
+| 方面　　　　　 | transformers　　　　　　　　　　　　　　　　　　　　　　　　　| npu_tuned　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　 |
+| ----------------| ---------------------------------------------------------------| ---------------------------------------------------------------------------------------------|
+| KV cache 写入　| `past_key_values.update(k, v, layer_idx)` — 不透明 Cache 对象 | **scatter-write 到预分配 buffer**：`past_key_value[0][new_kv_cache_pos] = k.transpose(0,2)` |
+| KV cache 读取　| Cache 返回更新后的 tensor　　　　　　　　　　　　　　　　　　 | **读回整个 buffer**：`key_states = past_key_value[0].transpose(0,2)`　　　　　　　　　　　　|
+| Attention 计算 | 调度到 `ALL_ATTENTION_FUNCTIONS`　　　　　　　　　　　　　　　| 内联：`matmul(q, k.T) * scale → softmax → matmul(attn, v)`　　　　　　　　　　　　　　　　　|
+| 返回　　　　　 | `(attn_output, attn_weights)`　　　　　　　　　　　　　　　　 | `(attn_output, attn_weights, past_key_value)` ← cache 是输出　　　　　　　　　　　　　　　　|
 
 ### 2.7 输出 reshape
 

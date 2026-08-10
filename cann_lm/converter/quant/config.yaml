@@ -1,0 +1,7 @@
+dataset:
+  train_files:
+    - "calibration.json"
+  cutoff_len: 512
+  ptq_samples: 128
+
+cutoff_len: 512

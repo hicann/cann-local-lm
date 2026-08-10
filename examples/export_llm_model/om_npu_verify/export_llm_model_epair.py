@@ -18,7 +18,7 @@ from pathlib import Path
 
 import torch
 
-_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+_PROJECT_ROOT = Path(__file__).resolve().parents[3]
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
@@ -26,6 +26,7 @@ from cann_lm.converter.model_registry import get_entry, available_models
 from cann_lm.converter.loader import build_config
 from cann_lm.converter.export.ge_converter import register_ge_converters
 from cann_lm.converter.export.epair_utils import consolidated_weights_save
+from cann_lm.converter.saver import _extract_host_side_weights
 import torch_delegate
 
 ROOT = Path(__file__).resolve().parent
@@ -61,6 +62,7 @@ def export_model(
     dtype: torch.dtype,
     output_dir: str,
     kv_cache_max_len: int,
+    use_embeddings: bool = False,
 ) -> None:
     register_ge_converters()
     entry = get_entry(model_name)
@@ -81,26 +83,49 @@ def export_model(
     print(f"[3/5] Loading weights from {hf_path}")
     model = entry.load_weights_fn(model, hf_path, device="cpu", dtype=dtype)
 
-    print(f"[4/5] Building export wrapper (kv_cache_max_len={kv_cache_max_len})")
+    print(f"[4/5] Building export wrapper (kv_cache_max_len={kv_cache_max_len}, "
+          f"use_embeddings={use_embeddings})")
     wrapper = entry.wrapper_cls(model, kv_cache_max_len=kv_cache_max_len, batch=1).eval()
-    sample_inputs = _build_simple_sample_inputs(wrapper, seq_len)
+    if use_embeddings:
+        # 纯 embeddings: 走 wrapper.get_sample_inputs (含 gemma4 PLE 的 per_layer_token_identity)
+        sample_inputs = wrapper.get_sample_inputs(seq_len=seq_len, use_embeddings=True)
+    else:
+        # 非 embeddings: 同样走 wrapper.get_sample_inputs (适配各 wrapper 自身 forward 签名,
+        # 如 gemma4 新 wrapper 的 mask_full/mask_sliding 10 参; 旧 _build_simple_sample_inputs
+        # 7 参仅适配 base forward, 对 scatter+host-mask 的 wrapper 不兼容)
+        sample_inputs = wrapper.get_sample_inputs(seq_len=seq_len, use_embeddings=False)
+    # 纯 embeddings: detach 外置查表子模块 (embed_tokens / gemma4 embed_tokens_per_layer),
+    # 使 torch.export 不 lift 它们 → weights_*.bin 不含冗余查表权重 (对齐 saver.py)
+    if use_embeddings:
+        wrapper.detach_externalized_lookups()
 
     print(f"[5/5] Exporting to epair (seq_len={seq_len})")
     exported = torch.export.export(wrapper, sample_inputs, strict=False)
     epair = torch_delegate.export_to_epair(exported)
 
+    # 纯 embeddings: 抽取 host 查表权重 (embed_tokens / gemma4 embed_tokens_per_layer)
+    host_side_weights = _extract_host_side_weights(wrapper, use_embeddings) if use_embeddings else []
+
     out = Path(output_dir).resolve()
     out.mkdir(parents=True, exist_ok=True)
-    consolidated_weights_save(epair, out, save_weights=True, max_file_size=512 * 1024 * 1024)
+    consolidated_weights_save(epair, out, save_weights=True,
+                              max_file_size=512 * 1024 * 1024,
+                              host_side_weights=host_side_weights)
 
     pt2_path = out.parent / f"{out.name}.pt2"
     torch_delegate.epair_save(epair, str(pt2_path))
     print(f"Saved: {pt2_path}")
 
-    inp = sample_inputs[0]
+    # 保存主用户输入供 C++ 验证: use_embeddings 时存 embeddings (pos 5), 否则 input_ids (pos 0)
+    # bfloat16 numpy 不支持, view int16 落盘 (与 acl 验证脚本 t_bytes/b2t 一致)
+    inp = sample_inputs[5] if use_embeddings else sample_inputs[0]
     inp_path = out.parent / f"input_0_{out.name}.bin"
-    inp.cpu().detach().numpy().tofile(inp_path)
-    print(f"Saved input[0] shape={list(inp.shape)} -> {inp_path}")
+    arr = inp.cpu().detach()
+    if arr.dtype == torch.bfloat16:
+        arr.view(torch.int16).numpy().tofile(inp_path)
+    else:
+        arr.numpy().tofile(inp_path)
+    print(f"Saved input[0] shape={list(inp.shape)} dtype={inp.dtype} -> {inp_path}")
     print(f"\nDone. Output: {out}")
 
 
@@ -114,10 +139,14 @@ def main() -> None:
     parser.add_argument("--dtype", default="float16", choices=list(_DTYPE_MAP))
     parser.add_argument("--output-dir", default="epair_model")
     parser.add_argument("--kv-cache-max-len", type=int, default=2048)
+    parser.add_argument("--use-embeddings", action="store_true",
+                        help="Pure-embeddings export: input_ids not in graph, host feeds embeddings "
+                             "(+ gemma4 per_layer_token_identity for PLE). Lookup weights packed "
+                             "to host_weights_*.bin additionally.")
     args = parser.parse_args()
 
     export_model(args.model, args.hf_path, args.seq_len, _DTYPE_MAP[args.dtype],
-                 args.output_dir, args.kv_cache_max_len)
+                 args.output_dir, args.kv_cache_max_len, use_embeddings=args.use_embeddings)
 
 
 if __name__ == "__main__":

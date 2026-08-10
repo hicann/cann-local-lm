@@ -13,6 +13,41 @@ from cann_lm.converter.loader import ModelArtifact
 from cann_lm.converter.export.epair_utils import consolidated_weights_save
 
 
+def _extract_host_side_weights(wrapper, use_embeddings: bool) -> list[tuple[str, torch.Tensor]]:
+    """Collect embedding-lookup weights to additionally pack as host-side extras.
+
+    torch.export 会 lift 全部参数 (含未用的 embed_tokens), pack_weights 也照常打包到
+    weights_*.bin / weight_info.json; 但 host 推理做查表时, 把查表权重额外打包到独立的
+    host_weights_info.json + host_weights_*.bin, 便于 host 按名定位、并携带 dtype/shape。
+    故这里不做 dedup (即使权重已在图中, 也额外打一份)。仅 use_embeddings=True 时触发。
+    """
+    if not use_embeddings:
+        return []
+    candidate_names = wrapper.host_side_weight_names()
+    sd = wrapper.state_dict()
+    return [(name, sd[name].detach().cpu()) for name in candidate_names if name in sd]
+
+
+def _assert_externalized_not_lifted(ep, names: list[str]) -> None:
+    """断言 detach 生效: 外置查表权重不应出现在 ep.graph_signature 的 lifted 集合里。
+
+    若仍被 lift, 说明 detach 失败 (模型 forward 在纯 embeddings 路径访问了它们, 或 detach 未执行),
+    此时 weights_*.bin 会携带冗余查表权重、C++ 建图会为它们建 Data 节点 → 与 OM 不一致。
+    """
+    lifted: set[str] = set()
+    gs = ep.graph_signature
+    for mapping in (gs.inputs_to_parameters, gs.inputs_to_buffers, gs.inputs_to_lifted_tensor_constants):
+        for _placeholder, logical_name in mapping.items():
+            lifted.add(logical_name)
+    leaked = [n for n in names if n in lifted]
+    if leaked:
+        raise RuntimeError(
+            f"detach_externalized_lookups 失效: {leaked} 仍被 lift。"
+            "纯 embeddings 路径的 forward 不应访问这些查表子模块 (embed_tokens 应被 inputs_embeds "
+            "跳过, gemma4 embed_tokens_per_layer 应被实例方法替换跳过)。请检查模型 forward 或 wrapper。"
+        )
+
+
 def save_epair(
     artifact: ModelArtifact,
     output_dir: str | Path,
@@ -23,6 +58,8 @@ def save_epair(
     use_embeddings: bool = False,
     save_weights: bool = True,
     whitelist_decompositions: set | None = None,
+    quant_embeddings: bool = False,
+    embed_quant: dict[str, tuple[torch.Tensor, torch.Tensor]] | None = None,
 ) -> None:
     import torch_delegate
     from torch_delegate import EpairConfig
@@ -45,10 +82,39 @@ def save_epair(
         batch=1,
     ).eval()
 
-    # 构造示例输入 (统一 I/O 契约)
-    sample_inputs = wrapper.get_sample_inputs(seq_len=sample_seq_len, use_embeddings=use_embeddings)
+    # quant-embeddings: 注入 host 查表的 int8+per-channel scale (走 dopt Quant_Embed_MinMax)
+    # 图输入改 int8+scale, 图入口 dequant (base forward); host_weights 携 int8+scale (非 float)。
+    if quant_embeddings:
+        if not embed_quant:
+            raise ValueError("quant_embeddings=True 需 embed_quant (swap_embeddings_from_dopt 产物)")
+        wrapper.set_quant_embeddings(embed_quant)
+
+    # 构造示例输入 (统一 I/O 契约) — quant-embeddings 用 int8+scale gather, 否则用 embed_tokens 算 sample
+    sample_inputs = wrapper.get_sample_inputs(
+        seq_len=sample_seq_len, use_embeddings=use_embeddings, quant_embeddings=quant_embeddings
+    )
+
+    # 抽取 host 查表权重: quant-embeddings 用 int8+scale (从 embed_quant); 否则 float embed_tokens
+    if quant_embeddings:
+        host_side_weights = [
+            (fqn + "_q", int8) for fqn, (int8, _) in embed_quant.items()
+        ] + [
+            (fqn + "_scale", scale) for fqn, (_, scale) in embed_quant.items()
+        ]
+    else:
+        host_side_weights = _extract_host_side_weights(wrapper, use_embeddings)
+
+    # 纯 embeddings: detach 外置查表子模块, 使 torch.export 不 lift 它们 → weights_*.bin 不含
+    # 冗余查表权重 (GE 编译本就剪掉), weights_*.bin ≈ OM。依赖 forward 不访问它们
+    # (embed_tokens 被 inputs_embeds 跳过, gemma4 embed_tokens_per_layer 被实例方法替换跳过)。
+    if use_embeddings:
+        wrapper.detach_externalized_lookups()
 
     ep = torch.export.export(wrapper, sample_inputs, strict=False)
+
+    # 断言 detach 生效: 外置查表权重不应被 lift (否则 forward 在纯 embeddings 路径访问了它们 → detach 失效)。
+    if use_embeddings:
+        _assert_externalized_not_lifted(ep, wrapper.host_side_weight_names())
 
     # 用默认 whitelist (linear/matmul/layer_norm/softmax 等分解), conv1d 走自定义 converter
     if whitelist_decompositions is None:
@@ -71,10 +137,12 @@ def save_epair(
         epair, output_dir,
         save_weights=save_weights,
         max_file_size=max_file_size,
+        host_side_weights=host_side_weights,
     )
 
     copy_tokenizer_files(artifact.tokenizer_files, output_dir)
-    save_model_config(artifact, output_dir)
+    save_model_config(artifact, output_dir, use_embeddings=use_embeddings,
+                      quant_embeddings=quant_embeddings)
 
 def save_epair_prefill_decode(
     artifact: ModelArtifact,
@@ -86,6 +154,8 @@ def save_epair_prefill_decode(
     use_embeddings: bool = False,
     save_weights: bool = True,
     whitelist_decompositions: set | None = None,
+    quant_embeddings: bool = False,
+    embed_quant: dict[str, tuple[torch.Tensor, torch.Tensor]] | None = None,
 ) -> None:
     """Prefill/decode split export: emit two graphs (prefill + decode) + shared weights.
 
@@ -122,11 +192,38 @@ def save_epair_prefill_decode(
         batch=1,
     ).eval()
 
-    # Export prefill_ep (seq_len=prefill_seq_len, shape-specialized)
+    # quant-embeddings: 注入 host 查表的 int8+per-channel scale
+    if quant_embeddings:
+        if not embed_quant:
+            raise ValueError("quant_embeddings=True 需 embed_quant (swap_embeddings_from_dopt 产物)")
+        wrapper.set_quant_embeddings(embed_quant)
+
+    # 先算 sample (quant-embeddings 用 int8+scale gather; 否则用 embed_tokens 算), 必须在 detach 前
     prefill_sample = wrapper.get_sample_inputs(
-        seq_len=prefill_seq_len, use_embeddings=use_embeddings
+        seq_len=prefill_seq_len, use_embeddings=use_embeddings, quant_embeddings=quant_embeddings
     )
+    decode_sample = wrapper.get_sample_inputs(
+        seq_len=1, use_embeddings=use_embeddings, quant_embeddings=quant_embeddings
+    )
+
+    # 抽取 host 查表权重: quant-embeddings 用 int8+scale (从 embed_quant); 否则 float embed_tokens
+    if quant_embeddings:
+        host_side_weights = [
+            (fqn + "_q", int8) for fqn, (int8, _) in embed_quant.items()
+        ] + [
+            (fqn + "_scale", scale) for fqn, (_, scale) in embed_quant.items()
+        ]
+    else:
+        host_side_weights = _extract_host_side_weights(wrapper, use_embeddings)
+
+    # 纯 embeddings: detach 外置查表子模块 → torch.export 不 lift → weights_*.bin 不含冗余查表权重。
+    if use_embeddings:
+        wrapper.detach_externalized_lookups()
+
+    # Export prefill_ep (seq_len=prefill_seq_len, shape-specialized)
     prefill_ep = torch.export.export(wrapper, prefill_sample, strict=False)
+    if use_embeddings:
+        _assert_externalized_not_lifted(prefill_ep, wrapper.host_side_weight_names())
     # 用默认 whitelist (linear/matmul/layer_norm/softmax 等分解), conv1d 走自定义 converter
     if whitelist_decompositions is None:
         whitelist_decompositions = set(EpairConfig().whitelist_decompositions)
@@ -135,7 +232,6 @@ def save_epair_prefill_decode(
     del prefill_ep
 
     # Export decode_ep (seq_len=1, reused for all decode steps)
-    decode_sample = wrapper.get_sample_inputs(seq_len=1, use_embeddings=use_embeddings)
     decode_ep = torch.export.export(wrapper, decode_sample, strict=False)
     decode_epair = torch_delegate.export_to_epair(decode_ep, config)
 
@@ -144,12 +240,13 @@ def save_epair_prefill_decode(
     del artifact.model
     import gc; gc.collect()
 
-    # Write weights + prefill ep_json (save_weights=True, only once)
+    # Write weights + prefill ep_json (save_weights=True, only once) + host-side extras
     consolidated_weights_save(
         prefill_epair, output_dir,
         save_weights=save_weights,
         max_file_size=max_file_size,
         ep_json_filename="prefill_ep_json_with_ascend_ir.json",
+        host_side_weights=host_side_weights,
     )
 
     # Write decode ep_json only (save_weights=False, weights already packed above)
@@ -160,10 +257,13 @@ def save_epair_prefill_decode(
     )
 
     copy_tokenizer_files(artifact.tokenizer_files, output_dir)
-    save_model_config(artifact, output_dir)
+    save_model_config(artifact, output_dir, use_embeddings=use_embeddings,
+                      quant_embeddings=quant_embeddings)
 
 
-def save_model_config(artifact: ModelArtifact, output_dir: Path) -> None:
+def save_model_config(artifact: ModelArtifact, output_dir: Path, *,
+                      use_embeddings: bool = False,
+                      quant_embeddings: bool = False) -> None:
     config_obj = artifact.config
     if hasattr(config_obj, "to_dict"):
         config_dict = config_obj.to_dict()
@@ -176,6 +276,8 @@ def save_model_config(artifact: ModelArtifact, output_dir: Path) -> None:
         "model_type": artifact.model_type,
         "config": config_dict,
         "hf_config": artifact.hf_config,
+        "use_embeddings": use_embeddings,
+        "quant_embeddings": quant_embeddings,
     }
     if artifact.quant_info:
         config_data["quant_info"] = artifact.quant_info

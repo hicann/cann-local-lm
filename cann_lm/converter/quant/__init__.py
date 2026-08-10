@@ -26,19 +26,22 @@ converter loads it via --quant-path, materializes, swaps, exports. See
 docs/cann_lm_converter/quant_design.md.
 """
 
-from .materialize import materialize_int4, materialize_int4_with_scale
+from .materialize import materialize_int4, materialize_int4_with_scale, materialize_int8_per_channel
 from .quant_linear import QuantLinear
 from .swap import (
     load_dopt_state_dict,
     swap_to_quant_linear,
     swap_to_quant_linear_from_dopt,
+    swap_embeddings_from_dopt,
 )
 
 __all__ = [
     "materialize_int4",
     "materialize_int4_with_scale",
+    "materialize_int8_per_channel",
     "QuantLinear",
     "swap_to_quant_linear",
     "swap_to_quant_linear_from_dopt",
+    "swap_embeddings_from_dopt",
     "load_dopt_state_dict",
 ]

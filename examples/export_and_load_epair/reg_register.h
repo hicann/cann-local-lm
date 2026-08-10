@@ -356,21 +356,22 @@ REG_OP(QuantBatchMatmulV3)
     .ATTR(transpose_x2, Bool, false)
     .OP_END_FACTORY_REG(QuantBatchMatmulV3)
 
-// QuantBatchMatmulV4: MXFP path (FLOAT8_E4M3FN act + FLOAT4_E2M1 weight, per-group).
-//   NOTE: x2 dtype is microscaling float, NOT integer int4 — integer path should
-//   use V3 (above); aligning the converter/materialize is the int4-CANN 遗留.
+// QuantBatchMatmulV4: A8W4 / MxA8W4 / A8W8 / A4W4 per-group matmul (antiquant+matmul fusion).
+//   Per official proto (cann/ops-nn quant_batch_matmul_v4_proto.h): x1 supports
+//   int8/int4 (integer) + float8 (mxfp8); x2 supports int4/int8 (integer) + float4_e2m1 (mxfp4).
+//   W4A8 = x1 DT_INT8 + x2 DT_INT4 (prebuilt ND_ND_int8_int4 kernel, tilingKey=24).
 REG_OP(QuantBatchMatmulV4)
-    .INPUT(x1, TensorType({DT_FLOAT8_E4M3FN}))
-    .INPUT(x2, TensorType({DT_FLOAT4_E2M1}))
-    .OPTIONAL_INPUT(bias, TensorType({DT_BF16}))
-    .OPTIONAL_INPUT(x1_scale, TensorType({DT_BF16}))
-    .OPTIONAL_INPUT(x2_scale, TensorType({DT_BF16}))
+    .INPUT(x1, TensorType({DT_FLOAT8_E5M2, DT_FLOAT8_E4M3FN, DT_INT8, DT_INT4}))
+    .INPUT(x2, TensorType({DT_FLOAT4_E2M1, DT_INT4, DT_INT8}))
+    .OPTIONAL_INPUT(bias, TensorType({DT_BF16, DT_FLOAT16, DT_FLOAT32}))
+    .OPTIONAL_INPUT(x1_scale, TensorType({DT_FLOAT16, DT_BF16, DT_FLOAT8_E8M0, DT_FLOAT32}))
+    .OPTIONAL_INPUT(x2_scale, TensorType({DT_FLOAT16, DT_BF16, DT_FLOAT8_E8M0, DT_UINT64, DT_FLOAT32}))
     .OPTIONAL_INPUT(y_scale, TensorType({DT_UINT64}))
-    .OPTIONAL_INPUT(x1_offset, TensorType({DT_BF16}))
-    .OPTIONAL_INPUT(x2_offset, TensorType({DT_BF16}))
-    .OPTIONAL_INPUT(y_offset, TensorType({DT_BF16}))
+    .OPTIONAL_INPUT(x1_offset, TensorType({DT_FLOAT16, DT_BF16}))
+    .OPTIONAL_INPUT(x2_offset, TensorType({DT_FLOAT16, DT_BF16}))
+    .OPTIONAL_INPUT(y_offset, TensorType({DT_FLOAT16, DT_BF16, DT_FLOAT32}))
     .OPTIONAL_INPUT(x2_table, TensorType({DT_INT8}))
-    .OUTPUT(y, TensorType({DT_BF16}))
+    .OUTPUT(y, TensorType({DT_FLOAT16, DT_BF16}))
     .REQUIRED_ATTR(dtype, Int)
     .ATTR(compute_type, Int, -1)
     .ATTR(transpose_x1, Bool, false)
@@ -387,5 +388,19 @@ REG_OP(DynamicQuant)
     .OUTPUT(scale, TensorType({DT_FLOAT}))
     .ATTR(dst_type, Int, DT_INT8)
     .OP_END_FACTORY_REG(DynamicQuant)
+
+// Bitcast: reinterpret tensor bytes as another dtype (e.g. int8 storage -> DT_INT4
+//   for quantized weight feeding QuantBatchMatmulV4 x2). Per official proto
+//   (opp/built-in/op_graph/inc/transformation_ops.h).
+REG_OP(Bitcast)
+    .INPUT(x, TensorType({DT_BOOL, DT_FLOAT16, DT_FLOAT, DT_INT4, DT_INT8, DT_INT32, DT_UINT32, DT_UINT8,
+                          DT_INT64, DT_UINT64, DT_INT16, DT_UINT16, DT_DOUBLE, DT_COMPLEX64,
+                          DT_COMPLEX128, DT_QINT8, DT_QUINT8, DT_QINT16, DT_QUINT16, DT_QINT32}))
+    .OUTPUT(y, TensorType({DT_BOOL, DT_FLOAT16, DT_FLOAT, DT_INT4, DT_INT8, DT_INT32, DT_UINT32, DT_UINT8,
+                           DT_INT64, DT_UINT64, DT_INT16, DT_UINT16, DT_DOUBLE, DT_COMPLEX64,
+                           DT_COMPLEX128, DT_QINT8, DT_QUINT8, DT_QINT16, DT_QUINT16, DT_QINT32}))
+    .REQUIRED_ATTR(type, Type)
+    .ATTR(keep_dim, Bool, false)
+    .OP_END_FACTORY_REG(Bitcast)
 
 }  // namespace ge

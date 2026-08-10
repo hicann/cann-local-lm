@@ -133,7 +133,8 @@ def pack_weights(contents, *, max_file_size: int = DEFAULT_SPLIT_SIZE) -> Consol
 def consolidated_weights_save(contents, output_dir: str | Path, *,
                               save_weights: bool = True,
                               max_file_size: int = 5 * 1024,
-                              ep_json_filename: str = "ep_json_with_ascend_ir.json") -> None:
+                              ep_json_filename: str = "ep_json_with_ascend_ir.json",
+                              host_side_weights: list[tuple[str, torch.Tensor]] | None = None) -> None:
     """Write epair contents to disk in consolidated weights format.
 
     Writes files directly under ``output_dir`` (no ``data/`` subdirectory):
@@ -141,6 +142,17 @@ def consolidated_weights_save(contents, output_dir: str | Path, *,
     - ``weights_0.bin``, ``weights_1.bin``, ... — raw concatenated tensor bytes
     - ``weight_info.json`` — index describing each tensor and its bin file
     - ``<ep_json_filename>`` — annotated EP JSON (default ``ep_json_with_ascend_ir.json``)
+
+    When ``host_side_weights`` is provided (pure-embeddings export: embedding
+    lookups externalized from the graph), additionally writes:
+
+    - ``host_weights_0.bin``, ... — host-side lookup weights (embed_tokens /
+      gemma4 embed_tokens_per_layer), NOT graph inputs
+    - ``host_weights_info.json`` — index with name/offset/size/dtype/shape
+
+    These host-side files are independent of ``weight_info.json`` /
+    ``weights_*.bin``; the C++ ``GeWeightLoader`` reads only the latter, so
+    host-side packing has zero impact on the GE compile path.
 
     Weight files are written directly to disk (streaming, not in-memory)
     to support large models (>8B params) without OOM.
@@ -156,6 +168,10 @@ def consolidated_weights_save(contents, output_dir: str | Path, *,
             ``ep_json_with_ascend_ir.json``. Use a custom name for
             prefill/decode split export (e.g.
             ``prefill_ep_json_with_ascend_ir.json``).
+        host_side_weights: Optional list of ``(name, tensor)`` pairs for
+            embedding-lookup weights externalized from the graph (pure-
+            embeddings mode). Packed into separate ``host_weights_*.bin`` +
+            ``host_weights_info.json`` for host-side lookup at inference.
     """
     output_dir = Path(output_dir).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -169,6 +185,13 @@ def consolidated_weights_save(contents, output_dir: str | Path, *,
         print(f"Saved: {idx_path}")
     else:
         print("  [skip] weights_*.bin + weight_info.json (save_weights=False)")
+
+    if host_side_weights:
+        host_index = _pack_host_side_weights_to_dir(host_side_weights, output_dir, max_file_size)
+        host_idx_path = output_dir / "host_weights_info.json"
+        with open(host_idx_path, "w") as f:
+            json.dump(host_index, f, indent=2)
+        print(f"Saved: {host_idx_path}")
 
     ep_json_path = output_dir / ep_json_filename
     _strip_none_input_descs(contents.ep_json)
@@ -279,4 +302,68 @@ def _pack_weights_to_dir(contents, output_dir: Path, max_file_size: int) -> dict
 
     print(f"Packed {len(index)} tensors into {current_file_idx + 1} file(s) "
           f"({total_written / 1024:.0f} KB)")
+    return index
+
+
+def _pack_host_side_weights_to_dir(
+    host_side_weights: list[tuple[str, torch.Tensor]],
+    output_dir: Path,
+    max_file_size: int,
+) -> dict[str, list[dict]]:
+    """Pack host-side lookup weights (externalized from the graph) to disk.
+
+    Streaming + split-on-max_file_size logic mirrors _pack_weights_to_dir, but
+    writes to ``host_weights_*.bin`` and records dtype+shape per entry (the host
+    needs these to reconstruct the tensor, esp. bfloat16 stored as int16 bytes).
+
+    These weights are NOT graph inputs (embed_tokens / gemma4 embed_tokens_per_layer
+    lookups externalized in pure-embeddings mode); packed solely for host-side
+    lookup at inference. Independent of weight_info.json / weights_*.bin.
+    """
+    output_dir = Path(output_dir)
+    index: dict[str, list[dict]] = {}
+    current_file_name = "host_weights_0.bin"
+    current_file_idx = 0
+    current_offset = 0
+    total_written = 0
+    bin_fp = None
+
+    for name, tensor in host_side_weights:
+        shape = list(tensor.shape)
+        dtype = tensor.dtype
+        raw = tensor.detach().cpu().contiguous()
+        if raw.dtype == torch.bfloat16:
+            raw = raw.view(torch.int16)
+        data = raw.numpy().tobytes()
+        del raw
+
+        if current_offset > 0 and current_offset + len(data) > max_file_size:
+            if bin_fp is not None:
+                bin_fp.close()
+            current_file_idx += 1
+            current_file_name = f"host_weights_{current_file_idx}.bin"
+            current_offset = 0
+
+        if current_offset == 0:
+            bin_fp = open(output_dir / current_file_name, "wb")
+            index[current_file_name] = []
+
+        index[current_file_name].append({
+            "name": name,
+            "offset": current_offset,
+            "size": len(data),
+            "dtype": str(dtype).split(".")[-1],
+            "shape": shape,
+        })
+
+        bin_fp.write(data)
+        current_offset += len(data)
+        total_written += len(data)
+        del data
+
+    if bin_fp is not None:
+        bin_fp.close()
+
+    print(f"Packed {len(host_side_weights)} host-side weight(s) into "
+          f"{current_file_idx + 1} file(s) ({total_written / 1024:.0f} KB)")
     return index

@@ -485,15 +485,18 @@ def weight_q_params_adapter_into_dopt(dopt_model, weight_q_quantizers, tie_lmhea
                 continue
             module.quant_op.weight_quantizer.s = weight_q_q.group_scale.flatten().to(module.quant_op.weight_quantizer.s.dtype)
             module.quant_op.weight_quantizer.offset = torch.zeros_like(module.quant_op.weight_quantizer.offset)
-    if hasattr(dopt_model.model, 'embed_tokens') and hasattr(dopt_model.model.embed_tokens, "quant_op"):
-        if not tie_lmhead:
-            weight = dopt_model.model.embed_tokens.weight.data
-            dopt_model.model.embed_tokens.weight.data.copy_(dopt_model.model.embed_tokens.quant_op.weight_quantizer(weight).to(weight.dtype))
-        elif hasattr(dopt_model.lm_head, 'quant_op'):
-            dopt_model.model.embed_tokens.quant_op.weight_quantizer = dopt_model.lm_head.quant_op.weight_quantizer
-        else:
-            weight = dopt_model.model.embed_tokens.weight.data
-            dopt_model.model.embed_tokens.weight.data.copy_(dopt_model.model.embed_tokens.quant_op.weight_quantizer(weight).to(weight.dtype))
+
+    for name, module in dopt_model.named_modules():
+        if hasattr(module, "quant_op") and hasattr(module, "weight") and module.quant_op.weight_quantizer is not None:
+            if "embed_tokens" in name:  ## include ple embeds
+                module.quant_op.weight_quantizer.do_calibrate = True
+            else:
+                module.quant_op.weight_quantizer.do_calibrate = False
+            if name == "model.embed_tokens" and tie_lmhead:
+                module.quant_op.weight_quantizer = dopt_model.lm_head.quant_op.weight_quantizer
+                module.quant_op.weight_quantizer.do_calibrate = False
+            weight = module.weight.data
+            module.weight.data.copy_(module.quant_op.weight_quantizer(weight).to(weight.dtype))
 
 
 def weight_quant_pipline(

@@ -101,7 +101,7 @@ int main(int argc, char *argv[]) {
   // SOC version: 本机芯片 Ascend910_9362 (npu-smi 显示), CANN platform_config 有 Ascend910_9362.ini
   // 用环境变量 SOC_VERSION 覆盖 (默认 Ascend910_9362)
   const char *soc_env = std::getenv("SOC_VERSION");
-  const std::string soc_version = (soc_env != nullptr) ? std::string(soc_env) : std::string("Ascend910_9362");
+  const std::string soc_version = (soc_env != nullptr) ? std::string(soc_env) : std::string("Ascend950DT");
   std::map<ge::AscendString, ge::AscendString> init_options = GlobalOptionsWithSoc(soc_version);
   ge::graphStatus init_status = aclgrphBuildInitialize(init_options);
   if (init_status != ge::GRAPH_SUCCESS) {

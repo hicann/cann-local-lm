@@ -63,6 +63,7 @@ def export_model(
     output_dir: str,
     kv_cache_max_len: int,
     use_embeddings: bool = False,
+    num_layers: int | None = None,
 ) -> None:
     register_ge_converters()
     entry = get_entry(model_name)
@@ -82,6 +83,16 @@ def export_model(
 
     print(f"[3/5] Loading weights from {hf_path}")
     model = entry.load_weights_fn(model, hf_path, device="cpu", dtype=dtype)
+
+    if num_layers is not None:
+        text_model = model.model
+        total = len(text_model.layers)
+        if num_layers > total:
+            raise ValueError(f"--num-layers {num_layers} exceeds total {total} layers")
+        if num_layers < 1:
+            raise ValueError(f"--num-layers must be >= 1, got {num_layers}")
+        text_model.layers = text_model.layers[:num_layers]
+        print(f"      Truncated to first {num_layers}/{total} layers (config.num_hidden_layers unchanged)")
 
     print(f"[4/5] Building export wrapper (kv_cache_max_len={kv_cache_max_len}, "
           f"use_embeddings={use_embeddings})")
@@ -143,10 +154,14 @@ def main() -> None:
                         help="Pure-embeddings export: input_ids not in graph, host feeds embeddings "
                              "(+ gemma4 per_layer_token_identity for PLE). Lookup weights packed "
                              "to host_weights_*.bin additionally.")
+    parser.add_argument("--num-layers", type=int, default=None,
+                        help="Truncate model.model.layers to first N layers (config.num_hidden_layers "
+                             "unchanged). Useful for fast/debug OM compile with a small N.")
     args = parser.parse_args()
 
     export_model(args.model, args.hf_path, args.seq_len, _DTYPE_MAP[args.dtype],
-                 args.output_dir, args.kv_cache_max_len, use_embeddings=args.use_embeddings)
+                 args.output_dir, args.kv_cache_max_len, use_embeddings=args.use_embeddings,
+                 num_layers=args.num_layers)
 
 
 if __name__ == "__main__":

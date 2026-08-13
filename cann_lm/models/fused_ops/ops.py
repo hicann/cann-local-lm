@@ -16,9 +16,12 @@
 
 from . import (  # noqa: F401  (side-effect: define + register_fake/impl)
     add_rms_norm,
+    apply_rotary_pos_emb,
     chunk_gated_delta_rule,
     dynamic_quant,
+    fused_infer_attention_score,
     quant_matmul,
+    quant_matmul_s8s4,
     rms_norm,
     rotary_mul,
 )

@@ -21,7 +21,7 @@ npu_rms_norm converter 自动注册 (ge.RmsNorm). stubs 环境 (无 torch_npu)
 
 import torch
 
-from ._library import NPU_LIB, _HAS_TORCH_NPU
+from ._library import NPU_LIB, _HAS_TORCH_NPU, register_cpu_impl
 
 if NPU_LIB is not None:
     NPU_LIB.define(
@@ -41,7 +41,7 @@ if not _HAS_TORCH_NPU:
         rstd = self.new_empty(self.shape[:-1] + (1,), dtype=torch.float32)
         return y, rstd
 
-    @torch.library.impl("npu::npu_rms_norm", "cpu")
+    @register_cpu_impl("npu::npu_rms_norm")
     def _rms_norm_cpu(
         self: torch.Tensor,
         gamma: torch.Tensor,

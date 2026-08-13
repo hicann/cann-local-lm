@@ -36,21 +36,81 @@ def rotate_half(x: torch.Tensor) -> torch.Tensor:
 
 
 def apply_rotary_pos_emb(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    cos: torch.Tensor,
+    sin: torch.Tensor,
+    layer_type: str,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Apply RoPE to q+k pair. 与图灵参考实现一致:
+
+    - sliding (全旋, head_dim == cos.shape[-1]): npu_rotary_mul 单 tensor, q/k 各调一次.
+    - full (proportional partial, rotary_dim == cos.shape[-1] < head_dim): cat 出 q_rot/k_rot
+      (前 pair_dim + 中 half_dim:half_dim+pair_dim), npu_apply_rotary_pos_emb 配对 (layout=BSND),
+      拆装插回原位 (中间和后面保持原值).
+    """
+    cos = cos.unsqueeze(2)  # [b,s,1,d] -> broadcast to heads (BSND: [b,s,N,d])
+    sin = sin.unsqueeze(2)
+    if layer_type == "sliding_attention":
+        return _rope_sliding(q, k, cos, sin)
+    return _rope_full_pair(q, k, cos, sin)
+
+
+def apply_rotary_pos_emb_single(
     x: torch.Tensor,
     cos: torch.Tensor,
     sin: torch.Tensor,
-    unsqueeze_dim: int = 1,
+    layer_type: str,
 ) -> torch.Tensor:
-    """Apply RoPE to a single tensor via cann_lm::rotary_mul (fused)."""
-    cos = cos.unsqueeze(unsqueeze_dim)
-    sin = sin.unsqueeze(unsqueeze_dim)
-    rotary_dim = cos.shape[-1]
-    x_rot = x[..., :rotary_dim]
-    x_pass = x[..., rotary_dim:]
-    out = torch.ops.npu.npu_rotary_mul(x_rot, cos, sin, rotary_mode="half")
-    if x_pass.shape[-1] > 0:
-        return torch.cat([out, x_pass], dim=-1)
-    return out
+    """Apply RoPE to a single tensor (for kv_shared path: q 单独, k 从 shared 来已 RoPE).
+
+    sliding: npu_rotary_mul; full: cat/拆装 + npu_rotary_mul (单 tensor 模拟 partial).
+    """
+    cos = cos.unsqueeze(2)
+    sin = sin.unsqueeze(2)
+    if layer_type == "sliding_attention":
+        return torch.ops.npu.npu_rotary_mul(x, cos, sin, rotary_mode="half")
+    return _rope_full_single(x, cos, sin)
+
+
+def _rope_sliding(
+    q: torch.Tensor, k: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    q_out = torch.ops.npu.npu_rotary_mul(q, cos, sin, rotary_mode="half")
+    k_out = torch.ops.npu.npu_rotary_mul(k, cos, sin, rotary_mode="half")
+    return q_out, k_out
+
+
+def _rope_full_pair(
+    q: torch.Tensor, k: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    pair_dim = cos.shape[-1] // 2
+    half_dim = q.shape[-1] // 2
+    q_rot = torch.cat([q[..., :pair_dim], q[..., half_dim:half_dim + pair_dim]], dim=-1)
+    k_rot = torch.cat([k[..., :pair_dim], k[..., half_dim:half_dim + pair_dim]], dim=-1)
+    q_rot, k_rot = torch.ops.npu.npu_apply_rotary_pos_emb(q_rot, k_rot, cos, sin, layout="BSND")
+    q_out = torch.cat(
+        [q_rot[..., :pair_dim], q[..., pair_dim:half_dim],
+         q_rot[..., pair_dim:], q[..., half_dim + pair_dim:]], dim=-1,
+    )
+    k_out = torch.cat(
+        [k_rot[..., :pair_dim], k[..., pair_dim:half_dim],
+         k_rot[..., pair_dim:], k[..., half_dim + pair_dim:]], dim=-1,
+    )
+    return q_out, k_out
+
+
+def _rope_full_single(
+    x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor,
+) -> torch.Tensor:
+    pair_dim = cos.shape[-1] // 2
+    half_dim = x.shape[-1] // 2
+    x_rot = torch.cat([x[..., :pair_dim], x[..., half_dim:half_dim + pair_dim]], dim=-1)
+    x_rot = torch.ops.npu.npu_rotary_mul(x_rot, cos, sin, rotary_mode="half")
+    return torch.cat(
+        [x_rot[..., :pair_dim], x[..., pair_dim:half_dim],
+         x_rot[..., pair_dim:], x[..., half_dim + pair_dim:]], dim=-1,
+    )
 
 
 def repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
@@ -114,6 +174,76 @@ def eager_attention_forward(
     return attn_output, attn_weights
 
 
+def _pad_mask_to_kv_square(mask: torch.Tensor, kv_len: int) -> torch.Tensor:
+    """pad atten_mask 的 q 维到 kv_len (融合算子要求 [*, kv_len, kv_len] 方阵).
+
+    cann_lm 的 mask 是 [*, q_len, kv_len] (q-kv mask, q 维=q_len). 融合算子要求
+    [*, kv_len, kv_len] (全 KV buffer 因果模板). pad q 维到 kv_len: 前 q_len 行原 mask
+    (bool: False=attend, True=mask out), 后 kv_len-q_len 行 pad True (mask out, 不影响,
+    融合算子用 actual_seq_qlen 只取前 q_len 行).
+    """
+    q_len = mask.shape[-2]
+    if q_len >= kv_len:
+        return mask.bool()
+    pad_shape = (*mask.shape[:-2], kv_len - q_len, kv_len)
+    pad = torch.full(pad_shape, True, dtype=torch.bool, device=mask.device)
+    return torch.cat([mask.bool(), pad], dim=-2)
+
+
+def fused_attention_forward(
+    module: nn.Module,
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    attention_mask: torch.Tensor | None,
+    new_kv_cache_pos: torch.Tensor | None = None,
+) -> torch.Tensor:
+    """融合 attention via npu_fused_infer_attention_score_v2 (替代 eager_attention_forward).
+
+    与图灵参考实现一致: 融合 QK^T+softmax+AV+GQA, 消除 repeat_kv; sparse_mode+pre_tokens
+    表达 causal/sliding, 消除 _prepare_causal_mask 的 4D mask 构造. q/k/v 为 BNSD [b,n,s,d]
+    (RoPE 后已 transpose). GQA 由 num_query_heads vs num_key_value_heads 表达 (融合算子原生).
+
+    actual_seq_kvlen 用 new_kv_cache_pos.max()+1 算实际有效 kv (past+new), 不能用 key.shape[2]
+    (scatter-write 后的全 buffer, 含未初始化部分, 会让融合算子 attend 到垃圾).
+    """
+    q_len = query.shape[2]
+    # actual_kv_len: 实际有效 kv 长度 (past + new).
+    # - scatter-write 模式 (OM export): new_kv_cache_pos 不为 None, 用 max+1 (写入位置+1, 不含 buffer 未用部分)
+    # - torch.cat 模式 (model.generate eager): new_kv_cache_pos=None, key.shape[2]=past+q_len (实际有效)
+    if new_kv_cache_pos is not None:
+        actual_kv_len = new_kv_cache_pos.max() + 1
+    else:
+        actual_kv_len = torch.tensor(key.shape[2], dtype=torch.int64, device=query.device)
+    actual_seq_qlen = torch.tensor([q_len], dtype=torch.int64, device=query.device)
+    actual_seq_kvlen = actual_kv_len.reshape(1).to(torch.int64)
+    # atten_mask: sparse_mode=3/4 要求 atten_mask 非空 (bool [*, kv_len, kv_len] 方阵).
+    # cann_lm float mask [*, q_len, kv_len] (0.0=attend k<=q, min=mask out k>q) -> bool 转换 +
+    # pad q 维到 kv_len (融合算子用 actual_seq_qlen 切片前 q_len 行). 试不取反 (False=attend).
+    atten_mask_bool = _pad_mask_to_kv_square(attention_mask, key.shape[2]) if attention_mask is not None else None
+    if module.is_sliding:
+        sparse_mode, pre_tokens = 4, module.sliding_window
+    else:
+        sparse_mode = 3
+        pre_tokens = torch.iinfo(torch.int32).max
+    attn_output, _ = torch.ops.npu.npu_fused_infer_attention_score_v2(
+        query, key, value,
+        num_query_heads=module.config.num_attention_heads,
+        num_key_value_heads=module.config.num_key_value_heads,
+        softmax_scale=module.scaling,
+        input_layout="BNSD",
+        sparse_mode=sparse_mode,
+        pre_tokens=pre_tokens,
+        next_tokens=0,
+        atten_mask=atten_mask_bool,
+        actual_seq_qlen=actual_seq_qlen,
+        actual_seq_kvlen=actual_seq_kvlen,
+    )
+    # 融合算子输出 BNSD [b,n,s,d], Attention.forward 期望 BSND [b,s,n,d] (reshape [b,s,-1] 假设 BSND).
+    # transpose(1,2) BNSD->BSND, 跟 eager_attention_forward 输出一致.
+    return attn_output.transpose(1, 2).contiguous()
+
+
 # ════════════════════════════════════════════════════════════════════
 # RMSNorm
 # ════════════════════════════════════════════════════════════════════
@@ -137,8 +267,12 @@ class Gemma4RMSNorm(nn.Module):
         return y
 
     def forward_add(self, x1: torch.Tensor, x2: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        """Fused add + rms_norm: returns (rms_norm(x1 + x2), x1 + x2)."""
-        y, _, residual = torch.ops.npu.npu_add_rms_norm(x1, x2, self.weight, epsilon=self.eps)
+        """add + rms_norm (拆开): returns (rms_norm(x1 + x2), x1 + x2).
+
+        原用 fused npu_add_rms_norm, 现拆为 add + npu_rms_norm (用户要求).
+        """
+        residual = x1 + x2
+        y, _ = torch.ops.npu.npu_rms_norm(residual, self.weight, epsilon=self.eps)
         return y, residual
 
     def extra_repr(self):
@@ -217,15 +351,13 @@ class Gemma4TextRotaryEmbedding(nn.Module):
         head_dim = rope_config["head_dim"]
 
         if rope_type == "proportional":
+            # 与图灵参考实现一致: inv_freq 长度 = rope_angles = rotary_dim//2 (不补 0).
+            # cos/sin 长度 = 2*rope_angles = rotary_dim, 由 apply_rotary_pos_emb 的
+            # cat/拆装路径 (full 层) 消费, 不再用 inv_freq 后半补 0 等效 partial rotary.
             rope_angles = int(partial_rotary_factor * head_dim // 2)
             inv_head_dim = torch.tensor(1.0 / head_dim, dtype=dtype, device=device)
             exponents = torch.arange(0, 2 * rope_angles, 2, dtype=dtype, device=device) * inv_head_dim
-            inv_freq_rotated = torch.pow(base, -exponents)
-            nope_angles = head_dim // 2 - rope_angles
-            if nope_angles > 0:
-                return torch.cat((inv_freq_rotated, torch.zeros(nope_angles, dtype=dtype, device=device)), dim=0)
-            else:
-                return inv_freq_rotated
+            return torch.pow(base, -exponents)
         else:
             dim = int(head_dim * partial_rotary_factor)
             inv_dim = torch.tensor(1.0 / dim, dtype=dtype, device=device)
@@ -352,10 +484,11 @@ class Gemma4TextAttention(nn.Module):
         # --- Q projection ---
         query_states = self.q_proj(hidden_states).view(q_shape)
         query_states = self.q_norm(query_states)
-        query_states = apply_rotary_pos_emb(query_states, cos, sin, unsqueeze_dim=2)
-        query_states = query_states.transpose(1, 2)
 
-        # --- KV projection (or reuse shared) ---
+        # --- KV projection (or reuse shared) + RoPE ---
+        # 与图灵参考实现一致: 非 kv_shared 用配对 RoPE (sliding: npu_rotary_mul 各调;
+        # full: npu_apply_rotary_pos_emb 配对 + cat/拆装). kv_shared 路径 q 单独 RoPE
+        # (k 从 shared 来已 RoPE), 用 single 版 (npu_rotary_mul + cat/拆装 模拟 partial).
         if self.is_kv_shared_layer and shared_kv_states is not None:
             kv_key = self.layer_type
             if kv_key not in shared_kv_states:
@@ -364,10 +497,13 @@ class Gemma4TextAttention(nn.Module):
                 key_states, value_states = shared_kv_states[kv_key]
                 key_states = key_states.to(query_states.device)
                 value_states = value_states.to(query_states.device)
+            query_states = apply_rotary_pos_emb_single(query_states, cos, sin, self.layer_type)
+            query_states = query_states.transpose(1, 2)
         else:
             key_states = self.k_proj(hidden_states).view(kv_shape)
             key_states = self.k_norm(key_states)
-            key_states = apply_rotary_pos_emb(key_states, cos, sin, unsqueeze_dim=2)
+            query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin, self.layer_type)
+            query_states = query_states.transpose(1, 2)
             key_states = key_states.transpose(1, 2)
 
             if self.v_proj is not None:
@@ -401,15 +537,14 @@ class Gemma4TextAttention(nn.Module):
         if self.store_full_length_kv and shared_kv_states is not None:
             shared_kv_states[self.layer_type] = (key_states, value_states)
 
-        # --- Attention ---
-        attn_output, _attn_weights = eager_attention_forward(
+        # --- Attention (fused: npu_fused_infer_attention_score_v2) ---
+        attn_output = fused_attention_forward(
             self,
             query_states,
             key_states,
             value_states,
             attention_mask,
-            scaling=self.scaling,
-            dropout=self.attention_dropout if self.training else 0.0,
+            new_kv_cache_pos,
         )
 
         attn_output = attn_output.reshape(*input_shape, -1).contiguous()
@@ -952,7 +1087,9 @@ __all__ = [
     "Gemma4TextRotaryEmbedding",
     "rotate_half",
     "apply_rotary_pos_emb",
+    "apply_rotary_pos_emb_single",
     "repeat_kv",
     "eager_attention_forward",
+    "fused_attention_forward",
     "load_gemma4_weights",
 ]

@@ -38,3 +38,26 @@ NPU_LIB = torch.library.Library("npu", "DEF") if not _HAS_TORCH_NPU else None
 
 # cann_lm 命名空间: 无 torchair 对应的算子 (chunk_gated_delta_rule, torchair raise RuntimeError)
 CANN_LM_LIB = torch.library.Library("cann_lm", "DEF")
+
+# stub (export) env: converter (quant_export.sh run_converter) LD_PRELOAD's
+# libacl_stub/libge_local_stub/libhccl_stub to provide GE symbols for torchair IR
+# conversion on CPU. In this env, torch.library.impl(op, "cpu") triggers
+# free():invalid-pointer (C heap corruption — torch 2.9.0 + stub clash). Skip cpu
+# eager-impl registration here; export traces via register_fake/meta only. Eager
+# regression runs in a non-stub env where impl registers normally.
+_STUB_ENV = "libacl_stub" in os.environ.get("LD_PRELOAD", "")
+
+
+def register_cpu_impl(op_name: str):
+    """Decorator: register a CPU eager impl for op_name; no-op in stub (export) env.
+
+    Use ``@register_cpu_impl("npu::xxx")`` instead of ``@torch.library.impl(..., "cpu")``
+    so the registration is skipped when LD_PRELOAD carries libacl_stub.
+    """
+
+    def deco(fn):
+        if not _STUB_ENV:
+            torch.library.impl(op_name, "cpu")(fn)
+        return fn
+
+    return deco

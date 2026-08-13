@@ -29,6 +29,25 @@ REG_OP(MatMul)
     .ATTR(transpose_x2, Bool, false)
     .OP_END_FACTORY_REG(MatMul)
 
+// QuantMatmulS8S4 — 方案 A 自研 W4A8 量化 matmul (s8s4 对称). 骨架: 待算子实现方补
+// AscendC kernel + 预编译 .o (见 docs/cann_lm_converter/quant_design.md "方案 A").
+// conv 侧 GE 节点由 cann_lm/converter/export/_quant_matmul_s8s4_converter.py 产出;
+// 此 REG_OP 让 C++ parser 识别该 op + OM 编译选 kernel (kernel 就位后即生效)。
+// x2 = int4 nibble-packed in int8 container [n, k//2] (低 nibble=偶 k); x2_scale fp32
+// per-channel×per-group [n, k//group]; x1 int8 per-token act; 对称 offset=0。
+REG_OP(QuantMatmulS8S4)
+    .INPUT(x1, TensorType({DT_INT8}))
+    .INPUT(x1_scale, TensorType({DT_FLOAT}))
+    .INPUT(x2, TensorType({DT_INT8}))
+    .INPUT(x2_scale, TensorType({DT_FLOAT}))
+    .OPTIONAL_INPUT(bias, TensorType({DT_FLOAT16, DT_BF16, DT_FLOAT}))
+    .OUTPUT(y, TensorType({DT_FLOAT16, DT_BF16}))
+    .ATTR(group_size, Int, 256)
+    .ATTR(output_dtype, Int, 5)            // 1=fp16, 27=bf16
+    .ATTR(transpose_x1, Bool, false)
+    .ATTR(transpose_x2, Bool, true)
+    .OP_END_FACTORY_REG(QuantMatmulS8S4)
+
 REG_OP(Mul)
     .INPUT(x1, TensorType({DT_FLOAT, DT_FLOAT16, DT_INT32, DT_INT64, DT_BF16}))
     .INPUT(x2, TensorType({DT_FLOAT, DT_FLOAT16, DT_INT32, DT_INT64, DT_BF16}))
@@ -160,6 +179,83 @@ REG_OP(RotaryMul)
     .OUTPUT(y, TensorType({DT_FLOAT, DT_FLOAT16, DT_BF16}))
     .OP_END_FACTORY_REG(RotaryMul)
 
+// ApplyRotaryPosEmb: q+k 配对 RoPE 融合算子 (ge.ApplyRotaryPosEmb, torchair converter
+// apply_rotary_pos_emb.py 产出). 来源: ops-transformer 仓库
+//   https://gitcode.com/cann/ops-transformer/blob/master/posembedding/apply_rotary_pos_emb/op_graph/apply_rotary_pos_emb_proto.h
+// 适配: 原文用 DT_BFLOAT16, 本机 CANN 9.2.0 graph/types.h 只有 DT_BF16 (=27),
+//   DT_BFLOAT16 仅在 aclnn 注释出现 (非代码常量), 故统一换 DT_BF16.
+// 用途: 让 GE OperatorFactory 注册 ApplyRotaryPosEmb, 使 epair->OM 编译能识别该算子
+//   (切换到 npu_apply_rotary_pos_emb 后, full 层走此算子, 见 modeling_gemma4.py).
+// inputs query/key/cos/sin -> outputs query/key (in-place 风格, converter 内 TensorMove 保护).
+// attrs: layout (1=BSND 2=SBND 3=BNSD 4=TND), rotary_mode (half/interleave/quarter).
+REG_OP(ApplyRotaryPosEmb)
+    .INPUT(query, TensorType({DT_FLOAT16, DT_FLOAT, DT_BF16}))
+    .INPUT(key, TensorType({DT_FLOAT16, DT_FLOAT, DT_BF16}))
+    .INPUT(cos, TensorType({DT_FLOAT16, DT_FLOAT, DT_BF16}))
+    .INPUT(sin, TensorType({DT_FLOAT16, DT_FLOAT, DT_BF16}))
+    .ATTR(layout, Int, 1)
+    .ATTR(rotary_mode, String, "half")
+    .OUTPUT(query, TensorType({DT_FLOAT16, DT_FLOAT, DT_BF16}))
+    .OUTPUT(key, TensorType({DT_FLOAT16, DT_FLOAT, DT_BF16}))
+    .OP_END_FACTORY_REG(ApplyRotaryPosEmb)
+
+// FusedInferAttentionScore: 融合 attention 算子 (ge.FusedInferAttentionScore, cann_lm
+// ge_converter.py 的 npu_fused_infer_attention_score_v2 converter 产出). 来源: torchair
+// auto_generated_ge_raw_ops.py:90687 的 IR 定义 (DT_BF16, 与本机 CANN graph/types.h 一致).
+// 用途: 替代 eager_attention_forward (matmul+softmax+matmul), 融合 QK^T+softmax+AV+GQA+
+// causal/sliding. cann_lm schema 简化 (只 gemma4 用参数), GE IR 完整 (30+ inputs/attrs).
+REG_OP(FusedInferAttentionScore)
+    .INPUT(query, TensorType({DT_INT8, DT_FLOAT16, DT_BF16}))
+    .DYNAMIC_INPUT(key, TensorType({DT_INT8, DT_FLOAT16, DT_BF16}))
+    .DYNAMIC_INPUT(value, TensorType({DT_INT8, DT_FLOAT16, DT_BF16}))
+    .OPTIONAL_INPUT(pse_shift, TensorType({DT_FLOAT16, DT_BF16}))
+    .OPTIONAL_INPUT(atten_mask, TensorType({DT_FLOAT16, DT_BOOL, DT_UINT8, DT_INT8}))
+    .OPTIONAL_INPUT(actual_seq_lengths, TensorType({DT_INT64}))
+    .OPTIONAL_INPUT(actual_seq_lengths_kv, TensorType({DT_INT64}))
+    .OPTIONAL_INPUT(dequant_scale1, TensorType({DT_UINT64}))
+    .OPTIONAL_INPUT(quant_scale1, TensorType({DT_FLOAT32}))
+    .OPTIONAL_INPUT(dequant_scale2, TensorType({DT_UINT64}))
+    .OPTIONAL_INPUT(quant_scale2, TensorType({DT_FLOAT32, DT_BF16}))
+    .OPTIONAL_INPUT(quant_offset2, TensorType({DT_FLOAT32, DT_BF16}))
+    .OPTIONAL_INPUT(antiquant_scale, TensorType({DT_FLOAT16, DT_BF16}))
+    .OPTIONAL_INPUT(antiquant_offset, TensorType({DT_FLOAT16, DT_BF16}))
+    .OPTIONAL_INPUT(block_table, TensorType({DT_INT32}))
+    .OPTIONAL_INPUT(query_padding_size, TensorType({DT_INT64}))
+    .OPTIONAL_INPUT(kv_padding_size, TensorType({DT_INT64}))
+    .OPTIONAL_INPUT(key_antiquant_scale, TensorType({DT_FLOAT16, DT_BF16, DT_FLOAT32}))
+    .OPTIONAL_INPUT(key_antiquant_offset, TensorType({DT_FLOAT16, DT_BF16, DT_FLOAT32}))
+    .OPTIONAL_INPUT(value_antiquant_scale, TensorType({DT_FLOAT16, DT_BF16, DT_FLOAT32}))
+    .OPTIONAL_INPUT(value_antiquant_offset, TensorType({DT_FLOAT16, DT_BF16, DT_FLOAT32}))
+    .OPTIONAL_INPUT(key_shared_prefix, TensorType({DT_INT8, DT_FLOAT16, DT_BF16}))
+    .OPTIONAL_INPUT(value_shared_prefix, TensorType({DT_INT8, DT_FLOAT16, DT_BF16}))
+    .OPTIONAL_INPUT(actual_shared_prefix_len, TensorType({DT_INT64}))
+    .OPTIONAL_INPUT(query_rope, TensorType({DT_INT8, DT_FLOAT16, DT_BF16}))
+    .OPTIONAL_INPUT(key_rope, TensorType({DT_INT8, DT_FLOAT16, DT_BF16}))
+    .OPTIONAL_INPUT(key_rope_antiquant_scale, TensorType({DT_INT8, DT_FLOAT16, DT_BF16}))
+    .OPTIONAL_INPUT(dequant_scale_query, TensorType({DT_FLOAT32}))
+    .OPTIONAL_INPUT(learnable_sink, TensorType({DT_BF16}))
+    .OPTIONAL_INPUT(q_start_idx, TensorType({DT_INT64}))
+    .OPTIONAL_INPUT(kv_start_idx, TensorType({DT_INT64}))
+    .OUTPUT(attention_out, TensorType({DT_FLOAT16, DT_FLOAT32, DT_INT8, DT_BF16}))
+    .OUTPUT(softmax_lse, TensorType({DT_FLOAT16, DT_FLOAT32, DT_BF16}))
+    .REQUIRED_ATTR(num_heads, Int)
+    .ATTR(scale, Float, 1.0)
+    .ATTR(pre_tokens, Int, 2147483647)
+    .ATTR(next_tokens, Int, 2147483647)
+    .ATTR(input_layout, String, "BSH")
+    .ATTR(num_key_value_heads, Int, 0)
+    .ATTR(sparse_mode, Int, 0)
+    .ATTR(inner_precise, Int, 0)
+    .ATTR(block_size, Int, 0)
+    .ATTR(antiquant_mode, Int, 0)
+    .ATTR(softmax_lse_flag, Bool, false)
+    .ATTR(key_antiquant_mode, Int, 0)
+    .ATTR(value_antiquant_mode, Int, 0)
+    .ATTR(query_quant_mode, Int, 0)
+    .ATTR(pse_type, Int, 0)
+    .ATTR(out_dtype, Int, 0)
+    .OP_END_FACTORY_REG(FusedInferAttentionScore)
+
 REG_OP(Cast)
     .INPUT(x, TensorType({DT_BOOL, DT_FLOAT16, DT_FLOAT, DT_INT8, DT_INT32, DT_UINT32,
                           DT_UINT8, DT_INT64, DT_UINT64, DT_INT16, DT_UINT16, DT_DOUBLE,
@@ -178,6 +274,15 @@ REG_OP(ReduceMean)
     .OUTPUT(y, TensorType::NumberType())
     .ATTR(keep_dims, Bool, false)
     .OP_END_FACTORY_REG(ReduceMean)
+
+// ReduceMax: aten.max -> ge.ReduceMax (fused_attention_forward 用 new_kv_cache_pos.max()
+// 算实际有效 kv 长度). 来源: torchair auto_generated_ge_raw_ops.py IR 定义.
+REG_OP(ReduceMax)
+    .INPUT(x, TensorType::NumberType())
+    .INPUT(axes, TensorType::IndexNumberType())
+    .OUTPUT(y, TensorType::NumberType())
+    .ATTR(keep_dims, Bool, false)
+    .OP_END_FACTORY_REG(ReduceMax)
 
 REG_OP(Rsqrt)
     .INPUT(x, TensorType::UnaryDataType())

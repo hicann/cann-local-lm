@@ -23,7 +23,7 @@ a8w4 分支 (x1=FP8_E4M3FN + x2=FP4/FP32-pack + per-group ``y_scale`` +
 
 import torch
 
-from ._library import NPU_LIB, _HAS_TORCH_NPU
+from ._library import NPU_LIB, _HAS_TORCH_NPU, register_cpu_impl
 
 if NPU_LIB is not None:
     NPU_LIB.define(
@@ -78,7 +78,7 @@ if not _HAS_TORCH_NPU:
         return x1.new_empty(batch + [m, n], dtype=out_dtype)
 
 
-    @torch.library.impl("npu::npu_quant_matmul", "cpu")
+    @register_cpu_impl("npu::npu_quant_matmul")
     def _npu_quant_matmul_cpu(
         x1: torch.Tensor,
         x2: torch.Tensor,

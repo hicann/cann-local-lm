@@ -24,6 +24,7 @@ from . import (  # noqa: F401  (side-effect: define + register_fake/impl)
     quant_matmul_s8s4,
     rms_norm,
     rotary_mul,
+    scatter_nd_update,
 )
 
 __all__: list[str] = []

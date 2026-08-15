@@ -117,9 +117,14 @@ def save_epair(
         _assert_externalized_not_lifted(ep, wrapper.host_side_weight_names())
 
     # 用默认 whitelist (linear/matmul/layer_norm/softmax 等分解), conv1d 走自定义 converter
-    if whitelist_decompositions is None:
-        whitelist_decompositions = set(EpairConfig().whitelist_decompositions)
-    config = EpairConfig(whitelist_decompositions=whitelist_decompositions)
+    config = EpairConfig()
+    config.whitelist_decompositions.update({
+        torch.ops.aten.softplus.default,
+        torch.ops.aten.eye.default,
+        torch.ops.aten.type_as.default,
+        torch.ops.aten.index_copy.default,
+        torch.ops.aten.index_put.default
+    })
     epair = torch_delegate.export_to_epair(ep, config)
 
     # C++ 侧已兜底处理：

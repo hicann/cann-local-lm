@@ -150,6 +150,27 @@ line 488 的 `residual + hidden_states` 与 line 491 的 `pre_feedforward_layern
 > 已一致；logit softcap（`x/cap→tanh→x*cap`）无单一融合算子，`fused_attention_forward` 未传 softcap
 > （gemma4 attention 无 softcap，logit softcap 在 `Gemma4ForCausalLM` 末尾，不在 attention 内）。
 
+#### 遗留问题：融合算子引入权重时的支持方案（当前 gemma4 不涉及，量化/sink 场景需关注）
+
+**背景**：当前 `FusedInferAttentionScore` 在 gemma4 中**无 weight 参数**（只接收 Q/K/V 张量 + 配置常量如 `sparse_mode`/`actual_seq_qlen`），因此切换 eager→fused 时**可复用旧 `weights_0.bin`**（q_proj/k_proj/v_proj/o_proj 的 weight 不变，只是中间计算算子从 `BatchMatMul`+`SoftmaxV2` 换成融合算子）。
+
+**遗留场景**：若后续融合算子引入**可学习 weight**（如量化场景的 `antiquant_scale`/`antiquant_offset`/`dequant_scale_query`/`dequant_scale_key`/`dequant_scale_value`，或 attention sink 的 `learnable_sink`），则不能复用旧 `weights_0.bin` —— 新 weight 在旧 `.bin` 里没有，`weight_info.json` 也没索引，OM 编译时 Const 节点找不到权重。
+
+**支持方案**（6 步，把融合算子权重暴露为 `nn.Parameter`，让 torch.export + `consolidated_weights_save` 自动 lift + 落盘）：
+
+| 步骤 | 改动 | 说明 |
+|------|------|------|
+| 1. 模型定义 | `Attention.__init__` 加 `nn.Parameter`（如 `self.learnable_sink = nn.Parameter(torch.zeros(num_heads))`） | 跟 q_proj 等 nn.Linear 同级，torch.export 自动 lift |
+| 2. 权重加载 | `load_gemma4_weights` 加 name 映射（HF → cann_lm） | HF 有则加载，无则用 `__init__` 初始化值 |
+| 3. forward 传递 | `fused_attention_forward` 传新 weight（如 `learnable_sink=module.learnable_sink`） | 给融合算子 |
+| 4. schema | `fused_ops/fused_infer_attention_score.py` 的 schema 加新输入（`learnable_sink` 等） | 已有部分可选输入（IR 定义含 `learnable_sink`），schema 简化版需补 |
+| 5. GE converter | `ge_converter.py` 的 `_convert_fused_infer_attention_score_v2` 传新 weight（不是 None） | `REG_OP(FusedInferAttentionScore)` 已有 `learnable_sink` 等 OPTIONAL_INPUT，无需改 |
+| 6. 落盘 | `--save-weights=True`（**不能复用旧 .bin**） | `consolidated_weights_save` 自动把新 weight 存到 `weights_0.bin` + 更新 `weight_info.json` |
+
+**核心思路**：融合算子的 weight 暴露为 `nn.Parameter`（跟 q_proj 同级），让 `torch.export` + `consolidated_weights_save` 自动 lift + 落盘，无需手动管理 `weights_0.bin` 偏移/索引。**关键约束**：引入新 weight 后必须重新落盘（`--save-weights=True`），不能复用旧 `weights_0.bin`。
+
+**触发条件**：当 `fused_attention_forward` 给融合算子传非 None 的 `learnable_sink`/`antiquant_scale`/`dequant_scale_*` 等参数时，需走此方案。当前 gemma4（纯 bf16，无量化，无 sink）全部传 None，不触发。
+
 ### 2.6 KV Cache 写入 → `npu_scatter_nd_update_`
 
 **当前实现**（`Gemma4TextAttention.forward`，modeling_gemma4.py:391-392）：

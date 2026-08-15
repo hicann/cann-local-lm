@@ -23,8 +23,14 @@ import torch.nn as nn
 from .materialize import materialize_int4, materialize_int4_with_scale, materialize_int8_per_channel
 from .quant_linear import QuantLinear
 
-# names containing any of these substrings are NOT quantized
-DEFAULT_SKIP = ("embed_tokens", "lm_head", "embed_tokens_per_layer")
+# names containing any of these substrings are NOT quantized by the Linear swap.
+# embed_tokens / embed_tokens_per_layer are nn.Embedding (not nn.Linear) — never
+# reached by the Linear swap anyway; they're consumed by swap_embeddings_from_dopt
+# (W8 host gather, requires the converter --quant-embeddings flag).
+# lm_head: NOT skipped — it's a big NPU-side Linear, quantized to W4 (QuantLinear).
+# For host-embed + NPU-lm_head deployment (tie_word_embeddings must be untied:
+# embed on host, lm_head on NPU — different compute domains, can't share weight).
+DEFAULT_SKIP = ("embed_tokens", "embed_tokens_per_layer")
 
 
 def swap_embeddings_from_dopt(
@@ -187,14 +193,18 @@ def swap_to_quant_linear_from_dopt(
                 f"{name}: unsigned_quant={uq} (unsigned int4 not supported; "
                 "only symmetric uq=0). Re-run dopt with a signed-symmetric strategy."
             )
-        if offset is not None and offset.abs().max().item() == 0.0:
-            offset = None  # symmetric no-op: don't store a zeros buffer
+        if offset is not None and offset.abs().max().item() != 0.0:
+            raise NotImplementedError(
+                f"{name}: non-zero offset (asymmetric) not supported by 方案 A "
+                "quant_matmul_s8s4 (symmetric offset=0 only). Re-run dopt with a "
+                "symmetric strategy."
+            )
+        # 方案 A: nibble-packed int4 [n, k//2] int8 for the quant_matmul_s8s4 op x2 input.
         weight_q, weight_scale = materialize_int4_with_scale(
-            w_gptq, scale2d, group_size, signed=True, nbits=bit
+            w_gptq, scale2d, group_size, signed=True, nbits=bit, packed=True
         )
         ql = QuantLinear(
-            weight_q, weight_scale, group_size, bias=m.bias,
-            offset=offset, act_quant=act_quant,
+            weight_q, weight_scale, group_size, bias=m.bias, act_quant=act_quant,
         )
         parent, child = _resolve_parent(model, name)
         setattr(parent, child, ql)
@@ -208,8 +218,9 @@ def swap_to_quant_linear_from_dopt(
         "n_quantized": n_q,
         "n_skipped_no_dopt_key": n_skip,
         "dopt_path": str(dopt_path),
-        "weight_int4_encoding": "unpack+signed[-8,7] placeholder (CANN convention TBD)",
+        "weight_int4_encoding": "nibble-packed int8 [n,k//2] (low nibble=even k, signed [-8,7]) — 方案 A quant_matmul_s8s4 x2",
+        "op": "cann_lm::quant_matmul_s8s4",
         "dopt_bit": bit,
         "dopt_unsigned_quant": uq,
-        "offset_supported": "read+pass-through (symmetric zeros normalized to None)",
+        "offset_supported": "symmetric only (offset=0); non-zero offset rejected",
     }

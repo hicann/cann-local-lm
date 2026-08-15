@@ -58,21 +58,21 @@ def register_ge_converters() -> None:
     # ge.DynamicQuant passes the check on the stub env -> full IR in ep_json ->
     # TBE compiler can select the kernel. Do NOT register a duplicate here.
 
-    @register_fx_node_ge_converter(torch.ops.aten.softplus.default)
-    def _convert_softplus(x: Any, meta_outputs: Any = None) -> Any:
-        del meta_outputs
-        return ge.Softplus(x)
+    # @register_fx_node_ge_converter(torch.ops.aten.softplus.default)
+    # def _convert_softplus(x: Any, meta_outputs: Any = None) -> Any:
+    #     del meta_outputs
+    #     return ge.Softplus(x)
 
-    @register_fx_node_ge_converter(torch.ops.aten.eye.default)
-    def _convert_eye(n: Any, m: Any = None, *, dtype: Any = None, device: Any = None,
-                     pin_memory: bool = False, meta_outputs: Any = None) -> Any:
-        del device, pin_memory, meta_outputs
-        import torch as _torch
-        rows = int(n)
-        cols = int(m) if m is not None else rows
-        dt = _torch.float32 if dtype is None else dtype
-        eye_tensor = _torch.eye(rows, cols, dtype=dt)
-        return ge.Const(eye_tensor)
+    # @register_fx_node_ge_converter(torch.ops.aten.eye.default)
+    # def _convert_eye(n: Any, m: Any = None, *, dtype: Any = None, device: Any = None,
+    #                  pin_memory: bool = False, meta_outputs: Any = None) -> Any:
+    #     del device, pin_memory, meta_outputs
+    #     import torch as _torch
+    #     rows = int(n)
+    #     cols = int(m) if m is not None else rows
+    #     dt = _torch.float32 if dtype is None else dtype
+    #     eye_tensor = _torch.eye(rows, cols, dtype=dt)
+    #     return ge.Const(eye_tensor)
 
     @register_fx_node_ge_converter(torch.ops.npu.npu_chunk_gated_delta_rule.default)
     def _convert_chunk_gated_delta_rule(
@@ -188,59 +188,109 @@ def register_ge_converters() -> None:
             out4.desc.layout = "NCHW"
         return ge.Squeeze(out4, axis=[2])
 
-    @register_fx_node_ge_converter(torch.ops.aten.type_as.default)
+    # @register_fx_node_ge_converter(torch.ops.aten.type_as.default)
 
-    @register_fx_node_ge_converter(torch.ops.aten.type_as.default)
-    def _convert_type_as(x: Any, dtype_or_tensor: Any, *, meta_outputs: Any = None) -> Any:
-        del meta_outputs
-        import torch as _torch
-        if isinstance(dtype_or_tensor, _torch.Tensor):
-            dt = dtype_or_tensor.dtype
-        else:
-            dt = dtype_or_tensor
-        _GE_DTYPE_MAP = {
-            _torch.float16: 1, _torch.float32: 0, _torch.bfloat16: 27,
-            _torch.int64: 9, _torch.int32: 3, _torch.bool: 12,
-        }
-        return ge.Cast(x, dst_type=_GE_DTYPE_MAP.get(dt, 0))
+    # @register_fx_node_ge_converter(torch.ops.aten.type_as.default)
+    # def _convert_type_as(x: Any, dtype_or_tensor: Any, *, meta_outputs: Any = None) -> Any:
+    #     del meta_outputs
+    #     import torch as _torch
+    #     if isinstance(dtype_or_tensor, _torch.Tensor):
+    #         dt = dtype_or_tensor.dtype
+    #     else:
+    #         dt = dtype_or_tensor
+    #     _GE_DTYPE_MAP = {
+    #         _torch.float16: 1, _torch.float32: 0, _torch.bfloat16: 27,
+    #         _torch.int64: 9, _torch.int32: 3, _torch.bool: 12,
+    #     }
+    #     return ge.Cast(x, dst_type=_GE_DTYPE_MAP.get(dt, 0))
 
-    @register_fx_node_ge_converter(torch.ops.aten.index_copy.default)
-    def _convert_index_copy(
+    # @register_fx_node_ge_converter(torch.ops.aten.index_copy.default)
+    # def _convert_index_copy(
+    #     self: Any,
+    #     dim: int,
+    #     index: Any,
+    #     source: Any,
+    #     meta_outputs: Any = None,
+    # ) -> Any:
+    #     """aten::index_copy(Tensor self, int dim, Tensor index, Tensor source) -> Tensor
+
+    #     Implemented via InplaceUpdate + transpose: ``InplaceUpdate`` only supports
+    #     dim=0, so transpose self/source to move ``dim`` to axis 0, InplaceUpdate
+    #     (replace indices), then transpose back. Supports arbitrary 1D index
+    #     (not limited to contiguous arange).
+    #     """
+    #     del meta_outputs
+    #     from torchair.ge._ge_graph import DataType
+    #     # InplaceUpdate requires DT_INT32 indices (see REG_OP InplaceUpdate input)
+    #     if index.dtype != DataType.DT_INT32:
+    #         index = ge.Cast(index, dst_type=int(DataType.DT_INT32))
+    #     ndim = self.rank
+    #     if dim < 0:
+    #         dim += ndim
+    #     # perm moves `dim` to position 0: [dim, 0, 1, ..., dim-1, dim+1, ..., ndim-1]
+    #     perm = [dim] + [i for i in range(ndim) if i != dim]
+    #     inverse_perm = [0] * ndim
+    #     for i, p in enumerate(perm):
+    #         inverse_perm[p] = i
+    #     # Use ge.Transpose (perm as Const input) instead of ge.TransposeD (perm as attr):
+    #     # Ascend950 OPP ships Transpose but has no TransposeD engine, so TransposeD fails
+    #     # engine selection on 950. Transpose(perm=Const) stays Transpose (950-supported);
+    #     # 910 has both. dtype_promote -> DT_INT64 Const perm tensor (matches torchair default).
+    #     from torchair._ge_concrete_graph.ge_converter.converter_utils import dtype_promote
+    #     perm = dtype_promote(perm, target_dtype=DataType.DT_INT64)
+    #     inverse_perm = dtype_promote(inverse_perm, target_dtype=DataType.DT_INT64)
+    #     # TensorMove to avoid in-place precision issue (same pattern as index_add.py)
+    #     moved = ge.TensorMove(self)
+    #     transposed_self = ge.Transpose(moved, perm)
+    #     transposed_source = ge.Transpose(source, perm)
+    #     # Force dtype alignment: InplaceUpdate requires x and v to have the same dtype.
+    #     # Use self.dtype (known) rather than transposed_self.dtype (UNDEFINED before infershape).
+    #     transposed_source = ge.Cast(transposed_source, dst_type=int(self.dtype))
+    #     updated = ge.InplaceUpdate(transposed_self, index, transposed_source)
+    #     return ge.Transpose(updated, inverse_perm)
+
+    # aten.index_put: qwen3.5 的 past_key_values.update 用 index_put (不是 index_copy).
+    # indices 是 list of (tensor | None), 找非 None 的 dim + index, 复用 InplaceUpdate + Transpose.
+    @register_fx_node_ge_converter(torch.ops.aten.index_put.default)
+    def _convert_index_put(
         self: Any,
-        dim: int,
-        index: Any,
-        source: Any,
+        indices: Any,
+        values: Any,
+        *,
+        accumulate: bool = False,
         meta_outputs: Any = None,
     ) -> Any:
-        """aten::index_copy(Tensor self, int dim, Tensor index, Tensor source) -> Tensor
-
-        Implemented via InplaceUpdate + transpose: ``InplaceUpdate`` only supports
-        dim=0, so transpose self/source to move ``dim`` to axis 0, InplaceUpdate
-        (replace indices), then transpose back. Supports arbitrary 1D index
-        (not limited to contiguous arange).
-        """
         del meta_outputs
+        if accumulate:
+            raise NotImplementedError("index_put with accumulate=True not supported")
         from torchair.ge._ge_graph import DataType
-        # InplaceUpdate requires DT_INT32 indices (see REG_OP InplaceUpdate input)
+        from torchair._ge_concrete_graph.ge_converter.converter_utils import dtype_promote
+        dim = None
+        index = None
+        for i, idx in enumerate(indices):
+            if idx is not None:
+                dim = i
+                index = idx
+                break
+        if dim is None:
+            raise NotImplementedError("index_put with all-None indices not supported")
         if index.dtype != DataType.DT_INT32:
             index = ge.Cast(index, dst_type=int(DataType.DT_INT32))
         ndim = self.rank
         if dim < 0:
             dim += ndim
-        # perm moves `dim` to position 0: [dim, 0, 1, ..., dim-1, dim+1, ..., ndim-1]
         perm = [dim] + [i for i in range(ndim) if i != dim]
         inverse_perm = [0] * ndim
         for i, p in enumerate(perm):
             inverse_perm[p] = i
-        # TensorMove to avoid in-place precision issue (same pattern as index_add.py)
+        perm = dtype_promote(perm, target_dtype=DataType.DT_INT64)
+        inverse_perm = dtype_promote(inverse_perm, target_dtype=DataType.DT_INT64)
         moved = ge.TensorMove(self)
-        transposed_self = ge.TransposeD(moved, perm=perm)
-        transposed_source = ge.TransposeD(source, perm=perm)
-        # Force dtype alignment: InplaceUpdate requires x and v to have the same dtype.
-        # Use self.dtype (known) rather than transposed_self.dtype (UNDEFINED before infershape).
-        transposed_source = ge.Cast(transposed_source, dst_type=int(self.dtype))
-        updated = ge.InplaceUpdate(transposed_self, index, transposed_source)
-        return ge.TransposeD(updated, perm=inverse_perm)
+        transposed_self = ge.Transpose(moved, perm)
+        transposed_values = ge.Transpose(values, perm)
+        transposed_values = ge.Cast(transposed_values, dst_type=int(self.dtype))
+        updated = ge.InplaceUpdate(transposed_self, index, transposed_values)
+        return ge.Transpose(updated, inverse_perm)
 
     # npu_fused_infer_attention_score_v2: cann_lm 自注册 (npu 命名空间, 见
     # fused_ops/fused_infer_attention_score.py). torchair 的 fused_infer_attention_score_v2

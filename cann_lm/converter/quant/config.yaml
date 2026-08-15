@@ -1,7 +1,10 @@
 dataset:
   train_files:
     - "calibration.json"
-  cutoff_len: 512
-  ptq_samples: 128
+  ptq_samples: 1024
+cutoff_len: 512
+
+extra_training_config:
+  fp16: true   # GPTQ 跑 fp16 + 存盘 fp16，避免 dopt 默认 fp32 导致产物翻倍（见 quant_design.md dopt 盘点）
 
 cutoff_len: 512

@@ -519,6 +519,10 @@ class Gemma4TextAttention(nn.Module):
             if cache_entry is not None and new_kv_cache_pos is not None:
                 cache_k, cache_v = cache_entry
                 # Scatter-write: write new KV at specified positions (non-in-place)
+                # 注: npu_scatter_nd_update 的 indices scatter dim 0, gemma4 cache [b,n,kv_max,d]
+                # (BNSD) 要 reshape (transpose n/kv_max, 不连续, 开销大于 index_copy).
+                # 故 gemma4 保留 index_copy (InplaceUpdate+Transpose). npu_scatter_nd_update 的
+                # schema+converter 保留供 qwen3.5 (cache layout 不同) 或后续 PagedAttention 用.
                 cache_k = cache_k.index_copy(2, new_kv_cache_pos, key_states)
                 cache_v = cache_v.index_copy(2, new_kv_cache_pos, value_states)
                 past_key_values[self.layer_idx] = (cache_k, cache_v)

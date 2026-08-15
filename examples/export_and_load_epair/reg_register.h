@@ -29,6 +29,25 @@ REG_OP(MatMul)
     .ATTR(transpose_x2, Bool, false)
     .OP_END_FACTORY_REG(MatMul)
 
+// QuantMatmulS8S4 — 方案 A 自研 W4A8 量化 matmul (s8s4 对称). 骨架: 待算子实现方补
+// AscendC kernel + 预编译 .o (见 docs/cann_lm_converter/quant_design.md "方案 A").
+// conv 侧 GE 节点由 cann_lm/converter/export/_quant_matmul_s8s4_converter.py 产出;
+// 此 REG_OP 让 C++ parser 识别该 op + OM 编译选 kernel (kernel 就位后即生效)。
+// x2 = int4 nibble-packed in int8 container [n, k//2] (低 nibble=偶 k); x2_scale fp32
+// per-channel×per-group [n, k//group]; x1 int8 per-token act; 对称 offset=0。
+REG_OP(QuantMatmulS8S4)
+    .INPUT(x1, TensorType({DT_INT8}))
+    .INPUT(x1_scale, TensorType({DT_FLOAT}))
+    .INPUT(x2, TensorType({DT_INT8}))
+    .INPUT(x2_scale, TensorType({DT_FLOAT}))
+    .OPTIONAL_INPUT(bias, TensorType({DT_FLOAT16, DT_BF16, DT_FLOAT}))
+    .OUTPUT(y, TensorType({DT_FLOAT16, DT_BF16}))
+    .ATTR(group_size, Int, 256)
+    .ATTR(output_dtype, Int, 5)            // 1=fp16, 27=bf16
+    .ATTR(transpose_x1, Bool, false)
+    .ATTR(transpose_x2, Bool, true)
+    .OP_END_FACTORY_REG(QuantMatmulS8S4)
+
 REG_OP(Mul)
     .INPUT(x1, TensorType({DT_FLOAT, DT_FLOAT16, DT_INT32, DT_INT64, DT_BF16}))
     .INPUT(x2, TensorType({DT_FLOAT, DT_FLOAT16, DT_INT32, DT_INT64, DT_BF16}))

@@ -70,12 +70,22 @@
 - **`QLinear.forward`（`modules/qlinear.py`）是 fakequant**：`weight, x = self.quant_op(weight, x)`（量化后**反量化回 fp**），再 `F.linear(x, weight)`。`Quantizer.quantize`（`quant.py`）返回 `scale*(q-zero)`（dequant 值）。→ dopt 的 `QLinear` **不能直接用于导出 IR 替换**（导出图会是 `aten.mm/MatMul`，不是 `quant_matmul`）。
 - **`Quantizer`（`quant.py`）**：`maxq = 2^bits - 1`（int4 → 15）；`sym=True` → `scale = (xmax-xmin)/maxq`，`zero = (maxq+1)/2`；`quantize(x) = clamp(round(x/scale)+zero, 0, maxq)`。但 adapter 把 offset 置零 → 实际 `q = round(x/scale)`（无 zero shift）。**这与物化成真 int4 时 signed/unsigned 的取定相关，见 [遗留问题](#遗留问题)**。
 
+### 模型加载约束（gemma4 多模态阻塞）
+
+GPTQ 循环写死**文本-only ForCausalLM** 结构假设：
+- `train.py:290` `model_define` = `AutoModelForCausalLM.from_pretrained(model_path, ...)`——对 `ForConditionalGeneration` 架构（多模态）多半直接找不到类报错；
+- `ptq_loop.py:21` `get_llama` + `llama_sequential:54` 取 `model.model.layers` / `model.model.embed_tokens` / `model.model.norm` / `model.lm_head`——多模态模型的文本层在 `model.language_model.layers`（如 gemma4-E4B，42 层），非 `model.model.layers`。
+
+**gemma4 适配现状**：`modules/qembed.py:70` 有 `QGemma4ScaledEmbedding` 类（处理 gemma4 的 `scalar_embed_scale`/`embed_scale`，forward 末尾 `out = out * self.embed_scale`），**但未接进 `do_opt.py:22-27` 的 `type_dict`**（那里只有 `Embedding→QEmbedding`、`"embedding_min_max"→QEmbedding`），属**预留未接线**代码。说明 dopt 作者已预期 gemma4 **文本模型**（带 embed_scale 的 `Gemma4ForCausalLM`）会接入，但未完成 type_dict 分支。
+
+**结论**：dopt 现状只支持文本-only `ForCausalLM`。要跑 gemma4 量化，正路是喂文本-only `Gemma4ForCausalLM` 导出（顶层 ForCausalLM、`model.model.layers`、`embed_tokens.embed_scale`），而非多模态 `Gemma4ForConditionalGeneration` 目录；或改 `model_define`/`get_llama` 抽 `model.language_model` 重挂顶层（dopt 改动，需确认）。
+
 ### dopt 与 converter 的差距
 
-| 你的两步 | dopt 现状 | 缺口 |
-|---|---|---|
+| 你的两步　　　　　　　　　　　　　 | dopt 现状　　　　　　　　　　　　　　　　　　　　　　　　　　　 | 缺口　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　 |
+| ------------------------------------| -----------------------------------------------------------------| --------------------------------------------------------------------------------------------------------------------------------------------|
 | ① 权重量化→scale/offset→存权重文件 | ✅ GPTQ 算法（产出 group_scale + GPTQ fp16 权重，offset=0 对称） | ❌ 不物化真 int4 payload（state_dict 是 fp16 weight+scale）；❌ 跑在 HF `AutoModelForCausalLM` 非 cann_lm 模型；❌ 未接 converter 的 pack/bin |
-| ② 导出前算子 IR 替换 | ✅ 有模块 swap 基础设施（`optimize_model→QLinear`） | ❌ `QLinear` 是 fakequant `F.linear`，**非 `cann_lm::quant_matmul`**，导出图是 `aten.mm/MatMul` 而非 `QuantBatchMatmulV4` |
+| ② 导出前算子 IR 替换　　　　　　　 | ✅ 有模块 swap 基础设施（`optimize_model→QLinear`）　　　　　　　| ❌ `QLinear` 是 fakequant `F.linear`，**非 `cann_lm::quant_matmul`**，导出图是 `aten.mm/MatMul` 而非 `QuantBatchMatmulV4`　　　　　　　　　 |
 
 ---
 
@@ -104,6 +114,15 @@
 - **范围**：全部 `nn.Linear`（`q_proj/k_proj/v_proj/o_proj/gate_proj/up_proj/down_proj/per_layer_input_gate/per_layer_projection`），**除 `embed_tokens` 与 `lm_head`**。
 - **校准数据**：`cann_lm/converter/quant/calibration.json`（已存在，557KB）；`config.yaml` 默认 `cutoff_len=512`、`ptq_samples=128`。
 - **GPTQ 跑在 HF 模型**：dopt 现成依赖 `transformers.AutoModelForCausalLM` + `accelerate` dispatch，不改 dopt；量化参数按层名 port 到 cann_lm 模型（两者命名一致：`model.layers.N.self_attn.q_proj` 等）。
+
+> **dopt 实测量化范围（gemma4-E4B，346 个 quant 模块）**——比上文"除 embed_tokens 与 lm_head"更宽：
+> - `dopt_config.json` 里 `embed_tokens` 用 `Quant_Embed_MinMax`（**bit=8** int8 per-channel，host gather）、`lm_head` 用 `Quant_lm_head`（**bit=4**），两者 dopt 都量化了。dopt 产物里 `lm_head.weight` 与 `model.embed_tokens.weight` 已**实质 untie**（max diff ≈0.01 = GPTQ 修正量，lm_head 是 GPTQ 修正版给 W4、embed 是原始版给 W8）。
+> - converter 侧（host-embed + NPU-lm_head 部署，`tie_word_embeddings` 必须解：embed 在 host、lm_head 在 NPU，不同计算域无法共享权重）：
+>   - `lm_head`：`swap_to_quant_linear_from_dopt` 的 `DEFAULT_SKIP=("embed_tokens","embed_tokens_per_layer")` **不跳过 lm_head** → 按 W4 QuantLinear 消费（NPU 图内）。cann_lm `load_gemma4_weights` 显式 copy 解 tie（modeling_gemma4.py:929-936）。
+>   - `embed_tokens` / `embed_tokens_per_layer`：是 `nn.Embedding`（非 Linear，Linear swap 不触及），由 `swap_embeddings_from_dopt` 消费 W8 host gather——需 converter `--quant-embeddings` + `--use-embeddings`（embed 外置，图内无 embed_tokens 节点）。
+> - **bit 分布**：bit=4 共 344 个（attn q/k/v/o_proj + mlp gate/up/down_proj + PLE per_layer_input_gate/per_layer_projection/per_layer_model_projection + lm_head），bit=8 共 2 个（embed_tokens + embed_tokens_per_layer）。
+> - **gemma4 KV 共享**：`k_proj`/`v_proj` 只 0..23（24 层）有独立权重，后 18 层（24..41）复用前层 KV 无独立 k/v_proj——模型结构决定，非漏量化。
+> - 上文"范围"一句（除 embed/lm_head）已**过时**——现设计 lm_head 也量化（W4），仅 embed 走 host gather 外置；`DEFAULT_SKIP` 不再含 `lm_head`。
 
 ### `cann_lm::quant_matmul` 算子签名（已存在）
 

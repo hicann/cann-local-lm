@@ -614,6 +614,17 @@ REG_OP(ScatterElements)
     .ATTR(reduction, String, "none")
     .OP_END_FACTORY_REG(ScatterElements)
 
+// ScatterNdUpdate: KV cache scatter-write (npu_scatter_nd_update -> ge.ScatterNdUpdate).
+// 替代 aten.index_copy/index_put 的 InplaceUpdate+Transpose 方案 (1 个算子, 无 Transpose).
+// 来源: torchair auto_generated_ge_raw_ops.py:38995 IR 定义.
+REG_OP(ScatterNdUpdate)
+    .INPUT(var, TensorType::BasicType())
+    .INPUT(indices, TensorType::IndexNumberType())
+    .INPUT(updates, TensorType::BasicType())
+    .OUTPUT(var, TensorType::BasicType())
+    .ATTR(use_locking, Bool, false)
+    .OP_END_FACTORY_REG(ScatterNdUpdate)
+
 REG_OP(SplitV)
     .INPUT(x, TensorType({DT_FLOAT16, DT_FLOAT, DT_INT8, DT_INT16, DT_INT32, DT_INT64,
                            DT_UINT8, DT_UINT16, DT_UINT32, DT_UINT64, DT_BOOL, DT_BF16}))

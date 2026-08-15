@@ -19,6 +19,7 @@ set -eo pipefail
 #   ./scripts/quant_export.sh --hf-path ... --gptq-only             # 只跑 step1
 #   ./scripts/quant_export.sh --hf-path ... --export-only           # 只跑 step2 (复用已有 quant_output)
 #   ./scripts/quant_export.sh --hf-path ... --num-layers 2          # converter 只导前 N 层 (调试)
+#   ./scripts/quant_export.sh --hf-path ... --host-embeddings      # embed_tokens→host gather (W8), 图用外部 embedding (NPU 部署: embed 在 host, lm_head 在 NPU, untie)
 #=============================================================================
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -43,6 +44,7 @@ NUM_LAYERS=""
 DO_GPTQ=true
 DO_EXPORT=true
 REGEN_DOPT_CONFIG=false
+HOST_EMBEDDINGS=false
 
 # ---------- parse args ----------
 while [[ $# -gt 0 ]]; do
@@ -54,6 +56,7 @@ while [[ $# -gt 0 ]]; do
         --quant-act)           QUANT_ACT="$2"; shift 2 ;;
         --num-layers)          NUM_LAYERS="$2"; shift 2 ;;
         --regen-dopt-config)   REGEN_DOPT_CONFIG=true; shift ;;
+        --host-embeddings)     HOST_EMBEDDINGS=true; shift ;;
         --gptq-only)           DO_EXPORT=false; shift ;;
         --export-only)         DO_GPTQ=false; shift ;;
         -h|--help)             sed -n '2,22p' "$0"; exit 0 ;;
@@ -126,7 +129,8 @@ PY
 # ---------- step 1: dopt GPTQ (NPU env, system python, real torch_npu) ----------
 run_dopt_gptq() (
     echo "========== [Step 1/2] dopt GPTQ (NPU, ${NPU_PYTHON##*/}) =========="
-    unset LD_PRELOAD          # dopt 需真 torch_npu, stub 会拦截 NPU op
+    unset LD_PRELOAD          # 清掉 converter 步遗留的 stub LD_PRELOAD (会拦截真 NPU op)
+    export LD_PRELOAD=/lib/aarch64-linux-gnu/libgomp.so.1  # 预占 static TLS 槽, 修 set_env 后 transformers→torchaudio→libgomp 的 "cannot allocate memory in static TLS block"
     export DEVICE=npu
     export PYTHONPATH="${QUANT_DIR}:${PROJECT_ROOT}${PYTHONPATH:+:$PYTHONPATH}"
     prepare_dopt_config
@@ -160,6 +164,9 @@ run_converter() (
         --quant-act "$QUANT_ACT"
     )
     [[ -n "$NUM_LAYERS" ]] && FLAGS+=(--num-layers "$NUM_LAYERS")
+    # host-embeddings: embed_tokens → host gather (W8), graph uses external embeddings.
+    # Required for NPU deployment where embed is on host (untie from NPU-side lm_head).
+    $HOST_EMBEDDINGS && FLAGS+=(--quant-embeddings --use-embeddings)
     echo "  [export] cann-lm-converter ${FLAGS[*]}"
     cd "$PROJECT_ROOT"
     "$VENV_PYTHON" "${PROJECT_ROOT}/cann_lm/converter/cann-lm-converter.py" "${FLAGS[@]}"

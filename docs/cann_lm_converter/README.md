@@ -19,6 +19,7 @@ docs/cann_lm_converter/
 │   └── INDEX.md                           ← 导出模块索引
 ├── quant/                                 ← 量化模块
 │   ├── quant_design.md                    ← 量化设计
+│   ├── dopt_design.md                     ← dopt vendored GPTQ 框架
 │   ├── embedding_quant_design.md          ← embedding 量化子主题
 │   └── INDEX.md                           ← 量化模块索引
 │
@@ -70,7 +71,7 @@ export TORCH_DELEGATE_ENABLE_FALLBACK_CODEGEN=0
 python cann_lm/converter/cann-lm-converter.py \
     --hf-path /path/to/qwen3-0.6B \
     --output-dir /path/to/output \
-    --dtype float16 --sample-seq-len 8
+    --dtype float16 --seq-len 8
 ```
 
 > 完整使用示例（single / use-embeddings / prefill-decode / 量化）见 [cli_design.md](./cli/cli_design.md) "使用示例"。环境配置见 [AGENTS.md](../../AGENTS.md) "运行环境设置"。

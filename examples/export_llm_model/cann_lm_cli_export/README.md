@@ -37,7 +37,7 @@ NUM_LAYERS=5 MODE=prefill-decode bash run.sh gemma4
 |------|------|------|
 | `MODE` | `single` | `single`(一张形状特化图) 或 `prefill-decode`(prefill+decode 两图) |
 | `DTYPE` | `bfloat16` | 三模型原生 bfloat16 |
-| `SEQ_LEN` | `8` | single 模式 `--sample-seq-len`;prefill-decode 模式 `--prefill-seq-len` |
+| `SEQ_LEN` | `8` | single 模式 `--seq-len`;prefill-decode 模式 `--seq-len` |
 | `NUM_LAYERS` | (空=全部) | 只导出前 N 层(`--num-layers`),截断 `model.model.layers`,不改 `config.num_hidden_layers` |
 | `VENV_DIR` | `/mnt/workspace/torch-delegate-harmony/.venv` | converter venv (torch 2.9.0+cpu + torchair + torch_delegate) |
 

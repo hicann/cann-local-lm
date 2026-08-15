@@ -151,7 +151,6 @@ def _read_dopt_quant_meta(
 def swap_to_quant_linear_from_dopt(
     model: nn.Module,
     dopt_path: str | Path,
-    group_size: int = 256,
     skip: tuple[str, ...] = DEFAULT_SKIP,
     act_quant: bool = True,
 ) -> dict:
@@ -159,9 +158,11 @@ def swap_to_quant_linear_from_dopt(
 
     For each nn.Linear (name not matching ``skip``): read the GPTQ-corrected fp
     weight ``{name}.weight`` and the flattened group_scale
-    ``{name}.quant_op.weight_quantizer.s`` from the dopt output, reshape scale to
-    ``[out, in//group]``, materialize to int4 (``materialize_int4_with_scale``),
-    and swap in a QuantLinear. embed_tokens / lm_head are skipped.
+    ``{name}.quant_op.weight_quantizer.s`` from the dopt output, **自动推断
+    group_size** (从 s_flat numel 反推: groups = numel//out, group = in//groups),
+    reshape scale to ``[out, groups]``, materialize to int4
+    (``materialize_int4_with_scale``), and swap in a QuantLinear.
+    embed_tokens / lm_head are skipped. act_quant 固定 True (W4A8, 当前仅支持).
 
     Returns a quant-info dict (scheme/group_size/scope/counts) for model_config.json.
     """
@@ -169,6 +170,7 @@ def swap_to_quant_linear_from_dopt(
     n_q = 0
     n_skip = 0
     bit = uq = None
+    group_size = None
     for name, m in list(model.named_modules()):
         if not isinstance(m, nn.Linear):
             continue
@@ -182,11 +184,14 @@ def swap_to_quant_linear_from_dopt(
         w_gptq = sd[wkey].float()
         s_flat = sd[skey].float()
         out_f, in_f = w_gptq.shape
+        # 自动推断 group_size: s_flat 扁平 [out*groups], groups = numel//out
+        groups = s_flat.numel() // out_f
+        group_size = in_f // groups
         if in_f % group_size != 0:
             raise ValueError(
-                f"{name}: in_features ({in_f}) not divisible by group_size ({group_size})"
+                f"{name}: in_features ({in_f}) not divisible by inferred group_size ({group_size})"
             )
-        scale2d = s_flat.reshape(out_f, in_f // group_size)
+        scale2d = s_flat.reshape(out_f, groups)
         bit, uq, offset = _read_dopt_quant_meta(sd, name, out_f, in_f, group_size)
         if uq != 0.0:
             raise ValueError(

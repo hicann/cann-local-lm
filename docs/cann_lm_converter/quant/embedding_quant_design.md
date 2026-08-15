@@ -136,8 +136,8 @@ def materialize_int8_per_channel(weight_fp: torch.Tensor,
 
 ### 5. CLI `cann_lm/converter/cann-lm-converter.py`
 
-- `--quant-embeddings`(触发:`swap_embeddings_from_dopt` + wrapper quant-embeddings 模式 + host_weights int8+scale)
-- 与 `--quant-path` 组合(`--quant-path` 给 dopt 产物,`--quant-embeddings` 开 embed 量化)
+- embed 量化自动检测(`--quant-path` 加载 dopt 产物时, `swap_embeddings_from_dopt` 检测 embed scale 存在则自动做, 无需额外参数)
+- wrapper quant-embeddings 模式 + host_weights int8+scale 由 `embed_quant` 非空触发
 
 ### 6. 图入口 dequant
 
@@ -148,7 +148,7 @@ aten `to`(int8→float)+ `mul`(scale `[b,s,1]` 广播)→ `cann_lm/converter/exp
 ## 端到端流程
 
 ```
-cann-lm-converter.py --quant-path <dopt产物> --quant-embeddings --use-embeddings
+cann-lm-converter.py --quant-path <dopt产物>   # embed 量化自动检测 (dopt 跑了 Quant_Embed_MinMax 则自动做)
   │
   ├─ load_model(hf_path)                    cann_lm 模型(float 权重)
   │
@@ -186,7 +186,7 @@ host: int8_emb = gather(int8_weight, input_ids)         # [b,s,hidden]
 
 1. **物化精确性**:`materialize_int8_per_channel(w, s)` → `int8*scale` vs dopt fakequant `w`,maxdiff=0(已初步验证)
 2. **host gather + dequant 回环**:`get_sample_inputs(quant_embeddings=True)` → `ep.module()` 输出 vs float embeddings 输出,maxdiff 应=0(dopt fakequant 精确)
-3. **端到端 ep 回环 vs HF**:扩展 `verify_qwen3_epair.py` 加 `--quant-embeddings`,host 用 int8+scale gather 喂图,EP-Q vs wrapper(in-graph float) vs HF
+3. **端到端 OM 验证 vs HF**:扩展 `examples/export_llm_model/om_npu_verify/run_qwen3_om.py` 支持 embed 量化样本(host 用 int8+scale gather 喂图),OM-Q vs wrapper(in-graph float) vs HF。原 `verify_qwen3_epair.py` 已重构进 OM runner
 4. **C++ OM 编译**:quant-embeddings epair → `examples/export_llm_model/build/export_llm_model` → .om(图入口 dequant 用 aten cast+mul,应可编译)
 
 ---

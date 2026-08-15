@@ -108,7 +108,7 @@ def convert(hf_path, output_dir, dtype, use_embeddings=False,
         save_epair(artifact, output_dir, use_embeddings=use_embeddings, ...)
 ```
 
-CLI 参数:`--hf-path --output-dir --dtype --use-embeddings --num-layers --mode {single,prefill-decode} --prefill-seq-len --sample-seq-len --kv-cache-max-len --quant-path ...`。
+CLI 参数:`--hf-path --output-dir --dtype --use-embeddings --num-layers --mode {single,prefill-decode} --seq-len --seq-len --kv-cache-max-len --quant-path ...`。
 
 ---
 
@@ -211,13 +211,13 @@ OUT=/tmp/opencode/gemma4_out
 # ── single 模式 (5 层, use_embeddings) ──
 $VENV cann_lm/converter/cann-lm-converter.py \
   --hf-path $HF --output-dir $OUT --dtype bfloat16 \
-  --sample-seq-len 8 --use-embeddings --num-layers 5
+  --seq-len 8 --use-embeddings --num-layers 5
 $BIN $OUT/ep_json_with_ascend_ir.json $OUT/weight_info.json gemma4_out
 
 # ── prefill-decode 模式 (5 层, use_embeddings) ──
 $VENV cann_lm/converter/cann-lm-converter.py \
   --hf-path $HF --output-dir $OUT --dtype bfloat16 \
-  --use-embeddings --num-layers 5 --mode prefill-decode --prefill-seq-len 8
+  --use-embeddings --num-layers 5 --mode prefill-decode --seq-len 8
 $BIN $OUT/prefill_ep_json_with_ascend_ir.json $OUT/weight_info.json prefill
 $BIN $OUT/decode_ep_json_with_ascend_ir.json  $OUT/weight_info.json decode
 ```

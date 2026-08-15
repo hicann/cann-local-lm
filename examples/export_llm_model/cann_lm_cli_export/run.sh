@@ -52,9 +52,9 @@ for m in ${MODELS}; do
   rm -rf "${out}"
   args=(--hf-path "${HF_PATHS[$m]}" --output-dir "${out}" --dtype "${DTYPE}")
   if [[ "${MODE}" == "prefill-decode" ]]; then
-    args+=(--mode prefill-decode --prefill-seq-len "${SEQ_LEN}")
+    args+=(--mode prefill-decode --seq-len "${SEQ_LEN}")
   else
-    args+=(--sample-seq-len "${SEQ_LEN}")
+    args+=(--seq-len "${SEQ_LEN}")
   fi
   [[ -z "${NUM_LAYERS}" ]] || args+=(--num-layers "${NUM_LAYERS}")
   "${PYTHON}" "${CONVERTER}" "${args[@]}"

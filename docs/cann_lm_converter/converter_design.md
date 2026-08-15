@@ -29,7 +29,7 @@ converter 把 HF 模型导出为 epair，供 C++ 后端加载编译 OM。三阶�
 cann-lm-converter.py (CLI)                                          ← cli_design.md
     │
     ├── parse_args()  ← --hf-path, --output-dir, --dtype, --mode,
-    │                    --use-embeddings, --quant-path, --quant-embeddings, ...
+    │                    --use-embeddings, [--quant-path | --quant w4a8]
     ▼
 convert(hf_path, output_dir, dtype, ...)
     │
@@ -45,7 +45,7 @@ loader.load_model(hf_path, dtype, device)                          ← export_de
     ▼
 (可选) 量化 swap                                                    ← quant_design.md
     │   swap_to_quant_linear_from_dopt(model, quant_path, ...)
-    │   swap_embeddings_from_dopt(sd, model)   # --quant-embeddings 时
+    │   swap_embeddings_from_dopt(sd, model)   # embed 自动检测 (embed_quant 非空时)
     ▼
 saver.save_epair(...) / save_epair_prefill_decode(...)             ← export_design.md
     │   ① register_ge_converters
@@ -94,14 +94,14 @@ C++ EpairModelLoader → GetGEGraph → aclgrphBuildModel → .om        ← exp
 
 ### forward 返回差异
 
-| 返回 key | gemma4 | qwen3 | qwen3_5 |
-|----------|--------|-------|---------|
-| loss | 有 | 有 | 有 |
-| logits | 有 | 有 | 有 |
-| past_key_values | 有 | 有 | 有 |
-| shared_kv_states | 有（独有） | 无 | 无 |
-| hidden_states | 有 | 有 | 无 |
-| delta_cache | 无 | 无 | 有（独有） |
+| 返回 key　　　　 | gemma4　　 | qwen3 | qwen3_5　　|
+| ------------------| ------------| -------| ------------|
+| loss　　　　　　 | 有　　　　 | 有　　| 有　　　　 |
+| logits　　　　　 | 有　　　　 | 有　　| 有　　　　 |
+| past_key_values　| 有　　　　 | 有　　| 有　　　　 |
+| shared_kv_states | 有（独有） | 无　　| 无　　　　 |
+| hidden_states　　| 有　　　　 | 有　　| 无　　　　 |
+| delta_cache　　　| 无　　　　 | 无　　| 有（独有） |
 
 ### 权重 key 重映射差异
 

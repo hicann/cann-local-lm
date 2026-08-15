@@ -148,7 +148,7 @@ cd examples/export_llm_model/cann_lm_cli_export
 $VENV/bin/python3 $PROJECT_ROOT/cann_lm/converter/cann-lm-converter.py \
     --hf-path /mnt/workspace/data/models/gemma-4-E2B-it \
     --output-dir epair_gemma4_test \
-    --dtype bfloat16 --sample-seq-len 8 --num-layers 5
+    --dtype bfloat16 --seq-len 8 --num-layers 5
 ```
 
 > `--num-layers 5`：截断到 5 层加速（只验证 IR，不出字）。
@@ -160,7 +160,7 @@ cd examples/export_llm_model/om_npu_verify
 $VENV/bin/python3 $PROJECT_ROOT/cann_lm/converter/cann-lm-converter.py \
     --hf-path /mnt/workspace/data/models/gemma-4-E2B-it \
     --output-dir epair_gemma4_pd \
-    --dtype bfloat16 --mode prefill-decode --prefill-seq-len 128 --use-embeddings
+    --dtype bfloat16 --mode prefill-decode --seq-len 128 --use-embeddings
 ```
 
 > `--use-embeddings`：gemma4 必须（embed_tokens + PLE 外置）；qwen3.5 不需要。

@@ -447,7 +447,7 @@ def save_epair(
     *,
     max_file_size: int = 50 * 1024 * 1024 * 1024,  # 默认 50GB
     kv_cache_max_len: int = 2048,
-    sample_seq_len: int = 128,
+    seq_len: int = 128,
     use_embeddings: bool = False,         # ← True: 图外查表 (量化用)
     save_weights: bool = True,
 ) -> None:
@@ -484,7 +484,7 @@ def save_epair(
 
     # 3. 创建示例输入 (统一 I/O 契约, 支持 embeddings 模式)
     sample_inputs = wrapper.get_sample_inputs(
-        seq_len=sample_seq_len, use_embeddings=use_embeddings
+        seq_len=seq_len, use_embeddings=use_embeddings
     )
 
     # 4. torch.export (strict=False 允许 None placeholder / 动态分支)
@@ -878,7 +878,7 @@ output_dir/
 
 ### 设计
 
-- **prefill 图**：seq_len=`prefill_seq_len`（默认 128，可配）特化。实际推理时 input_ids pad 到 `prefill_seq_len`，attention_mask 屏蔽 pad 位置，output_pos=[prompt_len-1] 取最后实际 token 的 logits
+- **prefill 图**：seq_len=`seq_len`（默认 128，可配）特化。实际推理时 input_ids pad 到 `seq_len`，attention_mask 屏蔽 pad 位置，output_pos=[prompt_len-1] 取最后实际 token 的 logits
 - **decode 图**：seq_len=1 特化，所有 decode 步复用
 - **权重共享**：两张图的 state_dict 相同（同一模型），`pack_weights` 只执行一次，`weight_info.json` + `weights_*.bin` 只写一份
 
@@ -892,7 +892,7 @@ save_epair_prefill_decode(
     *,
     max_file_size=50*1024**3,      # 单 bin 最大字节数
     kv_cache_max_len=2048,         # KV buffer 第一维
-    prefill_seq_len=128,           # prefill 图 seq_len (可配)
+    seq_len=128,           # prefill 图 seq_len (可配)
     use_embeddings=False,          # True: 图外查表
     save_weights=True,             # 是否写 weights_*.bin (False 只写 ep_json)
 )
@@ -904,7 +904,7 @@ save_epair_prefill_decode(
 
 ```
 output_dir/
-├── prefill_ep_json_with_ascend_ir.json   # prefill 图 (seq_len=prefill_seq_len)
+├── prefill_ep_json_with_ascend_ir.json   # prefill 图 (seq_len 由参数指定)
 ├── decode_ep_json_with_ascend_ir.json    # decode 图 (seq_len=1)
 ├── weight_info.json                       # 共享权重索引 (一份)
 ├── weights_0.bin                          # 共享权重 (一份)
@@ -928,7 +928,7 @@ td::EpairModelLoader decode_loader("decode_ep_json_with_ascend_ir.json",
 
 - `aten.index_copy.default` GE converter 缺失已解决：在 `converter/export/ge_converter.py` 用 `ge.InplaceUpdate` + `ge.TransposeD` 实现了 converter。converter CLI 导出 gemma4 prefill/decode + C++ `main.cpp` 加载编译 OM 全链路跑通（prefill 6079 节点 / decode 6044 节点 / `prefill.om` + `decode.om` 各 9.4GB）。
 
-- **纯 embeddings（`--use-embeddings`）全链路已通**：converter CLI 导出 + C++ `main.cpp` OM 编译跑通——qwen3-0.6B（`qwen3_pure_emb.om` 374MB，weights ≈ OM）+ gemma4-E2B（5B 参数 35 层含 PLE，`gemma4_e2b_pure.om` 4.57GB，ep_json 19MB / weights 4.56GB ≈ OM / host_weights 5.5GB 查表权重给 host）。`saver.detach_externalized_lookups()` 在导出前 del 外置查表子模块 → torch.export 不 lift → `weights_*.bin` 不含冗余查表权重（≈ OM，无 5.5GB 冗余）。Python ep 回环验证（`verify_qwen3_epair.py --use-embeddings` / `verify_gemma4_epair.py --use-embeddings`）：纯 embeddings ep（host 用 `embed_tokens` / gemma4 `embed_tokens_per_layer` 查表喂 `embeddings` + `per_layer_token_identity`）== in-graph wrapper，3-prompt 全一致；gemma4 PLE 实例方法替换经 torch.export tracing 存活、`ep.module()` vs eager max_diff=0。HF 文本一致（token 级偶有 bf16 差异，in-graph 模式同样存在，非本特性问题）。
+- **纯 embeddings（`--use-embeddings`）全链路已通**：converter CLI 导出 + C++ `main.cpp` OM 编译跑通——qwen3-0.6B（`qwen3_pure_emb.om` 374MB，weights ≈ OM）+ gemma4-E2B（5B 参数 35 层含 PLE，`gemma4_e2b_pure.om` 4.57GB，ep_json 19MB / weights 4.56GB ≈ OM / host_weights 5.5GB 查表权重给 host）。`saver.detach_externalized_lookups()` 在导出前 del 外置查表子模块 → torch.export 不 lift → `weights_*.bin` 不含冗余查表权重（≈ OM，无 5.5GB 冗余）。数值验证由 OM runner（`examples/export_llm_model/om_npu_verify/run_*_om.py`，OM vs eager/HF，ep 回环的超集）承接——原 `verify_qwen3_epair.py`/`verify_gemma4_epair.py`（`ep.module()` vs wrapper 的 ep 回环）已重构进 OM runner。gemma4 经 `run_gemma4_om.py` 验证（OM vs eager maxdiff<1.0 MATCH）+ `run_gemma4_gen.py` 文本生成通过；qwen3.5 经 `run_qwen3_5_om.py`（OM vs EP/HF MATCH）。**注**：qwen3（base）`run_qwen3_om.py` 暴露 OM 数值异常（OM vs eager maxdiff≈20，cann_lm eager≈HF 正确、OM 输出错误），疑在其动态 RoPE（Pow/Cos/Sin，gemma4 用预缓存表不触发），OM 计算侧待排查。
 
 ## 新增模型接入指南
 

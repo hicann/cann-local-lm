@@ -6,7 +6,8 @@
 
 | 文档 | 内容 |
 |------|------|
-| [quant_design.md](./quant_design.md) | W4A8 s8s4 方案 / quant 包架构 / 量化策略 / 端到端两步流程 / `materialize` / `quant_linear` / `swap` / dopt_lm 子包 / 方案 A 自研 `quant_matmul_s8s4` 算子规格 / C++ 注册 / CANN V3/V4 源码分析附录 |
+| [quant_design.md](./quant_design.md) | W4A8 s8s4 方案 / quant 包架构 / 量化策略 / 端到端两步流程 / `materialize` / `quant_linear` / `swap` / 方案 A 自研 `quant_matmul_s8s4` 算子规格 / C++ 注册 / CANN V3/V4 源码分析附录 |
+| [dopt_design.md](./dopt_design.md) | dopt_lm vendored GPTQ 框架（文件树 / 入口 / GPTQ 调用链 / 可设置参数清单 / 历史调试档案） |
 | [embedding_quant_design.md](./embedding_quant_design.md) | embed_tokens 的 W8 host gather 量化子主题（`materialize_int8_per_channel` + `swap_embeddings_from_dopt`） |
 
 ## 代码文件
@@ -66,12 +67,12 @@
 | 参数 | 作用 |
 |------|------|
 | `--quant-path <dopt产物目录>` | 加载 dopt GPTQ 产物，物化 int4 + swap QuantLinear |
-| `--quant-embeddings` | 触发 embed_tokens 的 W8 host gather 量化（需配合 `--use-embeddings`） |
+| `--quant` | `w4a8` | 量化策略（当前仅 w4a8；HF 原始权重 min-max，场景 2，与 --quant-path 互斥） |
 
 > CLI 用法见 [INDEX.md](../cli/INDEX.md) / [cli_design.md](../cli/cli_design.md)。
 
 ## 关联模块
 
-- **CLI**：[INDEX.md](../cli/INDEX.md) — `--quant-path` / `--quant-embeddings` 参数
+- **CLI**：[INDEX.md](../cli/INDEX.md) — `--quant-path` / `--quant w4a8` 参数
 - **导出**：[INDEX.md](../export/INDEX.md) — `QuantLinear` 替换后走 `save_epair` / `host_weights` 机制 / C++ `GeWeightLoader`
 - **总览**：[converter_design.md](../converter_design.md) — 待实现与遗留（量化部分）

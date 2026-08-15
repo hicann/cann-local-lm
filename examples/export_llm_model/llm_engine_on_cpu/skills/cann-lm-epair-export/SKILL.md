@@ -30,16 +30,16 @@ cann-lm-converter.py  →  epair 目录 (ep_json + weights + model_config + toke
 ```
 
 ```bash
-# 单图导出 (形状特化, seq_len=sample-seq-len)
+# 单图导出 (形状特化, seq_len=seq-len)
 python cann_lm/converter/cann-lm-converter.py \
     --hf-path /path/to/gemma-4-E2B-it \
     --output-dir /path/to/output \
-    --dtype bfloat16 --mode single --sample-seq-len 8
+    --dtype bfloat16 --mode single --seq-len 8
 
 # prefill/decode 分离 (实际推理用, 两图 + 共享权重)
 python cann_lm/converter/cann-lm-converter.py \
     --hf-path /path/to/model --output-dir /path/to/output \
-    --mode prefill-decode --prefill-seq-len 128 --dtype bfloat16
+    --mode prefill-decode --seq-len 128 --dtype bfloat16
 ```
 
 ## 文件结构 (当前)

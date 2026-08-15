@@ -54,11 +54,10 @@ def save_epair(
     *,
     max_file_size: int = 50 * 1024 * 1024 * 1024,
     kv_cache_max_len: int = 2048,
-    sample_seq_len: int = 128,
+    seq_len: int = 128,
     use_embeddings: bool = False,
     save_weights: bool = True,
     whitelist_decompositions: set | None = None,
-    quant_embeddings: bool = False,
     embed_quant: dict[str, tuple[torch.Tensor, torch.Tensor]] | None = None,
 ) -> None:
     import torch_delegate
@@ -82,16 +81,14 @@ def save_epair(
         batch=1,
     ).eval()
 
-    # quant-embeddings: 注入 host 查表的 int8+per-channel scale (走 dopt Quant_Embed_MinMax)
-    # 图输入改 int8+scale, 图入口 dequant (base forward); host_weights 携 int8+scale (非 float)。
+    # quant_embeddings 自动从 embed_quant 推断 (embed_quant 非空 = dopt 产物含 embed scale)
+    quant_embeddings = embed_quant is not None
     if quant_embeddings:
-        if not embed_quant:
-            raise ValueError("quant_embeddings=True 需 embed_quant (swap_embeddings_from_dopt 产物)")
         wrapper.set_quant_embeddings(embed_quant)
 
     # 构造示例输入 (统一 I/O 契约) — quant-embeddings 用 int8+scale gather, 否则用 embed_tokens 算 sample
     sample_inputs = wrapper.get_sample_inputs(
-        seq_len=sample_seq_len, use_embeddings=use_embeddings, quant_embeddings=quant_embeddings
+        seq_len=seq_len, use_embeddings=use_embeddings, quant_embeddings=quant_embeddings
     )
 
     # 抽取 host 查表权重: quant-embeddings 用 int8+scale (从 embed_quant); 否则 float embed_tokens
@@ -155,23 +152,22 @@ def save_epair_prefill_decode(
     *,
     max_file_size: int = 50 * 1024 * 1024 * 1024,
     kv_cache_max_len: int = 2048,
-    prefill_seq_len: int = 128,
+    seq_len: int = 128,
     use_embeddings: bool = False,
     save_weights: bool = True,
     whitelist_decompositions: set | None = None,
-    quant_embeddings: bool = False,
     embed_quant: dict[str, tuple[torch.Tensor, torch.Tensor]] | None = None,
 ) -> None:
     """Prefill/decode split export: emit two graphs (prefill + decode) + shared weights.
 
     Output layout (under output_dir):
-    - ``prefill_ep_json_with_ascend_ir.json`` — prefill graph (seq_len=prefill_seq_len)
+    - ``prefill_ep_json_with_ascend_ir.json`` — prefill graph (seq_len 由参数指定)
     - ``decode_ep_json_with_ascend_ir.json`` — decode graph (seq_len=1, reusable)
     - ``weight_info.json`` + ``weights_*.bin`` — shared weights (packed once)
     - ``model_config.json`` + tokenizer files
 
     At inference time:
-    - prefill: pad input_ids to prefill_seq_len, mask pad positions,
+    - prefill: pad input_ids to seq_len, mask pad positions,
       output_pos=[prompt_len-1] to select the last real token's logits
     - decode: seq_len=1, reuse decode graph, feed previous-step KV cache
 
@@ -197,15 +193,14 @@ def save_epair_prefill_decode(
         batch=1,
     ).eval()
 
-    # quant-embeddings: 注入 host 查表的 int8+per-channel scale
+    # quant_embeddings 自动从 embed_quant 推断 (embed_quant 非空 = dopt 产物含 embed scale)
+    quant_embeddings = embed_quant is not None
     if quant_embeddings:
-        if not embed_quant:
-            raise ValueError("quant_embeddings=True 需 embed_quant (swap_embeddings_from_dopt 产物)")
         wrapper.set_quant_embeddings(embed_quant)
 
     # 先算 sample (quant-embeddings 用 int8+scale gather; 否则用 embed_tokens 算), 必须在 detach 前
     prefill_sample = wrapper.get_sample_inputs(
-        seq_len=prefill_seq_len, use_embeddings=use_embeddings, quant_embeddings=quant_embeddings
+        seq_len=seq_len, use_embeddings=use_embeddings, quant_embeddings=quant_embeddings
     )
     decode_sample = wrapper.get_sample_inputs(
         seq_len=1, use_embeddings=use_embeddings, quant_embeddings=quant_embeddings
@@ -225,7 +220,7 @@ def save_epair_prefill_decode(
     if use_embeddings:
         wrapper.detach_externalized_lookups()
 
-    # Export prefill_ep (seq_len=prefill_seq_len, shape-specialized)
+    # Export prefill_ep (seq_len 由参数指定, shape-specialized)
     prefill_ep = torch.export.export(wrapper, prefill_sample, strict=False)
     if use_embeddings:
         _assert_externalized_not_lifted(prefill_ep, wrapper.host_side_weight_names())

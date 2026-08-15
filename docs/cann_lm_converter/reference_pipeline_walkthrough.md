@@ -261,4 +261,4 @@ OUT/
 - weights_0.bin ≈ OM(detach 后对上,无 5.5GB 冗余)
 - C++ OM 编译全 PASS(无 `MISSING_PLACEHOLDER_RECORD`)
 
-详见 [converter_design.md](./converter_design.md) "全链路已通" + [export_design.md](./cann_lm_conveter_export/export_design.md)。
+详见 [converter_design.md](./converter_design.md) "全链路已通" + [export_design.md](./export/export_design.md)。

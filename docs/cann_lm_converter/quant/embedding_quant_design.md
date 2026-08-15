@@ -22,7 +22,7 @@
 
 ## 背景与动机
 
-纯 embeddings 模式([pipeline_walkthrough.md](./pipeline_walkthrough.md) / [converter_design.md](./converter_design.md) 模式 B)已把 `embed_tokens`(及 gemma4 `embed_tokens_per_layer`)查表外置到 host:host 用 `host_weights_*.bin` 里的 **float** 权重查表 → float embeddings 喂图,图内 `embed_tokens` 经 `detach_externalized_lookups()` 不 lift。
+纯 embeddings 模式([reference_pipeline_walkthrough.md](../reference_pipeline_walkthrough.md) / [converter_design.md](../converter_design.md) 模式 B)已把 `embed_tokens`(及 gemma4 `embed_tokens_per_layer`)查表外置到 host:host 用 `host_weights_*.bin` 里的 **float** 权重查表 → float embeddings 喂图,图内 `embed_tokens` 经 `detach_externalized_lookups()` 不 lift。
 
 本设计把 host 查表权重从 float 改成 **int8 + per-vocab scale**(dopt `Quant_Embed_MinMax`),host 查表后 gather int8+scale 喂图,图入口 dequant 回 float。收益:
 
@@ -214,7 +214,7 @@ gemma4 dopt 产物**不含** embed_tokens/embed_tokens_per_layer scale → 需�
 ## 与现有设计的关系
 
 - 扩展 [quant_design.md](./quant_design.md):把 embed_tokens(+ embed_tokens_per_layer)纳入量化范围,新增 `materialize_int8_per_channel` + `swap_embeddings_from_dopt`;lm_head 从"排除"改"QuantLinear W4A8"
-- 扩展 [converter_design.md](./converter_design.md) 模式 B(纯 embeddings):host_weights 从 float → int8+scale;wrapper forward/get_sample_inputs/_drive_layers 加 quant-embeddings 模式
-- 复用 [pipeline_walkthrough.md](./pipeline_walkthrough.md) 的导出+OM 流程;图入口仅多 dequant(cast+mul)节点
+- 扩展 [converter_design.md](../converter_design.md) 模式 B(纯 embeddings):host_weights 从 float → int8+scale;wrapper forward/get_sample_inputs/_drive_layers 加 quant-embeddings 模式
+- 复用 [reference_pipeline_walkthrough.md](../reference_pipeline_walkthrough.md) 的导出+OM 流程;图入口仅多 dequant(cast+mul)节点
 - 不改 modeling(`modeling_gemma4.py` 等):forward 收 float `inputs_embeds`,无感
 - 不引入新 GE 算子:dequant 用 aten cast+mul(已有 converter)

@@ -799,7 +799,7 @@ OM top5 = HF top5 = [198, 271, 0, 353, 2921]，**与 [8.4](#84-chunkgateddeltaru
 
 ## 9. npu-op-elimination 改造（2026-08-10）
 
-参考 [`skills/npu-op-elimination/SKILL.md`](skills/npu-op-elimination/SKILL.md) 把 qwen3.5 导出图里 NPU 不支持/低效的算子改造成 NPU 友好形式。SKILL 跨模型适用性表标注 qwen3.5 三处"待应用"，本次落地改造 2 + 改造 3（改造 1 host mask 已应用，见[第 3 节](#3-mask-4d-透传)）。
+参考 [`reference_npu_op_elimination.md`](reference_npu_op_elimination.md) 把 qwen3.5 导出图里 NPU 不支持/低效的算子改造成 NPU 友好形式。SKILL 跨模型适用性表标注 qwen3.5 三处"待应用"，本次落地改造 2 + 改造 3（改造 1 host mask 已应用，见[第 3 节](#3-mask-4d-透传)）。
 
 ### 改造 1：host 预构 mask（已应用）
 

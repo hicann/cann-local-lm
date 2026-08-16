@@ -11,7 +11,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "${ROOT_DIR}/../.." && pwd)"
+PROJECT_ROOT="$(cd "${ROOT_DIR}/../../.." && pwd)"
 TORCH_DELEGATE_HOME="${TORCH_DELEGATE_HOME:-/mnt/workspace/torch-delegate-harmony}"
 TORCHAIR_FULL="${TORCHAIR_FULL:-/mnt/workspace/torchair}"
 PYTHON="${TORCH_DELEGATE_HOME}/.venv/bin/python3"

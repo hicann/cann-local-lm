@@ -204,50 +204,50 @@ def register_ge_converters() -> None:
     #     }
     #     return ge.Cast(x, dst_type=_GE_DTYPE_MAP.get(dt, 0))
 
-    # @register_fx_node_ge_converter(torch.ops.aten.index_copy.default)
-    # def _convert_index_copy(
-    #     self: Any,
-    #     dim: int,
-    #     index: Any,
-    #     source: Any,
-    #     meta_outputs: Any = None,
-    # ) -> Any:
-    #     """aten::index_copy(Tensor self, int dim, Tensor index, Tensor source) -> Tensor
+    @register_fx_node_ge_converter(torch.ops.aten.index_copy.default)
+    def _convert_index_copy(
+        self: Any,
+        dim: int,
+        index: Any,
+        source: Any,
+        meta_outputs: Any = None,
+    ) -> Any:
+        """aten::index_copy(Tensor self, int dim, Tensor index, Tensor source) -> Tensor
 
-    #     Implemented via InplaceUpdate + transpose: ``InplaceUpdate`` only supports
-    #     dim=0, so transpose self/source to move ``dim`` to axis 0, InplaceUpdate
-    #     (replace indices), then transpose back. Supports arbitrary 1D index
-    #     (not limited to contiguous arange).
-    #     """
-    #     del meta_outputs
-    #     from torchair.ge._ge_graph import DataType
-    #     # InplaceUpdate requires DT_INT32 indices (see REG_OP InplaceUpdate input)
-    #     if index.dtype != DataType.DT_INT32:
-    #         index = ge.Cast(index, dst_type=int(DataType.DT_INT32))
-    #     ndim = self.rank
-    #     if dim < 0:
-    #         dim += ndim
-    #     # perm moves `dim` to position 0: [dim, 0, 1, ..., dim-1, dim+1, ..., ndim-1]
-    #     perm = [dim] + [i for i in range(ndim) if i != dim]
-    #     inverse_perm = [0] * ndim
-    #     for i, p in enumerate(perm):
-    #         inverse_perm[p] = i
-    #     # Use ge.Transpose (perm as Const input) instead of ge.TransposeD (perm as attr):
-    #     # Ascend950 OPP ships Transpose but has no TransposeD engine, so TransposeD fails
-    #     # engine selection on 950. Transpose(perm=Const) stays Transpose (950-supported);
-    #     # 910 has both. dtype_promote -> DT_INT64 Const perm tensor (matches torchair default).
-    #     from torchair._ge_concrete_graph.ge_converter.converter_utils import dtype_promote
-    #     perm = dtype_promote(perm, target_dtype=DataType.DT_INT64)
-    #     inverse_perm = dtype_promote(inverse_perm, target_dtype=DataType.DT_INT64)
-    #     # TensorMove to avoid in-place precision issue (same pattern as index_add.py)
-    #     moved = ge.TensorMove(self)
-    #     transposed_self = ge.Transpose(moved, perm)
-    #     transposed_source = ge.Transpose(source, perm)
-    #     # Force dtype alignment: InplaceUpdate requires x and v to have the same dtype.
-    #     # Use self.dtype (known) rather than transposed_self.dtype (UNDEFINED before infershape).
-    #     transposed_source = ge.Cast(transposed_source, dst_type=int(self.dtype))
-    #     updated = ge.InplaceUpdate(transposed_self, index, transposed_source)
-    #     return ge.Transpose(updated, inverse_perm)
+        Implemented via InplaceUpdate + transpose: ``InplaceUpdate`` only supports
+        dim=0, so transpose self/source to move ``dim`` to axis 0, InplaceUpdate
+        (replace indices), then transpose back. Supports arbitrary 1D index
+        (not limited to contiguous arange).
+        """
+        del meta_outputs
+        from torchair.ge._ge_graph import DataType
+        # InplaceUpdate requires DT_INT32 indices (see REG_OP InplaceUpdate input)
+        if index.dtype != DataType.DT_INT32:
+            index = ge.Cast(index, dst_type=int(DataType.DT_INT32))
+        ndim = self.rank
+        if dim < 0:
+            dim += ndim
+        # perm moves `dim` to position 0: [dim, 0, 1, ..., dim-1, dim+1, ..., ndim-1]
+        perm = [dim] + [i for i in range(ndim) if i != dim]
+        inverse_perm = [0] * ndim
+        for i, p in enumerate(perm):
+            inverse_perm[p] = i
+        # Use ge.Transpose (perm as Const input) instead of ge.TransposeD (perm as attr):
+        # Ascend950 OPP ships Transpose but has no TransposeD engine, so TransposeD fails
+        # engine selection on 950. Transpose(perm=Const) stays Transpose (950-supported);
+        # 910 has both. dtype_promote -> DT_INT64 Const perm tensor (matches torchair default).
+        from torchair._ge_concrete_graph.ge_converter.converter_utils import dtype_promote
+        perm = dtype_promote(perm, target_dtype=DataType.DT_INT64)
+        inverse_perm = dtype_promote(inverse_perm, target_dtype=DataType.DT_INT64)
+        # TensorMove to avoid in-place precision issue (same pattern as index_add.py)
+        moved = ge.TensorMove(self)
+        transposed_self = ge.Transpose(moved, perm)
+        transposed_source = ge.Transpose(source, perm)
+        # Force dtype alignment: InplaceUpdate requires x and v to have the same dtype.
+        # Use self.dtype (known) rather than transposed_self.dtype (UNDEFINED before infershape).
+        transposed_source = ge.Cast(transposed_source, dst_type=int(self.dtype))
+        updated = ge.InplaceUpdate(transposed_self, index, transposed_source)
+        return ge.Transpose(updated, inverse_perm)
 
     # aten.index_put: qwen3.5 的 past_key_values.update 用 index_put (不是 index_copy).
     # indices 是 list of (tensor | None), 找非 None 的 dim + index, 复用 InplaceUpdate + Transpose.

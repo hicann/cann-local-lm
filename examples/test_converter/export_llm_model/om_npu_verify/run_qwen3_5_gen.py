@@ -13,8 +13,8 @@ decode OM (seq=1) 逐 token 生成, KV + delta 累积传递.
 import os, sys, dataclasses, json
 import torch
 
-# input_ids 入图 OM (已清除, 需 `export_llm_model_epair.py` + `export_decode_test.py` 不带
-# --use-embeddings 重新导出+编译 prefill/decode 两图). embeddings 入图单 OM 验证用 run_qwen3_5_om_emb.py.
+# input_ids 入图 OM (已清除, 需用 CLI `cann-lm-converter.py --no-use-embeddings --mode prefill-decode`
+# 重新导出+编译 prefill/decode 两图). embeddings 入图单 OM 验证用 run_qwen3_5_om_emb.py.
 PREFILL_OM = "/mnt/workspace/project/CANN-LM_5883/examples/export_llm_model/om_npu_verify/qwen3_5.om"
 DECODE_OM = "/mnt/workspace/project/CANN-LM_5883/examples/export_llm_model/om_npu_verify/qwen3_5_decode.om"
 HF = "/mnt/workspace/data/models/Qwen3.5-0.8B"

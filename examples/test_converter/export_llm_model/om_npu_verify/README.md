@@ -5,19 +5,23 @@
 ## 目录结构
 
 ```
-om_npu_verify/
-├── run.sh                    # 批量导出脚本 (调 export_llm_model_epair.py)
-├── export_llm_model_epair.py # 导出 epair (config→model→weights→wrapper→torch.export→epair)
-├── main.cpp                  # C++ OM 编译器 (EpairModelLoader→GE Graph→aclgrphBuildModel→.om)
-├── reg_register.h            # CANN 算子注册宏 (main.cpp include, 同目录)
-├── CMakeLists.txt            # 构建 main.cpp (链 ge_compiler/ge_runner/acl_rt + torch_delegate_backend)
-├── build/export_llm_model   # 编译好的可执行 (aarch64)
-├── epair_gemma4/             # 导出产物 (ep_json + weight_info + weights_*.bin)
-├── run_gemma4_om.py          # ACL python OM 运行验证 (单 OM vs eager)
-├── run_gemma4_gen.py         # ACL python OM 文本生成 (prefill+decode pipeline, 吐字)
-├── gemma4.om                 # 默认融合 OM (4.7G, 新 rope, AUB 开, 对比用)
-└── gemma4_noaub.om           # 关 AUB OM (4.7G, 新 rope, **推荐用**)
+om_npu_verify/                  # main.cpp + CMakeLists + reg_register.h 已上移到上级 export_llm_model/
+├── run_gemma4_om.py             # ACL python OM 运行验证 (单 OM vs eager; GEMMA4_OM env 切换 OM)
+├── run_gemma4_gen.py            # ACL python OM 文本生成 (prefill+decode pipeline, 吐字)
+├── run_qwen3_om.py              # ACL python qwen3 OM 验证 (OM vs eager; QWEN3_OM/NUM_LAYERS env)
+├── run_qwen3_5_om*.py          # qwen3.5 OM 验证 (OM vs EP/HF)
+├── README.md                    # 本文件
+├── epair_gemma4/                # 导出产物 (ep_json + weight_info + weights_*.bin)
+├── epair_gemma4_pd/             # prefill+decode 两图产物 (出字用)
+└── epair_qwen3_5_emb/          # qwen3.5 embeddings 入图产物
+
+(上级 export_llm_model/)
+├── main.cpp                     # C++ OM 编译器 (EpairModelLoader→GE Graph→aclgrphBuildModel→.om)
+├── reg_register.h               # CANN 算子注册宏 (IR 校准版, main.cpp include)
+├── CMakeLists.txt               # 构建 export_llm_model (链 ge_compiler/ge_runner/acl_rt + torch_delegate_backend)
+└── build/export_llm_model       # 编译好的可执行 (aarch64)
 ```
+> 导出 epair 用 CLI `cann_lm/converter/cann-lm-converter.py`(唯一入口);批量导出三模型见 `../cann_lm_cli_export/run.sh`。
 
 ## 环境
 
@@ -36,22 +40,24 @@ VENV=/mnt/workspace/torch-delegate-harmony/.venv
 
 ## 使用流程
 
-### 1. 构建 C++ 编译器(一次性)
+### 1. 构建 C++ 编译器(一次性; main.cpp+CMakeLists 已上移到上级 `export_llm_model/`)
 ```bash
 export TORCH_PKG_DIR=/mnt/workspace/torch-delegate-harmony/.venv/lib/python3.11/site-packages/torch
-cmake -S . -B build -DCANN_ROOT="$ASCEND_HOME_PATH" -DTORCH_PKG_DIR="$TORCH_PKG_DIR"
-cmake --build build -j4
+cmake -S .. -B ../build -DCANN_ROOT="$ASCEND_HOME_PATH" -DTORCH_PKG_DIR="$TORCH_PKG_DIR"
+cmake --build ../build -j4
 ```
 
-### 2. 导出 epair(新 wrapper + 新 repeat_kv)
+### 2. 导出 epair(用 CLI `cann-lm-converter.py`, 唯一导出入口)
 ```bash
-$VENV/bin/python export_llm_model_epair.py \
-  --model gemma4 --hf-path /mnt/workspace/data/models/gemma-4-E2B-it \
-  --seq-len 8 --dtype bfloat16 --output-dir epair_gemma4 --use-embeddings
+$VENV/bin/python3 /mnt/workspace/project/CANN-LM_5883/cann_lm/converter/cann-lm-converter.py \
+  --hf-path /mnt/workspace/data/models/gemma-4-E2B-it \
+  --output-dir epair_gemma4 \
+  --dtype bfloat16 --seq-len 8 --mode single          # --use-embeddings 默认 True (纯 embeddings, 图外查表)
 ```
-- `--use-embeddings`:embed_tokens + PLE embed_tokens_per_layer 查表外置到 host(图内不含,host 喂 embeddings + per_layer_token_identity);detach 避免冗余打包。
+- 纯 embeddings(`--use-embeddings` 默认 True):embed_tokens + PLE embed_tokens_per_layer 查表外置到 host(图内不含,host 喂 embeddings + per_layer_token_identity);detach 避免冗余打包。图内查表用 `--no-use-embeddings`。
+- prefill+decode 两图(出字用):`--mode prefill-decode --seq-len 128`。
 - 产物:`epair_gemma4/ep_json_with_ascend_ir.json`(GE IR)+ `weight_info.json` + `weights_*.bin`。
-- 或 `bash run.sh gemma4`(run.sh 默认非 use_embeddings;gemma4 新 wrapper 需 `--use-embeddings`,见下"注意")。
+- 批量导出三模型见 `../cann_lm_cli_export/run.sh`(基于 CLI)。
 
 ### 3. 编译 epair→OM(**每次编译都关 AUB**)
 > **默认每次编译都关 `AutomaticUbFusion`**(产生 `AutomaticBufferFusionOp` 的 UB 融合 pass),让元素算子(Mul/Add/Gelu 等)保持独立、图结构清晰可读。见下"关掉 AutomaticBufferFusionOp"。先建 cfg(一次性):
@@ -64,7 +70,7 @@ EOF
 ```bash
 # 每次编译都带 GE_FUSION_SWITCH_FILE 关 AUB:
 export GE_FUSION_SWITCH_FILE=/tmp/fusion_autoub_off.cfg
-./build/export_llm_model epair_gemma4/ep_json_with_ascend_ir.json \
+../build/export_llm_model epair_gemma4/ep_json_with_ascend_ir.json \
   epair_gemma4/weight_info.json gemma4_noaub
 # → gemma4_noaub.om (3 阶段: Load epair → Extract GE Graph → Compile)
 ```
@@ -79,7 +85,7 @@ atc --mode=6 --om=gemma4_noaub.om                              # 显示 model in
 
 ## 编译开关(env,免改代码重编即可实验)
 
-main.cpp 已加 env 注入(改完需 `cmake --build build` 重编一次 main.cpp):
+main.cpp 已加 env 注入(改完需 `cmake --build ../build` 重编一次 main.cpp):
 
 | env | GE key | 注入位置 | 取值/说明 |
 |---|---|---|---|
@@ -97,7 +103,7 @@ main.cpp 已加 env 注入(改完需 `cmake --build build` 重编一次 main.cpp
 ```bash
 # cfg 内容: {"Switch":{"UBFusion":{"AutomaticUbFusion":"off"}}}
 export GE_FUSION_SWITCH_FILE=/tmp/fusion_autoub_off.cfg   # 见上 "3. 编译" 的建 cfg 步骤
-./build/export_llm_model epair_gemma4/ep_json_with_ascend_ir.json epair_gemma4/weight_info.json gemma4_noaub
+../build/export_llm_model epair_gemma4/ep_json_with_ascend_ir.json epair_gemma4/weight_info.json gemma4_noaub
 ```
 - 一键全关(blunt,会把图重构成 PartitionedCall 子图,**不推荐**):`{"Switch":{"GraphFusion":{"ALL":"off"},"UBFusion":{"ALL":"off"}}}`。
 - `ge.bufferOptimize=off_optimize` **实测会让编译失败**(status 50331649),勿用。

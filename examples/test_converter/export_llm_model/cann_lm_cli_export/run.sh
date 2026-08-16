@@ -12,7 +12,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "${ROOT_DIR}/../../.." && pwd)"
+PROJECT_ROOT="$(cd "${ROOT_DIR}/../../../.." && pwd)"
 VENV_DIR="${VENV_DIR:-/mnt/workspace/torch-delegate-harmony/.venv}"
 PYTHON="${VENV_DIR}/bin/python3"
 CONVERTER="${PROJECT_ROOT}/cann_lm/converter/cann-lm-converter.py"

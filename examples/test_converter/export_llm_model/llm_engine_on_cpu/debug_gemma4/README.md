@@ -29,7 +29,7 @@ export TORCH_DELEGATE_ENABLE_FALLBACK_CODEGEN=0  # 不走 fallback codegen
 
 ## 脚本列表
 
-当前 5 个脚本:
+当前 8 个脚本:
 
 | 脚本 | 测试场景 | 验证对象 |
 |------|---------|---------|
@@ -38,6 +38,9 @@ export TORCH_DELEGATE_ENABLE_FALLBACK_CODEGEN=0  # 不走 fallback codegen
 | `verify_gemma4_chunk.py` | chunk 推理 + logits 精度对比 | chunk vs 非 chunk + vs HF logits |
 | `verify_gemma4_epair.py` | ep 回环 + wrapper direct 推理 | ep.module 回环 vs wrapper |
 | `export_gemma4_5layers_onnx_kv.py` | 导出 ONNX(带 KV cache) | ONNX 导出流程 |
+| `verify_gemma4_wrapper_bypass.py` | wrapper 重写验证 | host mask == model 4D + bypass vs model.forward |
+| `verify_gemma4_wrapper_export.py` | wrapper 可导出 + 图无 masked_fill | torch.export + FX 图 masked_fill==0 |
+| `verify_gemma4_tiny_epair_om.py` | tiny e2e epair→OM 产物 | 导出 tiny gemma4 epair 供 main.cpp 编译 OM |
 
 ---
 

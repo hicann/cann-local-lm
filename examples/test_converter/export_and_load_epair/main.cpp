@@ -165,10 +165,23 @@ int main(int argc, char *argv[]) {
   // [4/4] Compile graph
   PrintStage(4, kTotalStages, "Compile graph");
 
-  if (std::getenv("SKIP_OM_BUILD") != nullptr) {
-    std::cout << "[SKIP] OM build skipped (SKIP_OM_BUILD set; CPU-only/no-NPU mode)" << std::endl;
+  // SKIP_OM_BUILD: 值判断 — unset / "0" / "false" → 编译 OM; "1"/"true" → 跳过 (只 load+GetGEGraph+ONNX)
+  const char *skip_env = std::getenv("SKIP_OM_BUILD");
+  bool skip_om = false;
+  if (skip_env != nullptr) {
+    std::string sv(skip_env);
+    skip_om = !(sv.empty() || sv == "0" || sv == "false" || sv == "False");
+  }
+  if (skip_om) {
+    std::cout << "[SKIP] OM build skipped (SKIP_OM_BUILD=" << (skip_env ? skip_env : "")
+              << "; 仅 load+GetGEGraph+ONNX dump)" << std::endl;
   } else {
-    std::map<ge::AscendString, ge::AscendString> init_options = GlobalOptionsWithSoc("Ascend950DT_950x");
+    // OM 编译是 CPU 侧流程, 不需 NPU 设备; 但需算子(op_info+kernel)在 CANN 中对目标 Soc 存在。
+    // Soc 由 SOC_VERSION env 指定 (默认 Ascend910_9362, 本机芯片, 算子齐全);
+    // 错误的 Soc (如 Ascend950DT_950x) 会因算子 kernel 缺失/编不过而失败。
+    const char *soc_env = std::getenv("SOC_VERSION");
+    const std::string soc_version = (soc_env != nullptr) ? std::string(soc_env) : std::string("Ascend910_9362");
+    std::map<ge::AscendString, ge::AscendString> init_options = GlobalOptionsWithSoc(soc_version);
     ge::graphStatus init_status = aclgrphBuildInitialize(init_options);
     if (init_status != ge::GRAPH_SUCCESS) {
       std::cerr << "[ERROR] aclgrphBuildInitialize failed, status: " << init_status << std::endl;

@@ -7,7 +7,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 # Derived paths
 get_filename_component(EXAMPLE_DIR "${CMAKE_CURRENT_SOURCE_DIR}" ABSOLUTE)
-get_filename_component(PROJECT_ROOT "${EXAMPLE_DIR}/../.." ABSOLUTE)
+get_filename_component(PROJECT_ROOT "${EXAMPLE_DIR}/../../.." ABSOLUTE)
 
 # ---------------------------------------------------------------------------
 # Backend library (libtorch_delegate_backend.so from CANN-LM csrc/)

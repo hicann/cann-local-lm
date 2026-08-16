@@ -30,7 +30,7 @@ export TORCH_DELEGATE_ENABLE_FALLBACK_CODEGEN=0  # 不走 fallback codegen
 
 ## 脚本列表
 
-当前 7 个脚本:
+当前 9 个脚本:
 
 | 脚本 | 测试场景 | 验证对象 |
 |------|---------|---------|
@@ -38,6 +38,7 @@ export TORCH_DELEGATE_ENABLE_FALLBACK_CODEGEN=0  # 不走 fallback codegen
 | `run_qwen3_5.py` | 端到端推理 | cann_lm 模型 + chat_template + model.generate |
 | `verify_qwen3_5_vs_hf.py` | pure-torch vs HF 数值对齐 | logits max_diff(greedy token 一致) |
 | `verify_wrapper_qwen3_5.py` | wrapper 自测 | Qwen3_5ExportWrapper vs 原始 model(max_diff=0.0) |
+| `verify_wrapper_qwen3_5_decode.py` | wrapper 两轮 forward(prefill+decode) | wrapper 多轮 decode token 序列对比 |
 | `verify_qwen3_5_all.py` | 单步 + 多轮 decode + epair 导出 | wrapper vs model / vs HF / torch.export + ep.module 回环 |
 | `verify_qwen3_5_epair.py` | epair 导出 + ep 回环推理 | ep.module prefill + wrapper decode vs wrapper direct vs HF |
 | `verify_qwen3_5_chunk.py` | chunk 推理 + vs HF | 分 chunk prefill vs 非 chunk,验证一致性 + vs HF |

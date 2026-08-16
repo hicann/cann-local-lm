@@ -41,6 +41,8 @@ NUM_LAYERS=5 MODE=prefill-decode bash run.sh gemma4
 | `NUM_LAYERS` | (空=全部) | 只导出前 N 层(`--num-layers`),截断 `model.model.layers`,不改 `config.num_hidden_layers` |
 | `VENV_DIR` | `/mnt/workspace/torch-delegate-harmony/.venv` | converter venv (torch 2.9.0+cpu + torchair + torch_delegate) |
 
+> `--use-embeddings` 默认 **True**（纯 embeddings，图外查表；CLI 自带，`run.sh` 未暴露开关）。要图内查表直接调 `cann-lm-converter.py ... --no-use-embeddings`。`--mode` 默认 `prefill-decode`（CLI）；`run.sh` 的 `MODE` 默认 `single`（快测）。
+
 ## 测试结果
 
 ### single 模式 (`MODE=single`)
@@ -60,6 +62,8 @@ NUM_LAYERS=5 MODE=prefill-decode bash run.sh gemma4
 | qwen3_5 | 0.75B | bfloat16 | 1964 MB | PASS | prefill+decode 两图 + 共享权重 1 份 (71 权重) |
 
 prefill-decode 模式产物含 `prefill_ep_json_with_ascend_ir.json` + `decode_ep_json_with_ascend_ir.json` 两图,权重 `weights_0.bin` + `weight_info.json` 共享一份(`save_epair_prefill_decode` 内部 `save_weights=False` 复用 prefill 的打包结果)。
+
+> 注：上表大小为 `--use-embeddings` 默认 True **之前**的快照；现默认 True，`weights_*.bin` 不含查表权重、另产 `host_weights_*`（gemma4 含 PLE 的 host_weights ~5.5GB），单模型总产物拆分不同但 PASS 状态不变。
 
 ## 只导出前 N 层 (`--num-layers` / `NUM_LAYERS`)
 
@@ -85,21 +89,26 @@ qwen3.5 的 linear attention 层(GatedDeltaNet)原本用纯 torch `torch_chunk_g
 
 精度验证:vs HF max_diff=0.0(greedy identical)+ wrapper vs original max_diff=0.0(KV cache 全 match)。
 
-> 注:遗留任务 3(qwen3.5 export_to_epair segfault)已解决,三模型现在都能 export_to_epair + C++ OM 编译。
+> 注:遗留任务 3(qwen3.5 export_to_epair segfault)已解决，三模型现在都能 export_to_epair。但 qwen3.5 的 **C++ OM 编译仍搁置**（ChunkGatedDeltaRule infershape 失败，见下文"C++ OM 编译"节）。
 
 ## 产物布局
+
+`--use-embeddings` 默认 **True**（纯 embeddings，embed_tokens 查表外置到 host）：
 
 ```
 epair_<model>/
 ├── ep_json_with_ascend_ir.json   # torch.export 序列化 + ascend_ir 标注 (GE 转换后)
 ├── weight_info.json              # 权重索引 {weights_0.bin: [{name, offset, size}, ...]}
-├── weights_0.bin                 # 权重数据 (bfloat16 → view(int16) 打包)
-├── model_config.json             # {model_type, config: {...}, hf_config: {...}}
+├── weights_0.bin                 # 权重数据 (bfloat16 → view(int16) 打包; 不含 embed_tokens 查表权重)
+├── model_config.json             # {model_type, config: {...}, hf_config: {...}, use_embeddings}
 ├── tokenizer.json                # 从 HF 复制
-└── tokenizer_config.json         # 从 HF 复制
+├── tokenizer_config.json         # 从 HF 复制
+├── host_weights_info.json        # (use_embeddings=True) host 查表权重索引 {bin: [{name,offset,size,dtype,shape}]}
+└── host_weights_0.bin            # (use_embeddings=True) embed_tokens / gemma4 embed_tokens_per_layer
 ```
 
-prefill-decode 模式额外生成 `prefill_ep_json_with_ascend_ir.json` + `decode_ep_json_with_ascend_ir.json`(权重仍共享一份)。
+- `--no-use-embeddings`（图内查表）时不产生 `host_weights_*`，`weights_*.bin` 含 `embed_tokens`。
+- prefill-decode 模式额外生成 `prefill_ep_json_with_ascend_ir.json` + `decode_ep_json_with_ascend_ir.json`（权重仍共享一份）。
 
 ## 验证项
 
@@ -166,16 +175,111 @@ qwen3.5 的 OM 编译历经多轮修复,Conv2D infershape **已解决**,但 Chun
 
 ### main.cpp / reg_register.h / ge_converter.py / C++ backend 改动
 
-- **`main.cpp`**:soc_version 改用 `std::getenv("SOC_VERSION")`(默认 `Ascend910_9362`,本机芯片;`Ascend910A` 导致 TensorMove/TransposeD 找不到 engine)
-- **`reg_register.h`** 补算子注册(对齐 CANN op_info 的 dtype + attr 顺序):
-  - gemma4:`AddRmsNorm`(残差+RMSNorm)+ `RotaryMul`(半旋转)
-  - qwen3.5:`ChunkGatedDeltaRule`(线性注意力融合)+ `Shape`/`Expand`/`Gather`/`Minimum`/`Pack`/`ScatterElements`/`SplitV`(动态 shape + slice_scatter 引入)+ `Conv2D`/`Squeeze`(conv1d 映射)
-  - `Unsqueeze` 改 `TensorType::ALL()`(对齐 auto_generated,原 `BasicType()` 可能不含 bf16)
+- **`main.cpp`**:soc_version 改用 `std::getenv("SOC_VERSION")`(默认 `Ascend910_9362`,本机芯片;`Ascend910A` 导致 TensorMove/TransposeD 找不到 engine)。`main.cpp` + `CMakeLists.txt` 已上移到 `examples/export_llm_model/`（doc 对齐）。
+- **`reg_register.h`** 已 **IR 校准**：以 `ops_IR(Ascend 950)/ops/*.md` 的 `REG_OP` 为标准，73 个有 IR 的算子全对齐官方 IR（dtype/inputs/outputs/attrs），8 个无 IR 的自研算子（`QuantMatmulS8S4`/`RotaryMul`/`ChunkGatedDeltaRule`/`ConcatD`/`SoftmaxV3`/`SliceD`/`TransposeD`/`TensorMove`）保留原定义。master 在 `examples/export_llm_model/reg_register.h`（81 ops），`om_npu_verify/reg_register.h` 与 `export_and_load_epair/reg_register.h` 为其软链（单一源）。本机 `DT_BFLOAT16`/`DT_FLOAT32` 经别名可编译，按 IR 原文保留。
+  - 历史补算子（现已含在校准版）：gemma4 `AddRmsNorm`+`RotaryMul`；qwen3.5 `ChunkGatedDeltaRule`+`Shape`/`Expand`/`Gather`/`Minimum`/`Pack`/`ScatterElements`/`SplitV`+`Conv2D`/`Squeeze`；`Unsqueeze` 用 `TensorType::ALL()`。
 - **`ge_converter.py`** 补 GE 映射:
   - `cann_lm::chunk_gated_delta_rule` → 手动定义 `ge.ChunkGatedDeltaRule`(torchair auto_generated 未生成此算子),填 output desc shape/dtype(从 meta_outputs)
   - `aten.conv1d` → `ge.Unsqueeze + _npu_convolution + ge.Squeeze`(1D→2D),手动填 Unsqueeze/Conv2D 的 output_desc.shape.dim + dtype(从 meta_outputs.size 反推 L_in)+ layout="NCHW"(避 inputDesc 空传播 + format ND 被拒)
   - `aten.type_as` 的 `meta_outputs` 移到 kwargs(避免 `Converter.__call__` 参数数错)
+  - `aten.index_copy` → `ge.InplaceUpdate + ge.Transpose`（KV cache scatter-write；曾注释掉，已取消注释以打通 gemma4 prefill-decode 导出，备份 `ge_converter.py.bak`）
 - **C++ backend(`cann_lm/converter/export/csrc/`)**:
   - `ge_graph_builder.cc:1366`:PlanConverterNode 对 input 调 `FindTensorValue(op.inputs[i])` 当 fallback_meta(方案 1,边界输入命中 tensor_values 拿 shape,内部 GE ref 返回 nullptr 无害)
   - `aten_tensor_desc_mapper.cc:91`:`MapGeLayoutString` 补认 "NCHW"/"NHWC"(原只认 "ND",Conv2D 要求 input format NCHW)
   - `saver.py`:`save_epair`/`save_epair_prefill_decode` 加 `whitelist_decompositions`(默认 EpairConfig whitelist,linear/matmul 等分解)
+
+---
+
+## 测试方案（覆盖全部 CLI 场景）
+
+`cann-lm-converter.py` 当前全参数：`--hf-path`/`--output-dir`(必填) + `--dtype`(float32/float16/bfloat16) + `--device`(cpu) + `--max-file-size` + `--kv-cache-max-len` + `--seq-len` + `--use-embeddings`(`BooleanOptionalAction`，自动派生 `--no-use-embeddings`) + `--mode`(single/prefill-decode) + `--num-layers` + 量化互斥组 `--quant-path`/`--quant-method gptq` + `--quant-bits`(w4a8/w4a16)。
+
+下面两个方案均覆盖**全部参数取值**，按需选用（`--hf-path`/`--output-dir` 省略，三模型路径见 `run.sh`）。
+
+### 方案一：全量覆盖矩阵（隔离，~28 case）
+
+每参数取值至少 1 case，尽量单变量隔离。
+
+**A. 基础（model × mode × use-emb × dtype，pairwise）**
+
+| ID | model | 参数 | 覆盖 |
+|---|---|---|---|
+| A1 | gemma4 | `--mode single --dtype bfloat16` | single+bf16 baseline |
+| A2 | gemma4 | `--mode prefill-decode --dtype bfloat16` | pd+bf16 |
+| A3 | qwen3 | `--mode single --dtype bfloat16` | qwen3 single |
+| A4 | qwen3 | `--mode prefill-decode --dtype bfloat16` | qwen3 pd |
+| A5 | qwen3.5 | `--mode single --dtype bfloat16` | 混合架构 single |
+| A6 | qwen3.5 | `--mode prefill-decode --dtype bfloat16` | 混合架构 pd |
+| A7 | gemma4 | `--mode single --dtype float16` | dtype float16 |
+| A8 | qwen3 | `--mode single --dtype float32` | dtype float32 |
+| A9 | qwen3.5 | `--mode single --dtype bfloat16 --no-use-embeddings` | use-emb False |
+| A10 | qwen3 | `--mode prefill-decode --dtype bfloat16 --no-use-embeddings` | use-emb False + pd |
+| A11 | gemma4 | `--mode single --dtype bfloat16 --no-use-embeddings` | use-emb False（gemma4 PLE 图内） |
+
+**B. 截断/快速（`--num-layers`）**
+
+| ID | model | 参数 | 覆盖 |
+|---|---|---|---|
+| B1 | gemma4 | `--num-layers 5 --mode single` | 截断（N≤15 无 shared 层） |
+| B2 | qwen3 | `--num-layers 5 --mode prefill-decode` | 截断 + pd |
+| B3 | qwen3.5 | `--num-layers 5 --mode single` | 截断 + ChunkGatedDeltaRule |
+
+**C. 参数边界**
+
+| ID | model | 参数 | 覆盖 | 期望 |
+|---|---|---|---|---|
+| C1 | qwen3 | `--seq-len 256 --mode single` | 长序列 | 节点数随 seq 增 |
+| C2 | qwen3 | `--max-file-size 1048576 --mode single` | 小 bin 切分 | `weight_info.json` 含多个 `weights_*.bin` |
+| C3 | qwen3 | `--kv-cache-max-len 512 --mode single` | 小 KV buffer | KV 输入 shape[2]=512 |
+| C4 | qwen3 | `--kv-cache-max-len 4096 --mode single` | 大 KV buffer | KV shape[2]=4096 |
+| C5 | qwen3 | `--seq-len 8 --mode single` | 短序列快测 | 最小图 |
+
+**D. 量化**
+
+| ID | model | 参数 | 覆盖 | 前置 |
+|---|---|---|---|---|
+| D1 | gemma4 | `--quant-path <dopt产物>` | 场景1 消费 dopt（W4A8+自动 embed） | **需 dopt GPTQ 产物** |
+| D2 | gemma4 | `--quant-method gptq` | 场景2 spawn dopt | **需 NPU，待实现** |
+| D3 | gemma4 | `--quant-method gptq --quant-bits w4a16` | w4a16 位宽 | 需 NPU |
+| D4 | — | `--quant-path X --quant-method gptq` | 互斥组报错 | argparse 拒绝（期望失败） |
+
+**E. 错误/边界（期望失败，fail-fast）**
+
+| ID | model | 参数 | 期望 |
+|---|---|---|---|
+| E1 | qwen3 | `--num-layers 999` | ValueError "exceeds total 28 layers" |
+| E2 | qwen3 | `--num-layers 0` | ValueError "must be >= 1" |
+| E3 | — | `--dtype int8` | argparse choices 拒绝 |
+| E4 | — | `--mode fast` | argparse choices 拒绝 |
+| E5 | — | （缺 `--hf-path`） | required 拒绝 |
+
+**覆盖核对**：dtype(3)✓ mode(2)✓ use-emb(2)✓ num-layers(full/5/边界)✓ seq-len(8/128/256)✓ max-file(默认/1M)✓ kv-len(2048/512/4096)✓ quant-path/method/bits/互斥✓ device(cpu)✓
+
+### 方案二：精简版（baseline + 7 新增，最小覆盖）
+
+复用 `run.sh` 作 baseline（3 模型 × {single, pd} × bf16 × seq8 × use-emb=True + `--num-layers 5`，9 case）；用最小模型 **qwen3** 当工作马（最快）；堆叠冒烟型边界参数；4 错误折 1 套件。
+
+**baseline（`run.sh` 已覆盖）**：model × mode × bf16 × use-emb-True × num-layers(full + 5)
+
+**新增（7 case）**：
+
+| ID | model | 参数 | 补缺口 |
+|---|---|---|---|
+| N1 | qwen3 | `--mode single --dtype float16` | dtype float16 |
+| N2 | qwen3 | `--mode single --dtype float32` | dtype float32 |
+| N3 | gemma4 | `--mode single --no-use-embeddings` | use-emb False（PLE 图内查表，最难路径） |
+| N4 | qwen3 | `--mode single --kv-cache-max-len 512 --seq-len 256 --max-file-size 1048576` | **堆叠**：kv-len + seq-len + max-file 三边界 |
+| N5 | gemma4 | `--quant-path <dopt产物>` | 场景1 量化（需 dopt） |
+| N6 | gemma4 | `--quant-method gptq --quant-bits w4a16` | 场景2 + w4a16（需 NPU，待实现） |
+| N7 | — | error suite：`--num-layers 999` / `--num-layers 0` / `--quant-path X --quant-method gptq` / `--dtype int8` | 4 个 fail-fast（含互斥） |
+
+**可跑**：N1-N5 + N7 = 6（N6 待 NPU/实现）。
+
+**覆盖核对**：dtype(3)✓ mode(2, baseline)✓ use-emb(2)✓ num-layers(full/5/999/0)✓ seq-len(8/256)✓ max-file(默认/1M)✓ kv-len(2048/512)✓ quant-path/method/bits/互斥✓ device(cpu)✓
+
+**取舍（牺牲了什么）**：
+- **N4 堆叠**三边界：覆盖到了，但失败需二分定位（这三个是"参数透传"型，出问题概率低，可接受）。
+- **N3 只测 gemma4 `--no-use-embeddings`**：gemma4 PLE 图内查表是最复杂路径；能过则 qwen3 简单图内大概率也过（未显式测）。
+- **N6 暂不可跑**：`run_auto_quant` 待实现。
+
+> 再砍可去 N4（边界堆叠，最低价值），但不再覆盖 kv-len/seq-len/max-file 非默认值。

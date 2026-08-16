@@ -1,21 +1,26 @@
 #!/usr/bin/env python3
-"""ACL python 运行 gemma4_noaub.om + 对比 eager wrapper (验证 OM 运行机制)。
+"""ACL python 运行 qwen3 OM + 对比 eager wrapper (验证 OM 运行机制)。
 
-流程: wrapper.get_sample_inputs (CPU) → eager 在 NPU 跑 (npu fused ops 仅 NPU) →
-模型回 CPU → OM (acl) 用同一份 CPU sample 跑 → 对比 OM logits vs eager logits。
+仿 run_gemma4_om.py, 适配 qwen3 (标准 GQA, 无 PLE, in-graph embed_tokens):
+  - sample 7-tuple (input_ids, mask, pos, past_kv, new_kv, None, output_pos)
+  - in-graph: OM 内含 embed_tokens, runtime 输入是 input_ids (非 embeddings)
+
+流程: wrapper.get_sample_inputs(use_embeddings=False, CPU) → eager NPU 跑 →
+      OM (acl) 用同一份 CPU sample 跑 → 对比 OM logits vs eager logits。
+
+OM 产物路径用 QWEN3_OM 环境变量覆盖 (默认 /tmp/opencode/qwen3_calib/qwen3_noaub.om):
+  QWEN3_OM=/path/to/qwen3.om python3 run_qwen3_om.py
 """
-import os, sys, json, dataclasses
+import os, sys, dataclasses
 import torch
 
-OM = "/mnt/workspace/project/CANN-LM_5883/examples/export_llm_model/om_npu_verify/gemma4_noaub.om"
-E2B = "/mnt/workspace/data/models/gemma-4-E2B-it"
+OM = os.environ.get("QWEN3_OM", "/tmp/opencode/qwen3_calib/qwen3_full.om")
+HF = "/mnt/workspace/data/models/qwen3-0.6B"
 SEQ = 8; KV_MAX = 2048; DEV = 0
 sys.path.insert(0, "/mnt/workspace/project/CANN-LM_5883")
 
-import torch_npu  # noqa
-from cann_lm.models.gemma4 import Gemma4ForCausalLM, Gemma4TextConfig
-from cann_lm.models.gemma4.modeling_gemma4 import load_gemma4_weights
-from cann_lm.models.gemma4.export_wrapper import Gemma4ExportWrapper
+from cann_lm.models.qwen3 import Qwen3ForCausalLM, Qwen3TextConfig, load_qwen3_weights
+from cann_lm.models.qwen3.export_wrapper import Qwen3ExportWrapper
 
 # --- ACL helpers ---
 import acl
@@ -23,7 +28,6 @@ ACL_OK = 0; H2D = 1; D2H = 2
 def check(n, r):
     if r != ACL_OK: raise RuntimeError(f"{n} ret={r}")
 def acl_init_tolerant():
-    """acl.init; torch_npu 可能已 init acl (ret=100002), 容错。"""
     r = acl.init()
     if r not in (0, 100002): raise RuntimeError(f"acl.init ret={r}")
 def t_bytes(t):
@@ -34,7 +38,6 @@ def bytes_to_tensor(b, shape):
     return torch.frombuffer(b, dtype=torch.int16).view(torch.bfloat16).reshape(shape)
 
 def move_sample(sample, dev):
-    """sample 10-tuple (含 past_kv list[(k,v)]); 整体移到 dev。"""
     res = []
     for t in sample:
         if isinstance(t, torch.Tensor): res.append(t.to(dev))
@@ -43,20 +46,26 @@ def move_sample(sample, dev):
     return tuple(res)
 
 def flatten_to_om_inputs(sample, in_names):
-    """展平 wrapper sample → OM 77 输入 (按 OM input name 顺序)。"""
-    _, mask_full, mask_sliding, position_ids, past_kv, new_pos, embeddings, output_pos, ple, _ = sample
+    """展平 qwen3 in-graph sample (7-tuple) → OM 输入 (按 OM input name 顺序)。
+
+    sample: (input_ids, attention_mask, position_ids, past_kv[(k,v),...],
+            new_kv_cache_pos, None, output_pos)
+    """
+    input_ids, mask, pos, past_kv, new_kv, _emb, output_pos = sample
     kv_flat = []
-    for k, v in past_kv: kv_flat.append(k); kv_flat.append(v)
-    by_name = {"mask_full": mask_full, "mask_sliding": mask_sliding, "position_ids": position_ids,
-               "new_kv_cache_pos": new_pos, "embeddings": embeddings, "output_pos": output_pos,
-               "per_layer_token_identity": ple}
+    for k, v in past_kv:
+        kv_flat.append(k); kv_flat.append(v)
+    by_name = {"input_ids": input_ids, "attention_mask": mask, "position_ids": pos,
+               "new_kv_cache_pos": new_kv, "output_pos": output_pos}
     inputs = []
     for name in in_names:
-        if name in by_name: inputs.append(by_name[name])
+        if name in by_name:
+            inputs.append(by_name[name])
         elif name.startswith("past_key_values_"):
             parts = name.split("_"); L = int(parts[-2]); K = int(parts[-1])
             inputs.append(kv_flat[L * 2 + K])
-        else: raise ValueError(f"unknown OM input {name}")
+        else:
+            raise ValueError(f"unknown OM input {name}")
     return inputs
 
 def run_om(sample):
@@ -92,15 +101,20 @@ def run_om(sample):
     return outs
 
 def main():
-    print("[1/4] Load gemma4-E2B (CPU) + wrapper + get_sample_inputs")
-    with open(f"{E2B}/config.json") as f: hf_cfg = json.load(f)
-    valid = {f.name for f in dataclasses.fields(Gemma4TextConfig)}
-    cfg = Gemma4TextConfig(**{k: v for k, v in hf_cfg["text_config"].items() if k in valid}); cfg.__post_init__()
-    model = Gemma4ForCausalLM(cfg).to(dtype=torch.bfloat16).eval()
-    model = load_gemma4_weights(model, E2B, device="cpu", dtype=torch.bfloat16)
-    wrapper = Gemma4ExportWrapper(model, kv_cache_max_len=KV_MAX, batch=1).eval()
-    sample = wrapper.get_sample_inputs(seq_len=SEQ, use_embeddings=True)  # CPU
-    print(f"  layers={cfg.num_hidden_layers}, vocab={cfg.vocab_size}, sample len={len(sample)}")
+    print("[1/4] Load qwen3-0.6B (CPU) + wrapper + get_sample_inputs")
+    cfg = Qwen3TextConfig.from_pretrained(HF)
+    model = Qwen3ForCausalLM(cfg).to(dtype=torch.bfloat16).eval()
+    model = load_qwen3_weights(model, HF, device="cpu", dtype=torch.bfloat16)
+    nl_env = os.environ.get("NUM_LAYERS")
+    if nl_env:
+        nl = int(nl_env)
+        total = len(model.model.layers)
+        if nl < total:
+            model.model.layers = model.model.layers[:nl]
+            print(f"  截断 model.model.layers {total} → {nl} (NUM_LAYERS env, 与 OM 对齐)")
+    wrapper = Qwen3ExportWrapper(model, kv_cache_max_len=KV_MAX, batch=1).eval()
+    sample = wrapper.get_sample_inputs(seq_len=SEQ, use_embeddings=False)  # in-graph: input_ids 入图
+    print(f"  layers={len(model.model.layers)}, vocab={cfg.vocab_size}, sample len={len(sample)}")
 
     print("[2/4] eager (NPU) → out_eager")
     model.npu()

@@ -20,7 +20,7 @@ from pathlib import Path
 import torch
 import torch.nn as nn
 
-from .materialize import materialize_int4, materialize_int4_with_scale, materialize_int8_per_channel
+from .materialize import materialize_int4_with_scale, materialize_int8_per_channel
 from .quant_linear import QuantLinear
 
 # names containing any of these substrings are NOT quantized by the Linear swap.
@@ -65,33 +65,6 @@ def _resolve_parent(model: nn.Module, dotted_name: str) -> tuple[nn.Module, str]
     for p in parts[:-1]:
         parent = getattr(parent, p)
     return parent, parts[-1]
-
-
-def swap_to_quant_linear(
-    model: nn.Module,
-    group_size: int = 128,
-    skip: tuple[str, ...] = DEFAULT_SKIP,
-    act_quant: bool = True,
-) -> nn.Module:
-    """Replace target nn.Linear modules with QuantLinear (materialize int4 weight).
-
-    Walks ``model.named_modules()``; for each nn.Linear whose name does not
-    contain a ``skip`` substring, materializes its weight to int4 + per-group
-    scale and swaps in a QuantLinear. embed_tokens / lm_head are skipped by
-    default. ``act_quant=False`` produces W4A16 (weight-only, no act quant).
-
-    Returns the same model (mutated in place).
-    """
-    for name, m in list(model.named_modules()):
-        if not isinstance(m, nn.Linear):
-            continue
-        if any(s in name for s in skip):
-            continue
-        weight_q, weight_scale = materialize_int4(m.weight, group_size)
-        ql = QuantLinear(weight_q, weight_scale, group_size, bias=m.bias, act_quant=act_quant)
-        parent, child = _resolve_parent(model, name)
-        setattr(parent, child, ql)
-    return model
 
 
 def load_dopt_state_dict(dopt_path: str | Path) -> dict:

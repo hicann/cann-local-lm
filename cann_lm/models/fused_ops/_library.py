@@ -32,9 +32,16 @@ try:
 except ImportError:
     _HAS_TORCH_NPU = False
 
-# npu 命名空间: stubs 环境 define schema (torchair custom/ converter 自动注册);
-# 真实 torch_npu 跳过 (torch_npu 已 define, 避免 RuntimeError: already registered)
-NPU_LIB = torch.library.Library("npu", "DEF") if not _HAS_TORCH_NPU else None
+# npu 命名空间: FRAGMENT (允许和 torch_npu 的 npu namespace 共存, define cann_lm 自定义 op)
+NPU_LIB = torch.library.Library("npu", "FRAGMENT")
+
+
+def safe_define(schema: str) -> None:
+    """NPU_LIB.define with try/except: torch_npu 已 define 的 op 跳过, cann_lm 自定义的 define."""
+    try:
+        NPU_LIB.define(schema)
+    except RuntimeError:
+        pass  # torch_npu 已 define 该 op, 跳过
 
 # cann_lm 命名空间: 无 torchair 对应的算子 (chunk_gated_delta_rule, torchair raise RuntimeError)
 CANN_LM_LIB = torch.library.Library("cann_lm", "DEF")

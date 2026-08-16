@@ -16,7 +16,7 @@
 
 | 文件 | 职责 |
 |------|------|
-| `__init__.py` | 包门面，re-export 8 个公共符号 |
+| `__init__.py` | 包门面，re-export 6 个公共符号 |
 | `materialize.py` | 权重物化纯函数：`pack_int4` / `materialize_int4` / `materialize_int4_with_scale` / `materialize_int8_per_channel` |
 | `quant_linear.py` | 导出用 `QuantLinear(nn.Module)`，forward 发射 `quant_matmul_s8s4` + `npu_dynamic_quant` IR |
 | `swap.py` | `swap_to_quant_linear_from_dopt` / `swap_embeddings_from_dopt` / `load_dopt_state_dict` / `_read_dopt_quant_meta` |
@@ -67,12 +67,13 @@
 | 参数 | 作用 |
 |------|------|
 | `--quant-path <dopt产物目录>` | 加载 dopt GPTQ 产物，物化 int4 + swap QuantLinear |
-| `--quant` | `w4a8` | 量化策略（当前仅 w4a8；HF 原始权重 min-max，场景 2，与 --quant-path 互斥） |
+| `--quant-method` | `gptq` | 量化算法（当前仅 gptq；自动 spawn dopt，场景 2，待实现；与 --quant-path 互斥） |
+| `--quant-bits` | `w4a8` | 格式/位宽（w4a8/w4a16，默认 w4a8；--quant-method 时生效） |
 
 > CLI 用法见 [INDEX.md](../cli/INDEX.md) / [cli_design.md](../cli/cli_design.md)。
 
 ## 关联模块
 
-- **CLI**：[INDEX.md](../cli/INDEX.md) — `--quant-path` / `--quant w4a8` 参数
+- **CLI**：[INDEX.md](../cli/INDEX.md) — `--quant-path` / `--quant-method` / `--quant-bits` 参数
 - **导出**：[INDEX.md](../export/INDEX.md) — `QuantLinear` 替换后走 `save_epair` / `host_weights` 机制 / C++ `GeWeightLoader`
 - **总览**：[converter_design.md](../converter_design.md) — 待实现与遗留（量化部分）

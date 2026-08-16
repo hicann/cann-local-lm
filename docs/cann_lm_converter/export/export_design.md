@@ -775,7 +775,7 @@ Please register the GE operator or decompose the operation in the model definiti
 1. 在 `reg_register.h` 中注册缺失的 GE 算子，或
 2. 在模型定义中用已支持的算子组合替换不支持的算子
 
-> CANN-LM 已移除 `fallback_codegen`，未映射算子直接报错；故只需 `ge_graph_builder.cc` 的 PlanNodes 跳过即可。Python 侧（example 脚本）若仍需在导出时清理 ep_json，可用 `epair_utils` 之外的本地 strip（见 `examples/export_llm_model/export_llm_model_epair.py` 的 `_strip_assert_nodes_ep_json`）；converter 主路径靠 C++ 侧跳过，不再依赖 Python strip。
+> CANN-LM 已移除 `fallback_codegen`，未映射算子直接报错；故只需 `ge_graph_builder.cc` 的 PlanNodes 跳过即可。converter 主路径靠 C++ 侧 `PlanNodes` 顶部 `IsAssertTensorMetadataNode` 跳过 `_assert_tensor_metadata` 节点，不再依赖 Python 侧 strip（原 `export_llm_model_epair.py` 的 `_strip_assert_nodes_ep_json` 已随该脚本废弃移除）。
 
 ### _assert_tensor_metadata 节点处理
 

@@ -29,7 +29,7 @@ CPU eager: 简化版 (BSND/BNSD + sparse_mode 0/3/4 + 无 quant/paged), 用于�
 
 import torch
 
-from ._library import NPU_LIB, _HAS_TORCH_NPU, register_cpu_impl
+from ._library import NPU_LIB, safe_define, _HAS_TORCH_NPU, register_cpu_impl
 
 _FA_SCHEMA = (
     "npu_fused_infer_attention_score_v2(Tensor query, Tensor key, Tensor value, *, "
@@ -42,7 +42,7 @@ _FA_SCHEMA = (
 )
 
 if NPU_LIB is not None:
-    NPU_LIB.define(_FA_SCHEMA)
+    safe_define(_FA_SCHEMA)
 
 if not _HAS_TORCH_NPU:
 

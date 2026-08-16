@@ -33,10 +33,10 @@ CPU impl 复用 torch_chunk_gated_delta_rule (chunked 矩阵化, 比 recurrent �
 
 import torch
 
-from ._library import NPU_LIB, _HAS_TORCH_NPU, register_cpu_impl
+from ._library import NPU_LIB, safe_define, _HAS_TORCH_NPU, register_cpu_impl
 
 if NPU_LIB is not None:
-    NPU_LIB.define(
+    safe_define(
         "npu_chunk_gated_delta_rule("
         "Tensor query, Tensor key, Tensor value, *, "
         "Tensor? beta=None, Tensor? initial_state=None, "

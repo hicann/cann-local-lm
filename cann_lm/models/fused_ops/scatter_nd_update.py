@@ -29,7 +29,7 @@
 
 import torch
 
-from ._library import NPU_LIB, _HAS_TORCH_NPU, register_cpu_impl
+from ._library import NPU_LIB, safe_define, _HAS_TORCH_NPU, register_cpu_impl
 
 _SCATTER_SCHEMA = (
     "npu_scatter_nd_update(Tensor self, Tensor indices, Tensor updates) -> Tensor out"
@@ -41,8 +41,8 @@ _SCATTER_INPLACE_SCHEMA = (
 )
 
 if NPU_LIB is not None:
-    NPU_LIB.define(_SCATTER_SCHEMA)
-    NPU_LIB.define(_SCATTER_INPLACE_SCHEMA)
+    safe_define(_SCATTER_SCHEMA)
+    safe_define(_SCATTER_INPLACE_SCHEMA)
 
 if not _HAS_TORCH_NPU:
 

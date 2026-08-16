@@ -130,7 +130,61 @@ python cann_lm/converter/cann-lm-converter.py \
     # embed 量化自动检测 (dopt 跑了 Quant_Embed_MinMax 则 converter 自动做, 无需额外参数)
 ```
 
-> dopt GPTQ（Step A，NPU）与 converter 导出（Step B-E，CPU）是两步磁盘桥接，一步化流程（进程内 GPTQ→swap→export）待实现，详见 [quant_design.md](./quant_design.md) "一步化流程"。
+> dopt GPTQ（Step A，NPU）与 converter 导出（Step B-E，CPU）是两步磁盘桥接，一键式流程（进程内 GPTQ→swap→export）详见 [quant_design.md](./quant_design.md) "一键式量化方案选型"。
+
+### converter 进程内调 dopt 的环境验证（方案 A 探索，已放弃）
+
+> 方案 C（subprocess 调 dopt）已实现（`auto_quant.py`），稳定。方案 A（进程内调 dopt）探索后**放弃**（torchair 带 CANN SDK export 链不完整 + fused_ops/真 torch_npu 兼容问题多），保留方案 C。
+
+方案 A 要 converter 主进程同进程跑 torchair（IR 转换）+ torch_npu（dopt GPTQ 执行），需解决 torch 版本对齐 + torchair/torch_npu 模块冲突。
+
+#### 环境对齐
+
+converter venv（torch 2.9.0+cpu + torchair stubs `NO_ASCEND_SDK=1`）和 NPU 系统 Python（torch 2.7.1 + torch_npu 2.7.1）**torch 版本不一致**（2.9.0 vs 2.7.1），不能同进程。
+
+方案 A 要统一 torch 版本：临时 venv 装 torch 2.9.0 + torch_npu 2.9.0 + torchair 带 CANN SDK 编译（`NO_ASCEND_SDK=0`）+ torch_delegate。
+
+实测（临时 venv `/tmp/torch29_venv`）：
+- ✅ torch_npu 2.9.0 + 本机 CANN 9.1.0 兼容（`torch.npu.is_available()`=True, count=2）
+- ✅ torchair 带 CANN SDK 编译成功（有 `ge_graph_ascend` 模块，stubs 编译缺这个）
+- ✅ torchair + torch_npu 同进程共存（加 import hack，见下）
+
+#### torchair + torch_npu 同进程冲突 + hack
+
+torch_npu 2.9.0 import 时注册 `sys.modules['torchair']`（劫持为 `torch_npu.dynamo.torchair`，不完整）。之后 `import torchair` 用劫持版（缺 `npu_format_cast_via_cpu` 等），`import torch_delegate` 失败。
+
+**hack 解**：import torch_npu 后清 `sys.modules['torchair*']`，再 import 真 torchair（site-packages 版，完整）：
+
+```python
+import torch_npu
+import sys
+for k in list(sys.modules):
+    if k == "torchair" or k.startswith("torchair."):
+        del sys.modules[k]
+import torchair      # 真 torchair（带 CANN SDK, 有 ge_graph_ascend）
+import torch_delegate
+```
+
+实测加 hack 后 `import torchair + torch_delegate + torchair.ge.ge_graph_ascend` 成功。
+
+#### 环境搭建坑
+
+1. torchair `--force-reinstall` 会升 torch 到 2.13.0（whl 依赖 torch，pip 升级）—— 装 torchair 用 `--no-deps` 或后重装 torch 2.9.0
+2. 缺依赖：pyyaml / numpy / wheel / setuptools<70（含 `pkg_resources`，新版 setuptools 去掉了）
+3. torchair 带 CANN SDK 编译：`build.sh -c` 强制 `NO_ASCEND_SDK=1`（stubs），要手动 cmake + make（`ASCEND_SDK_PATH=${ASCEND_HOME_PATH}` + `bash configure` + `cmake ..` + `make torchair`）
+
+#### 方案 A vs 方案 C
+
+| | 方案 A（进程内调 dopt） | 方案 C（subprocess，当前） |
+|---|---|---|
+| 环境 | 统一 torch 2.9.0 + torch_npu 2.9.0 + torchair 带 CANN SDK + torch_delegate | converter venv（stubs）+ 系统 Python subprocess（torch_npu） |
+| import hack | 需（清 sys.modules torchair） | 不需（分进程） |
+| torchair 编译 | 带 CANN SDK（`NO_ASCEND_SDK=0`） | stubs（`NO_ASCEND_SDK=1`） |
+| 调 dopt | `from dopt_lm import ...` 函数 | `subprocess` 跑 `python -m dopt_lm.opt_main` CLI |
+| 产物传输 | 内存（state_dict 直接传） | 临时盘 IO |
+| 状态 | **已放弃**（GPTQ 验证通过，但 export 卡 torchair hcom_broadcast + fused_ops 兼容） | 已实现 + 实测成功（qwen3-0.6B 完整 epair 产物） |
+
+> **方案 A 已放弃**（torchair 带 CANN SDK 编译不完整 `hcom_broadcast` + fused_ops/真 torch_npu 兼容问题多）。当前用方案 C（`auto_quant.py` subprocess，已实测成功）。
 
 ## 可设置参数清单
 
@@ -510,4 +564,4 @@ GPTQ 循环写死**文本-only ForCausalLM** 结构假设：
 |------|---------|
 | [quant_design.md](./quant_design.md) | converter 侧量化接入（`materialize` / `swap` / `quant_linear` / 端到端两步流程 / 方案 A 算子 / 已知问题） |
 | [embedding_quant_design.md](./embedding_quant_design.md) | embed_tokens 的 W8 host gather 量化子主题 |
-| [cli_design.md](../cli/cli_design.md) | CLI `--quant-path` / `--quant w4a8` 参数 |
+| [cli_design.md](../cli/cli_design.md) | CLI `--quant-path` / `--quant-method` / `--quant-bits` 参数 |

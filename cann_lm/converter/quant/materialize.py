@@ -44,49 +44,6 @@ def pack_int4(q: torch.Tensor) -> torch.Tensor:
     return ((nib_odd << 4) | nib_even).to(torch.int8)
 
 
-def materialize_int4(
-    weight: torch.Tensor,
-    group_size: int = 128,
-    signed: bool = True,
-    nbits: int = 4,
-    packed: bool = False,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """Materialize a Linear weight into (int4-as-int8 payload, per-group scale).
-
-    Args:
-        weight: fp16/bf16/fp32 weight in nn.Linear orientation ``[out, in]``.
-        group_size: K-axis (in) group size; ``in`` must be divisible by it.
-        signed: True -> signed symmetric range ``[-qmax, qmax]`` (qmax=7 for 4-bit);
-            False -> unsigned ``[0, 2*qmax+1]``.
-        nbits: bits per weight element (4 for int4).
-        packed: True -> return nibble-packed int8 ``[out, in//2]`` (2 int4/byte,
-            低 nibble=偶 in 索引) for the 方案 A ``quant_matmul_s8s4`` op x2 input;
-            False (default) -> unpack int8 ``[out, in]`` (1 int4/byte).
-
-    Returns:
-        (weight_q: int8 ``[out, in]`` (or ``[out, in//2]`` packed), scale: fp32 ``[out, in//group]``).
-        Symmetric (offset=0), so no offset tensor.
-    """
-    w = weight.detach().float()
-    out_f, in_f = w.shape
-    if in_f % group_size != 0:
-        raise ValueError(
-            f"in_features ({in_f}) not divisible by group_size ({group_size})"
-        )
-    qmax = (1 << (nbits - 1)) - 1  # signed 4-bit -> 7
-    ng = in_f // group_size
-    wg = w.reshape(out_f, ng, group_size)
-    scale = (wg.abs().amax(dim=-1) / qmax).clamp(min=1e-8)  # [out, ng]
-    scale_exp = scale.repeat_interleave(group_size, dim=-1)  # [out, in]
-    q = torch.round(w / scale_exp)
-    if signed:
-        q = q.clamp(-qmax, qmax)
-    else:
-        q = q.clamp(0, 2 * qmax + 1)
-    q = q.to(torch.int8)
-    return (pack_int4(q) if packed else q), scale.to(torch.float32)
-
-
 def materialize_int4_with_scale(
     weight: torch.Tensor,
     scale: torch.Tensor,

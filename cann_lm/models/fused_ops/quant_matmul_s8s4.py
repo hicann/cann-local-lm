@@ -54,7 +54,7 @@ _SCALAR_TYPE_TO_TORCH_DTYPE = {
 }
 
 
-if not _HAS_TORCH_NPU:
+if True:  # 真 torch_npu 也 register_fake (cann_lm 自定义 op, torch_npu 不提供)
     @torch.library.register_fake("cann_lm::quant_matmul_s8s4")
     def _quant_matmul_s8s4_meta(
         x1: torch.Tensor,

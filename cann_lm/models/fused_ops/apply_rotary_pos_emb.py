@@ -26,10 +26,10 @@ kernel 的张量排布解释 (BSH/BSND/SBND/BNSD/TND), CPU eager 无视 layout �
 
 import torch
 
-from ._library import NPU_LIB, _HAS_TORCH_NPU, register_cpu_impl
+from ._library import NPU_LIB, safe_define, _HAS_TORCH_NPU, register_cpu_impl
 
 if NPU_LIB is not None:
-    NPU_LIB.define(
+    safe_define(
         "npu_apply_rotary_pos_emb(Tensor query, Tensor key, Tensor cos, Tensor sin, "
         "str layout='BSH') -> (Tensor query_out, Tensor key_out)"
     )

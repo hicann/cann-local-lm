@@ -33,7 +33,8 @@
 | `--use-embeddings`　 | True　　 | 纯 embeddings（默认）; --no-use-embeddings 走图内查表　|
 | `--kv-cache-max-len` | 2048　　　| KV buffer 第一维　　　　　　　　　　　　　　　　　　　　　　　　　 |
 | `--quant-path`　　　 | —　　　　 | dopt GPTQ 产物路径（量化接入，详见 [INDEX.md](../quant/INDEX.md)） |
-| `--quant`　　　　　 | `w4a8`　 | 量化策略（当前仅 w4a8；HF 原始权重 min-max，场景 2，与 --quant-path 互斥）　 |
+| `--quant-method`　 | `gptq`　 | 量化算法（当前仅 gptq；自动 spawn dopt，场景 2，待实现；与 --quant-path 互斥）　|
+| `--quant-bits`　　 | `w4a8`　 | 格式/位宽（w4a8/w4a16，默认 w4a8；--quant-method 时生效）　|
 
 > 完整参数说明见 [cli_design.md](./cli_design.md) "命令行参数"。
 
@@ -47,4 +48,4 @@ parse_args → convert → loader.load_model (export_index) → [可选 quant sw
 ## 关联模块
 
 - **导出**：[INDEX.md](../export/INDEX.md) — `load_model` / `save_epair` / `ExportWrapper` / 产物布局
-- **量化**：[INDEX.md](../quant/INDEX.md) — `--quant-path` / `--quant w4a8` 接入
+- **量化**：[INDEX.md](../quant/INDEX.md) — `--quant-path` / `--quant-method` / `--quant-bits` 接入

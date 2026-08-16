@@ -49,7 +49,8 @@ def convert(
     mode: str = "prefill-decode",
     num_layers: int | None = None,
     quant_path: str | None = None,
-    quant: str | None = None,  # 量化策略, 当前仅支持 "w4a8"; 与 quant_path 互斥
+    quant_method: str | None = None,  # 量化算法, 当前仅支持 "gptq" (自动 spawn dopt); 与 quant_path 互斥
+    quant_bits: str = "w4a8",  # 格式/位宽 (w4a8/w4a16); 仅 quant_method 时生效
 ) -> None:
     """程序化入口：HF 模型 → epair
 
@@ -61,10 +62,10 @@ def convert(
               prefill-decode 模式 = prefill 图 seq_len (decode 固定 1, 不参数化).
         quant_path: dopt GPTQ 产物路径 (safetensors/.pth/dir). 场景 1: converter 加载 dopt 产物,
             自动推断 group_size, swap QuantLinear (W4A8), 自动检测 embed 量化.
-            精细调整 (层策略/group_size/算法参数) 由 dopt 分步完成 (见 dopt_design.md). 与 quant 互斥.
-        quant: 量化策略 (当前仅支持 "w4a8"). 对 HF 原始权重走场景 2: converter 直接
-            min-max W4A8 量化 (不经 dopt GPTQ), 固定 group_size=128. 精度不如 GPTQ,
-            适合快速验证. 与 quant_path 互斥.
+            精细调整 (层策略/group_size/算法参数) 由 dopt 分步完成 (见 dopt_design.md). 与 quant_method 互斥.
+        quant_method: 量化算法 (当前仅支持 "gptq"). 场景 2: converter 自动 spawn dopt subprocess
+            跑 GPTQ (需 NPU 环境, 待实现, 见 quant_design.md "一键式量化方案选型"). 与 quant_path 互斥.
+        quant_bits: 格式/位宽 (w4a8/w4a16, 默认 w4a8). 仅 quant_method 时生效, 传给 dopt_config 的 strategy.
     """
     print(f"[1/3] Loading model from {hf_path}")
     artifact = load_model(hf_path, dtype=dtype, device=device)
@@ -99,16 +100,10 @@ def convert(
         embed_quant = swap_embeddings_from_dopt(sd, artifact.model)
         if embed_quant:
             print(f"      Embedding int8 (auto-detected from dopt): {list(embed_quant)}")
-    elif quant == "w4a8":
-        from cann_lm.converter.quant import swap_to_quant_linear
-        print(f"      Quant: W4A8 min-max (HF raw weight, group=128, no GPTQ) -> swap QuantLinear")
-        swap_to_quant_linear(artifact.model, group_size=128, act_quant=True)
-        artifact.quant_info = {
-            "scheme": "W4A8-s8s4", "group_size": 128, "act_quant": True,
-            "scope": "all nn.Linear except ['embed_tokens', 'embed_tokens_per_layer']",
-            "source": "min-max (no GPTQ, HF raw weight)",
-        }
-        print(f"      Quantized via min-max W4A8 (group=128)")
+    elif quant_method == "gptq":
+        from cann_lm.converter.quant.auto_quant import run_auto_quant
+        print(f"      Quant: --quant-method gptq (bits={quant_bits}), spawn dopt subprocess (NPU GPTQ)")
+        embed_quant = run_auto_quant(hf_path, quant_bits, artifact)
 
     print(f"[2/3] Saving epair to {output_dir}")
     if mode == "prefill-decode":
@@ -180,17 +175,18 @@ def parse_args() -> argparse.Namespace:
                         help="Only export first N layers (slice/debug). None = all layers. "
                              "Truncates model.model.layers in place, config.num_hidden_layers unchanged "
                              "(PLE/delta_cache/layer_types stay full)")
-    # 量化: 两参数互斥 (--quant-path 已量化场景 / --quant w4a8 HF 原始权重场景)
+    # 量化: --quant-path (消费 dopt 产物) 与 --quant-method (自动 spawn dopt) 互斥
     quant_group = parser.add_mutually_exclusive_group()
     quant_group.add_argument("--quant-path", default=None,
                              help="dopt GPTQ 产物路径 (safetensors/.pth/dir). 场景 1: converter 加载 dopt 产物, "
                                   "自动推断 group_size, swap QuantLinear (W4A8), 自动检测 embed 量化. "
                                   "精细调整 (层策略/group_size/算法参数) 由 dopt 分步完成 (见 dopt_design.md). "
-                                  "与 --quant 互斥.")
-    quant_group.add_argument("--quant", default=None, choices=["w4a8"],
-                             help="量化策略 (当前仅支持 w4a8). 场景 2: 对 HF 原始权重走 min-max W4A8 "
-                                  "(不经 dopt GPTQ), 固定 group_size=128. 精度不如 GPTQ, 适合快速验证. "
-                                  "与 --quant-path 互斥.")
+                                  "与 --quant-method 互斥.")
+    quant_group.add_argument("--quant-method", default=None, choices=["gptq"],
+                             help="量化算法 (当前仅支持 gptq). 场景 2: converter 自动 spawn dopt subprocess 跑 GPTQ "
+                                  "(需 NPU 环境, 待实现). 与 --quant-path 互斥.")
+    parser.add_argument("--quant-bits", default="w4a8", choices=["w4a8", "w4a16"],
+                        help="格式/位宽 (w4a8/w4a16, 默认 w4a8). 仅 --quant-method 时生效, 传给 dopt_config 的 strategy.")
     return parser.parse_args()
 
 
@@ -208,7 +204,8 @@ def main() -> None:
         mode=args.mode,
         num_layers=args.num_layers,
         quant_path=args.quant_path,
-        quant=args.quant,
+        quant_method=args.quant_method,
+        quant_bits=args.quant_bits,
     )
 
 

@@ -219,24 +219,24 @@ for t,c in ops.most_common():
 ```bash
 cd examples/export_llm_model/om_npu_verify
 export TORCH_PKG_DIR=$VENV/lib/python3.11/site-packages/torch
-cmake -S . -B build -DCANN_ROOT="$ASCEND_HOME_PATH" -DTORCH_PKG_DIR="$TORCH_PKG_DIR"
-cmake --build build -j4
+cmake -S .. -B ../build -DCANN_ROOT="$ASCEND_HOME_PATH" -DTORCH_PKG_DIR="$TORCH_PKG_DIR"
+cmake --build ../build -j4
 ```
 
-> 改 `reg_register.h` 后只需 `cmake --build build -j4` 重编。
+> 改 `reg_register.h` 后只需 `cmake --build ../build -j4` 重编（main.cpp+CMakeLists 已上移到上级 `export_llm_model/`）。
 
 #### 4.2 编译 OM
 
 ```bash
 # single OM (NUM_LAYERS=5 快速验证)
-./build/export_llm_model \
+../build/export_llm_model \
     ../cann_lm_cli_export/epair_gemma4_test/ep_json_with_ascend_ir.json \
     ../cann_lm_cli_export/epair_gemma4_test/weight_info.json \
     gemma4_test
 
 # prefill + decode OM (完整 35 层, 出字用)
-./build/export_llm_model epair_gemma4_pd/prefill_ep_json_with_ascend_ir.json epair_gemma4_pd/weight_info.json /tmp/opencode/gemma4_pd/prefill
-./build/export_llm_model epair_gemma4_pd/decode_ep_json_with_ascend_ir.json  epair_gemma4_pd/weight_info.json /tmp/opencode/gemma4_pd/decode
+../build/export_llm_model epair_gemma4_pd/prefill_ep_json_with_ascend_ir.json epair_gemma4_pd/weight_info.json /tmp/opencode/gemma4_pd/prefill
+../build/export_llm_model epair_gemma4_pd/decode_ep_json_with_ascend_ir.json  epair_gemma4_pd/weight_info.json /tmp/opencode/gemma4_pd/decode
 ln -sf prefill_linux_aarch64.om prefill.om
 ln -sf decode_linux_aarch64.om decode.om
 ```
@@ -346,7 +346,7 @@ if _os.environ.get("FUSED_DEBUG") and self.layer_idx == 0:
 | 3 | CPU eager | `torch.ops.npu.xxx(简单输入)` | output shape 正确 |
 | 4 | epair 导出 | `cann-lm-converter.py --num-layers 5` | `Done. Output: epair_xxx` |
 | 5 | IR 含新算子 | python3 统计 ascend_ir ops | 新算子 >0，旧算子 =0 |
-| 6 | OM 编译 | `./build/export_llm_model ...` | `BuildModel succeeded` + `.om` 生成 |
+| 6 | OM 编译 | `../build/export_llm_model ...` | `BuildModel succeeded` + `.om` 生成 |
 | 7 | eager 出字 | `run_gemma4_eager_gen.py "prompt"` | 输出合理文本 |
 | 8 | OM 出字 | `run_gemma4_gen.py "prompt"` | 输出与 eager 一致 |
 
@@ -434,7 +434,7 @@ register_fx_node_ge_converter(torch.ops.npu.npu_fused_infer_attention_score_v2.d
 | epair 序列化 | `cann_lm/converter/export/epair_utils.py` | `consolidated_weights_save` |
 | 导出 CLI | `cann_lm/converter/cann-lm-converter.py` | `--hf-path --mode --use-embeddings --num-layers` |
 | C++ REG_OP | `examples/export_llm_model/om_npu_verify/reg_register.h` | 算子注册到 GE OperatorFactory |
-| C++ OM 编译器 | `examples/export_llm_model/om_npu_verify/main.cpp` + `CMakeLists.txt` | `EpairModelLoader` + `aclgrphBuildModel` |
+| C++ OM 编译器 | `examples/export_llm_model/main.cpp` + `CMakeLists.txt` | `EpairModelLoader` + `aclgrphBuildModel` |
 | eager 出字 | `examples/export_llm_model/om_npu_verify/run_gemma4_eager_gen.py` | wrapper eager NPU 出字 |
 | OM 出字 | `examples/export_llm_model/om_npu_verify/run_gemma4_gen.py` | `acl.mdl.execute` prefill+decode OM 出字 |
 | OM dump | `atc --mode=1 --om=xxx.om --json=xxx.json` | OM 算子清单 |

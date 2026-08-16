@@ -21,10 +21,10 @@ npu_rms_norm converter 自动注册 (ge.RmsNorm). stubs 环境 (无 torch_npu)
 
 import torch
 
-from ._library import NPU_LIB, _HAS_TORCH_NPU, register_cpu_impl
+from ._library import NPU_LIB, safe_define, _HAS_TORCH_NPU, register_cpu_impl
 
 if NPU_LIB is not None:
-    NPU_LIB.define(
+    safe_define(
         "npu_rms_norm(Tensor self, Tensor gamma, float epsilon=1e-6) -> (Tensor y, Tensor rstd)"
     )
 

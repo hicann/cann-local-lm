@@ -23,10 +23,10 @@ a8w4 分支 (x1=FP8_E4M3FN + x2=FP4/FP32-pack + per-group ``y_scale`` +
 
 import torch
 
-from ._library import NPU_LIB, _HAS_TORCH_NPU, register_cpu_impl
+from ._library import NPU_LIB, safe_define, _HAS_TORCH_NPU, register_cpu_impl
 
 if NPU_LIB is not None:
-    NPU_LIB.define(
+    safe_define(
         "npu_quant_matmul("
         "Tensor x1, Tensor x2, Tensor scale, *, "
         "Tensor? offset=None, Tensor? pertoken_scale=None, Tensor? bias=None, "

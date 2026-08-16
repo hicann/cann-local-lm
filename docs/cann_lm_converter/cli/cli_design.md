@@ -15,6 +15,7 @@
 - [prefill/decode 分离模式 CLI](#prefilldecode-分离模式-cli)
 - [环境变量](#环境变量)
 - [使用示例](#使用示例)
+- [运行环境支持（NPU / GPU / 纯 CPU）](#运行环境支持npu--gpu--纯-cpu)
 - [文档关联](#文档关联)
 
 ---
@@ -27,7 +28,7 @@
 2. **保存**：`saver.save_epair` / `save_epair_prefill_decode` → epair 目录（详见 [export_design.md](../export/export_design.md) "saver"）
 3. **验证产物**：检查输出文件是否齐全
 
-CLI 只做编排，不实现加载/保存逻辑（二者在 [export_design.md](../export/export_design.md)）。量化接入由 `--quant-path` / `--quant w4a8` 触发，调用 [quant 模块](../quant/quant_design.md) 的 swap 函数（详见 [quant_design.md](../quant/quant_design.md)）。
+CLI 只做编排，不实现加载/保存逻辑（二者在 [export_design.md](../export/export_design.md)）。量化接入由 `--quant-path` / `--quant-method` / `--quant-bits` 触发，调用 [quant 模块](../quant/quant_design.md) 的 swap 函数（详见 [quant_design.md](../quant/quant_design.md)）。
 
 ## convert 程序化入口
 
@@ -109,7 +110,7 @@ def parse_args():
                         help="Use external embeddings (no embed_tokens in graph). 默认 True; --no-use-embeddings 走图内查表")
     parser.add_argument("--mode", default="prefill-decode", choices=["single", "prefill-decode"],
                         help="single: 一张形状特化图; prefill-decode: prefill+decode 两图 + 共享权重 (默认)")
-    # 量化参数: 见 quant_design.md (--quant-path / --quant w4a8)
+    # 量化参数: 见 quant_design.md (--quant-path / --quant-method / --quant-bits)
     return parser.parse_args()
 ```
 
@@ -124,10 +125,11 @@ def parse_args():
 | `--seq-len`　　　　　| 128　　　　　　　| single 模式 = 图 seq_len; prefill-decode 模式 = prefill 图 seq_len（decode 固定 1）　　　　　　　　　　　　　　　　　　　　　　　　　　　　 |
 | `--use-embeddings`　 | True　　　　　　 | 纯 embeddings（图外查表，默认；`--no-use-embeddings` 走图内查表，详见 [export_design.md](../export/export_design.md) "纯 embeddings 模式"） |
 | `--mode`　　　　　　 | `prefill-decode` | `single` / `prefill-decode`　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　 |
-| `--quant-path`　　　 | `None`　　　　　 | dopt GPTQ 产物路径（场景 1，自动推断 group_size/embed；与 `--quant w4a8` 互斥）　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　 |
-| `--quant`　　　　　 | `w4a8`　 | 量化策略（当前仅 w4a8；HF 原始权重 min-max W4A8，场景 2，固定 group=128；与 `--quant-path` 互斥）　　|
+| `--quant-path`　　　 | `None`　　　　　 | dopt GPTQ 产物路径（场景 1，自动推断 group_size/embed；与 `--quant-method gptq` 互斥）　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　 |
+| `--quant-method`　 | `gptq`　 | 量化算法（当前仅 gptq；自动 spawn dopt，场景 2，待实现；与 `--quant-path` 互斥）　|
+| `--quant-bits`　　 | `w4a8`　 | 格式/位宽（w4a8/w4a16，默认 w4a8；`--quant-method` 时生效）　|
 
-> 量化参数 `--quant-path` / `--quant w4a8` 互斥，详见 [quant_design.md](../quant/quant_design.md) "量化工具链分工设计"。精细调整走 dopt 分步（[dopt_design.md](../quant/dopt_design.md) "使用方法"）。
+> 量化参数 `--quant-path` / `--quant-method` / `--quant-bits` 互斥，详见 [quant_design.md](../quant/quant_design.md) "量化工具链分工设计"。精细调整走 dopt 分步（[dopt_design.md](../quant/dopt_design.md) "使用方法"）。
 
 ## 完整调用链
 
@@ -136,7 +138,7 @@ cann-lm-converter.py (CLI)
     │
     ├── parse_args()  ← --hf-path, --output-dir, --dtype, --device, --max-file-size,
     │                    --kv-cache-max-len, --seq-len, --use-embeddings,
-    │                    --mode, --seq-len, [--quant-path | --quant w4a8]
+    │                    --mode, --seq-len, [--quant-path | --quant-method gptq]
     │
     ▼
 convert(hf_path, output_dir, dtype, device, ...)
@@ -278,12 +280,62 @@ python cann_lm/converter/cann-lm-converter.py \
 
 > 纯 embeddings 设计（`detach_externalized_lookups` / host_weights / `model_config.json` 的 `use_embeddings` 字段）详见 [export_design.md](../export/export_design.md) "纯 embeddings 模式"。
 
+## 运行环境支持（NPU / GPU / 纯 CPU）
+
+converter 全流程三阶段：**加载**（torch CPU）→ **量化**（GPTQ 需计算设备 + swap CPU）→ **导出**（torchair IR 转换）。
+
+### 环境矩阵
+
+| 阶段 | NPU（Ascend910 + CANN + torch_npu） | GPU（CUDA + torch） | 纯 CPU |
+|------|------|------|------|
+| 加载 `load_model` | ✅ torch CPU | ✅ | ✅ |
+| swap（`--quant-path` 消费 dopt 产物） | ✅ CPU | ✅ | ✅ |
+| GPTQ（`--quant-method gptq`） | ✅ 方案 C subprocess | ⚠️ dopt `DEVICE=cuda` 适配待验证 | ❌ 需计算设备 |
+| 导出 epair（torch.export + export_to_epair） | ✅ stubs torchair | ✅ stubs torchair（CPU） | ✅ stubs torchair |
+
+### 当前各环境可用性
+
+**NPU**（已验证）：
+- `--quant-path`（消费产物 + swap + export stubs）✅ 全流程
+- `--quant-method gptq` 方案 C（subprocess 系统 Python torch_npu + stubs export）✅ 全流程
+
+**GPU**（未验证）：
+- `--quant-path` ✅（swap + export stubs，CPU）
+- `--quant-method gptq`：dopt GPTQ 需 GPU（torch CUDA）。**dopt 的 `DEVICE=cuda` 分支未验证**（dopt 有 `if DEVICE==npu` NPU 特定逻辑，GPU 走非 npu 分支，Hessian cholesky 等是否 GPU 兼容待验证）
+- 导出 ✅（converter venv stubs torchair，CPU，不需 GPU）
+
+**纯 CPU**：
+- `--quant-path` ✅（swap + export stubs）
+- `--quant-method gptq` ❌（GPTQ 需 NPU/GPU，纯 CPU 跑不了）
+- 导出 ✅（stubs torchair）
+
+### 还缺什么
+
+**通用（`auto_quant.py`）**：
+1. ✅ **DEVICE 检测**：`_detect_device_type` 自动检测 NPU→`npu` / GPU→`cuda` / 纯 CPU→报错
+2. ✅ **纯 CPU 报错**：无 NPU/GPU → 提示用 `--quant-path`
+
+**NPU**：方案 C 已可用（subprocess + stubs export），无缺失（方案 A 已放弃，torchair 带 CANN SDK 不完整）
+
+**GPU**：
+1. ⏳ **dopt GPU 适配验证**：dopt 的 `if DEVICE==npu` 分支（NPU 特定：Hessian 搬 CPU cholesky）。GPU（`DEVICE=cuda`）走非 npu 分支，验证 dopt GPU 跑 GPTQ
+
+**纯 CPU**：✅ `--quant-method gptq` 报错检测已实现
+
+### 优先级
+
+| 缺什么 | 优先级 | 状态 |
+|--------|--------|------|
+| 纯 CPU `--quant-method gptq` 报错检测 | 高（防误用） | ✅ 完成 |
+| auto_quant DEVICE 检测（NPU/GPU/CPU） | 高（三环境通用） | ✅ 完成 |
+| GPU dopt 适配验证 | 中（GPU 支持） | ⏳ 待做 |
+
 ## 文档关联
 
 | 文档　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　| 关联内容　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　|
 | -----------------------------------------------------------------------------------------| -------------------------------------------------------------------------------------------------------|
 | [export_design.md](../export/export_design.md)　　　　　　　　　　　　　　　　　　　　　| `loader.load_model` / `saver.save_epair` / `ExportWrapper` / `model_registry` / 产物布局 / C++ 加载侧 |
-| [quant_design.md](../quant/quant_design.md)　　　　　　　　　　　　　　　　　　　　　　 | `--quant-path` / `--quant w4a8` 量化接入 / `swap_to_quant_linear_from_dopt`　　　　　　　　　　　　　　　　 |
+| [quant_design.md](../quant/quant_design.md)　　　　　　　　　　　　　　　　　　　　　　 | `--quant-path` / `--quant-method` / `--quant-bits` 量化接入 / `swap_to_quant_linear_from_dopt`　　　　　　　　　　　　　　　　 |
 | [converter_design.md](../converter_design.md)　　　　　　　　　　　　　　　　　　　　　 | 跨模块调用链总览 / 模型差异总览 / 精度汇总　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　|
 | [reference_pipeline_walkthrough.md](../reference_pipeline_walkthrough.md)　　　　　　　 | gemma4 端到端 6 阶段流程示例（参考）　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　|
 | [reference_python_to_om_self_test_flow.md](../reference_python_to_om_self_test_flow.md) | 改源码到 OM 出字的自验证流程（参考）　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　|

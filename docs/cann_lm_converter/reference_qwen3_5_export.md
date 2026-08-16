@@ -333,7 +333,7 @@ qwen3.5 是混合架构（6 full + 18 linear）：
 
 ### 绕过（临时）
 
-`examples/export_llm_model/om_npu_verify/export_llm_model_epair.py` 用 `_build_simple_sample_inputs`（`past=None`，模型内部自建 cache，K=seq_len）绕过 scatter mask 不匹配问题，可在 scatter 改造完成前导出单图验证精度（非全量静态图，无法覆盖 prefill+decode）。
+> 注：原 `examples/export_llm_model/om_npu_verify/export_llm_model_epair.py`（含 `_build_simple_sample_inputs` 的 `past=None` 绕过）已废弃移除，导出统一走 CLI `cann-lm-converter.py`（`--mode single` 单图）。该绕过 util 不再保留；scatter 改造完成后 CLI 即可导出覆盖 prefill+decode 的两图。
 
 ---
 
@@ -738,14 +738,15 @@ export PYTHONPATH=/mnt/workspace/project/CANN-LM_5883:${PYTHONPATH:-}
 export TORCH_DEVICE_BACKEND_AUTOLOAD=0
 export TORCH_DELEGATE_ENABLE_FALLBACK_CODEGEN=0
 cd examples/export_llm_model/om_npu_verify
-/mnt/workspace/torch-delegate-harmony/.venv/bin/python export_llm_model_epair.py \
-  --model qwen3_5 --hf-path /mnt/workspace/data/models/Qwen3.5-0.8B \
-  --seq-len 8 --dtype bfloat16 --output-dir epair_qwen3_5_emb --use-embeddings
+/mnt/workspace/torch-delegate-harmony/.venv/bin/python3 /mnt/workspace/project/CANN-LM_5883/cann_lm/converter/cann-lm-converter.py \
+  --hf-path /mnt/workspace/data/models/Qwen3.5-0.8B \
+  --output-dir epair_qwen3_5_emb \
+  --seq-len 8 --dtype bfloat16 --mode single          # --use-embeddings 默认 True
 
 # 2. 编译 OM（系统环境，关 AUB，cfg 格式 {"Switch":{"UBFusion":{"AutomaticUbFusion":"off"}}}）
 export GE_FUSION_SWITCH_FILE=/tmp/fusion_autoub_off.cfg
 export SOC_VERSION=Ascend910_9362
-./build/export_llm_model epair_qwen3_5_emb/ep_json_with_ascend_ir.json \
+../build/export_llm_model epair_qwen3_5_emb/ep_json_with_ascend_ir.json \
   epair_qwen3_5_emb/weight_info.json qwen3_5_emb_noaub
 
 # 3. 验证（系统 Python, NPU acl + HF 对比）
@@ -785,14 +786,14 @@ OM top5 = HF top5 = [198, 271, 0, 353, 2921]，**与 [8.4](#84-chunkgateddeltaru
 
 #### 修复
 
-- `export_llm_model_epair.py` input_0 保存：`use_embeddings=True` 时 `inp` 是 bfloat16，`numpy.tofile` 不支持 bfloat16 → 改 `arr.view(torch.int16).numpy().tofile()`（与 acl 验证脚本 `t_bytes`/`b2t` 一致）。
+- 原 `export_llm_model_epair.py` 的 input_0 保存（`use_embeddings=True` 时 bfloat16 → `arr.view(torch.int16).numpy().tofile()`，与 acl 验证脚本 `t_bytes`/`b2t` 一致）：该脚本已废弃，导出走 CLI；OM 验证输入由 `run_*_om.py` 经 `wrapper.get_sample_inputs` 构造，无需单独 input_0.bin。
 - fusion switch cfg 首编失败（`aclgrphBuildInitialize failed, status: 4294967295`）：疑 GE session 残留状态，重试成功。cfg 格式 `{"Switch":{"UBFusion":{"AutomaticUbFusion":"off"}}}` 可用（[4.3](#43-om-编译维度约定错误已修复) "额外发现"称旧格式 Switch 被拒不准，实测可用）。
 
 #### 相关脚本
 
 | 脚本 | 作用 |
 |------|------|
-| `export_llm_model_epair.py --use-embeddings`（venv） | 导出 embeddings 入图 epair |
+| `cann-lm-converter.py --mode single`（venv, CLI） | 导出 embeddings 入图 epair（原 `export_llm_model_epair.py` 已废弃） |
 | `run_qwen3_5_om_emb.py`（系统 Python） | host 查表 embeddings + OM (acl) run + vs HF（支持 `QWEN35_OM` env 切换 OM） |
 
 ---

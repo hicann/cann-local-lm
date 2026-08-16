@@ -26,10 +26,10 @@ no GE converter and blocked export).
 
 import torch
 
-from ._library import NPU_LIB, _HAS_TORCH_NPU, register_cpu_impl
+from ._library import NPU_LIB, safe_define, _HAS_TORCH_NPU, register_cpu_impl
 
 if NPU_LIB is not None:
-    NPU_LIB.define(
+    safe_define(
         "npu_dynamic_quant(Tensor input, *, "
         "Tensor? smooth_scales=None, Tensor? group_index=None, "
         "int? dst_type=None, str quant_mode=\"pertoken\", "

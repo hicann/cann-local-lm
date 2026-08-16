@@ -29,7 +29,7 @@ converter 把 HF 模型导出为 epair，供 C++ 后端加载编译 OM。三阶�
 cann-lm-converter.py (CLI)                                          ← cli_design.md
     │
     ├── parse_args()  ← --hf-path, --output-dir, --dtype, --mode,
-    │                    --use-embeddings, [--quant-path | --quant w4a8]
+    │                    --use-embeddings, [--quant-path | --quant-method gptq]
     ▼
 convert(hf_path, output_dir, dtype, ...)
     │

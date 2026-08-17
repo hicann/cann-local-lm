@@ -1,0 +1,53 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cann-lm"
+version = "0.1.0"
+description = "CANN-LM converter: HF model -> epair (gemma4/qwen3/qwen3.5) + models"
+requires-python = ">=3.10"
+# 注: torchair + torch-delegate 不在 PyPI, 需源码/whl 预装 (见 AGENTS.md converter env)
+dependencies = [
+    "torch>=2.9",
+    "transformers",
+    "safetensors",
+    "pyyaml",
+    "packaging",
+    "datasets",
+]
+
+[project.scripts]
+cann-lm-converter = "cann_lm.converter.cann_lm_converter:main"
+
+[tool.setuptools]
+# cann_lm 是 PEP 420 namespace 包 (cann-lm 装 converter+models, cann-lm-engine 装 engine);
+# 本 distribution 不含 cann_lm.engine (单独打包)。从 scripts/cann_lm/ build,
+# 源码在 ../../cann_lm (相对本 pyproject)。
+# 显式 packages (find 在 ../../cann_lm 会带上 engine, 故显式排除 cann_lm.engine*)。
+packages = [
+    "cann_lm.converter",
+    "cann_lm.converter.export",
+    "cann_lm.converter.quant",
+    "cann_lm.models",
+    "cann_lm.models.gemma4",
+    "cann_lm.models.qwen3",
+    "cann_lm.models.qwen3_5",
+    "cann_lm.models.fused_ops",
+    # dopt_lm (vendored GPTQ 框架, 顶层包, 源码在 quant/dopt_lm)
+    "dopt_lm",
+    "dopt_lm.common_tools",
+    "dopt_lm.modules",
+    "dopt_lm.opt_funcs",
+    "dopt_lm.opt_funcs.eco_stage",
+    "dopt_lm.quantizer",
+    "dopt_lm.weight_quant_ptq",
+    "dopt_lm.weight_quant_ptq.ptq_algo_heissen",
+]
+
+[tool.setuptools.package-dir]
+"cann_lm" = "../../cann_lm"
+"dopt_lm" = "../../cann_lm/converter/quant/dopt_lm"
+
+[tool.setuptools.package-data]
+"cann_lm.converter.quant" = ["*.yaml", "*.json"]

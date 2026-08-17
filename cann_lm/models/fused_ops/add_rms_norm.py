@@ -20,10 +20,10 @@ npu_add_rms_norm converter 自动注册 (ge.AddRmsNorm).
 
 import torch
 
-from ._library import NPU_LIB, _HAS_TORCH_NPU
+from ._library import NPU_LIB, safe_define, _HAS_TORCH_NPU, register_cpu_impl
 
 if NPU_LIB is not None:
-    NPU_LIB.define(
+    safe_define(
         "npu_add_rms_norm(Tensor x1, Tensor x2, Tensor gamma, float epsilon=1e-6) "
         "-> (Tensor y, Tensor rstd, Tensor residual)"
     )
@@ -43,7 +43,7 @@ if not _HAS_TORCH_NPU:
         residual = torch.empty_like(x1)
         return y, rstd, residual
 
-    @torch.library.impl("npu::npu_add_rms_norm", "cpu")
+    @register_cpu_impl("npu::npu_add_rms_norm")
     def _add_rms_norm_cpu(
         x1: torch.Tensor,
         x2: torch.Tensor,

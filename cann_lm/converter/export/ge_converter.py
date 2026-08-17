@@ -46,192 +46,72 @@ def register_ge_converters() -> None:
     from ._quant_matmul_converter import convert_quant_matmul
     register_fx_node_ge_converter(torch.ops.npu.npu_quant_matmul.default)(convert_quant_matmul)
 
+    # quant_matmul_s8s4 (方案 A 自研 W4A8 算子): cann_lm 命名空间, 映射到 GE op
+    # 节点 "QuantMatmulS8S4" (骨架; NPU kernel + REG_OP 由算子实现方补, 见
+    # _quant_matmul_s8s4_converter.py + reg_register.h TODO)。
+    from ._quant_matmul_s8s4_converter import convert_quant_matmul_s8s4
+    register_fx_node_ge_converter(torch.ops.cann_lm.quant_matmul_s8s4.default)(convert_quant_matmul_s8s4)
+
     # npu_dynamic_quant: torchair ships its own converter (custom/npu_dynamic_quant.py,
     # pertoken -> ge.DynamicQuant / else ge.DynamicQuantV2). It auto-registers when
     # torchair custom/ is imported above. With the is_cann_compat monkey-patch,
     # ge.DynamicQuant passes the check on the stub env -> full IR in ep_json ->
     # TBE compiler can select the kernel. Do NOT register a duplicate here.
 
-    @register_fx_node_ge_converter(torch.ops.aten.softplus.default)
-    def _convert_softplus(x: Any, meta_outputs: Any = None) -> Any:
-        del meta_outputs
-        return ge.Softplus(x)
+    # @register_fx_node_ge_converter(torch.ops.aten.softplus.default)
+    # def _convert_softplus(x: Any, meta_outputs: Any = None) -> Any:
+    #     del meta_outputs
+    #     return ge.Softplus(x)
 
-    @register_fx_node_ge_converter(torch.ops.aten.eye.default)
-    def _convert_eye(n: Any, m: Any = None, *, dtype: Any = None, device: Any = None,
-                     pin_memory: bool = False, meta_outputs: Any = None) -> Any:
-        del device, pin_memory, meta_outputs
-        import torch as _torch
-        rows = int(n)
-        cols = int(m) if m is not None else rows
-        dt = _torch.float32 if dtype is None else dtype
-        eye_tensor = _torch.eye(rows, cols, dtype=dt)
-        return ge.Const(eye_tensor)
+    # @register_fx_node_ge_converter(torch.ops.aten.eye.default)
+    # def _convert_eye(n: Any, m: Any = None, *, dtype: Any = None, device: Any = None,
+    #                  pin_memory: bool = False, meta_outputs: Any = None) -> Any:
+    #     del device, pin_memory, meta_outputs
+    #     import torch as _torch
+    #     rows = int(n)
+    #     cols = int(m) if m is not None else rows
+    #     dt = _torch.float32 if dtype is None else dtype
+    #     eye_tensor = _torch.eye(rows, cols, dtype=dt)
+    #     return ge.Const(eye_tensor)
 
-    @register_fx_node_ge_converter(torch.ops.npu.npu_chunk_gated_delta_rule.default)
-    def _convert_chunk_gated_delta_rule(
-        query: Any,
-        key: Any,
-        value: Any,
-        *,
-        beta: Any = None,
-        initial_state: Any = None,
-        actual_seq_lengths: Any = None,
-        scale: float | None = None,
-        g: Any = None,
-        meta_outputs: Any = None,
-    ) -> Any:
-        # 手动创建 ge.ChunkGatedDeltaRule (torchair auto_generated 未生成此算子,
-        # npu_chunk_gated_delta_rule converter 直接 raise RuntimeError, 此处覆盖).
-        # CANN op_info: aic-ascend910_93-ops-info-transformer.json "ChunkGatedDeltaRule"
-        # 维度约定 THD 3D (与 npu_recurrent_gated_delta_rule 一致, 见 tiling.cpp
-        # CheckDim QKV_DIM_NUM=3): query/key (T,Nk,Dk), value (T,Nv,Dv), beta/g (T,Nv),
-        # initial_state (B,Nv,Dv,Dk), actual_seq_lengths (B,), out (T,Nv,Dv), final_state
-        # (B,Nv,Dv,Dk). modeling 已传 THD, converter 直接透传 (参考 recurrent converter).
-        from torchair.ge._ge_graph import get_default_ge_graph, next_unique_name, Tensor, get_invalid_desc
-        op = get_default_ge_graph().op.add()
-        op.type = "ChunkGatedDeltaRule"
-        op.name = next_unique_name(None, "ChunkGatedDeltaRule")
-        input_list = [
-            (query, "query"),
-            (key, "key"),
-            (value, "value"),
-            (beta, "beta"),
-            (initial_state, "initial_state"),
-            (actual_seq_lengths, "actual_seq_lengths"),
-            (g, "g"),
-        ]
-        for item_t, item_n in input_list:
-            if item_t is not None:
-                op.input.append(item_t.tensor)
-                op.input_desc.add().CopyFrom(item_t.desc)
-                op.input_desc[-1].name = item_n
-            else:
-                op.input.append('')
-                op.input_desc.add().CopyFrom(get_invalid_desc())
-                op.input_desc[-1].name = item_n
-        op.attr["scale_value"].f = scale if scale is not None else 1.0
-        output_index = 0
-        op.output_desc.add().name = "out"
-        out = Tensor(op, output_index)
-        output_index += 1
-        op.output_desc.add().name = "final_state"
-        final_state = Tensor(op, output_index)
-        # 填 output desc shape/dtype (从 meta_outputs), 避 GE infershape 不推空 desc
-        mo_list = list(meta_outputs) if isinstance(meta_outputs, (list, tuple)) else [meta_outputs]
-        if len(mo_list) >= 1 and mo_list[0] is not None:
-            mo0 = mo_list[0]
-            del out.desc.shape.dim[:]
-            out.desc.shape.dim.extend(list(getattr(mo0, "size", []) or []))
-            out.desc.dtype = query.desc.dtype
-        if len(mo_list) >= 2 and mo_list[1] is not None:
-            mo1 = mo_list[1]
-            del final_state.desc.shape.dim[:]
-            final_state.desc.shape.dim.extend(list(getattr(mo1, "size", []) or []))
-            final_state.desc.dtype = initial_state.desc.dtype
-        return out, final_state
+    # npu_chunk_gated_delta_rule: qwen3.5 linear-attn 融合算子, torchair auto_generated 未生成
+    # (其 npu_chunk_gated_delta_rule converter 直接 raise RuntimeError). 实现抽到单独模块.
+    from ._chunk_gated_delta_rule_converter import convert_chunk_gated_delta_rule
+    register_fx_node_ge_converter(torch.ops.npu.npu_chunk_gated_delta_rule.default)(convert_chunk_gated_delta_rule)
 
-    @register_fx_node_ge_converter(torch.ops.aten.conv1d.default)
-    def _convert_conv1d(
-        x: Any,
-        weight: Any,
-        bias: Any = None,
-        stride: Any = (1,),
-        padding: Any = (0,),
-        dilation: Any = (1,),
-        groups: int = 1,
-        *,
-        meta_outputs: Any = None,
-    ) -> Any:
-        from torchair._ge_concrete_graph.ge_converter.aten.convolution import _npu_convolution
-        s = stride[0] if isinstance(stride, (list, tuple)) and stride else 1
-        p = padding[0] if isinstance(padding, (list, tuple)) and padding else 0
-        d = dilation[0] if isinstance(dilation, (list, tuple)) and dilation else 1
-        x4 = ge.Unsqueeze(x, axes=[2])       # [B,C,L] -> [B,C,1,L]
-        w4 = ge.Unsqueeze(weight, axes=[2])  # [O,C,K] -> [O,C,1,K]
-        # 手动填 Unsqueeze outputDesc 的 shape/dtype, 让下游 Conv2D inputDesc (CopyFrom) 非空,
-        # 避开 GE infershape 不推空 desc (torchair auto_generated 只设 name="y")
-        w_dims = list(weight.desc.shape.dim)  # [O,C,K] (constant 有 shape.dim)
-        # x.desc.shape.dim 空 (boundary 只有 _meta), 从 meta_outputs.size [B,C,L_out] 反推 L_in
-        mo = meta_outputs[0] if isinstance(meta_outputs, (list, tuple)) else meta_outputs
-        mo_size = list(getattr(mo, "size", []) or [])
-        x_dims = []
-        if len(mo_size) == 3 and len(w_dims) == 3:
-            B, C, L_out = mo_size[0], mo_size[1], mo_size[2]
-            K = w_dims[2]
-            L_in = (L_out - 1) * s + K - 2 * p
-            x_dims = [B, C, L_in]
-        # 填 x4 (Unsqueeze output) shape [B,C,1,L_in] + dtype (layout 由 _npu_conv2d 的 specific_op_input_layout 设)
-        if len(x_dims) == 3:
-            del x4.desc.shape.dim[:]
-            x4.desc.shape.dim.extend([x_dims[0], x_dims[1], 1, x_dims[2]])
-            x4.desc.dtype = x.desc.dtype
-            x4.desc.layout = "NCHW"
-        # 填 w4 (Unsqueeze output) shape [O,C,1,K] + dtype
-        if len(w_dims) == 3:
-            del w4.desc.shape.dim[:]
-            w4.desc.shape.dim.extend([w_dims[0], w_dims[1], 1, w_dims[2]])
-            w4.desc.dtype = weight.desc.dtype
-            w4.desc.layout = "NCHW"
-        out4 = _npu_convolution(x4, w4, bias, [1, s], [0, p], [1, d], groups, meta_outputs)
-        # 填 Conv2D outputDesc shape [B,O,1,L_out] + dtype
-        if len(mo_size) == 3 and len(w_dims) == 3:
-            del out4.desc.shape.dim[:]
-            out4.desc.shape.dim.extend([mo_size[0], w_dims[0], 1, mo_size[2]])
-            out4.desc.dtype = x.desc.dtype
-            out4.desc.layout = "NCHW"
-        return ge.Squeeze(out4, axis=[2])
+    # aten.conv1d: 无 decomposition, 必须自定义 converter (手动填 outputDesc 避开 GE infershape 空 desc;
+    # 走 whitelist 分解会 infershape 失败). 实现抽到 _conv1d_converter.py (单独模块).
+    from ._conv1d_converter import convert_conv1d
+    register_fx_node_ge_converter(torch.ops.aten.conv1d.default)(convert_conv1d)
 
-    @register_fx_node_ge_converter(torch.ops.aten.type_as.default)
+    # @register_fx_node_ge_converter(torch.ops.aten.type_as.default)
 
-    @register_fx_node_ge_converter(torch.ops.aten.type_as.default)
-    def _convert_type_as(x: Any, dtype_or_tensor: Any, *, meta_outputs: Any = None) -> Any:
-        del meta_outputs
-        import torch as _torch
-        if isinstance(dtype_or_tensor, _torch.Tensor):
-            dt = dtype_or_tensor.dtype
-        else:
-            dt = dtype_or_tensor
-        _GE_DTYPE_MAP = {
-            _torch.float16: 1, _torch.float32: 0, _torch.bfloat16: 27,
-            _torch.int64: 9, _torch.int32: 3, _torch.bool: 12,
-        }
-        return ge.Cast(x, dst_type=_GE_DTYPE_MAP.get(dt, 0))
+    # @register_fx_node_ge_converter(torch.ops.aten.type_as.default)
+    # def _convert_type_as(x: Any, dtype_or_tensor: Any, *, meta_outputs: Any = None) -> Any:
+    #     del meta_outputs
+    #     import torch as _torch
+    #     if isinstance(dtype_or_tensor, _torch.Tensor):
+    #         dt = dtype_or_tensor.dtype
+    #     else:
+    #         dt = dtype_or_tensor
+    #     _GE_DTYPE_MAP = {
+    #         _torch.float16: 1, _torch.float32: 0, _torch.bfloat16: 27,
+    #         _torch.int64: 9, _torch.int32: 3, _torch.bool: 12,
+    #     }
+    #     return ge.Cast(x, dst_type=_GE_DTYPE_MAP.get(dt, 0))
 
-    @register_fx_node_ge_converter(torch.ops.aten.index_copy.default)
-    def _convert_index_copy(
-        self: Any,
-        dim: int,
-        index: Any,
-        source: Any,
-        meta_outputs: Any = None,
-    ) -> Any:
-        """aten::index_copy(Tensor self, int dim, Tensor index, Tensor source) -> Tensor
+    # aten.index_copy: KV cache scatter-write. 无 decomposition (whitelist 空操作), torchair 占位
+    # NotImplementedError. 实现抽到 _index_copy_converter.py (InplaceUpdate + Transpose).
+    from ._index_copy_converter import convert_index_copy
+    register_fx_node_ge_converter(torch.ops.aten.index_copy.default)(convert_index_copy)
 
-        Implemented via InplaceUpdate + transpose: ``InplaceUpdate`` only supports
-        dim=0, so transpose self/source to move ``dim`` to axis 0, InplaceUpdate
-        (replace indices), then transpose back. Supports arbitrary 1D index
-        (not limited to contiguous arange).
-        """
-        del meta_outputs
-        from torchair.ge._ge_graph import DataType
-        # InplaceUpdate requires DT_INT32 indices (see REG_OP InplaceUpdate input)
-        if index.dtype != DataType.DT_INT32:
-            index = ge.Cast(index, dst_type=int(DataType.DT_INT32))
-        ndim = self.rank
-        if dim < 0:
-            dim += ndim
-        # perm moves `dim` to position 0: [dim, 0, 1, ..., dim-1, dim+1, ..., ndim-1]
-        perm = [dim] + [i for i in range(ndim) if i != dim]
-        inverse_perm = [0] * ndim
-        for i, p in enumerate(perm):
-            inverse_perm[p] = i
-        # TensorMove to avoid in-place precision issue (same pattern as index_add.py)
-        moved = ge.TensorMove(self)
-        transposed_self = ge.TransposeD(moved, perm=perm)
-        transposed_source = ge.TransposeD(source, perm=perm)
-        # Force dtype alignment: InplaceUpdate requires x and v to have the same dtype.
-        # Use self.dtype (known) rather than transposed_self.dtype (UNDEFINED before infershape).
-        transposed_source = ge.Cast(transposed_source, dst_type=int(self.dtype))
-        updated = ge.InplaceUpdate(transposed_self, index, transposed_source)
-        return ge.TransposeD(updated, perm=inverse_perm)
+    # aten.index_put: qwen3.5 past_key_values.update 用 index_put (indices list). 无 decomposition,
+    # torchair 占位 NotImplementedError. 实现抽到 _index_put_converter.py (找非 None dim + InplaceUpdate+Transpose).
+    from ._index_put_converter import convert_index_put
+    register_fx_node_ge_converter(torch.ops.aten.index_put.default)(convert_index_put)
+
+    # npu_fused_infer_attention_score_v2: gemma4 attention 融合算子. cann_lm 自注册 npu 命名空间
+    # (见 fused_ops/fused_infer_attention_score.py); torchair 的 converter 在 air 命名空间 (不适用).
+    # 实现抽到 _fused_infer_attention_score_v2_converter.py (调 ge.FusedInferAttentionScore).
+    from ._fused_infer_attention_score_v2_converter import convert_fused_infer_attention_score_v2
+    register_fx_node_ge_converter(torch.ops.npu.npu_fused_infer_attention_score_v2.default)(convert_fused_infer_attention_score_v2)

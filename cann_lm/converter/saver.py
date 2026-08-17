@@ -12,6 +12,17 @@ import torch
 from cann_lm.converter.loader import ModelArtifact
 from cann_lm.converter.export.epair_utils import consolidated_weights_save
 
+# 额外分解的 aten 算子白名单：torchair 无内置 GE 映射或仅占位 NotImplementedError，分解成有映射的
+# 基元算子（Exp/Log/Add/Select 等）。save_epair / save_epair_prefill_decode 共用，两函数白名单集合
+# 保持一致（曾因 prefill-decode 漏 update 这组致 qwen3.5 softplus 未分解 → GE 转换撞占位 NotImplementedError）。
+_EXTRA_DECOMPOSITION_OPS: frozenset = frozenset({
+    torch.ops.aten.softplus.default,
+    torch.ops.aten.eye.default,
+    torch.ops.aten.type_as.default,
+    torch.ops.aten.index_copy.default,
+    torch.ops.aten.index_put.default,
+})
+
 
 def _extract_host_side_weights(wrapper, use_embeddings: bool) -> list[tuple[str, torch.Tensor]]:
     """Collect embedding-lookup weights to additionally pack as host-side extras.
@@ -54,11 +65,10 @@ def save_epair(
     *,
     max_file_size: int = 50 * 1024 * 1024 * 1024,
     kv_cache_max_len: int = 2048,
-    sample_seq_len: int = 128,
+    seq_len: int = 128,
     use_embeddings: bool = False,
     save_weights: bool = True,
     whitelist_decompositions: set | None = None,
-    quant_embeddings: bool = False,
     embed_quant: dict[str, tuple[torch.Tensor, torch.Tensor]] | None = None,
 ) -> None:
     import torch_delegate
@@ -82,16 +92,14 @@ def save_epair(
         batch=1,
     ).eval()
 
-    # quant-embeddings: 注入 host 查表的 int8+per-channel scale (走 dopt Quant_Embed_MinMax)
-    # 图输入改 int8+scale, 图入口 dequant (base forward); host_weights 携 int8+scale (非 float)。
+    # quant_embeddings 自动从 embed_quant 推断 (embed_quant 非空 = dopt 产物含 embed scale)
+    quant_embeddings = embed_quant is not None
     if quant_embeddings:
-        if not embed_quant:
-            raise ValueError("quant_embeddings=True 需 embed_quant (swap_embeddings_from_dopt 产物)")
         wrapper.set_quant_embeddings(embed_quant)
 
     # 构造示例输入 (统一 I/O 契约) — quant-embeddings 用 int8+scale gather, 否则用 embed_tokens 算 sample
     sample_inputs = wrapper.get_sample_inputs(
-        seq_len=sample_seq_len, use_embeddings=use_embeddings, quant_embeddings=quant_embeddings
+        seq_len=seq_len, use_embeddings=use_embeddings, quant_embeddings=quant_embeddings
     )
 
     # 抽取 host 查表权重: quant-embeddings 用 int8+scale (从 embed_quant); 否则 float embed_tokens
@@ -117,9 +125,8 @@ def save_epair(
         _assert_externalized_not_lifted(ep, wrapper.host_side_weight_names())
 
     # 用默认 whitelist (linear/matmul/layer_norm/softmax 等分解), conv1d 走自定义 converter
-    if whitelist_decompositions is None:
-        whitelist_decompositions = set(EpairConfig().whitelist_decompositions)
-    config = EpairConfig(whitelist_decompositions=whitelist_decompositions)
+    config = EpairConfig()
+    config.whitelist_decompositions.update(_EXTRA_DECOMPOSITION_OPS)
     epair = torch_delegate.export_to_epair(ep, config)
 
     # C++ 侧已兜底处理：
@@ -150,23 +157,22 @@ def save_epair_prefill_decode(
     *,
     max_file_size: int = 50 * 1024 * 1024 * 1024,
     kv_cache_max_len: int = 2048,
-    prefill_seq_len: int = 128,
+    seq_len: int = 128,
     use_embeddings: bool = False,
     save_weights: bool = True,
     whitelist_decompositions: set | None = None,
-    quant_embeddings: bool = False,
     embed_quant: dict[str, tuple[torch.Tensor, torch.Tensor]] | None = None,
 ) -> None:
     """Prefill/decode split export: emit two graphs (prefill + decode) + shared weights.
 
     Output layout (under output_dir):
-    - ``prefill_ep_json_with_ascend_ir.json`` — prefill graph (seq_len=prefill_seq_len)
+    - ``prefill_ep_json_with_ascend_ir.json`` — prefill graph (seq_len 由参数指定)
     - ``decode_ep_json_with_ascend_ir.json`` — decode graph (seq_len=1, reusable)
     - ``weight_info.json`` + ``weights_*.bin`` — shared weights (packed once)
     - ``model_config.json`` + tokenizer files
 
     At inference time:
-    - prefill: pad input_ids to prefill_seq_len, mask pad positions,
+    - prefill: pad input_ids to seq_len, mask pad positions,
       output_pos=[prompt_len-1] to select the last real token's logits
     - decode: seq_len=1, reuse decode graph, feed previous-step KV cache
 
@@ -192,15 +198,14 @@ def save_epair_prefill_decode(
         batch=1,
     ).eval()
 
-    # quant-embeddings: 注入 host 查表的 int8+per-channel scale
+    # quant_embeddings 自动从 embed_quant 推断 (embed_quant 非空 = dopt 产物含 embed scale)
+    quant_embeddings = embed_quant is not None
     if quant_embeddings:
-        if not embed_quant:
-            raise ValueError("quant_embeddings=True 需 embed_quant (swap_embeddings_from_dopt 产物)")
         wrapper.set_quant_embeddings(embed_quant)
 
     # 先算 sample (quant-embeddings 用 int8+scale gather; 否则用 embed_tokens 算), 必须在 detach 前
     prefill_sample = wrapper.get_sample_inputs(
-        seq_len=prefill_seq_len, use_embeddings=use_embeddings, quant_embeddings=quant_embeddings
+        seq_len=seq_len, use_embeddings=use_embeddings, quant_embeddings=quant_embeddings
     )
     decode_sample = wrapper.get_sample_inputs(
         seq_len=1, use_embeddings=use_embeddings, quant_embeddings=quant_embeddings
@@ -220,13 +225,14 @@ def save_epair_prefill_decode(
     if use_embeddings:
         wrapper.detach_externalized_lookups()
 
-    # Export prefill_ep (seq_len=prefill_seq_len, shape-specialized)
+    # Export prefill_ep (seq_len 由参数指定, shape-specialized)
     prefill_ep = torch.export.export(wrapper, prefill_sample, strict=False)
     if use_embeddings:
         _assert_externalized_not_lifted(prefill_ep, wrapper.host_side_weight_names())
     # 用默认 whitelist (linear/matmul/layer_norm/softmax 等分解), conv1d 走自定义 converter
     if whitelist_decompositions is None:
         whitelist_decompositions = set(EpairConfig().whitelist_decompositions)
+    whitelist_decompositions.update(_EXTRA_DECOMPOSITION_OPS)
     config = EpairConfig(whitelist_decompositions=whitelist_decompositions)
     prefill_epair = torch_delegate.export_to_epair(prefill_ep, config)
     del prefill_ep

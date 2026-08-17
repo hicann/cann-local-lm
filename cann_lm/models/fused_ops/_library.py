@@ -32,9 +32,39 @@ try:
 except ImportError:
     _HAS_TORCH_NPU = False
 
-# npu 命名空间: stubs 环境 define schema (torchair custom/ converter 自动注册);
-# 真实 torch_npu 跳过 (torch_npu 已 define, 避免 RuntimeError: already registered)
-NPU_LIB = torch.library.Library("npu", "DEF") if not _HAS_TORCH_NPU else None
+# npu 命名空间: FRAGMENT (允许和 torch_npu 的 npu namespace 共存, define cann_lm 自定义 op)
+NPU_LIB = torch.library.Library("npu", "FRAGMENT")
+
+
+def safe_define(schema: str) -> None:
+    """NPU_LIB.define with try/except: torch_npu 已 define 的 op 跳过, cann_lm 自定义的 define."""
+    try:
+        NPU_LIB.define(schema)
+    except RuntimeError:
+        pass  # torch_npu 已 define 该 op, 跳过
 
 # cann_lm 命名空间: 无 torchair 对应的算子 (chunk_gated_delta_rule, torchair raise RuntimeError)
 CANN_LM_LIB = torch.library.Library("cann_lm", "DEF")
+
+# stub (export) env: converter (quant_export.sh run_converter) LD_PRELOAD's
+# libacl_stub/libge_local_stub/libhccl_stub to provide GE symbols for torchair IR
+# conversion on CPU. In this env, torch.library.impl(op, "cpu") triggers
+# free():invalid-pointer (C heap corruption — torch 2.9.0 + stub clash). Skip cpu
+# eager-impl registration here; export traces via register_fake/meta only. Eager
+# regression runs in a non-stub env where impl registers normally.
+_STUB_ENV = "libacl_stub" in os.environ.get("LD_PRELOAD", "")
+
+
+def register_cpu_impl(op_name: str):
+    """Decorator: register a CPU eager impl for op_name; no-op in stub (export) env.
+
+    Use ``@register_cpu_impl("npu::xxx")`` instead of ``@torch.library.impl(..., "cpu")``
+    so the registration is skipped when LD_PRELOAD carries libacl_stub.
+    """
+
+    def deco(fn):
+        if not _STUB_ENV:
+            torch.library.impl(op_name, "cpu")(fn)
+        return fn
+
+    return deco

@@ -116,33 +116,60 @@ line 488 的 `residual + hidden_states` 与 line 491 的 `pre_feedforward_layern
 
 ### 2.4 RoPE → `npu_rotary_mul` / `npu_apply_rotary_pos_emb`
 
-**已落地**（modeling_gemma4.py）：`apply_rotary_pos_emb`（单 tensor）委托 `cann_lm::rotary_mul`
-（`rotary_mode='half'`），partial rotary 由调用方 slice+cat 包裹；attention 对 q、k 各调一次
-（sliding 全旋 + full partial 旋均走此路径）。原 `apply_rotary_pos_emb_qk`（q+k 配对）及对应
-`cann_lm::apply_rotary_pos_emb` 融合算子已删除（attention 未用配对路径，单 tensor 路径覆盖两类层）。
+**已落地**（modeling_gemma4.py）：与图灵参考实现（cann-recipes-infer）一致，按 layer_type 分两条路径：
+- **sliding 层**（全旋，`head_dim == cos.shape[-1]`）：`npu_rotary_mul` 单 tensor，q/k 各调一次（`rotary_mode='half'`）。
+- **full 层**（proportional partial，`rotary_dim == cos.shape[-1] < head_dim`）：cat 出 q_rot/k_rot（前 `pair_dim` + 中 `half_dim:half_dim+pair_dim`），`npu_apply_rotary_pos_emb` q+k 配对（`layout='BSND'`），拆装插回原位（中间和后面保持原值）。
+- **kv_shared 路径**（q 单独，k 从 shared 来已 RoPE）：用 `apply_rotary_pos_emb_single`（`npu_rotary_mul` + cat/拆装 模拟 partial），避免对已 RoPE 的 k 再次旋转。
+- `inv_freq` 对 proportional 不再补 0（长度 = `rope_angles = rotary_dim//2`），`cos/sin` 长度 = `rotary_dim`，由 full 层 cat/拆装消费（与参考实现一致；原"inv_freq 补 0 + 整 head_dim 过 rotary_mul"路径已废弃）。
 
 | 算子 | 状态 | 说明 |
 |------|------|------|
-| `cann_lm::rotary_mul`（= `torch_npu.npu_rotary_mul`） | ✅ 已落地 | sliding + full 两类层均用，单 tensor。GE 转换器 → `ge.RotaryMul` |
-| `torch_npu.npu_apply_rotary_pos_emb`（q+k 配对） | ❌ 未采用 | 参考 full 层用此配对算子（TND partial）；本仓改用单 tensor `rotary_mul` 统一两类层，配对路径已删 |
+| `cann_lm::rotary_mul`（= `torch_npu.npu_rotary_mul`） | ✅ 已落地 | sliding 层（全旋）单 tensor；kv_shared 路径 full 层（cat/拆装模拟 partial）。GE 转换器 → `ge.RotaryMul` |
+| `torch_npu.npu_apply_rotary_pos_emb`（q+k 配对） | ✅ 已落地 | full 层（非 kv_shared）配对 + cat/拆装，`layout='BSND'`。GE 转换器 → `ge.ApplyRotaryPosEmb` |
 
 > 本仓 `fused_ops/ops.py` 还注册了自定义 `cann_lm::rope_in_place`（GE 算子 `RopeInPlace`），
 > 可作为 RoPE 的项目内融合替代（见 converter/export/ge_converter.py）。
 
 ### 2.5 Eager Attention → `npu_fused_infer_attention_score_v2`
 
-**当前实现**（`eager_attention_forward`，modeling_gemma4.py:87-129）：
-手动 `repeat_kv`（GQA 展开）→ `matmul(Q,K^T)*scale` → `+mask` → `softmax(fp32)` → `matmul(@V)`，
-含 softcap（`x/cap → tanh → x*cap`）。
+**已落地**（modeling_gemma4.py）：与图灵参考实现一致，`fused_attention_forward` 按 `layer_type` 调
+`npu_fused_infer_attention_score_v2`（BNSD layout），融合 QK^T+softmax+AV+GQA+causal/sliding。
+- **sliding 层**（全旋 head_dim=256）：`sparse_mode=4`（sliding_window）+ `pre_tokens=sliding_window`。
+- **full 层**（global_head_dim=512）：`sparse_mode=3`（causal）+ `pre_tokens=INT_MAX`（全 attention）。
+- **GQA 原生**：`num_query_heads` vs `num_key_value_heads`（消除 `repeat_kv`，原 35 层×2=70 个 `ConcatV2D` 归零）。
+- **mask 适配**：cann_lm 的 float mask `[*, q_len, kv_len]` → 融合算子要求 bool `[*, kv_len, kv_len]` 方阵
+  （`_pad_mask_to_kv_square` pad q 维到 kv_len，融合算子用 `actual_seq_qlen` 切片前 q_len 行）；`actual_seq_qlen/kvlen` 用 int64。
+- **保留**：`eager_attention_forward` + `repeat_kv` + `_prepare_causal_mask`（未删，仅不再调用，作为 fallback/对照）。
 
-| 算子 | 适用性 | 说明 |
+| 算子 | 状态 | 说明 |
 |------|--------|------|
-| `torch.ops.npu.npu_fused_infer_attention_score_v2` | ⚠️ 需重构 | 融合 QK^T+softmax+AV+PA+GQA+sliding window。收益最大：① 取消 `repeat_kv`（融合算子原生支持 `num_key_value_heads` GQA）；② sliding 层用 `sparse_mode=4 + pre_tokens=sliding_window` 直接表达滑窗，省 `_prepare_causal_mask` 构造的 4D mask；③ 支持 `block_table`+`block_size` 做 PagedAttention，省 KV cache 的 index_copy。注意 full 层 head_dim=512 需用 BNSD layout（TND 拒绝 D=512）；sliding 层 D=256 可用 TND |
-| `cann_lm::fused_infer_attention_score` | ⚠️ 需重构 | 本仓 `ops.py` 注册的自定义 FA 算子（GE 转换为 `ge.FusedInferAttentionScore`，converter/export/ge_converter.py:82），参数与 npu 版对齐（含 `block_table`/`num_key_value_heads`/`sparse_mode`），可作为 NPU 不可用时的 IR 级 fallback |
+| `torch.ops.npu.npu_fused_infer_attention_score_v2` | ✅ 已落地 | cann_lm `fused_ops/fused_infer_attention_score.py` 注册 schema+fake+CPU eager（npu 命名空间）；`ge_converter.py` 注册 converter（调 `ge.FusedInferAttentionScore`，40+ 参数全传，None 给不用）；`reg_register.h` 加 `REG_OP(FusedInferAttentionScore)`（OM 编译注册到 GE OperatorFactory）。消除 `BatchMatMul`/`SoftmaxV2`（归零），`ConcatV2D` 从 14 降到 9（repeat_kv 消除） |
+| `cann_lm::fused_infer_attention_score` | ❌ 未采用（文档原提） | 原文档提的 cann_lm 自定义 FA 算子（IR 级 fallback），实际改用 npu 命名空间（与图灵一致），未用 cann_lm 命名空间 |
 
 > softcap 部分：参考实现把 `1/sqrt(d)` 吸收进 q_norm（`scale_fa=1.0`），本仓 `scaling=1.0`
-> 已一致；logit softcap（`x/cap→tanh→x*cap`）无单一融合算子，可保留 elementwise 或后续做
-> 自定义融合。
+> 已一致；logit softcap（`x/cap→tanh→x*cap`）无单一融合算子，`fused_attention_forward` 未传 softcap
+> （gemma4 attention 无 softcap，logit softcap 在 `Gemma4ForCausalLM` 末尾，不在 attention 内）。
+
+#### 遗留问题：融合算子引入权重时的支持方案（当前 gemma4 不涉及，量化/sink 场景需关注）
+
+**背景**：当前 `FusedInferAttentionScore` 在 gemma4 中**无 weight 参数**（只接收 Q/K/V 张量 + 配置常量如 `sparse_mode`/`actual_seq_qlen`），因此切换 eager→fused 时**可复用旧 `weights_0.bin`**（q_proj/k_proj/v_proj/o_proj 的 weight 不变，只是中间计算算子从 `BatchMatMul`+`SoftmaxV2` 换成融合算子）。
+
+**遗留场景**：若后续融合算子引入**可学习 weight**（如量化场景的 `antiquant_scale`/`antiquant_offset`/`dequant_scale_query`/`dequant_scale_key`/`dequant_scale_value`，或 attention sink 的 `learnable_sink`），则不能复用旧 `weights_0.bin` —— 新 weight 在旧 `.bin` 里没有，`weight_info.json` 也没索引，OM 编译时 Const 节点找不到权重。
+
+**支持方案**（6 步，把融合算子权重暴露为 `nn.Parameter`，让 torch.export + `consolidated_weights_save` 自动 lift + 落盘）：
+
+| 步骤 | 改动 | 说明 |
+|------|------|------|
+| 1. 模型定义 | `Attention.__init__` 加 `nn.Parameter`（如 `self.learnable_sink = nn.Parameter(torch.zeros(num_heads))`） | 跟 q_proj 等 nn.Linear 同级，torch.export 自动 lift |
+| 2. 权重加载 | `load_gemma4_weights` 加 name 映射（HF → cann_lm） | HF 有则加载，无则用 `__init__` 初始化值 |
+| 3. forward 传递 | `fused_attention_forward` 传新 weight（如 `learnable_sink=module.learnable_sink`） | 给融合算子 |
+| 4. schema | `fused_ops/fused_infer_attention_score.py` 的 schema 加新输入（`learnable_sink` 等） | 已有部分可选输入（IR 定义含 `learnable_sink`），schema 简化版需补 |
+| 5. GE converter | `ge_converter.py` 的 `_convert_fused_infer_attention_score_v2` 传新 weight（不是 None） | `REG_OP(FusedInferAttentionScore)` 已有 `learnable_sink` 等 OPTIONAL_INPUT，无需改 |
+| 6. 落盘 | `--save-weights=True`（**不能复用旧 .bin**） | `consolidated_weights_save` 自动把新 weight 存到 `weights_0.bin` + 更新 `weight_info.json` |
+
+**核心思路**：融合算子的 weight 暴露为 `nn.Parameter`（跟 q_proj 同级），让 `torch.export` + `consolidated_weights_save` 自动 lift + 落盘，无需手动管理 `weights_0.bin` 偏移/索引。**关键约束**：引入新 weight 后必须重新落盘（`--save-weights=True`），不能复用旧 `weights_0.bin`。
+
+**触发条件**：当 `fused_attention_forward` 给融合算子传非 None 的 `learnable_sink`/`antiquant_scale`/`dequant_scale_*` 等参数时，需走此方案。当前 gemma4（纯 bf16，无量化，无 sink）全部传 None，不触发。
 
 ### 2.6 KV Cache 写入 → `npu_scatter_nd_update_`
 
@@ -177,7 +204,7 @@ MC2 dispatch-combine）。
 | P0 | `npu_rms_norm` | `Gemma4RMSNorm._norm` | 每层 4-6 个 RMSNorm（input/post_attn/pre_ffn/post_ffn + q/k/v_norm），高频 |
 | P1 | `npu_fast_gelu` | `nn.GELU(tanh)` / `F.gelu(tanh)` | 每层 MLP + per_layer_input 各一次 |
 | P1 | `npu_add_rms_norm` | residual add + 下一 norm | 需轻微重构 forward 拓扑，每层 2 处 |
-| P2 | `npu_rotary_mul`（已落地） | `apply_rotary_pos_emb` 手动实现 | 每层 q/k 各 1 次，sliding+full 统一走单 tensor `rotary_mul` |
+| P2 | `npu_rotary_mul` + `npu_apply_rotary_pos_emb`（已落地） | `apply_rotary_pos_emb` 配对 + cat/拆装 | sliding: `npu_rotary_mul` 单 tensor；full: `npu_apply_rotary_pos_emb` 配对（`layout='BSND'`）；kv_shared: `apply_rotary_pos_emb_single`（`npu_rotary_mul` + cat/拆装 模拟 partial） |
 | P2 | `npu_scatter_nd_update_` | `index_copy` KV cache 写入 | 每层 2 处（k/v），IR 路径已通 |
 
 > 注：本仓当前为纯 PyTorch 参考实现，引入 `torch_npu` 需遵循 AGENTS.md 的 stub 约定

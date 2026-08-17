@@ -21,10 +21,10 @@ npu_rotary_mul converter 自动注册 (arch35 -> ge.RotaryPositionEmbedding,
 
 import torch
 
-from ._library import NPU_LIB, _HAS_TORCH_NPU
+from ._library import NPU_LIB, safe_define, _HAS_TORCH_NPU, register_cpu_impl
 
 if NPU_LIB is not None:
-    NPU_LIB.define(
+    safe_define(
         "npu_rotary_mul(Tensor self, Tensor r1, Tensor r2, str rotary_mode=\"half\") -> Tensor out"
     )
 
@@ -40,7 +40,7 @@ if not _HAS_TORCH_NPU:
         del r1, r2, rotary_mode
         return torch.empty_like(self)
 
-    @torch.library.impl("npu::npu_rotary_mul", "cpu")
+    @register_cpu_impl("npu::npu_rotary_mul")
     def _rotary_mul_cpu(
         self: torch.Tensor,
         r1: torch.Tensor,

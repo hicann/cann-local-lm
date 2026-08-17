@@ -151,9 +151,16 @@ export LD_LIBRARY_PATH="${TORCH_PKG_DIR}/lib:${TORCH_PKG_DIR}/../torch.libs:/mnt
 | gemma4 | PASS | PASS | **PASS** | 6.3 GB | 补 AddRmsNorm + RotaryMul 算子注册 |
 | qwen3_5 | PASS | PASS | **FAIL** | — | ChunkGatedDeltaRule infershape 失败(inputDesc 空) |
 
-### qwen3.5 OM 编译进展与现状(搁置)
+### qwen3.5 OM 编译进展与现状(已解决 2026-08-16)
 
-qwen3.5 的 OM 编译历经多轮修复,Conv2D infershape **已解决**,但 ChunkGatedDeltaRule infershape 仍失败(搁置)。
+> **2026-08-16 更新**：qwen3.5 全层 prefill-decode epair（`--use-embeddings` + softplain whitelist 分解后）OM 编译**全 3 stage PASS** + NPU 出字连贯（`Hello, my name is` → ` John. I am a 20-year-old male. I am a student at a university.`）。实际阻塞点是 softplus 分解引入的 3 个未注册 GE 算子 `Log1p`/`Greater`/`SelectV2`（见下"已解决(softplus 分解算子未注册)"），注册后全层 epair 不再触发下方记的 ChunkGatedDeltaRule infershape 问题。下方 Conv2D/ChunkGatedDeltaRule 分析为 NUM_LAYERS=5 截断 epair 的历史记录，保留备查。
+
+qwen3.5 的 OM 编译历经多轮修复,Conv2D infershape **已解决**;ChunkGatedDeltaRule infershape 在 NUM_LAYERS=5 截断 epair 上曾失败(历史记录)。
+
+**已解决(softplus 分解算子未注册)**:
+- `save_epair_prefill_decode` 补 whitelist 后,`aten.softplus` 分解为 `log1p(exp)` + `Greater`/`SelectV2`(threshold 分支),图里出现 `Log1p`/`Greater`/`SelectV2` GE 节点
+- 这 3 个算子未在 `reg_register.h` 注册 → stage2 `GetGEGraph failed`(GE: `Op type "Log1p" is not registered in OperatorFactory`)
+- 修复:按 CANN 官方 IR 在 `reg_register.h` 补 `Greater`(仿 GreaterEqual)/`Log1p`(CANN IR)/`SelectV2`(CANN IR 原文) → 全层 epair 编译全过 + 出字 PASS
 
 **已解决(Conv2D infershape)**:
 1. **方案 1(C++ inputDesc fallback)**:`ge_graph_builder.cc:1366` PlanConverterNode 对 input 调 `FindTensorValue(op.inputs[i])` 当 fallback_meta,边界输入(FX 名)命中 `tensor_values` 拿到 shape → Unsqueeze input 有 shape
@@ -176,8 +183,8 @@ qwen3.5 的 OM 编译历经多轮修复,Conv2D infershape **已解决**,但 Chun
 ### main.cpp / reg_register.h / ge_converter.py / C++ backend 改动
 
 - **`main.cpp`**:soc_version 改用 `std::getenv("SOC_VERSION")`(默认 `Ascend910_9362`,本机芯片;`Ascend910A` 导致 TensorMove/TransposeD 找不到 engine)。`main.cpp` + `CMakeLists.txt` 已上移到 `examples/export_llm_model/`（doc 对齐）。
-- **`reg_register.h`** 已 **IR 校准**：以 `ops_IR(Ascend 950)/ops/*.md` 的 `REG_OP` 为标准，73 个有 IR 的算子全对齐官方 IR（dtype/inputs/outputs/attrs），8 个无 IR 的自研算子（`QuantMatmulS8S4`/`RotaryMul`/`ChunkGatedDeltaRule`/`ConcatD`/`SoftmaxV3`/`SliceD`/`TransposeD`/`TensorMove`）保留原定义。master 在 `examples/export_llm_model/reg_register.h`（81 ops），`om_npu_verify/reg_register.h` 与 `export_and_load_epair/reg_register.h` 为其软链（单一源）。本机 `DT_BFLOAT16`/`DT_FLOAT32` 经别名可编译，按 IR 原文保留。
-  - 历史补算子（现已含在校准版）：gemma4 `AddRmsNorm`+`RotaryMul`；qwen3.5 `ChunkGatedDeltaRule`+`Shape`/`Expand`/`Gather`/`Minimum`/`Pack`/`ScatterElements`/`SplitV`+`Conv2D`/`Squeeze`；`Unsqueeze` 用 `TensorType::ALL()`。
+- **`reg_register.h`** 已 **IR 校准**：以 `ops_IR(Ascend 950)/ops/*.md` 的 `REG_OP` 为标准，73 个有 IR 的算子全对齐官方 IR（dtype/inputs/outputs/attrs），8 个无 IR 的自研算子（`QuantMatmulS8S4`/`RotaryMul`/`ChunkGatedDeltaRule`/`ConcatD`/`SoftmaxV3`/`SliceD`/`TransposeD`/`TensorMove`）保留原定义。master 在 `examples/export_llm_model/reg_register.h`（84 ops，2026-08-16 补 `Greater`/`Log1p`/`SelectV2`），`om_npu_verify/reg_register.h` 与 `export_and_load_epair/reg_register.h` 为其软链（单一源）。本机 `DT_BFLOAT16`/`DT_FLOAT32` 经别名可编译，按 IR 原文保留。
+  - 历史补算子（现已含在校准版）：gemma4 `AddRmsNorm`+`RotaryMul`；qwen3.5 `ChunkGatedDeltaRule`+`Shape`/`Expand`/`Gather`/`Minimum`/`Pack`/`ScatterElements`/`SplitV`+`Conv2D`/`Squeeze`；`Unsqueeze` 用 `TensorType::ALL()`；2026-08-16 补 qwen3.5 softplus 分解路径的 `Greater`/`Log1p`/`SelectV2`（CANN 官方 IR）。
 - **`ge_converter.py`** 补 GE 映射:
   - `cann_lm::chunk_gated_delta_rule` → 手动定义 `ge.ChunkGatedDeltaRule`(torchair auto_generated 未生成此算子),填 output desc shape/dtype(从 meta_outputs)
   - `aten.conv1d` → `ge.Unsqueeze + _npu_convolution + ge.Squeeze`(1D→2D),手动填 Unsqueeze/Conv2D 的 output_desc.shape.dim + dtype(从 meta_outputs.size 反推 L_in)+ layout="NCHW"(避 inputDesc 空传播 + format ND 被拒)

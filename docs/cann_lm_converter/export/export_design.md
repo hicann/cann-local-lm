@@ -831,13 +831,13 @@ GE 算子注册分两层，互补：
 
 1. **Python 侧 `converter/export/ge_converter.py`** — `register_ge_converters()` 把 `torch.ops` 节点映射到 GE 算子，在 `export_to_epair` 前调用（save_epair 步骤 1）。覆盖：
    - `cann_lm.*` 自定义算子：`add_rms_norm`/`rms_norm`/`rotary_mul`/`rope_in_place`/`quant_matmul_s8s4`/`fused_infer_attention_score`/`beam_search`（算子定义在 `cann_lm/models/fused_ops/`，GE 映射实现见 `compositte_op.md`）
-   - 部分 `aten.*` 算子：`softplus`/`eye`/`type_as`/`index_copy`（torch.export 残留的 aten 节点，torchair 无内置映射时补）
+   - 部分 `aten.*` 算子：`softplus`/`eye`/`type_as`/`index_copy`/`index_put`（torch.export 残留的 aten 节点，torchair 无内置映射时补）
 
 2. **C++ 侧 `examples/export_llm_model/reg_register.h`** — 注册 GE 图编译期需要的算子实现（aclgrphBuildModel 前），不同模型需要的算子集不同：
 
 | 算子类别 | 示例算子 | 用于 |
 |---------|---------|------|
-| 基础运算 | Add, Mul, Sub, Div, RealDiv, Neg, Pow, Abs, Exp, Log, Sqrt | 基础数学运算 |
+| 基础运算 | Add, Mul, Sub, Div, RealDiv, Neg, Pow, Abs, Exp, Log, Log1p, Sqrt | 基础数学运算 |
 | 归一化 | ReduceMean, Rsqrt, Sigmoid, Swish | RMSNorm / SiLU |
 | 矩阵 | MatMul, BatchMatMul | Attention QK^T / attnV |
 | 注意力 | SoftmaxV2, SoftmaxV3, Triu, Fill | Causal mask + softmax |
@@ -846,7 +846,7 @@ GE 算子注册分两层，互补：
 | 拼接 | ConcatV2, ConcatD | Rotary embedding 拼接 |
 | 查找 | GatherV2, Embedding | Token embedding |
 | 范围 | Range, Cos, Sin | Position encoding |
-| 其他 | Identity, Where, ZerosLike | Clone / 条件选择 |
+| 其他 | Identity, Where, ZerosLike, Greater, SelectV2 | Clone / 条件选择 / 比较 |
 
 算子未注册时 C++ 侧直接报错退出（`UNMAPPED_OPERATOR`），提示用户注册或分解算子。
 

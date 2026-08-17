@@ -16,6 +16,7 @@
 - [环境变量](#环境变量)
 - [使用示例](#使用示例)
 - [运行环境支持（NPU / GPU / 纯 CPU）](#运行环境支持npu--gpu--纯-cpu)
+- [converter 与 torch_npu 的关系（设计决策：不依赖真实 torch_npu）](#converter-与-torch_npu-的关系设计决策不依赖真实-torch_npu)
 - [文档关联](#文档关联)
 
 ---
@@ -330,7 +331,52 @@ converter 全流程三阶段：**加载**（torch CPU）→ **量化**（GPTQ �
 | auto_quant DEVICE 检测（NPU/GPU/CPU） | 高（三环境通用） | ✅ 完成 |
 | GPU dopt 适配验证 | 中（GPU 支持） | ⏳ 待做 |
 
-## 文档关联
+## converter 与 torch_npu 的关系（设计决策：不依赖真实 torch_npu）
+
+> converter（① 导出 epair）**不依赖真实 torch_npu python 包**。走 stub 路径：converter venv 不装 `torch_npu`，`cann_lm/models/fused_ops/_library.py` 自定义 `npu::` 算子的 schema+fake-meta（含 `npu_chunk_gated_delta_rule`/`npu_dynamic_quant`/`quant_matmul_s8s4` 等），torch.export 能 trace；`cann_lm::` 算子本就由 `_library.py` 自定义。lib 层 stub（`.so` 在 `LD_LIBRARY_PATH`）给 torchair GE 引擎提供 C 符号。
+
+### 为什么不依赖真实 torch_npu（背景与踩坑）
+
+converter venv（CPU-only）组件：`torch 2.9.0+cpu` + `torchair`（源码编译 `NO_ASCEND_SDK=1`，CPU+stubs 可用）+ lib stubs（`/mnt/workspace/torchair/build/stubs` 的 `libtorch_npu.so` 等，给 torchair GE 引擎提供 C 符号，避免真 NPU `aclrtSetDevice→107001`）。
+
+`_library.py:29-33` 顶层 `try: import torch_npu`：导入成功→真实路径（`npu::` 由 torch_npu 提供）；`ImportError`→stub 路径（`_library.py` 自定义 `npu::` schema+fake）。两条路都能让 torch.export trace `npu::` 算子。
+
+若装真实 torch_npu，会撞三个耦合问题：
+
+1. **`npu_chunk_gated_delta_rule` 的 python 版本**：CANN kernel 8.5.0+ 支持（本机 9.2.0 满足），但 torch_npu **python schema/fake-meta 从 ≥2.7.1.post8 起才有**；2.7.1.post4 / 2.9.0 / 2.9.1 等非 post 版**无此算子**（`torch.ops.npu.npu_chunk_gated_delta_rule` AttributeError）。2.9.0.post6（匹配 torch 2.9.0、不升 torch）才有。
+2. **`_LazyTorchair` 代理覆盖源码 torchair（核心坑）**：`torch_npu/dynamo/__init__.py:113` 在 `import torch_npu` 时**无条件**装 `sys.modules['torchair'] = _LazyTorchair()`，把 `import torchair` 劫持到 torch_npu 自带的 bundled wrapper（`torch_npu/dynamo/torchair/`），**忽略** venv 里的源码 torchair。而 wrapper 的 `_ge_concrete_graph/fx2ge_converter.py:1336 parse_input` 有 `AssertionError("meta_outputs must be instance of torch.Tensor")`（在 `input_ids` placeholder 上失败），**源码 torchair 已修该处**。即"装真 torch_npu → 代理屏蔽源码 torchair（已修）→ 用 wrapper（未修）→ GE 转换挂"。
+3. **`_get_deterministic_level` API**：源码 torchair 的 `_normalize_ge_option`（`fx2ge_converter.py:1901`）调 `sys.modules['torch_npu'].npu._get_deterministic_level()`；torch_npu 2.9.0 无此 API（2.9.0.post6/2.9.1 有）。源码 torchair 有 `if 'torch_npu' not in sys.modules: → "0"` 兜底，但只要 torch_npu 在 sys.modules 就走 else 必调。
+
+### 关键结论：bug 只在 ① 导出 epair 触发
+
+上述 bug（wrapper 的 `fx2ge_converter.parse_input` AssertionError）只在 **FX 图 → GE IR 转换**路径触发，即 ① `torch_delegate.export_to_epair → torchair._optimize_and_convert → npu_fx_compiler`。其他阶段不跑 FX→GE 转换，不撞：
+
+| 阶段 | `import torch_npu`? | 跑 FX→GE 转换? | 撞 bug? |
+|------|---|---|---|
+| ① converter 导出 epair | ✓ | ✓（`export_to_epair`） | ✓（`input_ids` placeholder 触发 `parse_input`） |
+| Step A dopt GPTQ | ✓（系统 python，真 NPU） | ✗（transformers eager 跑 GPTQ） | ✗ |
+| ③ OM 编译 | ✗（C++ 二进制，无 python） | ✗（读 epair 里已转好的 `ascend_ir`） | ✗ |
+| ④ NPU 出字 | ✓（系统 python，acl 跑 OM） | ✗（`acl.mdl.execute`；CPU 端 load 模型只取 mask/kv 是 eager） | ✗ |
+
+代理在 `import torch_npu` 时就装，但代理本身不报错；只有真正调 torchair 做 GE 转换（`fx2ge_converter` 处理 placeholder）时，wrapper 的 bug 才暴露。dopt / 出字 / OM 编译虽也 import 了 torch_npu（代理也装），但不跑 FX→GE 转换 → `fx2ge_converter.parse_input` 不被调 → 不撞 bug。
+
+### 设计决策：converter 走 stub 路径（不装 torch_npu）
+
+converter 只需要 `npu::` 算子的 **fake-meta**（torch.export trace 用），`_library.py` 能自提供，**不需要真实 torch_npu 的算子**。故：
+
+- converter venv **不装 `torch_npu` python 包** → `import torch_npu` → `ImportError` → `_HAS_TORCH_NPU=False`（stub 路径）→ `_library.py` 自定义 `npu::` schema+fake（含 `npu_chunk_gated_delta_rule`/`npu_dynamic_quant` 等）。
+- 无 torch_npu → `_LazyTorchair` 代理不安装 → **源码 torchair 直接用**（GE 转换能过的版本）；`_normalize_ge_option` 走 `torch_npu not in sys.modules → "0"` 兜底，不调 `_get_deterministic_level`。
+- lib 层 stub 保留（`LD_LIBRARY_PATH`），给 torchair GE 引擎提供 C 符号。
+
+好处：绕开 P1（torch_npu 版本依赖）/P2（代理覆盖）/P3（API 缺失）三个问题；无 torch_npu 版本漂移；无需重命名 wrapper。**converter 的正确性不依赖任何特定 torch_npu 版本**。
+
+副作用：converter 导出产出有效产物后进程会在 GE finalize/stub 收尾**挂起不退出**（产物在挂起前已落盘）→ 用"后台跑 + 轮询产物 + kill"绕过。
+
+### 替代方案（不采用，仅记录）
+
+- **真 torch_npu 2.9.0.post6 + 重命名 `dynamo/torchair`**：装 torch_npu 2.9.0.post6（含 `npu_chunk_gated_delta_rule`，真实路径，torch_npu 提供算子 fake）+ 重命名 venv 的 `torch_npu/dynamo/torchair` → `torchair.disabled`（让 `dynamo/__init__.py:103 if not exists(...)` 命中 → 不装代理 → 源码 torchair 直接用）。能跑（用官方算子 + 源码 torchair），但依赖 torch_npu 版本（须 ≥2.7.1.post8 且匹配 torch）+ 需一次性重命名 wrapper，复杂度高。设计上不采用——converter 不需要真实 torch_npu 算子（fake-meta 由 `_library.py` 自提供即可）。
+
+
 
 | 文档　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　| 关联内容　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　|
 | -----------------------------------------------------------------------------------------| -------------------------------------------------------------------------------------------------------|

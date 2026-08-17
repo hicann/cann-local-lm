@@ -12,6 +12,17 @@ import torch
 from cann_lm.converter.loader import ModelArtifact
 from cann_lm.converter.export.epair_utils import consolidated_weights_save
 
+# 额外分解的 aten 算子白名单：torchair 无内置 GE 映射或仅占位 NotImplementedError，分解成有映射的
+# 基元算子（Exp/Log/Add/Select 等）。save_epair / save_epair_prefill_decode 共用，两函数白名单集合
+# 保持一致（曾因 prefill-decode 漏 update 这组致 qwen3.5 softplus 未分解 → GE 转换撞占位 NotImplementedError）。
+_EXTRA_DECOMPOSITION_OPS: frozenset = frozenset({
+    torch.ops.aten.softplus.default,
+    torch.ops.aten.eye.default,
+    torch.ops.aten.type_as.default,
+    torch.ops.aten.index_copy.default,
+    torch.ops.aten.index_put.default,
+})
+
 
 def _extract_host_side_weights(wrapper, use_embeddings: bool) -> list[tuple[str, torch.Tensor]]:
     """Collect embedding-lookup weights to additionally pack as host-side extras.
@@ -115,13 +126,7 @@ def save_epair(
 
     # 用默认 whitelist (linear/matmul/layer_norm/softmax 等分解), conv1d 走自定义 converter
     config = EpairConfig()
-    config.whitelist_decompositions.update({
-        torch.ops.aten.softplus.default,
-        torch.ops.aten.eye.default,
-        torch.ops.aten.type_as.default,
-        torch.ops.aten.index_copy.default,
-        torch.ops.aten.index_put.default
-    })
+    config.whitelist_decompositions.update(_EXTRA_DECOMPOSITION_OPS)
     epair = torch_delegate.export_to_epair(ep, config)
 
     # C++ 侧已兜底处理：
@@ -227,6 +232,7 @@ def save_epair_prefill_decode(
     # 用默认 whitelist (linear/matmul/layer_norm/softmax 等分解), conv1d 走自定义 converter
     if whitelist_decompositions is None:
         whitelist_decompositions = set(EpairConfig().whitelist_decompositions)
+    whitelist_decompositions.update(_EXTRA_DECOMPOSITION_OPS)
     config = EpairConfig(whitelist_decompositions=whitelist_decompositions)
     prefill_epair = torch_delegate.export_to_epair(prefill_ep, config)
     del prefill_ep

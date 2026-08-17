@@ -293,12 +293,14 @@ def model_define(model_path, torch_dtype=torch.float16):
     if hasattr(full_cfg, "text_config"):
         # 多模态模型 (如 Gemma4ForConditionalGeneration): 取 text_config,
         # transformers 自动 remap model.language_model.* -> model.* (丢弃 vision/audio 权重),
-        # 使 dopt 的 get_llama() (model.model.layers) 能直接访问文本层, 无需先 extract_gemma4_text.py
+        # 使 dopt 的 get_llama() (model.model.layers) 能直接访问文本层, 无需先 extract_gemma4_text.py。
+        # 不加 trust_remote_code (用 cann_lm 注册的 Gemma4ForCausalLM, 不走 HF dir 的多模态 custom code)
+        # + low_cpu_mem_usage (与 extract_gemma4_text.py 一致, 避免 weight key mismatch -> MISSING)
         model = AutoModelForCausalLM.from_pretrained(
             model_path,
             config=full_cfg.text_config,
             torch_dtype=torch_dtype,
-            trust_remote_code=True,
+            low_cpu_mem_usage=True,
         )
     else:
         model = AutoModelForCausalLM.from_pretrained(

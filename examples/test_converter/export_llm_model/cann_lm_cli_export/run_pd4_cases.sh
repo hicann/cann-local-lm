@@ -187,18 +187,34 @@ PYEOF
 }
 
 # ─────────────────────── Case 4: gemma4 量化 (场景1) ──────────────────────────
-# 注: dopt 对 gemma4 多模态 (ForConditionalGeneration) 有已知阻塞 (dopt 写死文本-only
-# ForCausalLM); 本会话未实测 case 4. 静态 dopt_config.json 是 gemma4-E4B 专用.
+# dopt model_define 已支持多模态 (检测 text_config 自动取 text-only, 免 extract_gemma4_text.py)。
+# 为快测, 临时把 quant/config.yaml 的 ptq_samples 改 16 (备份 + trap 保证还原)。
 case_4() {
-  local DOPT_CFG="$WORK_DIR/dopt_config_gemma4.json"   # 或用静态 $QD/dopt_config.json (E4B)
-  local OPTCFG="$QD/config.yaml"
+  local DOPT_CFG="$WORK_DIR/dopt_config_gemma4.json"
   local QOUT="$WORK_DIR/gemma4_quant_output"
+  # 临时 quick config (ptq_samples=16) 加速 dopt GPTQ; 备份 + trap 还原
+  cp "$QD/config.yaml" "$QD/config.yaml.bak"
+  printf 'dataset:\n  train_files:\n    - "calibration.json"\n  ptq_samples: 16\ncutoff_len: 64\nextra_training_config:\n  fp16: true\ncutoff_len: 64\n' > "$QD/config.yaml"
+  _restore_c4_cfg(){ mv "$QD/config.yaml.bak" "$QD/config.yaml" 2>/dev/null || true; }
+  trap _restore_c4_cfg EXIT
   setup_dopt_env
   gen_dopt_config "$HF_GEMMA4" "$DOPT_CFG"
-  run_dopt "$HF_GEMMA4" "$DOPT_CFG" "$OPTCFG" "$QOUT"
+  run_dopt "$HF_GEMMA4" "$DOPT_CFG" "$QD/config.yaml" "$QOUT"
+  _restore_c4_cfg; trap - EXIT
   setup_converter_env
   run_conv "$CLI_DIR/epair_gemma4_quant" "$HF_GEMMA4" prefill-decode --quant-path "$QOUT"
-  "$VENV/bin/python3" "$CLI_DIR/verify.py" gemma4 2>&1 | tail -4
+  # 量化产物核对 (IR 含 quant_matmul_s8s4 + weights 变小)
+  "$VENV/bin/python3" - "$CLI_DIR/epair_gemma4_quant" <<'PYEOF' 2>&1 | tail -4
+import json,sys; from pathlib import Path
+q=Path(sys.argv[1])
+ep = q/"prefill_ep_json_with_ascend_ir.json"
+if not ep.exists(): print("  FAIL: 无 prefill_ep_json (导出失败, 见 log)"); sys.exit()
+s=json.dumps(json.load(open(ep)))
+print("  IR quant_matmul_s8s4:", "quant_matmul_s8s4" in s, "| DynamicQuant:", "DynamicQuant" in s)
+mc=json.load(open(q/"model_config.json")); qi=mc.get("quant_info") or {}
+print("  quant_info:", {k:qi.get(k) for k in ("scheme","group_size","n_quantized")})
+print(f"  weights_0.bin: {(q/'weights_0.bin').stat().st_size/1e6:.1f} MB (int4 packed)")
+PYEOF
 }
 
 # ─────────────────── Case 5: qwen3 量化 场景2 (auto_quant 一键式) ───────────────────

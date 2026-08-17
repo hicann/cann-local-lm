@@ -287,12 +287,25 @@ def seed_all(seed_value=1234, deterministic=False):
             torch.backends.cudnn.deterministic = True # needed
 
 
-def model_define(model_path, torch_dtype=torch.float16): 
-    model = AutoModelForCausalLM.from_pretrained(
-        model_path, 
-        torch_dtype=torch_dtype, 
-        trust_remote_code=True, 
-    )
+def model_define(model_path, torch_dtype=torch.float16):
+    from transformers import AutoConfig
+    full_cfg = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
+    if hasattr(full_cfg, "text_config"):
+        # 多模态模型 (如 Gemma4ForConditionalGeneration): 取 text_config,
+        # transformers 自动 remap model.language_model.* -> model.* (丢弃 vision/audio 权重),
+        # 使 dopt 的 get_llama() (model.model.layers) 能直接访问文本层, 无需先 extract_gemma4_text.py
+        model = AutoModelForCausalLM.from_pretrained(
+            model_path,
+            config=full_cfg.text_config,
+            torch_dtype=torch_dtype,
+            trust_remote_code=True,
+        )
+    else:
+        model = AutoModelForCausalLM.from_pretrained(
+            model_path,
+            torch_dtype=torch_dtype,
+            trust_remote_code=True,
+        )
     return model
 
 

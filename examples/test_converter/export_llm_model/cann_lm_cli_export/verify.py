@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify epair output produced by cann-lm-converter.py CLI.
+"""Verify epair output produced by cann_lm_converter.py CLI.
 
 检查每个 epair_<model>/ 目录的产物完整性:
   - 必需 JSON 文件存在 (ep_json / model_config / weight_info)

@@ -62,7 +62,7 @@ ge::Graph
 ```
 cann_lm/converter/
 ├── __init__.py
-├── cann-lm-converter.py          # CLI 入口 (pipeline) + 程序化 convert() 函数  ← 见 cli_design.md
+├── cann_lm_converter.py          # CLI 入口 (pipeline) + 程序化 convert() 函数  ← 见 cli_design.md
 ├── loader.py                     # 模型加载 (config + weights + tokenizer, 自动探测模型类型)
 ├── saver.py                      # epair 保存 (save_epair / save_epair_prefill_decode / save_model_config / copy_tokenizer_files)
 ├── model_registry.py             # 模型注册表 (ModelEntry + REGISTRY + get_entry + detect_model_type + available_models)
@@ -995,7 +995,7 @@ REGISTRY["{model_name}"] = ModelEntry(
 
 ```bash
 # Python 导出
-python cann_lm/converter/cann-lm-converter.py \
+python cann_lm/converter/cann_lm_converter.py \
     --hf-path /path/to/model --output-dir /path/to/output --dtype float16
 
 # C++ 加载
@@ -1204,7 +1204,7 @@ HF (Gemma4ClippableLinear):           cann_lm (nn.Linear):
 
 | 文档 | 关联内容 |
 |------|---------|
-| [cli_design.md](../cli/cli_design.md) | CLI 入口 `cann-lm-converter.py` / `convert()` / 命令行参数 / 使用示例 |
+| [cli_design.md](../cli/cli_design.md) | CLI 入口 `cann_lm_converter.py` / `convert()` / 命令行参数 / 使用示例 |
 | [quant_design.md](../quant/quant_design.md) | 量化接入 `--quant-path` / `swap_to_quant_linear_from_dopt` / `quant_matmul_s8s4` |
 | [converter_design.md](../converter_design.md) | 跨模块调用链总览 / 模型差异总览 / 精度汇总 |
 | [reference_qwen3_5_export.md](../reference_qwen3_5_export.md) | qwen3.5 线性注意力导出 / `ChunkGatedDeltaRule` / delta_states tensor 化（参考） |

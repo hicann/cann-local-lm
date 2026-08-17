@@ -6,7 +6,7 @@ cann_lm 从 **HuggingFace 模型 → CLI 导出 epair → C++ OM 编译 → NPU 
 
 ```
 HF 模型 (safetensors)
-    │  ① CLI 导出 (cann-lm-converter.py, converter venv + torchair stubs)
+    │  ① CLI 导出 (cann_lm_converter.py, converter venv + torchair stubs)
     ▼
 epair (ep_json_with_ascend_ir.json + weights_*.bin + host_weights_*.bin)
     │  ② 产物校验 (verify.py) + IR 算子统计
@@ -49,7 +49,7 @@ export TORCH_DELEGATE_HOME=/mnt/workspace/torch-delegate-harmony
 export TORCH_DEVICE_BACKEND_AUTOLOAD=0; export TORCH_DELEGATE_ENABLE_FALLBACK_CODEGEN=0
 VENV=/mnt/workspace/torch-delegate-harmony/.venv
 
-$VENV/bin/python3 cann_lm/converter/cann-lm-converter.py \
+$VENV/bin/python3 cann_lm/converter/cann_lm_converter.py \
   --hf-path /mnt/workspace/data/models/gemma-4-E2B-it \
   --output-dir examples/export_llm_model/om_npu_verify/epair_gemma4_pd \
   --dtype bfloat16 --mode prefill-decode --seq-len 128   # --use-embeddings 默认 True

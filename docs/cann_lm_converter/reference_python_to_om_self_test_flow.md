@@ -145,7 +145,7 @@ print('output shape:', out.shape)
 
 ```bash
 cd examples/export_llm_model/cann_lm_cli_export
-$VENV/bin/python3 $PROJECT_ROOT/cann_lm/converter/cann-lm-converter.py \
+$VENV/bin/python3 $PROJECT_ROOT/cann_lm/converter/cann_lm_converter.py \
     --hf-path /mnt/workspace/data/models/gemma-4-E2B-it \
     --output-dir epair_gemma4_test \
     --dtype bfloat16 --seq-len 8 --num-layers 5
@@ -157,7 +157,7 @@ $VENV/bin/python3 $PROJECT_ROOT/cann_lm/converter/cann-lm-converter.py \
 
 ```bash
 cd examples/export_llm_model/om_npu_verify
-$VENV/bin/python3 $PROJECT_ROOT/cann_lm/converter/cann-lm-converter.py \
+$VENV/bin/python3 $PROJECT_ROOT/cann_lm/converter/cann_lm_converter.py \
     --hf-path /mnt/workspace/data/models/gemma-4-E2B-it \
     --output-dir epair_gemma4_pd \
     --dtype bfloat16 --mode prefill-decode --seq-len 128 --use-embeddings
@@ -344,7 +344,7 @@ if _os.environ.get("FUSED_DEBUG") and self.layer_idx == 0:
 | 1 | schema 注册 | `import ops; getattr(torch.ops.npu, 'xxx', None) is not None` | `True` |
 | 2 | converter 注册 | `hasattr(op.default, '_ge_converter')` | `True`，`__module__` 是 `cann_lm...` |
 | 3 | CPU eager | `torch.ops.npu.xxx(简单输入)` | output shape 正确 |
-| 4 | epair 导出 | `cann-lm-converter.py --num-layers 5` | `Done. Output: epair_xxx` |
+| 4 | epair 导出 | `cann_lm_converter.py --num-layers 5` | `Done. Output: epair_xxx` |
 | 5 | IR 含新算子 | python3 统计 ascend_ir ops | 新算子 >0，旧算子 =0 |
 | 6 | OM 编译 | `../build/export_llm_model ...` | `BuildModel succeeded` + `.om` 生成 |
 | 7 | eager 出字 | `run_gemma4_eager_gen.py "prompt"` | 输出合理文本 |
@@ -432,7 +432,7 @@ register_fx_node_ge_converter(torch.ops.npu.npu_fused_infer_attention_score_v2.d
 | GE converter | `cann_lm/converter/export/ge_converter.py` | `@register_fx_node_ge_converter` + `ge.Xxx(...)` |
 | epair 落盘 | `cann_lm/converter/saver.py` | `whitelist_decompositions` / `EpairConfig` |
 | epair 序列化 | `cann_lm/converter/export/epair_utils.py` | `consolidated_weights_save` |
-| 导出 CLI | `cann_lm/converter/cann-lm-converter.py` | `--hf-path --mode --use-embeddings --num-layers` |
+| 导出 CLI | `cann_lm/converter/cann_lm_converter.py` | `--hf-path --mode --use-embeddings --num-layers` |
 | C++ REG_OP | `examples/export_llm_model/om_npu_verify/reg_register.h` | 算子注册到 GE OperatorFactory |
 | C++ OM 编译器 | `examples/export_llm_model/main.cpp` + `CMakeLists.txt` | `EpairModelLoader` + `aclgrphBuildModel` |
 | eager 出字 | `examples/export_llm_model/om_npu_verify/run_gemma4_eager_gen.py` | wrapper eager NPU 出字 |

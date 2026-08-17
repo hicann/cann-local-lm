@@ -31,7 +31,7 @@ cann_lm/
 │   ├── model_registry.py            # 模型注册表 (差异记录)
 │   ├── loader.py                    # 加载适配 (config + weights + tokenizer)
 │   ├── saver.py                     # 保存适配 (export + epair + filter)
-│   ├── cann-lm-converter.py         # CLI 入口
+│   ├── cann_lm_converter.py         # CLI 入口
 │   └── export/
 │       └── epair_utils.py           # 权重打包 (已有)
 ```

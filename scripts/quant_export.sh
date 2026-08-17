@@ -169,7 +169,7 @@ run_converter() (
     $HOST_EMBEDDINGS && FLAGS+=(--quant-embeddings --use-embeddings)
     echo "  [export] cann-lm-converter ${FLAGS[*]}"
     cd "$PROJECT_ROOT"
-    "$VENV_PYTHON" "${PROJECT_ROOT}/cann_lm/converter/cann-lm-converter.py" "${FLAGS[@]}"
+    "$VENV_PYTHON" "${PROJECT_ROOT}/cann_lm/converter/cann_lm_converter.py" "${FLAGS[@]}"
 )
 
 # ---------- run ----------

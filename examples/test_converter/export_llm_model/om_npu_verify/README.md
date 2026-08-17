@@ -21,7 +21,7 @@ om_npu_verify/                  # main.cpp + CMakeLists + reg_register.h 已上�
 ├── CMakeLists.txt               # 构建 export_llm_model (链 ge_compiler/ge_runner/acl_rt + torch_delegate_backend)
 └── build/export_llm_model       # 编译好的可执行 (aarch64)
 ```
-> 导出 epair 用 CLI `cann_lm/converter/cann-lm-converter.py`(唯一入口);批量导出三模型见 `../cann_lm_cli_export/run.sh`。
+> 导出 epair 用 CLI `cann_lm/converter/cann_lm_converter.py`(唯一入口);批量导出三模型见 `../cann_lm_cli_export/run.sh`。
 
 ## 环境
 
@@ -47,9 +47,9 @@ cmake -S .. -B ../build -DCANN_ROOT="$ASCEND_HOME_PATH" -DTORCH_PKG_DIR="$TORCH_
 cmake --build ../build -j4
 ```
 
-### 2. 导出 epair(用 CLI `cann-lm-converter.py`, 唯一导出入口)
+### 2. 导出 epair(用 CLI `cann_lm_converter.py`, 唯一导出入口)
 ```bash
-$VENV/bin/python3 /mnt/workspace/project/CANN-LM_5883/cann_lm/converter/cann-lm-converter.py \
+$VENV/bin/python3 /mnt/workspace/project/CANN-LM_5883/cann_lm/converter/cann_lm_converter.py \
   --hf-path /mnt/workspace/data/models/gemma-4-E2B-it \
   --output-dir epair_gemma4 \
   --dtype bfloat16 --seq-len 8 --mode single          # --use-embeddings 默认 True (纯 embeddings, 图外查表)
@@ -254,7 +254,7 @@ cd examples/export_llm_model/om_npu_verify
 - 用 `wrapper.get_sample_inputs` 的 mask/kv 约定(gemma4 shared KV 要求 pad 位不被 all-mask,否则污染 store 层 KV → 共享层输出错误)
 - prefill OM 的 77 输入 = wrapper sample 展平(跳过 None input_ids/embeddings_scale,70 kv 拆开)
 - OM 产物路径在脚本常量 `PREFILL_OM`/`DECODE_OM` 里(当前指向 `/tmp/opencode/gemma4_pd/`)
-- 需先导出 prefill+decode OM:`cann-lm-converter.py --mode prefill-decode --use-embeddings` → C++ `main.cpp` 编译两图
+- 需先导出 prefill+decode OM:`cann_lm_converter.py --mode prefill-decode --use-embeddings` → C++ `main.cpp` 编译两图
 
 ## 注意事项
 

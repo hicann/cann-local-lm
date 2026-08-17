@@ -8,7 +8,7 @@
 import os, sys, json, dataclasses
 import torch
 
-# input_ids 入图 OM (已清除, 需用 CLI `cann-lm-converter.py --no-use-embeddings` 重新导出+编译).
+# input_ids 入图 OM (已清除, 需用 CLI `cann_lm_converter.py --no-use-embeddings` 重新导出+编译).
 # embeddings 入图验证用 run_qwen3_5_om_emb.py (推荐, OM=qwen3_5_emb_noaub.om).
 OM = "/mnt/workspace/project/CANN-LM_5883/examples/export_llm_model/om_npu_verify/qwen3_5.om"
 HF = "/mnt/workspace/data/models/Qwen3.5-0.8B"

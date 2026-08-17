@@ -72,6 +72,6 @@ output_dir/
 
 ## 关联模块
 
-- **CLI**：[INDEX.md](../cli/INDEX.md) — `cann-lm-converter.py` 入口 / `convert()` 编排
+- **CLI**：[INDEX.md](../cli/INDEX.md) — `cann_lm_converter.py` 入口 / `convert()` 编排
 - **量化**：[INDEX.md](../quant/INDEX.md) — `QuantLinear` 替换 `nn.Linear` / `quant_matmul_s8s4` 算子
 - **参考**：[reference_pipeline_walkthrough.md](../reference_pipeline_walkthrough.md) / [reference_qwen3_5_export.md](../reference_qwen3_5_export.md) / [reference_litert_lm_export.md](../reference_litert_lm_export.md) / [reference_npu_tuned_export_qwen3.md](../reference_npu_tuned_export_qwen3.md)

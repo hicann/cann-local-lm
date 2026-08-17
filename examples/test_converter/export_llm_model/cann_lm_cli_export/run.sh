@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# run.sh — 用 cann-lm-converter.py CLI 把 gemma4/qwen3/qwen3.5 导出为 epair
+# run.sh — 用 cann_lm_converter.py CLI 把 gemma4/qwen3/qwen3.5 导出为 epair
 #
 # 用法:
 #   bash run.sh                          # 导出全部三模型 (single 模式)
@@ -15,7 +15,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${ROOT_DIR}/../../../.." && pwd)"
 VENV_DIR="${VENV_DIR:-/mnt/workspace/torch-delegate-harmony/.venv}"
 PYTHON="${VENV_DIR}/bin/python3"
-CONVERTER="${PROJECT_ROOT}/cann_lm/converter/cann-lm-converter.py"
+CONVERTER="${PROJECT_ROOT}/cann_lm/converter/cann_lm_converter.py"
 
 source /home/developer/Ascend/cann/set_env.sh
 
@@ -44,7 +44,7 @@ for m in ${MODELS}; do
   [[ -n "${HF_PATHS[$m]:-}" ]] || { echo "[✗] unknown model '${m}', available: ${!HF_PATHS[*]}"; exit 1; }
   echo ""
   echo "========================================"
-  echo " cann-lm-converter.py: ${m}"
+  echo " cann_lm_converter.py: ${m}"
   echo "   HF:    ${HF_PATHS[$m]}"
   echo "   mode:  ${MODE}  dtype: ${DTYPE}  seq_len: ${SEQ_LEN}${NUM_LAYERS:+  layers: ${NUM_LAYERS}}"
   echo "========================================"

@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cann-lm-engine"
+version = "0.1.0"
+description = "CANN-LM engine (epair runtime / inference engine)"
+requires-python = ">=3.10"
+# dependencies = []  # 待 engine 代码写入后补 (torch/torch_npu/acl/torchair 等, 视实现而定)
+
+[tool.setuptools]
+# cann_lm 是 PEP 420 namespace 包 (cann-lm distribution 装 converter+models,
+# 本 distribution 只装 cann_lm.engine)。从 cann_lm/engine/ 目录 build;
+# find 在此 dir 会发现 api/backend/core 为顶层, 故用显式 packages + package-dir
+# 把它们映射成 cann_lm.engine.*
+packages = [
+    "cann_lm.engine",
+    "cann_lm.engine.api",
+    "cann_lm.engine.backend",
+    "cann_lm.engine.core",
+    "cann_lm.engine.core.sample",
+    "cann_lm.engine.infra",
+    "cann_lm.engine.pipeline",
+]
+
+[tool.setuptools.package-dir]
+# 源码在 ../../cann_lm/engine/ (相对本 pyproject 所在 scripts/cann_lm_engine/)
+"cann_lm.engine" = "../../cann_lm/engine"
+"cann_lm.engine.api" = "../../cann_lm/engine/api"
+"cann_lm.engine.backend" = "../../cann_lm/engine/backend"
+"cann_lm.engine.core" = "../../cann_lm/engine/core"
+"cann_lm.engine.core.sample" = "../../cann_lm/engine/core/sample"
+"cann_lm.engine.infra" = "../../cann_lm/engine/infra"
+"cann_lm.engine.pipeline" = "../../cann_lm/engine/pipeline"

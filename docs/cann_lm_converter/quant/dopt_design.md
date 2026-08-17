@@ -123,7 +123,7 @@ dopt 产物由 converter 的 `--quant-path` 加载（`swap.load_dopt_state_dict`
 
 ```bash
 # converter 环境（CPU venv + torchair stubs，详见 AGENTS.md "运行环境设置（converter）"）
-python cann_lm/converter/cann-lm-converter.py \
+python cann_lm/converter/cann_lm_converter.py \
     --hf-path /path/to/hf-model \
     --output-dir /path/to/epair \
     --quant-path quant_output

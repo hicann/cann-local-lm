@@ -53,3 +53,7 @@ cann_lm/converter/quant/calibration.json
 
 # Run logs (converter/OM/dopt run artifacts, e.g. epair_*.log from run_pd4_cases.sh)
 *.log
+
+# Packaging build artifacts
+*.egg-info/
+dist/

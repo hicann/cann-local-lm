@@ -1,6 +1,6 @@
 # CLI 模块索引
 
-> `cann-lm-converter.py` — 对外唯一入口，模型类型从 `config.json` 自动探测。
+> `cann_lm_converter.py` — 对外唯一入口，模型类型从 `config.json` 自动探测。
 
 ## 模块文档
 
@@ -12,7 +12,7 @@
 
 | 文件 | 职责 |
 |------|------|
-| `cann_lm/converter/cann-lm-converter.py` | CLI 入口（`parse_args` + `convert`）+ 程序化 `convert()` 函数 |
+| `cann_lm/converter/cann_lm_converter.py` | CLI 入口（`parse_args` + `convert`）+ 程序化 `convert()` 函数 |
 
 ## 关键函数
 

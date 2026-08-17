@@ -30,7 +30,7 @@ cann_lm/models/gemma4/  (configuration / modeling / export_wrapper)
 cann_lm/converter/model_registry.py  (REGISTRY["gemma4"] = ModelEntry(...))
         │
         ▼  CLI
-cann_lm/converter/cann-lm-converter.py  convert()
+cann_lm/converter/cann_lm_converter.py  convert()
         │
         ├── loader.load_model()          config.json → model + weights + tokenizer
         │
@@ -94,7 +94,7 @@ REGISTRY["gemma4"] = ModelEntry(
 
 ---
 
-## Phase 3: CLI 入口 `cann_lm/converter/cann-lm-converter.py`
+## Phase 3: CLI 入口 `cann_lm/converter/cann_lm_converter.py`
 
 ```python
 def convert(hf_path, output_dir, dtype, use_embeddings=False,
@@ -209,13 +209,13 @@ HF=/mnt/workspace/data/models/gemma-4-E2B-it
 OUT=/tmp/opencode/gemma4_out
 
 # ── single 模式 (5 层, use_embeddings) ──
-$VENV cann_lm/converter/cann-lm-converter.py \
+$VENV cann_lm/converter/cann_lm_converter.py \
   --hf-path $HF --output-dir $OUT --dtype bfloat16 \
   --seq-len 8 --use-embeddings --num-layers 5
 $BIN $OUT/ep_json_with_ascend_ir.json $OUT/weight_info.json gemma4_out
 
 # ── prefill-decode 模式 (5 层, use_embeddings) ──
-$VENV cann_lm/converter/cann-lm-converter.py \
+$VENV cann_lm/converter/cann_lm_converter.py \
   --hf-path $HF --output-dir $OUT --dtype bfloat16 \
   --use-embeddings --num-layers 5 --mode prefill-decode --seq-len 8
 $BIN $OUT/prefill_ep_json_with_ascend_ir.json $OUT/weight_info.json prefill

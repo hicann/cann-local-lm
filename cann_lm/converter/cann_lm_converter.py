@@ -4,7 +4,7 @@
 Model type is auto-detected from config.json; no --model-type needed.
 
 Usage:
-  python cann-lm-converter.py \
+  cann-lm-converter \          # 装包后 (console_scripts); 或 python -m cann_lm.converter.cann_lm_converter
       --hf-path /path/to/gemma-4-e2b-it \
       --output-dir /path/to/output \
       --dtype float16 \

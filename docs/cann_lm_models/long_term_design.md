@@ -350,4 +350,4 @@ gemma4 / qwen3_5 有 vision_config 但当前不需要 processor，留作后续�
 | loader.py 适配 config 加载差异 | PreTrainedConfig.from_pretrained 统一 |
 | saver.py ExportWrapper | ModelOutput 返回 logits，不再需要 wrapper |
 | saver.py 过滤 assert 节点 | 仍需保留 (torch.export 内部行为) |
-| converter cann-lm-converter.py | AutoModelForCausalLM.from_pretrained 一行代码 |
+| converter cann_lm_converter.py | AutoModelForCausalLM.from_pretrained 一行代码 |

@@ -26,18 +26,18 @@ CANN-LM 模型导出为 epair 的完整流水线。**详细设计见 `docs/cann_
 ## 当前流程 (converter CLI)
 
 ```
-cann-lm-converter.py  →  epair 目录 (ep_json + weights + model_config + tokenizer)
+cann_lm_converter.py  →  epair 目录 (ep_json + weights + model_config + tokenizer)
 ```
 
 ```bash
 # 单图导出 (形状特化, seq_len=seq-len)
-python cann_lm/converter/cann-lm-converter.py \
+python cann_lm/converter/cann_lm_converter.py \
     --hf-path /path/to/gemma-4-E2B-it \
     --output-dir /path/to/output \
     --dtype bfloat16 --mode single --seq-len 8
 
 # prefill/decode 分离 (实际推理用, 两图 + 共享权重)
-python cann_lm/converter/cann-lm-converter.py \
+python cann_lm/converter/cann_lm_converter.py \
     --hf-path /path/to/model --output-dir /path/to/output \
     --mode prefill-decode --seq-len 128 --dtype bfloat16
 ```
@@ -57,7 +57,7 @@ cann_lm/
 │   ├── fused_infer_attention_score.py  # schema + meta (fake-only)
 │   └── beam_search.py               # schema + meta (fake-only)
 └── converter/
-    ├── cann-lm-converter.py         # CLI 入口 + convert() 程序化入口
+    ├── cann_lm_converter.py         # CLI 入口 + convert() 程序化入口
     ├── loader.py                    # load_model + build_config + collect_tokenizer_files
     ├── saver.py                     # save_epair / save_epair_prefill_decode
     ├── export_wrapper.py            # ExportWrapper 基类 (forward + get_sample_inputs)

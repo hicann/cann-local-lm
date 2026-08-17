@@ -36,7 +36,7 @@ docs/cann_lm_converter/
 
 | 模块 | 设计文档 | 索引 | 范围 |
 |------|---------|------|------|
-| **CLI** | [cli_design.md](./cli/cli_design.md) | [INDEX.md](./cli/INDEX.md) | `cann-lm-converter.py` 入口 / `convert()` / 命令行参数 / 调用链 / 环境变量 |
+| **CLI** | [cli_design.md](./cli/cli_design.md) | [INDEX.md](./cli/INDEX.md) | `cann_lm_converter.py` 入口 / `convert()` / 命令行参数 / 调用链 / 环境变量 |
 | **模型导出** | [export_design.md](./export/export_design.md) | [INDEX.md](./export/INDEX.md) | `model_registry` / `loader` / `saver` / `ExportWrapper` / `epair_utils` / C++ 加载侧 / GE 算子注册 |
 | **量化** | [quant_design.md](./quant/quant_design.md) | [INDEX.md](./quant/INDEX.md) | W4A8 s8s4 / dopt GPTQ / `quant_matmul_s8s4` / swap 接入 |
 
@@ -68,7 +68,7 @@ export TORCH_DEVICE_BACKEND_AUTOLOAD=0
 export TORCH_DELEGATE_ENABLE_FALLBACK_CODEGEN=0
 
 # 导出 epair（single 模式）
-python cann_lm/converter/cann-lm-converter.py \
+python cann_lm/converter/cann_lm_converter.py \
     --hf-path /path/to/qwen3-0.6B \
     --output-dir /path/to/output \
     --dtype float16 --seq-len 8

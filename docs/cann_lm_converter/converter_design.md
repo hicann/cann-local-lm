@@ -3,7 +3,7 @@
 > **顶层总览入口**。将 HuggingFace 模型转换为 epair 格式的 CLI 工具，支持 gemma4 / qwen3 / qwen3_5。
 >
 > 详细设计已按模块拆分：
-> - **CLI 模块** → [cli_design.md](./cli/cli_design.md)（`cann-lm-converter.py` 入口 / `convert()` / 命令行参数 / 调用链 / 环境变量 / 使用示例）
+> - **CLI 模块** → [cli_design.md](./cli/cli_design.md)（`cann_lm_converter.py` 入口 / `convert()` / 命令行参数 / 调用链 / 环境变量 / 使用示例）
 > - **模型导出模块** → [export_design.md](./export/export_design.md)（`model_registry` / `loader` / `saver` / `ExportWrapper` / `epair_utils` / C++ 加载侧 / GE 算子注册 / prefill-decode / 新增模型接入 / 精度分析）
 > - **量化模块** → [quant_design.md](./quant/quant_design.md)（W4A8 s8s4 / dopt GPTQ 框架 / `quant_matmul_s8s4` 算子 / swap 接入）
 > - **模块索引** → [INDEX.md](./cli/INDEX.md) / [INDEX.md](./export/INDEX.md) / [INDEX.md](./quant/INDEX.md)
@@ -26,7 +26,7 @@
 converter 把 HF 模型导出为 epair，供 C++ 后端加载编译 OM。三阶段由 CLI 编排，各阶段归属模块如下：
 
 ```
-cann-lm-converter.py (CLI)                                          ← cli_design.md
+cann_lm_converter.py (CLI)                                          ← cli_design.md
     │
     ├── parse_args()  ← --hf-path, --output-dir, --dtype, --mode,
     │                    --use-embeddings, [--quant-path | --quant-method gptq]
@@ -131,7 +131,7 @@ C++ EpairModelLoader → GetGEGraph → aclgrphBuildModel → .om        ← exp
 
 | 文档 | 范围 | 关键内容 |
 |------|------|---------|
-| [cli_design.md](./cli/cli_design.md) | `cann-lm-converter.py` | `convert()` 程序化入口 / 命令行参数 / 完整调用链 / prefill-decode CLI / 环境变量 / 使用示例 |
+| [cli_design.md](./cli/cli_design.md) | `cann_lm_converter.py` | `convert()` 程序化入口 / 命令行参数 / 完整调用链 / prefill-decode CLI / 环境变量 / 使用示例 |
 | [export_design.md](./export/export_design.md) | `model_registry` / `loader` / `saver` / `export_wrapper` / `export/`（含 C++ `csrc/`） | `ModelArtifact` / `build_config` / `ExportWrapper` 基类 + 三子类 / 统一图 I/O 契约 / 纯 embeddings 模式 / `pack_weights` / `consolidated_weights_save` / `EpairModelLoader` / `GeWeightLoader` 懒加载 / `_assert_tensor_metadata` / GE 算子注册两层 / prefill-decode 分离 / 新增模型接入 / 精度分析 |
 | [quant_design.md](./quant/quant_design.md) | `cann_lm/converter/quant/` | W4A8 s8s4 方案 / dopt GPTQ 框架 / `materialize_int4_with_scale` / `QuantLinear` / `swap_to_quant_linear_from_dopt` / 方案 A 自研 `quant_matmul_s8s4` 算子 / C++ 注册 / CANN V3/V4 源码分析附录 |
 | [embedding_quant_design.md](./quant/embedding_quant_design.md) | embed_tokens 量子主题 | W8 host gather / `materialize_int8_per_channel` / `swap_embeddings_from_dopt` |

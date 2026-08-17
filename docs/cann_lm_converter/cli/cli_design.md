@@ -1,6 +1,6 @@
 # CLI 模块设计文档
 
-> 对外唯一入口 `cann-lm-converter.py`：把 HuggingFace 模型转换为 epair 格式。
+> 对外唯一入口 `cann_lm_converter.py`：把 HuggingFace 模型转换为 epair 格式。
 >
 > 模型类型从 `config.json` 的 `model_type` 字段自动探测，用户无需指定 `--model-type`。同时提供程序化入口 `convert()` 供脚本/测试复用。
 >
@@ -23,7 +23,7 @@
 
 ## 概述
 
-`cann-lm-converter.py` 是 converter 对外暴露的唯一入口，职责是编排三个阶段：
+`cann_lm_converter.py` 是 converter 对外暴露的唯一入口，职责是编排三个阶段：
 
 1. **加载**：`loader.load_model(hf_path)` → `ModelArtifact`（详见 [export_design.md](../export/export_design.md) "loader"）
 2. **保存**：`saver.save_epair` / `save_epair_prefill_decode` → epair 目录（详见 [export_design.md](../export/export_design.md) "saver"）
@@ -135,7 +135,7 @@ def parse_args():
 ## 完整调用链
 
 ```
-cann-lm-converter.py (CLI)
+cann_lm_converter.py (CLI)
     │
     ├── parse_args()  ← --hf-path, --output-dir, --dtype, --device, --max-file-size,
     │                    --kv-cache-max-len, --seq-len, --use-embeddings,
@@ -185,7 +185,7 @@ verify output                                          # ④ 检查产物文件�
 ### CLI 用法
 
 ```bash
-python cann_lm/converter/cann-lm-converter.py \
+python cann_lm/converter/cann_lm_converter.py \
     --hf-path /path/to/gemma-4-E2B \
     --output-dir /path/to/output \
     --mode prefill-decode \
@@ -247,14 +247,14 @@ export TORCH_DEVICE_BACKEND_AUTOLOAD=0
 export TORCH_DELEGATE_ENABLE_FALLBACK_CODEGEN=0
 
 # 默认: 纯 embeddings (use_embeddings=True 默认, embed_tokens 查表外置到 host)
-python cann_lm/converter/cann-lm-converter.py \
+python cann_lm/converter/cann_lm_converter.py \
     --hf-path /path/to/qwen3-0.6B \
     --output-dir /path/to/output \
     --dtype float16 \
     --seq-len 8
 
 # 图内查表 (需显式 --no-use-embeddings 关闭纯 embeddings, 图内含 embed_tokens)
-python cann_lm/converter/cann-lm-converter.py \
+python cann_lm/converter/cann_lm_converter.py \
     --hf-path /path/to/qwen3-0.6B \
     --output-dir /path/to/output \
     --dtype float16 \
@@ -271,7 +271,7 @@ python3 examples/export_llm_model/om_npu_verify/run_qwen3_5_om.py  # qwen3.5: OM
     output/ep_json_with_ascend_ir.json output/weight_info.json output
 
 # prefill/decode 分离 (推理用, prefill+decode 两图 + 共享权重; 默认模式)
-python cann_lm/converter/cann-lm-converter.py \
+python cann_lm/converter/cann_lm_converter.py \
     --hf-path /path/to/gemma-4-E2B \
     --output-dir /path/to/output \
     --mode prefill-decode \

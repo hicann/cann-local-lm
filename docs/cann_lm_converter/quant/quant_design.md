@@ -106,7 +106,7 @@ __init__.py (门面)
     └── swap.py             ← 相对 import materialize + quant_linear
                                 ↑
                                 │ 唯一外部消费者
-                cann-lm-converter.py:90, 105
+                cann_lm_converter.py:90, 105
                     from cann_lm.converter.quant import (
                         swap_to_quant_linear_from_dopt,     # 主 swap 路径
                         swap_embeddings_from_dopt,          # embedding host gather
@@ -115,7 +115,7 @@ __init__.py (门面)
 ```
 
 - **无循环依赖**：`materialize ← swap → quant_linear` 的有向无环图；`materialize` 与 `quant_linear` 互不依赖。
-- **`__all__` 暴露 6 个符号**（`__init__.py:38-47`）：其中只有 3 个（`swap_to_quant_linear_from_dopt` / `swap_embeddings_from_dopt` / `load_dopt_state_dict`）被 `cann-lm-converter.py` 实际 import；其余 3 个（`materialize_int4_with_scale` / `materialize_int8_per_channel` / `QuantLinear`）经 `swap.py` 内部相对 import 使用，对外暴露为测试/将来直接调用预留。
+- **`__all__` 暴露 6 个符号**（`__init__.py:38-47`）：其中只有 3 个（`swap_to_quant_linear_from_dopt` / `swap_embeddings_from_dopt` / `load_dopt_state_dict`）被 `cann_lm_converter.py` 实际 import；其余 3 个（`materialize_int4_with_scale` / `materialize_int8_per_channel` / `QuantLinear`）经 `swap.py` 内部相对 import 使用，对外暴露为测试/将来直接调用预留。
 
 ### I/O 定位
 
@@ -226,7 +226,7 @@ __init__.py (门面)
 ┌─────────────────────────────────────────────────────────────────────────┐
 │  CONVERTER (CPU venv, torchair stubs) — Step B-E                         │
 │                                                                         │
-│  cann-lm-converter.py:                                                  │
+│  cann_lm_converter.py:                                                  │
 │   B. load_model(hf_path) → nn.Module (HF 原始, fp16)                     │
 │   C+D. swap_to_quant_linear_from_dopt(model, quant_path=quant_output,    │
 │                                      group_size=256, act_quant=True):  │
@@ -315,7 +315,7 @@ convert(--quant-method gptq)                      python -m dopt_lm.opt_main
 
 目标命令：
 ```bash
-DEVICE=npu python cann-lm-converter.py \
+DEVICE=npu python cann_lm_converter.py \
   --hf-path /path/to/hf --output-dir /path/to/out --dtype float16 \
   --quant-method gptq
 # converter 自动: generate_dopt_config → spawn dopt subprocess (NPU GPTQ) → 临时盘 → swap → export
@@ -391,7 +391,7 @@ class QuantLinear(nn.Module):
 
 ### `swap.py`（226 行）— 算子 IR 替换 + dopt 产物加载
 
-在 `torch.export` 之前，**就地遍历** `model.named_modules()`，把目标 `nn.Linear` 替换成 `QuantLinear`（物化 int4 权重）、把目标 `nn.Embedding` 的 int8+scale 抽出来供 host gather（不替换成图模块）。还提供 dopt GPTQ 产物的加载器 + 量化元信息读取器。是 `cann-lm-converter.py` 唯一直接调用的模块。
+在 `torch.export` 之前，**就地遍历** `model.named_modules()`，把目标 `nn.Linear` 替换成 `QuantLinear`（物化 int4 权重）、把目标 `nn.Embedding` 的 int8+scale 抽出来供 host gather（不替换成图模块）。还提供 dopt GPTQ 产物的加载器 + 量化元信息读取器。是 `cann_lm_converter.py` 唯一直接调用的模块。
 
 | 函数 | 行 | 签名 | 参数数 | 作用 |
 |------|----|------|--------|------|
@@ -400,7 +400,7 @@ class QuantLinear(nn.Module):
 | ~~`swap_to_quant_linear`~~ | ~~70-94~~ | ~~`(model, group_size=128, skip=DEFAULT_SKIP, act_quant=True)`~~ | ~~4~~ | **已删除**（min-max 快速路径移除；dopt 只支持 GPTQ，min-max 精度差无实用价值） |
 | `load_dopt_state_dict` | 97-122 | `(dopt_path: str \| Path) -> dict` | 1 | 接受 `.safetensors` / `.pth` / 目录(含 `model.safetensors`)。返回 `{name: tensor}` dict |
 | `_read_dopt_quant_meta` | 125-148 | `(sd, name, out_f, in_f, group_size) -> tuple[int, float, Tensor \| None]` | 5 | 私有辅助：读 `{name}.quant_op.weight_quantizer.{bit, unsigned_quant, offset}`。bit=int64 标量，unsigned_quant=fp32 标量，offset=fp32 扁平 `[out*groups]`（reshape 到 `[out, in//group]`）。老版 dopt 无 buffer 时 fallback (4, 0.0, None) |
-| `swap_to_quant_linear_from_dopt` | 151-226 | `(model, dopt_path, group_size=256, skip=DEFAULT_SKIP, act_quant=True) -> dict` | 5 | **主路径**（流程 C+D）：① `load_dopt_state_dict` → sd；② 遍历 `nn.Linear`（非 skip）：读 wkey/skey，跳过缺 key 的；reshape s_flat → scale2d；`_read_dopt_quant_meta` → bit/uq/offset；校验 uq==0（symmetric only，否则 ValueError）；校验 offset 全 0（否则 NotImplementedError：方案 A 不支持非对称）；`materialize_int4_with_scale(packed=True)` → `QuantLinear` → setattr 替换；③ 返回 quant-info dict（scheme/group_size/scope/counts/op/encoding/dopt_bit/uq/offset_supported）→ 被 `cann-lm-converter.py` 写进 `model_config.json` 的 `quant_info` 字段 |
+| `swap_to_quant_linear_from_dopt` | 151-226 | `(model, dopt_path, group_size=256, skip=DEFAULT_SKIP, act_quant=True) -> dict` | 5 | **主路径**（流程 C+D）：① `load_dopt_state_dict` → sd；② 遍历 `nn.Linear`（非 skip）：读 wkey/skey，跳过缺 key 的；reshape s_flat → scale2d；`_read_dopt_quant_meta` → bit/uq/offset；校验 uq==0（symmetric only，否则 ValueError）；校验 offset 全 0（否则 NotImplementedError：方案 A 不支持非对称）；`materialize_int4_with_scale(packed=True)` → `QuantLinear` → setattr 替换；③ 返回 quant-info dict（scheme/group_size/scope/counts/op/encoding/dopt_bit/uq/offset_supported）→ 被 `cann_lm_converter.py` 写进 `model_config.json` 的 `quant_info` 字段 |
 
 模块级常量 `DEFAULT_SKIP = ("embed_tokens", "embed_tokens_per_layer")`（行 33）。**注意 `lm_head` 不在 skip 里**——会被量化成 QuantLinear W4A8（行 30 注释明确）。
 
@@ -435,7 +435,7 @@ __all__ = [
 ]
 ```
 
-顶部 docstring（行 15-27）概述了量化两条入口路径与 dopt_lm 离线运行的关系。6 个符号中只有 **3 个**（`swap_to_quant_linear_from_dopt` / `swap_embeddings_from_dopt` / `load_dopt_state_dict`）被 `cann-lm-converter.py` 实际 import；其余 3 个经 `swap.py` 内部相对 import 使用，对外暴露为测试/将来直接调用预留。
+顶部 docstring（行 15-27）概述了量化两条入口路径与 dopt_lm 离线运行的关系。6 个符号中只有 **3 个**（`swap_to_quant_linear_from_dopt` / `swap_embeddings_from_dopt` / `load_dopt_state_dict`）被 `cann_lm_converter.py` 实际 import；其余 3 个经 `swap.py` 内部相对 import 使用，对外暴露为测试/将来直接调用预留。
 
 ### `config.yaml`（10 行）— dopt GPTQ 训练配置
 

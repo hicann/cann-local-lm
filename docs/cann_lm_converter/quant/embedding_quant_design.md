@@ -134,7 +134,7 @@ def materialize_int8_per_channel(weight_fp: torch.Tensor,
 - `get_sample_inputs(use_embeddings=True, quant_embeddings=True)`:host 用 materialized int8+scale(从 swap dict 或 host_weights),gather → int8+scale sample
 - `detach_externalized_lookups`:不变(仍 del embed_tokens/embed_tokens_per_layer;int8+scale 已在 host_weights)
 
-### 5. CLI `cann_lm/converter/cann-lm-converter.py`
+### 5. CLI `cann_lm/converter/cann_lm_converter.py`
 
 - embed 量化自动检测(`--quant-path` 加载 dopt 产物时, `swap_embeddings_from_dopt` 检测 embed scale 存在则自动做, 无需额外参数)
 - wrapper quant-embeddings 模式 + host_weights int8+scale 由 `embed_quant` 非空触发
@@ -148,7 +148,7 @@ aten `to`(int8→float)+ `mul`(scale `[b,s,1]` 广播)→ `cann_lm/converter/exp
 ## 端到端流程
 
 ```
-cann-lm-converter.py --quant-path <dopt产物>   # embed 量化自动检测 (dopt 跑了 Quant_Embed_MinMax 则自动做)
+cann_lm_converter.py --quant-path <dopt产物>   # embed 量化自动检测 (dopt 跑了 Quant_Embed_MinMax 则自动做)
   │
   ├─ load_model(hf_path)                    cann_lm 模型(float 权重)
   │

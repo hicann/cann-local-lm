@@ -1,12 +1,12 @@
-# cann_lm_cli_export — cann-lm-converter.py CLI 测试
+# cann_lm_cli_export — cann_lm_converter.py CLI 测试
 
-用 `cann_lm/converter/cann-lm-converter.py` CLI 把 gemma4 / qwen3 / qwen3.5 三个 HuggingFace 模型导出为 epair 格式,并验证产物完整性。
+用 `cann_lm/converter/cann_lm_converter.py` CLI 把 gemma4 / qwen3 / qwen3.5 三个 HuggingFace 模型导出为 epair 格式,并验证产物完整性。
 
 ## 文件
 
 | 文件 | 作用 |
 |------|------|
-| `run.sh` | source 环境后循环调 `cann-lm-converter.py` 导出三模型,再调 `verify.py` |
+| `run.sh` | source 环境后循环调 `cann_lm_converter.py` 导出三模型,再调 `verify.py` |
 | `verify.py` | 检查每个 `epair_<model>/` 目录产物:ep_json / model_config / weight_info / weights_*.bin / tokenizer |
 
 ## 用法
@@ -41,7 +41,7 @@ NUM_LAYERS=5 MODE=prefill-decode bash run.sh gemma4
 | `NUM_LAYERS` | (空=全部) | 只导出前 N 层(`--num-layers`),截断 `model.model.layers`,不改 `config.num_hidden_layers` |
 | `VENV_DIR` | `/mnt/workspace/torch-delegate-harmony/.venv` | converter venv (torch 2.9.0+cpu + torchair + torch_delegate) |
 
-> `--use-embeddings` 默认 **True**（纯 embeddings，图外查表；CLI 自带，`run.sh` 未暴露开关）。要图内查表直接调 `cann-lm-converter.py ... --no-use-embeddings`。`--mode` 默认 `prefill-decode`（CLI）；`run.sh` 的 `MODE` 默认 `single`（快测）。
+> `--use-embeddings` 默认 **True**（纯 embeddings，图外查表；CLI 自带，`run.sh` 未暴露开关）。要图内查表直接调 `cann_lm_converter.py ... --no-use-embeddings`。`--mode` 默认 `prefill-decode`（CLI）；`run.sh` 的 `MODE` 默认 `single`（快测）。
 
 ## 测试结果
 
@@ -199,7 +199,7 @@ qwen3.5 的 OM 编译历经多轮修复,Conv2D infershape **已解决**;ChunkGat
 
 ## 测试方案（覆盖全部 CLI 场景）
 
-`cann-lm-converter.py` 当前全参数：`--hf-path`/`--output-dir`(必填) + `--dtype`(float32/float16/bfloat16) + `--device`(cpu) + `--max-file-size` + `--kv-cache-max-len` + `--seq-len` + `--use-embeddings`(`BooleanOptionalAction`，自动派生 `--no-use-embeddings`) + `--mode`(single/prefill-decode) + `--num-layers` + 量化互斥组 `--quant-path`/`--quant-method gptq` + `--quant-bits`(w4a8/w4a16)。
+`cann_lm_converter.py` 当前全参数：`--hf-path`/`--output-dir`(必填) + `--dtype`(float32/float16/bfloat16) + `--device`(cpu) + `--max-file-size` + `--kv-cache-max-len` + `--seq-len` + `--use-embeddings`(`BooleanOptionalAction`，自动派生 `--no-use-embeddings`) + `--mode`(single/prefill-decode) + `--num-layers` + 量化互斥组 `--quant-path`/`--quant-method gptq` + `--quant-bits`(w4a8/w4a16)。
 
 下面两个方案均覆盖**全部参数取值**，按需选用（`--hf-path`/`--output-dir` 省略，三模型路径见 `run.sh`）。
 

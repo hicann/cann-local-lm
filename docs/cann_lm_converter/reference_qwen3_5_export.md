@@ -333,7 +333,7 @@ qwen3.5 是混合架构（6 full + 18 linear）：
 
 ### 绕过（临时）
 
-> 注：原 `examples/export_llm_model/om_npu_verify/export_llm_model_epair.py`（含 `_build_simple_sample_inputs` 的 `past=None` 绕过）已废弃移除，导出统一走 CLI `cann-lm-converter.py`（`--mode single` 单图）。该绕过 util 不再保留；scatter 改造完成后 CLI 即可导出覆盖 prefill+decode 的两图。
+> 注：原 `examples/export_llm_model/om_npu_verify/export_llm_model_epair.py`（含 `_build_simple_sample_inputs` 的 `past=None` 绕过）已废弃移除，导出统一走 CLI `cann_lm_converter.py`（`--mode single` 单图）。该绕过 util 不再保留；scatter 改造完成后 CLI 即可导出覆盖 prefill+decode 的两图。
 
 ---
 
@@ -738,7 +738,7 @@ export PYTHONPATH=/mnt/workspace/project/CANN-LM_5883:${PYTHONPATH:-}
 export TORCH_DEVICE_BACKEND_AUTOLOAD=0
 export TORCH_DELEGATE_ENABLE_FALLBACK_CODEGEN=0
 cd examples/export_llm_model/om_npu_verify
-/mnt/workspace/torch-delegate-harmony/.venv/bin/python3 /mnt/workspace/project/CANN-LM_5883/cann_lm/converter/cann-lm-converter.py \
+/mnt/workspace/torch-delegate-harmony/.venv/bin/python3 /mnt/workspace/project/CANN-LM_5883/cann_lm/converter/cann_lm_converter.py \
   --hf-path /mnt/workspace/data/models/Qwen3.5-0.8B \
   --output-dir epair_qwen3_5_emb \
   --seq-len 8 --dtype bfloat16 --mode single          # --use-embeddings 默认 True
@@ -793,7 +793,7 @@ OM top5 = HF top5 = [198, 271, 0, 353, 2921]，**与 [8.4](#84-chunkgateddeltaru
 
 | 脚本 | 作用 |
 |------|------|
-| `cann-lm-converter.py --mode single`（venv, CLI） | 导出 embeddings 入图 epair（原 `export_llm_model_epair.py` 已废弃） |
+| `cann_lm_converter.py --mode single`（venv, CLI） | 导出 embeddings 入图 epair（原 `export_llm_model_epair.py` 已废弃） |
 | `run_qwen3_5_om_emb.py`（系统 Python） | host 查表 embeddings + OM (acl) run + vs HF（支持 `QWEN35_OM` env 切换 OM） |
 
 ---

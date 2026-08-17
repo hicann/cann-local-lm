@@ -42,7 +42,7 @@ set -uo pipefail
 PROJECT_ROOT="/mnt/workspace/project/CANN-LM_5883"
 CLI_DIR="$PROJECT_ROOT/examples/test_converter/export_llm_model/cann_lm_cli_export"
 VENV="/mnt/workspace/torch-delegate-harmony/.venv"
-CONV="$PROJECT_ROOT/cann_lm/converter/cann-lm-converter.py"
+CONV="$PROJECT_ROOT/cann_lm/converter/cann_lm_converter.py"
 DOPT_PY="/opt/buildtools/Python-3.11.4/bin/python3"
 QD="$PROJECT_ROOT/cann_lm/converter/quant"
 WORK_DIR="/tmp/opencode"           # dopt_config / quant_output 临时产物放这里 (不入仓)

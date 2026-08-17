@@ -127,10 +127,10 @@ def parse_args():
 | `--use-embeddings`　 | True　　　　　　 | 纯 embeddings（图外查表，默认；`--no-use-embeddings` 走图内查表，详见 [export_design.md](../export/export_design.md) "纯 embeddings 模式"） |
 | `--mode`　　　　　　 | `prefill-decode` | `single` / `prefill-decode`　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　 |
 | `--quant-path`　　　 | `None`　　　　　 | dopt GPTQ 产物路径（场景 1，自动推断 group_size/embed；与 `--quant-method gptq` 互斥）　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　 |
-| `--quant-method`　 | `gptq`　 | 量化算法（当前仅 gptq；自动 spawn dopt，场景 2，待实现；与 `--quant-path` 互斥）　|
+| `--quant-method`　 | `gptq`　 | 量化算法（当前仅 gptq；自动 spawn dopt subprocess 跑 GPTQ，场景 2；与 `--quant-path` 互斥）　|
 | `--quant-bits`　　 | `w4a8`　 | 格式/位宽（w4a8，默认 w4a8；`--quant-method` 时生效）　|
 
-> 量化参数 `--quant-path` / `--quant-method` / `--quant-bits` 互斥，详见 [quant_design.md](../quant/quant_design.md) "量化工具链分工设计"。精细调整走 dopt 分步（[dopt_design.md](../quant/dopt_design.md) "使用方法"）。
+> **量化两流程**：`--quant-path <dopt产物>`（场景 1，手动先跑 dopt GPTQ 产出 `quant_output/`，converter 消费）或 `--quant-method gptq`（场景 2，converter 自动 spawn dopt subprocess 在 NPU 跑 GPTQ → swap → export，一键式）。互斥。精细调整走 dopt 分步（[dopt_design.md](../quant/dopt_design.md)）。详见 [quant_design.md](../quant/quant_design.md)。
 
 ## 完整调用链
 
@@ -156,9 +156,13 @@ loader.load_model(hf_path, dtype, device)            # ① 加载（详见 expor
     └── collect_tokenizer_files(hf_path)
 
     ▼
-(可选) 量化 swap                                       # ② 量化接入（详见 quant_design.md）
-    │   swap_to_quant_linear_from_dopt(model, quant_path, ...)
-    │   swap_embeddings_from_dopt(sd, model)           # embed 自动检测 (embed_quant 非空时)
+(可选) 量化接入                                       # ② 量化（详见 quant_design.md）
+    │   场景1 (--quant-path <dopt产物>):
+    │     swap_to_quant_linear_from_dopt(model, quant_path)   # 消费已 GPTQ 产物 → QuantLinear
+    │     swap_embeddings_from_dopt(sd, model)               # embed 自动检测
+    │   场景2 (--quant-method gptq):
+    │     auto_quant.run_auto_quant(hf_path, "w4a8", artifact)  # 检测 NPU → spawn dopt
+    │       subprocess (系统 python + torch_npu + NPU) → GPTQ → 临时盘 → swap
 
     ▼
 saver.save_epair(...) / save_epair_prefill_decode(...)  # ③ 保存（详见 export_design.md "saver"）

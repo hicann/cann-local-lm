@@ -68,7 +68,7 @@
 |------|------|
 | `--quant-path <dopt产物目录>` | 加载 dopt GPTQ 产物，物化 int4 + swap QuantLinear |
 | `--quant-method` | `gptq` | 量化算法（当前仅 gptq；自动 spawn dopt，场景 2，待实现；与 --quant-path 互斥） |
-| `--quant-bits` | `w4a8` | 格式/位宽（w4a8/w4a16，默认 w4a8；--quant-method 时生效） |
+| `--quant-bits` | `w4a8` | 格式/位宽（w4a8，默认 w4a8；--quant-method 时生效） |
 
 > CLI 用法见 [INDEX.md](../cli/INDEX.md) / [cli_design.md](../cli/cli_design.md)。
 

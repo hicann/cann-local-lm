@@ -126,7 +126,7 @@ import torch
 from cann_lm.converter.loader import load_model
 from cann_lm.converter.quant.auto_quant import generate_dopt_config
 art = load_model(sys.argv[1], dtype=torch.bfloat16, device="cpu")
-cfg = generate_dopt_config(art, "w4a8")   # w4a8 only; w4a16 NotImplementedError
+cfg = generate_dopt_config(art, "w4a8")   # w4a8 only
 shutil.copy(cfg, sys.argv[2])
 from collections import Counter
 d = json.load(open(sys.argv[2]))

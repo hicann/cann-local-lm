@@ -34,7 +34,7 @@
 | `--kv-cache-max-len` | 2048　　　| KV buffer 第一维　　　　　　　　　　　　　　　　　　　　　　　　　 |
 | `--quant-path`　　　 | —　　　　 | dopt GPTQ 产物路径（量化接入，详见 [INDEX.md](../quant/INDEX.md)） |
 | `--quant-method`　 | `gptq`　 | 量化算法（当前仅 gptq；自动 spawn dopt，场景 2，待实现；与 --quant-path 互斥）　|
-| `--quant-bits`　　 | `w4a8`　 | 格式/位宽（w4a8/w4a16，默认 w4a8；--quant-method 时生效）　|
+| `--quant-bits`　　 | `w4a8`　 | 格式/位宽（w4a8，默认 w4a8；--quant-method 时生效）　|
 
 > 完整参数说明见 [cli_design.md](./cli_design.md) "命令行参数"。
 

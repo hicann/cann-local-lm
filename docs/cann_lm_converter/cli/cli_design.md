@@ -128,7 +128,7 @@ def parse_args():
 | `--mode`　　　　　　 | `prefill-decode` | `single` / `prefill-decode`　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　 |
 | `--quant-path`　　　 | `None`　　　　　 | dopt GPTQ 产物路径（场景 1，自动推断 group_size/embed；与 `--quant-method gptq` 互斥）　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　 |
 | `--quant-method`　 | `gptq`　 | 量化算法（当前仅 gptq；自动 spawn dopt，场景 2，待实现；与 `--quant-path` 互斥）　|
-| `--quant-bits`　　 | `w4a8`　 | 格式/位宽（w4a8/w4a16，默认 w4a8；`--quant-method` 时生效）　|
+| `--quant-bits`　　 | `w4a8`　 | 格式/位宽（w4a8，默认 w4a8；`--quant-method` 时生效）　|
 
 > 量化参数 `--quant-path` / `--quant-method` / `--quant-bits` 互斥，详见 [quant_design.md](../quant/quant_design.md) "量化工具链分工设计"。精细调整走 dopt 分步（[dopt_design.md](../quant/dopt_design.md) "使用方法"）。
 

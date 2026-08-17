@@ -52,7 +52,7 @@
 2. **CLI 一键导出（少量重要参数）**：converter CLI 只暴露 **两个互斥** 量化入口 + 一个格式参数，精细参数不暴露（走 dopt 分步）：
    - `--quant-path <dopt产物>`：场景 1，dopt 已 GPTQ，converter 消费产物
    - `--quant-method gptq`：场景 2，converter 自动 spawn dopt subprocess 跑 GPTQ（已实现 `auto_quant.py`，见 [一键式量化方案选型](#一键式量化方案选型)）
-   - `--quant-bits w4a8|w4a16`：格式/位宽（默认 `w4a8`，`--quant-method` 时生效，传给 dopt_config 的 strategy）
+   - `--quant-bits w4a8`：格式/位宽（默认 `w4a8`，`--quant-method` 时生效，传给 dopt_config 的 strategy）
 3. **converter 自动推断**：场景 1 的 `group_size` 从 dopt 产物 `group_scale` shape 自动反推（`swap.py`），`embed` 量化自动检测（dopt 产物含 `embed_tokens.quant_op...s` 即做），无需用户重复传参。
 
 ### 两场景对比
@@ -62,7 +62,7 @@
 | 输入 | dopt GPTQ 产物（`quant_output/`） | HF 原始权重 |
 | 谁跑 dopt | 用户手动跑 dopt | converter 自动 spawn dopt subprocess |
 | 量化算法 | GPTQ（dopt，精度高） | GPTQ（dopt，精度高） |
-| 格式 | 从产物推断 | `--quant-bits` 配（w4a8/w4a16，默认 w4a8） |
+| 格式 | 从产物推断 | `--quant-bits` 配（w4a8，默认 w4a8） |
 | group_size | 自动推断（从 dopt 产物） | dopt_config 配（默认 256） |
 | embed 量化 | 自动检测 | dopt_config 配（Quant_Embed_MinMax） |
 | 环境 | converter CPU stubs | converter CPU stubs + subprocess NPU |
@@ -331,9 +331,8 @@ DEVICE=npu python cann_lm_converter.py \
 2. **calibration 路径** ✅：subprocess `cwd=cann_lm/converter/quant/`（config.yaml 的 `train_files` 相对 CWD）
 3. **dopt_config 生成** ✅：`generate_dopt_config` 遍历 cann_lm 模型自动生成（按 `quant_bits` 映射 strategy），不依赖 `quant/dopt_config.json`
 4. **subprocess 失败处理** ✅：退出码非 0 raise `RuntimeError`，保留临时产物路径供调试
-5. **w4a16 strategy** ⏳ 待实现：无 preset W4A16 Linear strategy，当前 `NotImplementedError`
-6. **临时盘清理** ⏳ 待实现：当前不清理（保留供调试），7B+ 大文件需 `shutil.rmtree`
-7. **实测验证** ⏳ 待做：cann_lm 层名 vs HF 匹配、subprocess 环境跑通、calibration 匹配
+5. **临时盘清理** ⏳ 待实现：当前不清理（保留供调试），7B+ 大文件需 `shutil.rmtree`
+6. **实测验证** ⏳ 待做：cann_lm 层名 vs HF 匹配、subprocess 环境跑通、calibration 匹配
 
 > `--quant-path`（消费已存在的 dopt 磁盘产物，CPU-only 机或用户已手动跑 dopt）保留作兜底，与 `--quant-method gptq`（自动 spawn dopt）互斥。`--quant-bits` 仅 `--quant-method` 时生效。
 ### `materialize.py`（162 行）— 权重物化纯函数
@@ -550,7 +549,7 @@ y[b,m,n] = Σ_k ( x1_q[b,m,k] · x1_scale[b,m] ) · ( x2_q[n,k] · x2_scale[n, k
 1. **unsigned int4 不支持**：`swap_to_quant_linear_from_dopt`（`swap.py:191-195`）读 dopt 产物的 `unsigned_quant`，校验必须 = 0（symmetric signed `[-8, 7]`）。非 0（unsigned int4 `[0, 15]`）触及 CANN int4 signed/unsigned 编码约定，当前直接 `ValueError` 拒绝。dopt 默认 `Quant_act_weight_eco` 的 `unsigned_quant=False`，故主路径不触发。
 2. **非对称 offset 不支持**：`swap_to_quant_linear_from_dopt`（`swap.py:196-201`）读 dopt 产物的 `offset`，校验必须全 0（symmetric）。非零 offset（asymmetric）`NotImplementedError`——方案 A `quant_matmul_s8s4` 只支持 symmetric offset=0。dopt `weight_q_params_adapter_into_dopt` 把 offset 置零（`offset=torch.zeros_like(...)`），故主路径不触发。dopt `QuantizerFuncIntOffset` 反量化 `w_fp=(q-offset)*scale`；若未来支持非对称，需对齐 op 的 offset 语义 + 按 group `repeat_interleave` 扩维。
 3. **CPU-only 适配**：converter 侧 GPTQ 跑不了（需 NPU/GPU + 校准）。**`--quant-path` 已作兜底**：离线机跑 dopt GPTQ 产出（`quant_output/model.safetensors` 或 `trained_quant_weight.pth`），converter 加载它只做物化 + swap + 导出（不跑 GPTQ）。dopt `opt_main` 在本机 NPU 上跑 GPTQ 曾静默卡住（converter 一键式接入待解，见 [一键式量化方案选型](#一键式量化方案选型)）。
-4. **一键式量化（方案 C）已实现**：converter `--quant-method gptq`（`auto_quant.py`：`generate_dopt_config` + `run_auto_quant` spawn dopt subprocess + swap）。w4a16/实测待做，详见 [一键式量化方案选型](#一键式量化方案选型)。
+4. **一键式量化（方案 C）已实现**：converter `--quant-method gptq`（`auto_quant.py`：`generate_dopt_config` + `run_auto_quant` spawn dopt subprocess + swap）。实测待做，详见 [一键式量化方案选型](#一键式量化方案选型)。
 5. **dopt 函数超规**：`swap.py swap_to_quant_linear_from_dopt` 函数超 50 行，`materialize.py materialize_int4_with_scale` 6 参数（超 5 参数原则）。两者建议按单一职责拆分 + `Int4Spec` dataclass 收敛，当前未拆。
 6. **dopt gemma4 多模态阻塞**：dopt GPTQ 循环写死文本-only `ForCausalLM` 结构（`train.py:290 model_define` 用 `AutoModelForCausalLM`、`ptq_loop.py:21 get_llama` 取 `model.model.layers`）。多模态 `ForConditionalGeneration` 文本层在 `model.language_model.layers`。`QGemma4ScaledEmbedding` 预留未接线（`do_opt.py:visible_type_dict` 无对应分支）。正路是喂文本-only `Gemma4ForCausalLM`，或改 dopt `model_define`/`get_llama` 抽 `model.language_model` 重挂顶层（dopt 改动，需确认）。
 7. **dopt_lm 拼写错误**：目录名 `ptq_algo_heissen` 与类名 `WeightQuantHeissen` 中的 `heissen` 是 `Hessian` 的系统性拼写错误（遍布目录、类、属性 `heissen_matrix`、局部变量、甚至版权头）。因 dopt_lm 不被主仓 import（独立 CLI 运行，产物按文件路径加载），重命名 `heissen→hessian` 不影响 converter 消费链路——只需同步 dopt_lm 内部 import 与 `train.py` 的 import 即可，是低风险纯内部重构。当前未改。

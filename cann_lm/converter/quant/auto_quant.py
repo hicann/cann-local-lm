@@ -19,12 +19,10 @@ import torch
 def generate_dopt_config(artifact, quant_bits: str) -> str:
     """遍历 artifact.model 生成 dopt_config (layer_strategy), 返回临时文件路径.
 
-    Linear (非 embed/lm_head) → Quant_act_weight_eco (w4a8) / w4a16 待实现
+    Linear (非 embed/lm_head) → Quant_act_weight_eco (w4a8)
     Embedding → Quant_Embed_MinMax
     lm_head (Linear) → Quant_lm_head
     """
-    if quant_bits == "w4a16":
-        raise NotImplementedError("--quant-bits w4a16 待实现 (无 preset W4A16 Linear strategy)")
     linear_strategy = "Quant_act_weight_eco"  # w4a8
     layer_strategy = {}
     for name, m in artifact.model.named_modules():

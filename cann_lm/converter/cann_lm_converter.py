@@ -50,7 +50,7 @@ def convert(
     num_layers: int | None = None,
     quant_path: str | None = None,
     quant_method: str | None = None,  # 量化算法, 当前仅支持 "gptq" (自动 spawn dopt); 与 quant_path 互斥
-    quant_bits: str = "w4a8",  # 格式/位宽 (w4a8/w4a16); 仅 quant_method 时生效
+    quant_bits: str = "w4a8",  # 格式/位宽 (w4a8); 仅 quant_method 时生效
 ) -> None:
     """程序化入口：HF 模型 → epair
 
@@ -65,7 +65,7 @@ def convert(
             精细调整 (层策略/group_size/算法参数) 由 dopt 分步完成 (见 dopt_design.md). 与 quant_method 互斥.
         quant_method: 量化算法 (当前仅支持 "gptq"). 场景 2: converter 自动 spawn dopt subprocess
             跑 GPTQ (需 NPU 环境, 待实现, 见 quant_design.md "一键式量化方案选型"). 与 quant_path 互斥.
-        quant_bits: 格式/位宽 (w4a8/w4a16, 默认 w4a8). 仅 quant_method 时生效, 传给 dopt_config 的 strategy.
+        quant_bits: 格式/位宽 (w4a8, 默认 w4a8). 仅 quant_method 时生效, 传给 dopt_config 的 strategy.
     """
     print(f"[1/3] Loading model from {hf_path}")
     artifact = load_model(hf_path, dtype=dtype, device=device)
@@ -185,8 +185,8 @@ def parse_args() -> argparse.Namespace:
     quant_group.add_argument("--quant-method", default=None, choices=["gptq"],
                              help="量化算法 (当前仅支持 gptq). 场景 2: converter 自动 spawn dopt subprocess 跑 GPTQ "
                                   "(需 NPU 环境, 待实现). 与 --quant-path 互斥.")
-    parser.add_argument("--quant-bits", default="w4a8", choices=["w4a8", "w4a16"],
-                        help="格式/位宽 (w4a8/w4a16, 默认 w4a8). 仅 --quant-method 时生效, 传给 dopt_config 的 strategy.")
+    parser.add_argument("--quant-bits", default="w4a8", choices=["w4a8"],
+                        help="格式/位宽 (w4a8, 默认 w4a8). 仅 --quant-method 时生效, 传给 dopt_config 的 strategy.")
     return parser.parse_args()
 
 

@@ -10,7 +10,7 @@ import torch.nn as nn
 from dopt_lm.common_tools.log import Logger
 from dopt_lm.opt_funcs.eco_stage.train import model_define
 from dopt_lm.do_opt import paser_quant_config
-from .ptq_algo import WeightQuantHeissen
+from .ptq_algo import WeightQuantHessian
 from .modelutils import find_layers, DEV
 from .quant import Quantizer
 from .datautils import get_loaders
@@ -160,7 +160,7 @@ def llama_sequential(model, dataloader, dev):
         else: 
             per_layer_input = None
 
-        attn = layer.self_attn
+        attn = getattr(layer, "self_attn", None) or getattr(layer, "linear_attn", None)
         if getattr(attn, "is_kv_shared_layer", False): 
             lt = attn.layer_type
             Kt, Vt = stored_kv[lt]
@@ -215,7 +215,7 @@ def llama_sequential(model, dataloader, dev):
                 layer_name_full = 'model.layers.%d.%s' % (i, name)
                 if args.quant_config.get(layer_name_full, None) is None: 
                     continue
-                weight_algo[name] = WeightQuantHeissen(subset[name])
+                weight_algo[name] = WeightQuantHessian(subset[name])
                 weight_algo[name].quantizer = Quantizer()
                 wbits = args.quant_config.get(layer_name_full)['weight']['bit']
                 weight_algo[name].quantizer.configure(
@@ -267,7 +267,7 @@ def llama_sequential(model, dataloader, dev):
     ple_proj_key = 'model.per_layer_model_projection'
     if args.quant_config.get(ple_proj_key, None) is not None: 
         ple_proj_layer = model.model.per_layer_model_projection.to(dev)
-        ple_proj_quant = WeightQuantHeissen(ple_proj_layer)
+        ple_proj_quant = WeightQuantHessian(ple_proj_layer)
         ple_proj_quant.quantizer = Quantizer()
         wbits = args.quant_config.get(ple_proj_key)['weight']['bit']
         groupsize = args.quant_config.get(ple_proj_key)['weight']['group_size']
@@ -300,7 +300,7 @@ def llama_sequential(model, dataloader, dev):
 
     if args.quant_config.get('lm_head', None) is not None: 
         layer = model.lm_head.to(dev)
-        lm_head_q_layer = WeightQuantHeissen(layer)
+        lm_head_q_layer = WeightQuantHessian(layer)
         lm_head_q_layer.quantizer = Quantizer()
         wbits = args.quant_config.get('lm_head')['weight']['bit']
         groupsize = args.quant_config.get('lm_head')['weight']['group_size']

@@ -538,7 +538,7 @@ def ptq_quant_pipline(
     train_file = config["dataset"]["train_files"]
     config["dataset"]["cutoff_len"] = config.get("cutoff_len", 2048)
     if quant_method == 'gptq': 
-        from dopt_lm.weight_quant_ptq.ptq_algo_heissen.ptq_loop import weight_quant_loop
+        from dopt_lm.weight_quant_ptq.ptq_algo_hessian.ptq_loop import weight_quant_loop
     st = time.time()
     nsamples = config["dataset"].get("ptq_samples", 256)
     fp16_flag = config.get('extra_training_config', dict()).get('fp16', False)

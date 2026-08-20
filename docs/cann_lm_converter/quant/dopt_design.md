@@ -211,7 +211,7 @@ dopt 可设置的量化参数分布在 4 个层面。**用户实际可设的只�
 | `Quant_aigc_qat` | W8A8 | 8(omni_min_max) | 8(omni, unsigned) | QAT 用 |
 | `Quant_act_weight_eco` | **W4A8（主路径）** | 4(group 256, block 128, omni_group) | 8(dyn_s8, signed) | converter 默认 |
 | `Quant_Embed_MinMax` | embed int8 | 8(per-channel min_max) | — | host gather |
-| `Quant_Gemma4_Embed` | gemma4 embed | 8(per-channel) | — | **预留未接线**（`visible_type_dict` 无对应分支） |
+| `Quant_Gemma4_Embed` | gemma4 embed | 8(per-channel) | — | 已接线（`visible_type_dict` 含 `"Gemma4TextScaledWordEmbedding"→QGemma4ScaledEmbedding` 类名映射；策略本身未设 `target_op`，靠 embed module 类名匹配命中） |
 | `Quant_Dummy` | 占位 | — | — | |
 | `Quant_lm_head` | W4 A16 | 4(group 256) | 16(min_max) | lm_head 专用 |
 
@@ -365,7 +365,7 @@ dopt 的**推理期 fakequant 实现**，不是导出用算子。把 `nn.Linear`
 | 文件 | 职责 |
 |------|------|
 | `qlinear.py` | `QLinear.__init__(m, optimize_cfg, layer_name=None, **argv)`：解析 weight/input/output cfg，建 `QClass`，`to(weight_device)`。`forward(x)`：`weight, x = self.quant_op(weight, x)` → `F.linear(x, weight, None)` → 可选 `output_quantizer(out)` → `+ bias`。支持 `dyn` 动态输入量化（解出 `s_denormalized` 反缩放）。`set_quant_state(weight, input)` 透传 `quant_op` |
-| `qembed.py` | `QEmbedding(nn.Module).__init__(m: nn.Embedding, optimize_cfg, layer_name=None, **argv)`：强制 `per_channel=True`，建 `QClass(m, weight_cfg, input_cfg={})`；`tie_lmhead` 控制是否共享 `lm_head` 的 weight（不 clone）；`npu_simulator=None`（stub）。`forward(x)`：`weight, x = self.quant_op(weight, x)` → `F.embedding(...)`。`QGemma4ScaledEmbedding`：gemma4 专用，多 `embed_scale` buffer，forward 末尾 `out = out * self.embed_scale`。**注意：`QGemma4ScaledEmbedding` 未接入 `do_opt.py:visible_type_dict`，属预留未接线代码** |
+| `qembed.py` | `QEmbedding(nn.Module).__init__(m: nn.Embedding, optimize_cfg, layer_name=None, **argv)`：强制 `per_channel=True`，建 `QClass(m, weight_cfg, input_cfg={})`；`tie_lmhead` 控制是否共享 `lm_head` 的 weight（不 clone）；`npu_simulator=None`（stub）。`forward(x)`：`weight, x = self.quant_op(weight, x)` → `F.embedding(...)`。`QGemma4ScaledEmbedding`：gemma4 专用，多 `embed_scale` buffer，forward 末尾 `out = out * self.embed_scale`。**`QGemma4ScaledEmbedding` 已接入 `do_opt.py:visible_type_dict`（`"Gemma4TextScaledWordEmbedding"→QGemma4ScaledEmbedding` 类名映射），靠 embed module 类名匹配命中** |
 | `utils.py` | `get_quantizer_cfg(cfg) -> (weight_cfg, input_cfg, output_cfg)`（dict 三段拆分） |
 
 ## quantizer（量化器算法层）
@@ -449,7 +449,7 @@ GPTQ 循环写死**文本-only ForCausalLM** 结构假设：
 - `train.py:290` `model_define` = `AutoModelForCausalLM.from_pretrained(model_path, ...)`——对 `ForConditionalGeneration` 架构（多模态）多半直接找不到类报错；
 - `ptq_loop.py:21` `get_llama` + `llama_sequential:54` 取 `model.model.layers` / `model.model.embed_tokens` / `model.model.norm` / `model.lm_head`——多模态模型的文本层在 `model.language_model.layers`（如 gemma4-E4B，42 层），非 `model.model.layers`。
 
-**gemma4 适配现状**：`modules/qembed.py:70` 有 `QGemma4ScaledEmbedding` 类（处理 gemma4 的 `scalar_embed_scale`/`embed_scale`，forward 末尾 `out = out * self.embed_scale`），**但未接进 `do_opt.py:22-27` 的 `visible_type_dict`**（那里只有 `Embedding→QEmbedding`、`"embedding_min_max"→QEmbedding`），属**预留未接线**代码。说明 dopt 作者已预期 gemma4 **文本模型**（带 embed_scale 的 `Gemma4ForCausalLM`）会接入，但未完成 type_dict 分支。
+**gemma4 适配现状**：`modules/qembed.py:70` 的 `QGemma4ScaledEmbedding` 类（处理 gemma4 的 `scalar_embed_scale`/`embed_scale`，forward 末尾 `out = out * self.embed_scale`）**已接进 `do_opt.py:22-28` 的 `visible_type_dict`**：`"Gemma4TextScaledWordEmbedding": QGemma4ScaledEmbedding`。`get_target_op_cls` 通过类名匹配命中——`Quant_Gemma4_Embed` 策略本身未设 `target_op`，当模型 embed module 类名为 `Gemma4TextScaledWordEmbedding` 时自动映射到 `QGemma4ScaledEmbedding`（而非 `QEmbedding`）。`visible_type_dict` 共 5 个映射：`Embedding→QEmbedding`、`"embedding_min_max"→QEmbedding`、`Linear→QLinear`、`"Linear"→QLinear`、`"Gemma4TextScaledWordEmbedding"→QGemma4ScaledEmbedding`。
 
 **结论**：dopt 现状只支持文本-only `ForCausalLM`。要跑 gemma4 量化，正路是喂文本-only `Gemma4ForCausalLM` 导出（顶层 ForCausalLM、`model.model.layers`、`embed_tokens.embed_scale`），而非多模态 `Gemma4ForConditionalGeneration` 目录；或改 `model_define`/`get_llama` 抽 `model.language_model` 重挂顶层（dopt 改动，需确认）。
 

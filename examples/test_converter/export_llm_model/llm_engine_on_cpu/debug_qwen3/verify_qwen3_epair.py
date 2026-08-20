@@ -337,10 +337,10 @@ def main():
 
     if args.quant_embeddings:
         from safetensors import safe_open
-        from cann_lm.converter.quant.materialize import materialize_int8_per_channel
+        from cann_lm.converter.quant.materialize import materialize_int8_per_channel_symmetric
         print(f"  Loading dopt embed int8+scale from {DOPT_PATH}")
         with safe_open(DOPT_PATH, "pt") as sf:
-            int8_w, scale = materialize_int8_per_channel(
+            int8_w, scale = materialize_int8_per_channel_symmetric(
                 sf.get_tensor("model.embed_tokens.weight"),
                 sf.get_tensor("model.embed_tokens.quant_op.weight_quantizer.s"))
         wrapper.set_quant_embeddings({"model.model.embed_tokens.weight": (int8_w, scale)})

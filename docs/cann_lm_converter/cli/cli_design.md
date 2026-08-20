@@ -134,18 +134,37 @@ def parse_args():
 
 ## 完整调用链
 
+> **改造(2026-08-18)**:场景 2 (`--quant-method gptq`) 时 `load_model` 推到 `run_auto_quant` 之后,避免主进程 cann_lm 模型与 subprocess transformers 模型同时持有(2× 内存峰值)。`generate_dopt_config` 不再被场景 2 用(策略赋值逻辑在 subprocess 内用 transformers 模型生成),swap 移回主进程与场景 1 共用统一路径。**当前 subprocess 入口为独立脚本 `quant/dopt_wrapper.py`**(`python dopt_wrapper.py ...`,系统 Python + torch_npu + NPU env);计划改造为 `auto_quant._dopt_wrapper_main` 模块内函数(`python -m cann_lm.converter.quant.auto_quant --wrapper ...`,合并到单文件消除两份重复的 `_build_layer_strategy`),**尚未落地**。
+
 ```
 cann_lm_converter.py (CLI)
     │
-    ├── parse_args()  ← --hf-path, --output-dir, --dtype, --device, --max-file-size,
+    ├── parse_args()  ← --hf-path, --output-dir, --dtype, --max-file-size,
     │                    --kv-cache-max-len, --seq-len, --use-embeddings,
-    │                    --mode, --seq-len, [--quant-path | --quant-method gptq]
+    │                    --mode, --seq-len, [--quant-path | --quant-method gptq],
+    │                    [--quant-device npu|cuda]
     │
     ▼
-convert(hf_path, output_dir, dtype, device, ...)
+convert(hf_path, output_dir, dtype, ...)   # device 写死 CPU, 不暴露 CLI
     │
     ▼
-loader.load_model(hf_path, dtype, device)            # ① 加载（详见 export_design.md "loader"）
+(可选) 场景 2 量化前置: spawn dopt subprocess      # ① GPTQ (详见 quant_design.md "方案 C")
+    │   场景2 (--quant-method gptq, 主进程不预 load cann_lm):
+     │     auto_quant.run_auto_quant(hf_path, "w4a8") → 返回 dopt_out_dir
+     │       └─ spawn 'python dopt_wrapper.py ...' (系统 python + torch_npu + NPU)
+     │            内部调 dopt_wrapper.main(hf_path, optimize_config, output_dir, ...)
+    │            ├─ model_define(hf_path) 加载 transformers 模型
+    │            ├─ _build_layer_strategy(model) → dopt_config.json (带策略)
+    │            │   Linear→Quant_act_weight_eco, lm_head→Quant_lm_head,
+    │            │   Embedding→Quant_Embed_MinMax / Quant_Gemma4_Embed
+    │            ├─ del model 释放
+    │            └─ weight_quant_pipline(...) (dopt 内部加载 2 次,不改 dopt 的代价)
+    │               → 产物 → 临时盘 model.safetensors + dopt_config.json
+    │   场景1 (--quant-path): dopt_out_path = quant_path (离线产物, 无 subprocess)
+    │   无量化: dopt_out_path = None
+    │
+    ▼
+loader.load_model(hf_path, dtype, device)            # ② 加载 cann_lm 模型 (场景 2 时在 subprocess 之后)
     │
     ├── 读 config.json
     ├── model_registry.detect_model_type(hf_config)
@@ -156,16 +175,14 @@ loader.load_model(hf_path, dtype, device)            # ① 加载（详见 expor
     └── collect_tokenizer_files(hf_path)
 
     ▼
-(可选) 量化接入                                       # ② 量化（详见 quant_design.md）
-    │   场景1 (--quant-path <dopt产物>):
-    │     swap_to_quant_linear_from_dopt(model, quant_path)   # 消费已 GPTQ 产物 → QuantLinear
-    │     swap_embeddings_from_dopt(sd, model)               # embed 自动检测
-    │   场景2 (--quant-method gptq):
-    │     auto_quant.run_auto_quant(hf_path, "w4a8", artifact)  # 检测 NPU → spawn dopt
-    │       subprocess (系统 python + torch_npu + NPU) → GPTQ → 临时盘 → swap
+(可选) 量化接入 (场景 1 + 场景 2 共用统一 swap)        # ③ 量化 swap (详见 quant_design.md)
+    │   if dopt_out_path (场景1 quant_path 或 场景2 临时盘):
+    │     swap_to_quant_linear_from_dopt(artifact.model, dopt_out_path)  # → QuantLinear
+    │     load_dopt_state_dict(dopt_out_path) → sd
+    │     swap_embeddings_from_dopt(sd, artifact.model)                  # embed 自动检测
 
     ▼
-saver.save_epair(...) / save_epair_prefill_decode(...)  # ③ 保存（详见 export_design.md "saver"）
+saver.save_epair(...) / save_epair_prefill_decode(...)  # ④ 保存 (详见 export_design.md "saver")
     │
     ├── register_ge_converters()
     ├── wrapper = artifact.wrapper_cls(model, ...).eval()
@@ -179,7 +196,7 @@ saver.save_epair(...) / save_epair_prefill_decode(...)  # ③ 保存（详见 ex
     └── save_model_config(artifact, output_dir, use_embeddings)
 
     ▼
-verify output                                          # ④ 检查产物文件齐全
+verify output                                          # ⑤ 检查产物文件齐全
 ```
 
 ## prefill/decode 分离模式 CLI
@@ -229,14 +246,21 @@ output_dir/
 
 ## 环境变量
 
+> **快捷方式**:`scripts/set_env.sh` 封装了三套独立环境,按场景 source(`converter` / `npu` / `om`)。路径默认值可由环境变量覆盖(`TORCH_DELEGATE_HOME` / `TORCHAIR_ROOT` / `DOPT_PYTHON` / `PROJECT_ROOT` / `CANN_SET_ENV` / `SOC_VERSION` / `GE_FUSION_SWITCH_FILE`)。下面表格列变量与默认值。
+
 | 变量 | 说明 | 默认值 |
 |------|------|--------|
-| `ASCEND_HOME_PATH` | CANN 安装路径 | (需设置) |
-| `PYTHONPATH` | 项目根目录 | (需设置) |
-| `TORCH_DEVICE_BACKEND_AUTOLOAD` | backend autoload 开关 (设为 0 禁用) | - |
-| `TORCH_DELEGATE_HOME` | torch-delegate 安装路径 | - |
-| `TORCH_DELEGATE_ENABLE_FALLBACK_CODEGEN` | fallback codegen 开关 (设为 0 禁用) | - |
-| `LD_LIBRARY_PATH` | stubs + CANN lib64（converter CPU 环境需 stubs 在前） | - |
+| `ASCEND_HOME_PATH` | CANN 安装路径 (由 CANN `set_env.sh` 设置) | (需 source CANN set_env.sh) |
+| `PYTHONPATH` | 项目根目录 (`/mnt/workspace/project/CANN-LM_5883`) | (需设置) |
+| `TORCH_DEVICE_BACKEND_AUTOLOAD` | backend autoload 开关 (设为 0 禁用) | `0` |
+| `TORCH_DELEGATE_HOME` | torch-delegate 安装路径 | `/mnt/workspace/torch-delegate-harmony` |
+| `TORCH_DELEGATE_ENABLE_FALLBACK_CODEGEN` | fallback codegen 开关 (设为 0 禁用) | `0` (converter 模式) |
+| `ASCEND_SLOG_PRINT_TO_STDOUT` | GE 详细日志 (定位 not registered 等) | `1` (converter 模式) |
+| `LD_LIBRARY_PATH` | converter 模式: stubs 在 CANN lib64 前;NPU/OM 模式: 仅 CANN lib64 | (按模式) |
+| `DOPT_PYTHON` | dopt subprocess 用的系统 Python (`--quant-method gptq` 触发) | `/opt/buildtools/Python-3.11.4/bin/python3` |
+| `CONVERTER_PYTHON` | converter venv python (export 设置后供开发者用) | `${TORCH_DELEGATE_HOME}/.venv/bin/python` |
+| `SOC_VERSION` | OM 编译目标 SOC (om 模式) | `Ascend910_9362` |
+| `GE_FUSION_SWITCH_FILE` | OM 编译 fusion switch 配置 (关 AUB fusion) | `/tmp/fusion_autoub_off.cfg` |
 
 > 环境配置完整说明见 [AGENTS.md](../../../AGENTS.md) "运行环境设置（converter，已验证）"。
 

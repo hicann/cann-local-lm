@@ -44,7 +44,7 @@ def pack_int4(q: torch.Tensor) -> torch.Tensor:
     return ((nib_odd << 4) | nib_even).to(torch.int8)
 
 
-def materialize_int4_with_scale(
+def materialize_int4_per_group_symmetric(
     weight: torch.Tensor,
     scale: torch.Tensor,
     group_size: int,
@@ -52,7 +52,7 @@ def materialize_int4_with_scale(
     nbits: int = 4,
     packed: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Materialize using a PRECOMPUTED per-group scale (e.g., from dopt GPTQ).
+    """线性对称量化: q = clamp(round(w/s), ±qmax), 反量化 w ≈ q * s (offset=0).
 
     Args:
         weight: ``[out, in]`` (fp16/fp32, GPTQ-corrected).
@@ -60,6 +60,9 @@ def materialize_int4_with_scale(
             the dopt ``quant_op.weight_quantizer.s`` reshaped from its flattened
             ``[out * in//group]`` form back to 2D.
         group_size: K-axis group size (must match the scale's grouping).
+        signed: True -> signed int4 ``[-8, 7]``; False -> unsigned ``[0, 15]``.
+            两者反量化都是 q*s (对称, offset=0), unsigned 只平移整数范围不引入零点.
+        nbits: 4 (int4) default.
         packed: True -> return nibble-packed int8 ``[out, in//2]`` for 方案 A
             ``quant_matmul_s8s4`` x2; False (default) -> unpack ``[out, in]``.
 
@@ -86,7 +89,7 @@ def materialize_int4_with_scale(
     return (pack_int4(q) if packed else q), scale.float()
 
 
-def materialize_int8_per_channel(
+def materialize_int8_per_channel_symmetric(
     weight: torch.Tensor,
     scale: torch.Tensor,
     signed: bool = True,

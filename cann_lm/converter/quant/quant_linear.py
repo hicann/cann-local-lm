@@ -43,7 +43,7 @@ class QuantLinear(nn.Module):
 
     Args:
         weight_q: int8 ``[n, k//2]`` — int4 nibble-packed (low nibble=偶 k 索引,
-            two's-complement 4-bit signed). From ``materialize_int4_with_scale(..., packed=True)``.
+            two's-complement 4-bit signed). From ``materialize_int4_per_group_symmetric(..., packed=True)``.
         weight_scale: fp32 ``[n, k//group]`` (per output-channel × per K-group, from GPTQ).
         group_size: K-axis group size g (``k % g == 0``).
         bias: optional bias ``[n]`` (fp16/bf16/fp32); None if the source Linear had bias=None.

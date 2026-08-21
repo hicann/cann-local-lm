@@ -35,6 +35,41 @@ def rotate_half(x: torch.Tensor) -> torch.Tensor:
     return torch.cat((-x2, x1), dim=-1)
 
 
+def scatter_kv_to_cache(
+    cache: torch.Tensor,
+    kv_pos: torch.Tensor,
+    kv_new: torch.Tensor,
+) -> torch.Tensor:
+    """Scatter new KV into BNSD cache via npu_scatter_nd_update (out-of-place, 标准多维坐标).
+
+    cache [b,n,kv_max,d], kv_pos [seq] (dim2 写入位置), kv_new [b,n,seq,d].
+    构造 [b*n*seq,3] indices (b,n,kv_pos) + [b*n*seq,d] updates, 命中 ge.ScatterNdUpdate
+    标准语义, 等价 index_copy(2, kv_pos, kv_new). CPU (else 分支逐点写) 与 GE
+    (ge.ScatterNdUpdate) 语义一致, 不依赖 1D=dim2 私有约定.
+
+    用 out-of-place 版 (无 _): in-place schema 有 alias annotation (Tensor(a!)),
+    torch.export functionalization 不支持; out-of-place (-> Tensor out) 无 alias.
+
+    indices 构造避免 Range(arange)+BroadcastTo(expand), 改用 support_ops.md 算子:
+      n_grid: Const [n, kv_max] (python list 预计算, n/kv_max 静态 → Const, 无 Range)
+      col_n:  n_grid[:, :seq].reshape(-1) (StridedSliceD 动态 slice seq, 无 expand;
+              col_n 需 n_idx 每个重复 seq 次, seq 动态, concat 无法替代, 故用 slice)
+      col_pos: cat([kv_pos]*n) (ConcatV2D, n 静态 tile, 无 expand)
+      col_b:  col_n * 0 (Mul, b=1 全 0; gemma4 batch=1, b>1 需扩展 b 网格)
+    """
+    b, n, kv_max, d = cache.shape
+    seq = kv_pos.shape[0]
+    n_grid = torch.tensor(
+        [[i] * kv_max for i in range(n)], device=cache.device, dtype=torch.int64
+    )
+    col_n = n_grid[:, :seq].reshape(-1)
+    col_pos = torch.cat([kv_pos] * n, dim=0)
+    col_b = col_n * 0
+    indices = torch.cat([col_b.view(1, -1), col_n.view(1, -1), col_pos.view(1, -1)], dim=0).transpose(0, 1).reshape(-1, 3)
+    updates = kv_new.reshape(-1, d)
+    return torch.ops.npu.npu_scatter_nd_update(cache, indices, updates)
+
+
 def apply_rotary_pos_emb(
     q: torch.Tensor,
     k: torch.Tensor,
@@ -370,8 +405,11 @@ class Gemma4TextRotaryEmbedding(nn.Module):
         # Gather over 预缓存常量表 (cos_cached[position_ids])。无 inv_freq/cos/sin/pow/neg 动态算子。
         cos_cached = getattr(self, f"cos_cached_{layer_type}")  # [max_seq, dim] 常量
         sin_cached = getattr(self, f"sin_cached_{layer_type}")
-        cos = cos_cached[position_ids]   # -> [batch, seq, dim]
-        sin = sin_cached[position_ids]
+        # index_select 替代 advanced indexing (cos_cached[position_ids] -> ge.Index, 未在
+        # support_ops.md 列出); index_select(0, idx) -> ge.GatherV2 (support_ops.md GatherV2).
+        pos_flat = position_ids.reshape(-1)
+        cos = cos_cached.index_select(0, pos_flat).reshape(*position_ids.shape, -1)
+        sin = sin_cached.index_select(0, pos_flat).reshape(*position_ids.shape, -1)
         return cos.to(dtype=x.dtype), sin.to(dtype=x.dtype)
 
 
@@ -519,13 +557,14 @@ class Gemma4TextAttention(nn.Module):
             cache_entry = past_key_values[self.layer_idx]
             if cache_entry is not None and new_kv_cache_pos is not None:
                 cache_k, cache_v = cache_entry
-                # Scatter-write: write new KV at specified positions (non-in-place)
-                # 注: npu_scatter_nd_update 的 indices scatter dim 0, gemma4 cache [b,n,kv_max,d]
-                # (BNSD) 要 reshape (transpose n/kv_max, 不连续, 开销大于 index_copy).
-                # 故 gemma4 保留 index_copy (InplaceUpdate+Transpose). npu_scatter_nd_update 的
-                # schema+converter 保留供 qwen3.5 (cache layout 不同) 或后续 PagedAttention 用.
-                cache_k = cache_k.index_copy(2, new_kv_cache_pos, key_states)
-                cache_v = cache_v.index_copy(2, new_kv_cache_pos, value_states)
+                # Scatter-write new KV into BNSD cache via npu_scatter_nd_update (标准多维坐标).
+                # ge.ScatterNdUpdate 按多维坐标 scatter: scatter_kv_to_cache 构造 [b*n*seq,3]
+                # indices (b,n,kv_pos) + [b*n*seq,d] updates, 等价 index_copy(2,pos,kv_new).
+                # CPU (else 分支) 与 GE (ge.ScatterNdUpdate) 语义一致, 不依赖 1D=dim2 约定.
+                # cann_lm 自带 converter (converter/export/_scatter_nd_update_converter.py)
+                # 覆盖 torchair, 直接产出 ge.ScatterNdUpdate (不绕 InplaceUpdate+Transpose).
+                cache_k = scatter_kv_to_cache(cache_k, new_kv_cache_pos, key_states)
+                cache_v = scatter_kv_to_cache(cache_v, new_kv_cache_pos, value_states)
                 past_key_values[self.layer_idx] = (cache_k, cache_v)
                 # Use entire buffer for attention
                 key_states = cache_k

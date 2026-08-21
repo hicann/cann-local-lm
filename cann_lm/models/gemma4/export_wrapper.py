@@ -75,7 +75,9 @@ class Gemma4ExportWrapper(ExportWrapper):
             per_layer_token_identity,
         )
         if output_pos is not None:
-            logits = logits[:, output_pos, :]
+            # index_select 替代 advanced indexing (logits[:, output_pos, :] -> ge.IndexByTensor,
+            # 未在 support_ops.md 列出); index_select(1, idx) -> ge.GatherV2 (support_ops.md).
+            logits = logits.index_select(1, output_pos.to(torch.int64))
         return logits, *past_kv_flat
 
     def _drive_layers(

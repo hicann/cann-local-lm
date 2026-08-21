@@ -74,9 +74,12 @@ case "${1:-converter}" in
         #    用于: epair → OM 编译 (export_llm_model C++ 二进制)
         export LD_LIBRARY_PATH="${ASCEND_HOME_PATH}/lib64:${LD_LIBRARY_PATH:-}"
         export SOC_VERSION="${SOC_VERSION:-Ascend910_9362}"
-        # 关 AUB fusion: 让某些算子融合关闭, 适配 OM 编译
+        # 关 fusion: AUB (AutomaticUbFusion) + AddRmsNorm 残差融合
+        # (AddRmsNormFusionGraphPass / InplaceAddRmsNormFusionPass). 关后者使 OM 保留分开的
+        # RmsNorm+Add (ascend_ir 原样), 不产生 InplaceAddRmsNorm 融合算子 (未在 support_ops.md 列出).
+        # 如需该融合, 删 GraphFusion 两项即可 (融合后 OM 少 35 个算子但 InplaceAddRmsNorm 未覆盖).
         GE_FUSION_SWITCH_FILE="${GE_FUSION_SWITCH_FILE:-/tmp/fusion_autoub_off.cfg}"
-        echo '{"Switch":{"UBFusion":{"AutomaticUbFusion":"off"}}}' > "${GE_FUSION_SWITCH_FILE}"
+        echo '{"Switch":{"UBFusion":{"AutomaticUbFusion":"off"},"GraphFusion":{"AddRmsNormFusionGraphPass":"off","InplaceAddRmsNormFusionPass":"off"}}}' > "${GE_FUSION_SWITCH_FILE}"
         export GE_FUSION_SWITCH_FILE
         echo "[set_env] ③ OM compile (C++ epair → OM)"
         echo "  SOC_VERSION         : ${SOC_VERSION}"

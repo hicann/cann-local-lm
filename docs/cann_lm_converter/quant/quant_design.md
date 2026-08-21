@@ -323,7 +323,7 @@ converter `--quant-method gptq` 一键触发:主进程 spawn `python dopt_wrappe
 **改造(2026-08-18):全程单份权重 + load_model 推后**:
 
 1. `load_model` 推到 `run_auto_quant` 之后:主进程不预加载 cann_lm 模型,避免与 subprocess 内 transformers 模型同时持有(2× 内存峰值)
-2. `generate_dopt_config` 不再被场景 2 用:场景 2 的策略赋值逻辑在 subprocess 内(`dopt_wrapper.py:main`)用 transformers 模型遍历 `named_modules` 生成 dopt_config(dopt 自带 `generate_config` 生成空壳 `"float"` 不量化,不能用)。**注意**:`generate_dopt_config` 函数本身仍保留在 `auto_quant.py`,仅供场景 1 离线用户跑 dopt 前生成 dopt_config 用(调 `auto_quant._build_layer_strategy`;`dopt_wrapper.py` 另有一份等价的 `_build_layer_strategy`,两份未合并,examples 脚本 `run_pd4_cases.sh:gen_dopt_config` 依赖前者)。
+2. `generate_dopt_config` 不再被场景 2 用:场景 2 的策略赋值逻辑在 subprocess 内(`dopt_wrapper.py:main`)用 transformers 模型遍历 `named_modules` 生成 dopt_config(dopt 自带 `generate_config` 生成空壳 `"float"` 不量化,不能用)。**注意**:`generate_dopt_config` 函数本身仍保留在 `auto_quant.py`,仅供场景 1 离线用户跑 dopt 前生成 dopt_config 用(调 `auto_quant._build_layer_strategy`;`dopt_wrapper.py` 另有一份等价的 `_build_layer_strategy`,两份未合并,examples 脚本 `run_pd6_cases.sh:gen_dopt_config` 依赖前者)。
 3. swap 逻辑移回主进程 `cann_lm_converter.py`,场景 1/2 走统一路径(`dopt_out_path` 来源不同)
 4. subprocess 调用方式计划从"跑独立 wrapper 脚本"改为"跑模块的 `__main__` 入口":`python -m cann_lm.converter.quant.auto_quant --wrapper ...` 直接调 `_dopt_wrapper_main` 函数,合并到单文件。**此条为计划改造,尚未落地**——当前仍 spawn 独立脚本 `dopt_wrapper.py`(`python dopt_wrapper.py ...`)。
 

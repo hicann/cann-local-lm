@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# run_pd4_cases.sh — 6 用例: qwen3.5 / gemma4 × {无量化, 场景1 --quant-path, 场景2 --quant-method gptq}
+# run_pd6_cases.sh — 6 用例: qwen3.5 / gemma4 × {无量化, 场景1 --quant-path, 场景2 --quant-method gptq}
 #
 # 当前进展 (2026-08-19):
 #   case_1  qwen3.5 无量化       ✓ 跑通 (weights 1571.9 MB, host_weights 508.6 MB)
@@ -23,15 +23,15 @@
 # finalize/stub 收尾挂起 → run_conv 用 "后台跑 + 轮询产物 + kill" 绕过.
 #
 # 用法:
-#   bash run_pd4_cases.sh 1        # qwen3.5 无量化 (基线)
-#   bash run_pd4_cases.sh 2        # gemma4  无量化 (基线)
-#   bash run_pd4_cases.sh 3        # qwen3.5 场景1 (--quant-path: 手动 dopt + converter 消费)
-#   bash run_pd4_cases.sh 4        # gemma4  场景1 (--quant-path)
-#   bash run_pd4_cases.sh 5        # qwen3.5 场景2 (--quant-method gptq: 一键式 auto_quant)
-#   bash run_pd4_cases.sh 6        # gemma4  场景2 (--quant-method gptq)
-#   bash run_pd4_cases.sh all      # 1→2→3→4→5→6
-#   bash run_pd4_cases.sh setup    # 一次性: 确保 venv 不装 torch_npu (stub 路径)
-#   bash run_pd4_cases.sh env      # 打印 env 设置说明
+#   bash run_pd6_cases.sh 1        # qwen3.5 无量化 (基线)
+#   bash run_pd6_cases.sh 2        # gemma4  无量化 (基线)
+#   bash run_pd6_cases.sh 3        # qwen3.5 场景1 (--quant-path: 手动 dopt + converter 消费)
+#   bash run_pd6_cases.sh 4        # gemma4  场景1 (--quant-path)
+#   bash run_pd6_cases.sh 5        # qwen3.5 场景2 (--quant-method gptq: 一键式 auto_quant)
+#   bash run_pd6_cases.sh 6        # gemma4  场景2 (--quant-method gptq)
+#   bash run_pd6_cases.sh all      # 1→2→3→4→5→6
+#   bash run_pd6_cases.sh setup    # 一次性: 确保 venv 不装 torch_npu (stub 路径)
+#   bash run_pd6_cases.sh env      # 打印 env 设置说明
 #
 set -uo pipefail
 
@@ -260,5 +260,5 @@ case "${1:-help}" in
   all) case_1; case_2; case_3; case_4; case_5; case_6 ;;
   setup) setup_torch_npu ;;
   env) print_env ;;
-  *) echo "用法: bash run_pd4_cases.sh {1|2|3|4|5|6|all|setup|env}"; echo "  1=qwen3.5无量化 2=gemma4无量化 3=qwen3.5场景1(--quant-path) 4=gemma4场景1 5=qwen3.5场景2(--quant-method gptq) 6=gemma4场景2 all=全部 setup=venv无torch_npu env=打印env" ;;
+  *) echo "用法: bash run_pd6_cases.sh {1|2|3|4|5|6|all|setup|env}"; echo "  1=qwen3.5无量化 2=gemma4无量化 3=qwen3.5场景1(--quant-path) 4=gemma4场景1 5=qwen3.5场景2(--quant-method gptq) 6=gemma4场景2 all=全部 setup=venv无torch_npu env=打印env" ;;
 esac

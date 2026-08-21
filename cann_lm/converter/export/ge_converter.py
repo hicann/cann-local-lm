@@ -99,6 +99,13 @@ def register_ge_converters() -> None:
     from ._index_copy_converter import convert_index_copy
     register_fx_node_ge_converter(torch.ops.aten.index_copy.default)(convert_index_copy)
 
+    # npu_scatter_nd_update(_): KV cache scatter-write (替代 aten.index_copy). cann_lm 约定
+    # 1D indices = dim2 (BNSD cache). 覆盖 torchair custom/npu_scatter_nd_update.py 的
+    # ge.ScatterNdUpdate (标准多维坐标语义, 与 dim2 约定不等价). 复用 _index_copy_converter.
+    from ._scatter_nd_update_converter import convert_scatter_nd_update, convert_scatter_nd_update_
+    register_fx_node_ge_converter(torch.ops.npu.npu_scatter_nd_update.default)(convert_scatter_nd_update)
+    register_fx_node_ge_converter(torch.ops.npu.npu_scatter_nd_update_.default)(convert_scatter_nd_update_)
+
     # aten.index_put: qwen3.5 past_key_values.update 用 index_put (indices list). 无 decomposition,
     # torchair 占位 NotImplementedError. 实现抽到 _index_put_converter.py (找非 None dim + InplaceUpdate+Transpose).
     from ._index_put_converter import convert_index_put

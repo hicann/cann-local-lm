@@ -29,7 +29,8 @@ docs/cann_lm_converter/
 ├── reference_qwen3_5_export.md            ← qwen3.5 混合架构导出专题
 ├── reference_litert_lm_export.md          ← LiteRT-LM 外部参考
 ├── reference_npu_tuned_export_qwen3.md    ← npu_tuned_export 参考
-└── reference_npu_op_elimination.md        ← NPU 算子消除技能
+├── reference_npu_op_elimination.md        ← NPU 算子消除技能
+└── ops_replacement.md                    ← gemma4 OM 算子等价替换（对齐 support_ops.md）
 ```
 
 ## 三模块入口
@@ -56,6 +57,7 @@ docs/cann_lm_converter/
 | [reference_litert_lm_export.md](./reference_litert_lm_export.md) | LiteRT-LM + litert-torch 外部参考（prefill/decode 两签名 / KV cache pytree / wrapper 统一 I/O） |
 | [reference_npu_tuned_export_qwen3.md](./reference_npu_tuned_export_qwen3.md) | npu_tuned_export qwen3 fork 改造参考（预分配 KV buffer + scatter-write + 预缓存 RoPE + host 4D mask） |
 | [reference_npu_op_elimination.md](./reference_npu_op_elimination.md) | NPU 算子消除技能（host 预构 mask / repeat_kv concat / RoPE 预缓存 Gather） |
+| [ops_replacement.md](./ops_replacement.md) | gemma4 OM 算子等价替换（index_copy→npu_scatter_nd_update / stack→cat+transpose / arange→Const / expand→StridedSliceD+ConcatV2D / index→index_select / 关 InplaceAddRmsNorm 融合，对齐 support_ops.md） |
 
 ## 快速开始
 

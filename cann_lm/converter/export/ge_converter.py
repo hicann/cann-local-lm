@@ -46,12 +46,6 @@ def register_ge_converters() -> None:
     from ._quant_matmul_converter import convert_quant_matmul
     register_fx_node_ge_converter(torch.ops.npu.npu_quant_matmul.default)(convert_quant_matmul)
 
-    # quant_matmul_s8s4 (方案 A 自研 W4A8 算子): cann_lm 命名空间, 映射到 GE op
-    # 节点 "QuantMatmulS8S4" (骨架; NPU kernel + REG_OP 由算子实现方补, 见
-    # _quant_matmul_s8s4_converter.py + reg_register.h TODO)。
-    from ._quant_matmul_s8s4_converter import convert_quant_matmul_s8s4
-    register_fx_node_ge_converter(torch.ops.cann_lm.quant_matmul_s8s4.default)(convert_quant_matmul_s8s4)
-
     # npu_dynamic_quant: torchair ships its own converter (custom/npu_dynamic_quant.py,
     # pertoken -> ge.DynamicQuant / else ge.DynamicQuantV2). It auto-registers when
     # torchair custom/ is imported above. With the is_cann_compat monkey-patch,

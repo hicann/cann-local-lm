@@ -46,7 +46,7 @@ def apply_rotary_pos_emb(
 
     - sliding (全旋, head_dim == cos.shape[-1]): npu_rotary_mul 单 tensor, q/k 各调一次.
     - full (proportional partial, rotary_dim == cos.shape[-1] < head_dim): cat 出 q_rot/k_rot
-      (前 pair_dim + 中 half_dim:half_dim+pair_dim), npu_apply_rotary_pos_emb 配对 (layout=BSND),
+      (前 pair_dim + 中 half_dim:half_dim+pair_dim), npu_rotary_mul q/k 各调一次,
       拆装插回原位 (中间和后面保持原值).
     """
     cos = cos.unsqueeze(2)  # [b,s,1,d] -> broadcast to heads (BSND: [b,s,N,d])
@@ -88,7 +88,8 @@ def _rope_full_pair(
     half_dim = q.shape[-1] // 2
     q_rot = torch.cat([q[..., :pair_dim], q[..., half_dim:half_dim + pair_dim]], dim=-1)
     k_rot = torch.cat([k[..., :pair_dim], k[..., half_dim:half_dim + pair_dim]], dim=-1)
-    q_rot, k_rot = torch.ops.npu.npu_apply_rotary_pos_emb(q_rot, k_rot, cos, sin, layout="BSND")
+    q_rot = torch.ops.npu.npu_rotary_mul(q_rot, cos, sin, rotary_mode="half")
+    k_rot = torch.ops.npu.npu_rotary_mul(k_rot, cos, sin, rotary_mode="half")
     q_out = torch.cat(
         [q_rot[..., :pair_dim], q[..., pair_dim:half_dim],
          q_rot[..., pair_dim:], q[..., half_dim + pair_dim:]], dim=-1,
@@ -212,7 +213,7 @@ def fused_attention_forward(
     # - scatter-write 模式 (OM export): new_kv_cache_pos 不为 None, 用 max+1 (写入位置+1, 不含 buffer 未用部分)
     # - torch.cat 模式 (model.generate eager): new_kv_cache_pos=None, key.shape[2]=past+q_len (实际有效)
     if new_kv_cache_pos is not None:
-        actual_kv_len = new_kv_cache_pos.max() + 1
+        actual_kv_len = torch.tensor(q_len, dtype=torch.int64, device=query.device)
     else:
         actual_kv_len = torch.tensor(key.shape[2], dtype=torch.int64, device=query.device)
     actual_seq_qlen = torch.tensor([q_len], dtype=torch.int64, device=query.device)
@@ -486,8 +487,8 @@ class Gemma4TextAttention(nn.Module):
         query_states = self.q_norm(query_states)
 
         # --- KV projection (or reuse shared) + RoPE ---
-        # 与图灵参考实现一致: 非 kv_shared 用配对 RoPE (sliding: npu_rotary_mul 各调;
-        # full: npu_apply_rotary_pos_emb 配对 + cat/拆装). kv_shared 路径 q 单独 RoPE
+        # 与图灵参考实现一致: 非 kv_shared 用配对 RoPE (sliding/full: npu_rotary_mul q/k 各调
+        # + cat/拆装). kv_shared 路径 q 单独 RoPE
         # (k 从 shared 来已 RoPE), 用 single 版 (npu_rotary_mul + cat/拆装 模拟 partial).
         if self.is_kv_shared_layer and shared_kv_states is not None:
             kv_key = self.layer_type

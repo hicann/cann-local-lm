@@ -33,8 +33,7 @@ def pack_int4(q: torch.Tensor) -> torch.Tensor:
     Input: ``q`` int8 ``[..., k]`` holding signed int4 values in [-8, 7].
     Output: int8 ``[..., k//2]`` — byte at index i holds int4 for k=2i (low
     nibble) and k=2i+1 (high nibble), two's-complement 4-bit (``value & 0xF``).
-    Matches the unpack in ``fused_ops/quant_matmul_s8s4._quant_matmul_s8s4_cpu``
-    and the op ``x2`` input layout (方案 A).
+    Matches the ``npu::npu_quant_matmul`` x2 input layout (nibble-packed int4).
     """
     if q.shape[-1] % 2 != 0:
         raise ValueError(f"last dim {q.shape[-1]} must be even for int4 nibble-pack")
@@ -63,8 +62,8 @@ def materialize_int4_per_group_symmetric(
         signed: True -> signed int4 ``[-8, 7]``; False -> unsigned ``[0, 15]``.
             两者反量化都是 q*s (对称, offset=0), unsigned 只平移整数范围不引入零点.
         nbits: 4 (int4) default.
-        packed: True -> return nibble-packed int8 ``[out, in//2]`` for 方案 A
-            ``quant_matmul_s8s4`` x2; False (default) -> unpack ``[out, in]``.
+        packed: True -> return nibble-packed int8 ``[out, in//2]`` for
+            ``npu::npu_quant_matmul`` x2; False (default) -> unpack ``[out, in]``.
 
     Returns:
         (weight_q: int8 ``[out, in]`` (or ``[out, in//2]`` packed), scale: fp32 ``[out, in//group]``).

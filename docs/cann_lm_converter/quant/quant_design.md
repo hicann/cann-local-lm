@@ -6,7 +6,7 @@
 >
 > 算子实现：**方案 A — 自研 `cann_lm::quant_matmul_s8s4`（已落地）**。早期路径 C'（复用 CANN `QuantBatchMatmulV4` 整数 int8/int4）经实测不可达 s8s4 正确结果（V4 要求 uint64 deqScale，且 int8/int4 在 V4→V3 融合 pass 中降级、无预编译 kernel），故转为自研算子，用 **fp32 scale** 做 `q*scale` 反量化绕开 CANN V4 失败点。详见下文 [方案 A 算子规格与实现状态](#方案-a--自研-quant_matmul_s8s4-算子规格与实现状态)。
 >
-> 最后更新：2026-08-15
+> 最后更新：2026-08-20
 
 ## 目录
 
@@ -595,6 +595,7 @@ y[b,m,n] = Σ_k ( x1_q[b,m,k] · x1_scale[b,m] ) · ( x2_q[n,k] · x2_scale[n, k
 5. **dopt 函数超规**：`swap.py swap_to_quant_linear_from_dopt` 函数超 50 行，`materialize.py materialize_int4_per_group_symmetric` 6 参数（超 5 参数原则）。两者建议按单一职责拆分 + `Int4Spec` dataclass 收敛，当前未拆。
 6. **dopt gemma4 多模态已解决**：`train.py:model_define` 改为加载前检测 `AutoConfig.from_pretrained` 是否有 `text_config`（多模态标志），是则取 `text_config` 调 `AutoModelForCausalLM.from_pretrained(model_path, config=full_cfg.text_config)`（transformers 自动 remap `model.language_model.*` → `model.*`，丢弃 vision/audio 权重），使 dopt 的 `get_llama()` (`model.model.layers`) 能直接访问文本层。无需再先跑 `scripts/extract_gemma4_text.py` 抽取 text-only 权重——dopt 直接消费多模态 HF 模型目录。
 7. **dopt_lm 拼写错误**：目录名 `ptq_algo_heissen` 与类名 `WeightQuantHeissen` 中的 `heissen` 是 `Hessian` 的系统性拼写错误（遍布目录、类、属性 `heissen_matrix`、局部变量、甚至版权头）。因 dopt_lm 不被主仓 import（独立 CLI 运行，产物按文件路径加载），重命名 `heissen→hessian` 不影响 converter 消费链路——只需同步 dopt_lm 内部 import 与 `train.py` 的 import 即可，是低风险纯内部重构。当前未改。
+8. **`quant_matmul_s8s4 → npu::npu_quant_matmul` 迁移（导出层已修复，运行时待验证）**：已将 `QuantLinear.forward`（`cann_lm/converter/quant/quant_linear.py:73-81`）从 `cann_lm::quant_matmul_s8s4` 改为 `npu::npu_quant_matmul`，参数映射：`x_scale`→`pertoken_scale`、`group_size`(int)→`group_sizes=[1,1,g]`(3 元素 list，K-group 在 index 2，依据 `_quant_matmul_converter.py:80-84`)、`weight_q`→x2、`weight_scale`→scale；删除 `models/fused_ops/quant_matmul_s8s4.py` + `converter/export/_quant_matmul_s8s4_converter.py`，`ge_converter.py` 复用既有 `npu::npu_quant_matmul`+`_quant_matmul_converter` 注册。**x2 朝向修复（已落地）**：`npu_quant_matmul` 的 meta（`models/fused_ops/quant_matmul.py:76`）取 `n = x2.size(-1)` 且 GE converter（`_quant_matmul_converter.py:58,121-122`）忽略 `transpose_x2`、硬编码 `transpose_x2=False`，故原 nibble-packed `[n, k//2]` 朝向会让输出 N 取成 `k//2`（错误）。修复：`swap.py` 物化后把 `weight_q` `[n,k//2]→[k//2,n]`、`weight_scale` `[n,k//g]→[k//g,n]` 转置（`swap.py:305-313`），`QuantLinear` 设 `transpose_x2=False`。**case_4（gemma4 场景1）导出已通过**：IR 含 `npu_quant_matmul`×2770 → `QuantBatchMatmulV4`×1108 + `DynamicQuant`×1662，无 `quant_matmul_s8s4`，`weights_0.bin` 1377MB（int4 压缩，与原 s8s4 一致），quant_info.op=`npu::npu_quant_matmul`。**待验证（运行时）**：nibble-packed `[k//2,n]` x2 已过 export trace；CANN `QuantBatchMatmulV4` kernel 对该 int4 打包/朝向在 **OM 编译 + NPU 出字** 阶段是否正确需下游验证（converter 的 `_quant_matmul_converter` 是简化版，去掉了 torch_npu dtype 常量的 packed-layout 分支）。**CPU eager 回归**：`npu_quant_matmul` CPU impl（`quant_matmul.py:99-136`）期望 unpacked int8 `[K,N]`，不 nibble-unpack，故 nibble-packed 路径下 CPU 数值回归会形状不匹配——仅 export 路径（fake-meta）可用，CPU eager 待补 nibble-unpack 或改 unpacked 物化。
 
 ---
 

@@ -50,8 +50,23 @@ def convert_fused_infer_attention_score_v2(
     meta_outputs: Any = None,
 ) -> Any:
     """npu_fused_infer_attention_score_v2 -> ge.FusedInferAttentionScore (只传 gemma4 用的参数)."""
-    del meta_outputs
     from torchair._ge_concrete_graph import ge_apis as ge
+
+    # actual_seq_qlen/kvlen 如果是常量 tensor, 转成 ge.Const 节点
+    # (GE IsNeedMarkDynamicTilingDepend: const 输入不标记为 tilingDepend → 避免 PartitionedCall)
+    def _to_const_if_possible(x):
+        if x is None:
+            return None
+        try:
+            import torch
+            if isinstance(x, torch.Tensor) and x.numel() <= 8:
+                return ge.Const(x.tolist())
+        except Exception:
+            pass
+        return x
+
+    actual_seq_qlen = _to_const_if_possible(actual_seq_qlen)
+    actual_seq_kvlen = _to_const_if_possible(actual_seq_kvlen)
     out, lse = ge.FusedInferAttentionScore(
         query,
         [key],

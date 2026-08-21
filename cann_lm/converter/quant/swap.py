@@ -297,14 +297,19 @@ def _swap_linear_from_sd(
             )
         if offset is not None and offset.abs().max().item() != 0.0:
             raise NotImplementedError(
-                f"{name}: non-zero offset (asymmetric) not supported by 方案 A "
-                "quant_matmul_s8s4 (symmetric offset=0 only). Re-run dopt with a "
+                f"{name}: non-zero offset (asymmetric) not supported by "
+                "npu::npu_quant_matmul (symmetric offset=0 only). Re-run dopt with a "
                 "symmetric strategy."
             )
-        # 方案 A: nibble-packed int4 [n, k//2] int8 for the quant_matmul_s8s4 op x2 input.
+        # nibble-packed int4 int8: materialize -> [n, k//2], then pre-transpose to
+        # [k//2, n] (npu::npu_quant_matmul meta takes N = x2.size(-1) and ignores
+        # transpose_x2; GE converter _quant_matmul_converter hardcodes transpose_x2=False,
+        # so x2 must be [k//2, n] for size(-1) = n = out_features). scale同理 [n,k//g] -> [k//g,n].
         weight_q, weight_scale = materialize_int4_per_group_symmetric(
             w_gptq, scale2d, group_size, signed=True, nbits=bit, packed=True
         )
+        weight_q = weight_q.transpose(-1, -2).contiguous()          # [n, k//2] -> [k//2, n]
+        weight_scale = weight_scale.transpose(-1, -2).contiguous()   # [n, k//g] -> [k//g, n]
         ql = QuantLinear(
             weight_q, weight_scale, group_size, bias=m.bias, act_quant=act_quant,
         )
@@ -323,8 +328,8 @@ def _swap_linear_from_sd(
         "scope": f"all nn.Linear except {list(skip)}",
         "n_quantized": n_q,
         "n_skipped_no_dopt_key": n_skip,
-        "weight_int4_encoding": "nibble-packed int8 [n,k//2] (low nibble=even k, signed [-8,7]) — 方案 A quant_matmul_s8s4 x2",
-        "op": "cann_lm::quant_matmul_s8s4",
+        "weight_int4_encoding": "nibble-packed int8 [k//2,n] pre-transposed (low nibble=even k, signed [-8,7]) — npu::npu_quant_matmul x2",
+        "op": "npu::npu_quant_matmul",
         "dopt_unsigned_quant": uq,
         "offset_supported": "symmetric only (offset=0); non-zero offset rejected",
     }

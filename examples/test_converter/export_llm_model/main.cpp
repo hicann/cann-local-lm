@@ -1,5 +1,6 @@
 #include "ge/ge_api_v2.h"
 #include "graph/graph.h"
+#include "graph/attr_value.h"
 #include "graph/ge_error_codes.h"
 #include "graph/ascend_string.h"
 #include "ge/ge_ir_build.h"
@@ -123,6 +124,18 @@ int main(int argc, char *argv[]) {
   }
   if (const char *v = std::getenv("GE_OPT_SWITCH")) {
     build_options.emplace(ge::AscendString("ge.optimizationSwitch"), ge::AscendString(v));
+  }
+  // ge.graphRunMode: PREDICTION=0 (推理/静态) / TRAIN=1 (训练/动态). 设 0 可能避免动态 shape 分区.
+  if (const char *v = std::getenv("GE_RUN_MODE")) {
+    build_options.emplace(ge::AscendString("ge.graphRunMode"), ge::AscendString(v));
+    std::cout << "[INFO] ge.graphRunMode=" << v << std::endl;
+  }
+  // 跳过动态 shape 分区 (设 graph 属性 _no_need_dynamic_shape_partition=true, 避免 PartitionedCall)
+  if (const char *v = std::getenv("GE_SKIP_DSP"); v != nullptr && v[0] == '1') {
+    ge::AttrValue attr_val;
+    attr_val.SetAttrValue(true);
+    graph.SetAttr(ge::AscendString("_no_need_dynamic_shape_partition"), attr_val);
+    std::cout << "[INFO] Set _no_need_dynamic_shape_partition=true (skip dynamic shape partition)" << std::endl;
   }
   ge::graphStatus build_status = aclgrphBuildModel(graph, build_options, model);
   if (build_status != ge::GRAPH_SUCCESS) {

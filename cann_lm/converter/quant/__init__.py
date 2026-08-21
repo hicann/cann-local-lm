@@ -16,7 +16,7 @@
 
 - materialize_int4_per_group_symmetric: fp16 weight -> (int4-as-int8, scale), 线性对称 (offset=0), 用 dopt GPTQ scale
 - materialize_int8_per_channel_symmetric: embed int8 per-channel (host gather)
-- QuantLinear: export-path Linear whose forward calls cann_lm::quant_matmul_s8s4
+- QuantLinear: export-path Linear whose forward calls npu::npu_quant_matmul
   (W4A8 also uses npu_dynamic_quant for act quant)
 - swap_to_quant_linear_from_dopt: port dopt GPTQ output (GPTQ weight + group_scale)
   -> materialize int4 -> swap QuantLinear (legacy, scenes 1 offline use; internally

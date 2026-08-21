@@ -12,39 +12,43 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Export-path QuantLinear (方案 A): forward emits cann_lm::quant_matmul_s8s4 nodes.
+"""Export-path QuantLinear: forward emits npu::npu_quant_matmul nodes.
 
-Replaces nn.Linear so torch.export traces ``torch.ops.cann_lm.quant_matmul_s8s4``
-(instead of aten.mm/MatMul), mapped by
-``_quant_matmul_s8s4_converter.py`` to the 方案 A custom GE op (待 kernel).
+Replaces nn.Linear so torch.export traces ``torch.ops.npu.npu_quant_matmul``
+(instead of aten.mm/MatMul), mapped by ``_quant_matmul_converter.py`` to
+ge.QuantBatchMatmulV4.
 
-Stores materialized int4 weight (nibble-packed int8 ``[n, k//2]``) + per-group
-fp32 scale ``[n, k//g]`` as buffers (graph constants → weights_*.bin).
+Stores materialized int4 weight (nibble-packed int8 ``[k//2, n]``) + per-group
+fp32 scale ``[k//g, n]`` as buffers (graph constants → weights_*.bin).
 
-Convention (方案 A, s8s4 对称, offset=0):
-  - weight_q / weight_scale in **natural** nn.Linear orientation ``[n, k]`` /
-    ``[n, k//g]`` (NO pre-transpose); ``transpose_x2=True`` (kernel transposes
-    internally for the cube).
-  - activation: ``npu_dynamic_quant`` → int8 x1 + per-token fp32 x1_scale.
+Convention (W4A8 s8s4 对称, offset=0):
+  - weight_q ``[k//2, n]`` / weight_scale ``[k//g, n]`` **pre-transposed** (swap.py
+    物化后 transpose [n,k//2]->[k//2,n]): ``npu::npu_quant_matmul`` meta 取
+    ``n = x2.size(-1)`` 且 GE converter 硬编码 ``transpose_x2=False``, 故 x2 必须
+    预转置使 ``size(-1) = n`` (out_features); ``transpose_x2=False``。
+  - activation: ``npu_dynamic_quant`` → int8 x1 + per-token fp32 x1_scale。
   - bias optional ``[n]`` in output dtype (None when source Linear has no bias;
-    no dummy-zeros workaround — the 方案 A op's bias is genuinely optional).
+    no dummy-zeros workaround — the op's bias is genuinely optional).
 """
 
 import torch
 from torch import nn
 
-from cann_lm.models.fused_ops import ops as _fused_ops  # noqa: F401  (registers quant_matmul_s8s4 + npu_dynamic_quant)
+from cann_lm.models.fused_ops import ops as _fused_ops  # noqa: F401  (registers npu_quant_matmul + npu_dynamic_quant)
 
 _OUT_DTYPE_CODE = {torch.float16: 5, torch.bfloat16: 7, torch.float32: 6}
 
 
 class QuantLinear(nn.Module):
-    """nn.Linear replacement whose forward calls cann_lm::quant_matmul_s8s4 (方案 A).
+    """nn.Linear replacement whose forward calls npu::npu_quant_matmul.
 
     Args:
-        weight_q: int8 ``[n, k//2]`` — int4 nibble-packed (low nibble=偶 k 索引,
-            two's-complement 4-bit signed). From ``materialize_int4_per_group_symmetric(..., packed=True)``.
-        weight_scale: fp32 ``[n, k//group]`` (per output-channel × per K-group, from GPTQ).
+        weight_q: int8 ``[k//2, n]`` — int4 nibble-packed (low nibble=偶 k 索引,
+            two's-complement 4-bit signed), **pre-transposed** by swap.py from
+            materialize's ``[n, k//2]`` natural orientation (npu_quant_matmul meta
+            takes ``n = x2.size(-1)``).
+        weight_scale: fp32 ``[k//group, n]`` (per K-group × per output-channel,
+            pre-transposed from GPTQ's ``[n, k//group]``).
         group_size: K-axis group size g (``k % g == 0``).
         bias: optional bias ``[n]`` (fp16/bf16/fp32); None if the source Linear had bias=None.
         act_quant: must be True (W4A8 s8s4). False (W4A16) is not supported by this op.
@@ -56,13 +60,13 @@ class QuantLinear(nn.Module):
         super().__init__()
         if not act_quant:
             raise NotImplementedError(
-                "QuantLinear (cann_lm::quant_matmul_s8s4) supports W4A8 s8s4 only; "
+                "QuantLinear (npu::npu_quant_matmul) supports W4A8 s8s4 only; "
                 "act_quant=False (W4A16) not supported. Use the legacy path or add a W4A16 op."
             )
         self.group_size = group_size
         self.act_quant = act_quant
-        self.register_buffer("weight_q", weight_q.to(torch.int8))       # [n, k//2] nibble-packed
-        self.register_buffer("weight_scale", weight_scale.to(torch.float32))  # [n, k//g]
+        self.register_buffer("weight_q", weight_q.to(torch.int8))       # [k//2, n] nibble-packed (pre-transposed)
+        self.register_buffer("weight_scale", weight_scale.to(torch.float32))  # [k//g, n] (pre-transposed)
         if bias is not None:
             self.register_buffer("bias", bias.to(weight_scale.dtype))
         else:
@@ -70,12 +74,13 @@ class QuantLinear(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x_q, x_scale = torch.ops.npu.npu_dynamic_quant(x)  # int8 [..., m, k] + per-token fp32 [..., m]
-        out = torch.ops.cann_lm.quant_matmul_s8s4(
-            x_q, x_scale, self.weight_q, self.weight_scale,
+        out = torch.ops.npu.npu_quant_matmul(
+            x_q, self.weight_q, self.weight_scale,
+            pertoken_scale=x_scale,               # per-token act scale from npu_dynamic_quant
             bias=self.bias,                       # None when source Linear has no bias (no dummy workaround)
-            group_size=self.group_size,           # single int attr (NOT V4's [m,n,k] 48-bit pack)
+            group_sizes=[1, 1, self.group_size],  # V4 3-element [m,n,k]; K-group at index [2]
             output_dtype=_OUT_DTYPE_CODE.get(x.dtype, 5),
             transpose_x1=False,
-            transpose_x2=True,                    # x2 given [n, k//2] natural; kernel transposes
+            transpose_x2=False,                   # x2 pre-transposed to [k//2, n] in swap; meta takes N=x2.size(-1)
         )
         return out

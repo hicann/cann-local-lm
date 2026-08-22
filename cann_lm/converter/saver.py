@@ -264,10 +264,11 @@ def save_epair_prefill_decode(
         save_weights=False,
         ep_json_filename="decode_ep_json_with_ascend_ir.json",
     )
-    # decode q_len=1 (seq_len=1, fixed in this mode). Inline as ge.Const so decode
-    # resolves its own value (1) instead of prefill's (128) via shared weights_0.bin.
+    # decode: qlen=1 (query 长度, 固定), kvlen=kv_cache_max_len (让 FIA kernel 读全 buffer,
+    # 实际 attend 范围由显式 atten_mask 决定). kvlen=1 会让 kernel 静态截断到 1 个 kv 丢上下文.
+    # 见 docs/cann_lm_converter/ops_replacement.md "FIA 回退" 节根因分析.
     inline_fused_attn_seq_constants(
-        output_dir / "decode_ep_json_with_ascend_ir.json", 1)
+        output_dir / "decode_ep_json_with_ascend_ir.json", 1, kvlen_value=kv_cache_max_len)
 
     copy_tokenizer_files(artifact.tokenizer_files, output_dir)
     save_model_config(artifact, output_dir, use_embeddings=use_embeddings,

@@ -934,13 +934,15 @@ td::EpairModelLoader decode_loader("decode_ep_json_with_ascend_ir.json",
 
 prefill-decode 共享 `weights_0.bin` 带来一个隐患：modeling 里 `torch.tensor([q_len])` 创建的 `actual_seq_qlen`/`actual_seq_kvlen`（`FusedInferAttentionScore` 的逐图小常量，prefill=128、decode=1）被 `torch.export` lift 成 GE 图里的 **`Data` 引用节点**（指向共享权重里的同名常量）。prefill `save_weights=True` 把自己的 128 写进 `weights_0.bin`，decode `save_weights=False` 不写却按同名复用 → decode 的融合注意力算子拿到 prefill 的 128 而非自己的 1；且 `Data` 引用输入被 GE 标记 tilingDepend → `FusedInferAttentionScore` 进 `PartitionedCall` 动态子图（950 编译还触发 `actualSeqLengthsQ(128) > Q_S(1)` 校验失败）。
 
-**修复**（`cann_lm/converter/export/epair_utils.py: inline_fused_attn_seq_constants()` + `saver.py:save_epair_prefill_decode` 调用）：在 prefill/decode ep_json 写出后做后处理——把每个 `FusedInferAttentionScore` 算子的 `actual_seq_qlen`(input[5]) / `actual_seq_kvlen`(input[6]) 输入引用替换为内联的 `ge.Const`（带本图 q_len 值：prefill=seq_len、decode=1；值由 saver 已知参数推出，无需解析 `ep.constants` 名映射）。`Const` op 严格对齐 ascend_ir 既有格式（`attr.value.t.data` base64 原始字节 + `_readable_value.s`）。
+**修复**（`cann_lm/converter/export/epair_utils.py: inline_fused_attn_seq_constants()` + `saver.py:save_epair_prefill_decode` 调用）：在 prefill/decode ep_json 写出后做后处理——把每个 `FusedInferAttentionScore` 算子的 `actual_seq_qlen`(input[5]) / `actual_seq_kvlen`(input[6]) 输入引用替换为内联的 `ge.Const`。函数签名 `inline_fused_attn_seq_constants(ep_json_path, qlen_value, kvlen_value=None)`：`qlen_value` = query 长度（prefill=seq_len、decode=1）；`kvlen_value` 默认 None→用 qlen_value（**prefill 兼容**，无 past 时 kvlen=qlen=seq_len 正确），**decode 显式传 `kv_cache_max_len`**（见下）。`Const` op 严格对齐 ascend_ir 既有格式（`attr.value.t.data` base64 原始字节 + `_readable_value.s`）。
 
 **效果**：
-- 逐图取值正确（decode 拿到 1，不再串 prefill 的 128）→ 950 tiling 校验 `1 ≤ Q_S=1` 通过，decode OM 编译成功。
+- 逐图取值正确（decode qlen 拿到 1 不再串 prefill 的 128）→ 950 tiling 校验 `1 ≤ Q_S=1` 通过，decode OM 编译成功。
 - 真 const 不再 tilingDepend → 不进 `PartitionedCall`（OM 回到 4.86GB，而非动态派生的 8.1GB 膨胀）。
-- 不动 modeling（`fused_attention_forward` 保持原 `torch.tensor([q_len])`，CPU eager 不受影响）。
+- 不动 modeling（`fused_attention_forward` 保持原 `torch.tensor([q_len])`，CPU eager 不受影响；export decode 被 saver fix 覆盖为 kv_max）。
 
+> **decode `kvlen_value=kv_cache_max_len` 的原因**（qwen3.5 FIA decode 回归根因，详见 [`ops_replacement.md`](../ops_replacement.md)「FIA 回归根因与修复」节）：`actual_seq_kvlen` 语义是"kv 的有效长度"（torchair 文档）。若 decode 烘成静态 `ge.Const(q_len=1)`，FIA kernel **静态截断 kv 读取到 1 个 token**（kv[0:1]）丢全部 past → `1+1=` → `2019-01-01`。正确做法是 decode kvlen=`kv_cache_max_len`（让 kernel 读全 buffer），实际 attend 范围由 **显式 `atten_mask`** 决定（mask + kvlen=kv_max 两者都要；单独 mask 不够——静态 Const=1 仍截断，mask 被忽略）。modeling 须保证 decode full-attn 层拿到非 None 的 4D `attention_mask`（qwen3.5 去掉 `if seq_len==1 and past_len>0: causal_mask=None` 特例）。
+>
 > q_len = `query.shape[2]`：prefill = `seq_len`（参数），decode = 1（`save_epair_prefill_decode` 固定 `seq_len=1`）。内联后旧的 `lifted_tensor` / `Reshape` 引用变 dead，C++ 加载侧忽略。
 >
 > 相关：[`ops_replacement.md`](../ops_replacement.md) §7（关 InplaceAddRmsNorm 融合）同属"让 OM 终态对齐 support_ops.md"的编译期调整，但本节是 saver/epair 格式层的逐图常量内联（导出期），二者互补。

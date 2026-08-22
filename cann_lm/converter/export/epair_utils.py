@@ -369,23 +369,32 @@ def _pack_host_side_weights_to_dir(
     return index
 
 
-def inline_fused_attn_seq_constants(ep_json_path, seq_value: int) -> int:
+def inline_fused_attn_seq_constants(ep_json_path, qlen_value: int, kvlen_value: int | None = None) -> int:
     """Inline ``FusedInferAttentionScore`` actual_seq_qlen/kvlen as ``ge.Const`` in ep_json.
 
     prefill-decode 共享 ``weights_0.bin``: decode 的 actual_seq lifted 常量会按同名复用 prefill
-    的值 (128) 而非自己的 (1), 且 Data 引用输入被 GE 标为 tilingDepend -> PartitionedCall
-    (动态子图). 把 actual_seq_qlen/kvlen 内联成真正的 ``ge.Const`` (带本图 q_len 值:
-    prefill=seq_len, decode=1) 既修正逐图取值, 又让算子保持静态 (无 PartitionedCall).
-    q_len = query.shape[2] = prefill 的 seq_len / decode 的 1.
+    的值 (seq_len) 而非自己的, 且 Data 引用输入被 GE 标为 tilingDepend -> PartitionedCall
+    (动态子图). 把 actual_seq_qlen/kvlen 内联成真正的 ``ge.Const`` 既修正逐图取值, 又让算子
+    保持静态 (无 PartitionedCall).
+
+    - ``qlen_value``: actual_seq_qlen = query 长度 (prefill=seq_len, decode=1).
+    - ``kvlen_value``: actual_seq_kvlen = kv 有效长度. 默认 None -> 用 qlen_value (prefill
+      无 past, kvlen=qlen=seq_len 正确). **decode 须显式传 kv_cache_max_len**: decode 的 valid
+      kv = past_len+1 (随步动态, 静态 ge.Const 无法表达); 用 kv_max 让 kernel 读全 buffer,
+      实际 attend 范围由显式 atten_mask 决定. (kvlen=1 + mask 仍会被静态 Const 截断到 1 个 kv
+      丢上下文, 详见 docs/.../ops_replacement.md "FIA 回退" 节根因分析.)
     """
     import base64
     import struct
 
-    dim = ["1"]
-    data = base64.b64encode(struct.pack("<q", int(seq_value))).decode()
-    readable = base64.b64encode(f"[{int(seq_value)}]".encode()).decode()
+    if kvlen_value is None:
+        kvlen_value = qlen_value
 
-    def _make_const(name: str) -> dict:
+    dim = ["1"]
+
+    def _make_const(name: str, value: int) -> dict:
+        data = base64.b64encode(struct.pack("<q", int(value))).decode()
+        readable = base64.b64encode(f"[{int(value)}]".encode()).decode()
         return {
             "name": name,
             "type": "Const",
@@ -409,8 +418,8 @@ def inline_fused_attn_seq_constants(ep_json_path, seq_value: int) -> int:
             ins = op.get("input")
             if not isinstance(ins, list) or len(ins) < 7 or not ins[5] or not ins[6]:
                 continue
-            qlen_c = _make_const(f"InlineSeqQLen{inlined}")
-            kvlen_c = _make_const(f"InlineSeqKvlen{inlined}")
+            qlen_c = _make_const(f"InlineSeqQLen{inlined}", qlen_value)
+            kvlen_c = _make_const(f"InlineSeqKvlen{inlined}", kvlen_value)
             ops.append(qlen_c)
             ops.append(kvlen_c)
             ins[5] = f"{qlen_c['name']}:0"

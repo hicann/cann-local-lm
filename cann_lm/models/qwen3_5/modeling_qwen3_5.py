@@ -168,6 +168,66 @@ def eager_attention_forward(
     return attn_output, attn_weights
 
 
+def _pad_mask_to_kv_square(mask: torch.Tensor, kv_len: int) -> torch.Tensor:
+    """pad atten_mask 的 q 维到 kv_len (融合算子要求 [*, kv_len, kv_len] 方阵).
+
+    cann_lm 的 mask 是 [*, q_len, kv_len] (float: 0.0=attend, finfo.min=mask out) -> bool
+    (False=attend, True=mask out); pad q 维到 kv_len: 前 q_len 行原 mask, 后 kv_len-q_len 行
+    pad True (mask out, 不影响, 融合算子用 actual_seq_qlen 只取前 q_len 行). 参考 gemma4/modeling_gemma4.py.
+    """
+    q_len = mask.shape[-2]
+    if q_len >= kv_len:
+        return mask.bool()
+    pad_shape = (*mask.shape[:-2], kv_len - q_len, kv_len)
+    pad = torch.full(pad_shape, True, dtype=torch.bool, device=mask.device)
+    return torch.cat([mask.bool(), pad], dim=-2)
+
+
+def fused_attention_forward(
+    module: nn.Module,
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    attention_mask: torch.Tensor | None,
+    new_kv_cache_pos: torch.Tensor | None = None,
+) -> tuple[torch.Tensor, torch.Tensor | None]:
+    """融合 attention via npu_fused_infer_attention_score_v2 (替代 eager_attention_forward).
+
+    参考 gemma4/modeling_gemma4.py. 融合 QK^T+softmax+AV+GQA, 消除 repeat_kv;
+    sparse_mode=3 (causal) + atten_mask (覆盖全 kv buffer). q/k/v BNSD [b,n,s,d].
+
+    FIA decode 正确性依赖两点 (详见 docs/.../ops_replacement.md "FIA 回退" 节根因分析):
+    1. 显式 atten_mask (经 _pad_mask_to_kv_square pad 到 [*,kv_max,kv_max] 方阵): 决定实际
+       attend 范围 (0..cached_len attend, 其余 mask out).
+    2. actual_seq_kvlen = kv_cache_max_len (由 saver fix inline_fused_attn_seq_constants 内联,
+       非 q_len=1): 静态 ge.Const=1 会让 kernel 截断到 1 个 kv 丢上下文; kv_max 让 kernel 读
+       全 buffer, mask 兜底. (modeling 这里设 q_len 仅 eager/cat 路径用, export decode 被
+       saver fix 覆盖为 kv_max.)
+    """
+    q_len = query.shape[2]
+    if new_kv_cache_pos is not None:
+        actual_kv_len = torch.tensor(q_len, dtype=torch.int64, device=query.device)
+    else:
+        actual_kv_len = torch.tensor(key.shape[2], dtype=torch.int64, device=query.device)
+    actual_seq_qlen = torch.tensor([q_len], dtype=torch.int64, device=query.device)
+    actual_seq_kvlen = actual_kv_len.reshape(1).to(torch.int64)
+    atten_mask_bool = _pad_mask_to_kv_square(attention_mask, key.shape[2]) if attention_mask is not None else None
+    attn_output, _ = torch.ops.npu.npu_fused_infer_attention_score_v2(
+        query, key, value,
+        num_query_heads=module.config.num_attention_heads,
+        num_key_value_heads=module.config.num_key_value_heads,
+        softmax_scale=module.scaling,
+        input_layout="BNSD",
+        sparse_mode=3,
+        pre_tokens=torch.iinfo(torch.int32).max,
+        next_tokens=0,
+        atten_mask=atten_mask_bool,
+        actual_seq_qlen=actual_seq_qlen,
+        actual_seq_kvlen=actual_seq_kvlen,
+    )
+    return attn_output.transpose(1, 2).contiguous(), None
+
+
 def apply_mask_to_padding_states(hidden_states: torch.Tensor, attention_mask: torch.Tensor | None) -> torch.Tensor:
     if attention_mask is not None and attention_mask.shape[1] > 1 and attention_mask.shape[0] > 1:
         dtype = hidden_states.dtype
@@ -633,10 +693,9 @@ class Qwen3_5Attention(nn.Module):
             key_states, value_states = past_key_values.update(
                 key_states, value_states, self.layer_idx, new_kv_cache_pos)
 
-        attn_output, attn_weights = eager_attention_forward(
+        attn_output, attn_weights = fused_attention_forward(
             self, query_states, key_states, value_states, attention_mask,
-            scaling=self.scaling,
-            dropout=0.0 if not self.training else self.attention_dropout,
+            new_kv_cache_pos=new_kv_cache_pos,
         )
 
         attn_output = attn_output.reshape(*input_shape, -1).contiguous()
@@ -831,14 +890,11 @@ class Qwen3_5TextModel(nn.Module):
         else:
             text_position_ids = None
 
-        # Causal mask for full-attention layers. Build it for prefill (and the
-        # first step); a single-token decode step with an active cache needs no
-        # mask (the single query may attend to all cached keys).
+        # Causal mask for full-attention layers. 始终构造 (含 decode):
+        # FIA 路径下 decode 也需显式 atten_mask 覆盖全 kv buffer, 否则 kernel 按
+        # actual_seq_kvlen=[1] 截断到 1 个 kv 丢上下文 (eager cat-cache 无此问题).
         past_len = past_key_values.get_seq_length() if past_key_values is not None else 0
-        if seq_len == 1 and past_len > 0:
-            causal_mask = None
-        else:
-            causal_mask = _create_causal_mask(attention_mask, inputs_embeds, past_key_values)
+        causal_mask = _create_causal_mask(attention_mask, inputs_embeds, past_key_values)
 
         linear_attn_mask = attention_mask
         # decode 步 (有 cache) 不需要 linear mask; prefill 步保留 mask

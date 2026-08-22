@@ -184,7 +184,7 @@ torch_npu 包 absent；torchair present（`/mnt/workspace/torch-delegate-harmony
 
 ## qwen3.5 OM 算子表对比 support_ops（无量化 prefill-decode, Ascend910_9362）
 
-> qwen3.5-0.8B 无量化，FIA 回退 eager（decode `actual_seq_kvlen=1` 致 1+1= 回归，详见 [`ops_replacement.md`](../../../../docs/cann_lm_converter/ops_replacement.md)「FIA 回退」节）。SoftplusV2 + L2Normalize 已落地。OM 1456 ops（decode），扁平 so_store=0。
+> qwen3.5-0.8B 无量化，FIA 已重新启用（decode 修复：`actual_seq_kvlen=kv_cache_max_len` + 显式 atten_mask，详见 [`ops_replacement.md`](../../../../docs/cann_lm_converter/ops_replacement.md)「FIA 回归根因与修复」节）。SoftplusV2 + L2Normalize 已落地。OM 扁平 so_store=0。
 
 ### fuse_op
 
@@ -192,7 +192,7 @@ torch_npu 包 absent；torchair present（`/mnt/workspace/torch-delegate-harmony
 |---|---|---:|---|
 | ChunkGatedDeltaRule | ChunkGatedDeltaRule | 18 | ✅ |
 | Rmsnorm | RmsNorm | 79 | ✅ |
-| FusedInferAttention | — | 0 | ❌ 回退 eager（decode 回归，见 ops_replacement.md）|
+| FusedInferAttention | FusedInferAttentionScore | 6 | ✅ 重新启用（decode kvlen=kv_max + 显式 mask 修复，见 ops_replacement.md）|
 | l2norm | L2Normalize | 36 | ✅（cann_lm::l2norm → ge.L2Normalize）|
 | RotaryPositionEmbedding | RotaryMul | 12 | ✅ |
 | ScatterNdUpdate | ScatterNdUpdate | 12 | ✅ |
@@ -208,10 +208,10 @@ torch_npu 包 absent；torchair present（`/mnt/workspace/torch-delegate-harmony
 
 | single_op | OM 算子 | decode | 命中 |
 |---|---|---:|---|
-| Cast | Cast | 207 | ✅ |
+| Cast | Cast | 208 | ✅ |
 | Mul | Mul | 84 | ✅（含 Neg→Mul(-1.0) 替换）|
 | splitV | SplitVD | 24 | ✅ 同族 |
-| concatD | ConcatV2D | 55 | ✅ 同族 |
+| concatD | ConcatV2D | 61 | ✅ 同族（+6 为 FIA mask 的 cat）|
 | Transpose | Transpose | 48 | ✅ |
 | Conv2DV2 | Conv2D | 18 | ✅ 同族 |
 | StridedSliceV2 | StridedSliceD | 61 | ✅ 同族 |
@@ -228,17 +228,17 @@ torch_npu 包 absent；torchair present（`/mnt/workspace/torch-delegate-harmony
 
 | OM 算子 | decode | 性质 | 可消除? |
 |---|---:|---|---|
-| Const | 341 | 权重/参数/内联 ge.Const（图基础设施）| ❌ |
+| Const | 338 | 权重/参数/内联 ge.Const（图基础设施）| ❌ |
 | Data | 53 | 图输入（基础设施）| ❌ |
 | NetOutput | 1 | 图输出（基础设施）| ❌ |
-| Muls | 6 | 标量乘（per_layer_input_scale 等，框架算子，保留最优）| ❌ |
 | Exp | 18 | 线性注意力 g 的 `A_log.exp()`（普通 exp，无 support_ops.md 对应）| ❌ g 计算固有 |
-| BatchMatMul | 12 | eager attention 的 QK^T + @V（FIA 回退的代价，6 层×2）| ⚠️ 重新启用 FIA 可消除，但有 decode 回归 |
+
+> 注：qwen3.5 无 Muls（Muls 是 gemma4 的 per_layer_input_scale/per_layer_model_projection_scale，qwen3.5 无 PLE）；FIA 重新启用后亦无 BatchMatMul/SoftmaxV2（eager 的 QK^T/softmax/@V 被 FIA 融合替代）。
 
 ### 结论
 
-- **fuse_op**：5/8 命中（ChunkGatedDeltaRule / Rmsnorm / l2norm / RotaryPositionEmbedding / ScatterNdUpdate ✅；FIA ❌ 回退 eager；DynamicQuant / QuantBatchMatmulV4 ❌ 无量化）。
+- **fuse_op**：6/8 命中（ChunkGatedDeltaRule / Rmsnorm / l2norm / RotaryPositionEmbedding / ScatterNdUpdate / FusedInferAttention ✅；DynamicQuant / QuantBatchMatmulV4 ❌ 无量化）。
 - **single_op**：14/15 命中（Gelu ❌ 模型未用；SoftplusV2 ✅ 已落地需 reg_register.h 注册；Neg→Mul / Index→GatherV2 已替换消除）。
-- **框架算子**（Const / Data / NetOutput / Muls）：本就不属 support_ops.md 范畴。
+- **框架算子**（Const / Data / NetOutput）：本就不属 support_ops.md 范畴。
 - **分解基元**：Exp ×18 是线性注意力 g 计算固有（`A_log.exp()`），无 support_ops.md 对应，不可消除。
-- **BatchMatMul** ×12 是 FIA 回退 eager 的代价（eager attention 用 BatchMatMul+SoftmaxV2 替代 FIA）。重新启用 FIA 可消除，但 FIA decode 有 `actual_seq_kvlen=1` 数值回归（`1+1=` 错），详见 ops_replacement.md。
+- **扁平无动态子图**：so_store=0、stream_num=1（actual_seq 内联为真 ge.Const，不进 PartitionedCall；decode kvlen=kv_max 静态 Const，mask 兜底 attend 范围）。

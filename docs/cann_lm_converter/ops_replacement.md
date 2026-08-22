@@ -165,11 +165,12 @@ gemma4 OM 终态非框架算子**全部命中 support_ops.md 定义**，只剩 `
 
 ---
 
-## FusedInferAttentionScore：qwen3.5 decode 回归根因与修复（已重新启用）
+## FusedInferAttentionScore：qwen3.5 调查与现状（当前全 eager，FIA decode 修复已验证但暂搁置）
 
-> **当前状态**：FIA 已为 qwen3.5 重新启用（`fused_attention_forward` + 完整修复）。早期回退 eager 是因 `1+1=` → `2019-01-01` 回归；经 ep_json 级实证定位根因后修复，现 `1+1=` → `2+1=3+1=4...` ✅、`The capital of China is` → ` Beijing.` ✅。
+> **当前状态（2026-08-22）**：qwen3.5 attention **全 eager**（prefill + decode 都用 `eager_attention_forward`）。
+> FIA decode 修复（`actual_seq_kvlen=kv_max` + 显式 atten_mask）已开发并验证 decode 正确（committed `2f4755d`），但因 **prefill 多 chunk 限制**（FIA 静态 kvlen 无法跨 chunk；kv_max 对 q_len>1 退化）+ **方案 B 撞 torch.export 分支常量 lift 崩溃**，**暂回退全 eager**。FIA 相关代码（`fused_attention_forward` / `_pad_mask_to_kv_square` / saver fix `kvlen_value`）保留为 dead/no-op，待 prefill 多 chunk 解决后重启用。全 eager 下单/多 chunk prefill + decode 都正确。
 
-### 根因：saver fix 静态 ge.Const kvlen=1 截断 + 缺显式 atten_mask（两者叠加）
+### decode FIA 回归根因与修复（已验证，code 保留为 dead/no-op）
 
 从实际 decode ep_json 的 FIA 节点 input[4]/[5]/[6] 抽取的 ground truth：
 
@@ -187,7 +188,7 @@ gemma4 OM 终态非框架算子**全部命中 support_ops.md 定义**，只剩 `
 
 **gemma4 为何"对"**：gemma4 工作的那份 ep_json（`om_npu_verify/epair_gemma4_pd/`）kvlen 是 `view_8`（Data 引用，**未过 saver fix**→PartitionedCall 动态路径），kernel 读更大 kv 范围 + 显式 mask 决定 attend；**不是 gemma4 模型配置对 kvlen=1 免疫**。gemma4 的 full-attn 层（sparse_mode=3 + pre_tokens=int32max + 显式 mask）与 qwen3.5 配置一致，唯一结构差异就是有无显式 atten_mask + kvlen 是 Const 还是 Data 引用。
 
-### 验证（ep_json 改 + OM 编译 + NPU 出字，Ascend910）
+#### decode 修复（committed `2f4755d`，code 保留）
 
 | 配置 | decode FIA kvlen | atten_mask | `1+1=` 输出 | 结论 |
 |---|---|---|---|---|
@@ -196,28 +197,67 @@ gemma4 OM 终态非框架算子**全部命中 support_ops.md 定义**，只剩 `
 | kvlen=kv_max（无 mask） | `[2048]` | 无 | `!!` 乱码 | ❌（早期文档试过） |
 | **完整修复**（mask + kvlen=kv_max） | `[2048]` | 有（`cat_10`） | **`2+1=3+1=4+1=5+1=6+1=7`** | ✅ **正确** |
 
-→ mask 与 kvlen=kv_max **两者都要**：mask 决定实际 attend 范围（0..cached_len），kvlen=kv_max 让 kernel 读全 buffer（mask 兜底屏蔽 garbage 位）。单独任一都不行。
+→ decode 的 mask 与 kvlen=kv_max **两者都要**：mask 决定实际 attend 范围（0..cached_len），kvlen=kv_max 让 kernel 读全 buffer（mask 兜底屏蔽 garbage 位）。单独任一都不行。
 
-### 修复
+修复 code（保留为 dead/no-op）：
+- `modeling_qwen3_5.py`：去掉 decode `causal_mask=None` 特例（decode 也构造 causal_mask，4D 透传）+ `fused_attention_forward`（`_pad_mask_to_kv_square` + atten_mask）。**当前 call site 回退 eager**，`fused_attention_forward`/`_pad_mask_to_kv_square` 留为 dead code 便于重启用。
+- `epair_utils.py:inline_fused_attn_seq_constants`：加 `kvlen_value` 参数（默认 None→用 qlen_value）；decode 调用传 `kvlen_value=kv_cache_max_len`（`saver.py`）。**全 eager 下无 FIA 节点→saver fix no-op**。
+- `fused_attention_forward` 内 `actual_kv_len` 仍设 `q_len`（eager/cat 路径用），export decode 被 saver fix 覆盖为 kv_max。
 
-1. **`cann_lm/models/qwen3_5/modeling_qwen3_5.py`**：
-   - `Qwen3_5TextModel.forward` 去掉 `if seq_len==1 and past_len>0: causal_mask=None` 特例（decode 也构造 causal_mask，4D 透传）。
-   - `Qwen3_5Attention.forward` 用 `fused_attention_forward`（经 `_pad_mask_to_kv_square` pad 到 `[*,kv_max,kv_max]` 传显式 atten_mask，参考 gemma4）。
-2. **`cann_lm/converter/export/epair_utils.py:inline_fused_attn_seq_constants`**：签名加 `kvlen_value`（默认 None→用 qlen_value，prefill 兼容）；decode 调用传 `kvlen_value=kv_cache_max_len`（`saver.py`），qlen 保持 1。prefill 不变（kvlen=seq_len 本就正确，无 past）。
-3. `fused_attention_forward` 内 `actual_kv_len` 仍设 `q_len`（eager/cat 路径用），export decode 被 saver fix 覆盖为 kv_max。
+### prefill FIA 限制：kv_max 对 q_len>1 退化 + 多 chunk 静态 kvlen 无法跨 chunk
 
-### OM 算子状态（FIA 重新启用后）
+decode 的 `kvlen=kv_max` 修复**不能照搬到 prefill**：
 
-- FusedInferAttentionScore: 6（6 full-attn 层，重新启用）
-- SoftmaxV2: 0（eager 的 QK^T/softmax/@V 被 FIA 融合替代）
+1. **prefill kvlen=kv_max 对 q_len>1 退化**（实证，Ascend910）：
+   - patch prefill ep_json 的 `InlineSeqKvlen` `[seq_len]→[kv_max]`，重编 OM，测单 chunk（mask 最简单正确）：
+     - gemma4（q_len=128）：输出全 pad token 0（退化）
+     - qwen3.5（q_len=8）：输出 `22222...`（卡在重复"2"）
+   - **已排除 mask 构造原因**：kvlen=128/2048 用**同一个** `[kv_max,kv_max]` padded mask（gen 脚本 `_build_mask_full(seq, KV_MAX)` 永远建 kv_max 宽），唯一变量是 kvlen 值；kvlen=seq_len→正常，kvlen=kv_max→退化。buffer 128..kv_max 位是零（wrapper `torch.zeros`+H2D）非垃圾。故根因是 **FIA kernel 对 `q_len>1 + kvlen>actual写入位` 的限制**（读越界零位即便 mask 屏蔽也产出退化），与 mask/buffer 无关。decode（q_len=1）无此问题。
+2. **多 chunk prefill（prompt > seq_len）FIA 静态 kvlen 无法跨 chunk**：
+   - modeling `fused_attention_forward` 把 `actual_seq_kvlen` 设成 `q_len`（静态），saver fix 内联成 `ge.Const(seq_len)`。多 chunk 时 chunk 1+（q_pos=start..start+seq）的 FIA 只读 kv[0:seq_len]=chunk 0 的 kv，**读不到自己位置的 kv**（start..start+seq）→ 跨 chunk 上下文丢失 → `...` 乱码。
+   - 正确值应是动态 `new_kv_cache_pos.max()+1`（chunk 0=seq_len、chunk 1=2×seq_len…），但静态 `ge.Const` 无法表达 → FIA prefill 不支持多 chunk。
+3. **mask/buffer/KV-handoff 均已排除**：eager attention（matmul 全 buffer + mask，无 kvlen）多 chunk prefill 正确（见下"当前全 eager 验证"），证明多 chunk 问题是 FIA-kvlen 专属，非深层 mask/handoff。
+
+### 方案 B（eager prefill + FIA decode，modeling 内分支）尝试：撞 torch.export 分支常量 lift 崩溃
+
+尝试在 `Qwen3_5Attention.forward` 按 `if query_states.shape[2] == 1` 分支（decode→FIA，prefill→eager），靠 torch.export 形状特化让两图各 trace 一条分支。prefill ep_json 正确（FIA=0，eager 标志 BatchMatMul/SoftmaxV2），但 **decode OM 编译崩**（C++ `GeGraphBuilder` Extract GE Graph 阶段 heap corruption `corrupted size vs. prev_size`）。
+
+**根因**：torch.export 对 `if q_len==1` 分支**不只 trace 命中分支**，还把**未命中分支的常量也 lift** 进 ep_json。decode ep_json 含 24 个 `tensor_constant`（vs eager prefill 的 12 个），多出的 12 个是 FIA 分支的 `actual_seq` 提升常量；saver fix 用 `InlineSeq` Const 替换了 FIA input[5]/[6] 引用但**未从 input_specs 剥离这些 dead 提升常量**。decode ep_json 的 input_specs 引用了 weight_info.json（从 eager prefill 打包）里**不存在**的常量名 → C++ `PreparePlaceholders` 加载失败 → 堆崩溃。
+
+（2f4755d 纯 FIA 版本不崩，因 prefill 也是 FIA → 同名 actual_seq 常量已进 weight_info；方案 B 的 prefill=eager 打破了这个共享。）
+
+修复需在 saver fix 做**传递性 dead 常量剥离**（从 input_specs 删掉被 InlineSeq Const 替换后不再被任何 op 引用的 actual_seq 提升常量，含经 View/Reshape 间接引用的），非平凡。**暂搁置**。
+
+### 当前全 eager 验证（2026-08-22，Ascend910）
+
+`Qwen3_5Attention.forward` 用 `eager_attention_forward`，`causal_mask` 保持 always-build（decode 也构造，eager+scatter 需 mask 屏蔽零位）。
+
+| 测试 | prefill | 结果 |
+|---|---|---|
+| 单 chunk `1+1=` | 1 chunk | `2+1=3+1=4+1=5+1=6+1=7` ✅ |
+| 多 chunk 算术递增（~30 tok，9 chunk） | 9 chunk | `11. 11+1=12. 12+1=13.` ✅（跨 chunk 续数） |
+| 多 chunk 首都（~30 tok） | 多 chunk | ` Rome. ...` ✅（"意大利首都"→罗马，跨 chunk 上下文） |
+| decode OM 算子 | — | 1463 ops，FIA=0，SoftmaxV2=6，BatchMatMul=12（全 eager） |
+
+### OM 算子状态（全 eager）
+
+- FusedInferAttentionScore: 0（用 eager）
+- SoftmaxV2: 6（eager attention 的 softmax，6 full-attn 层）
+- BatchMatMul: 12（eager 的 QK^T + @V，6 层×2）
 - SoftplusV2: 18、L2Normalize: 36（g 计算 / l2norm，保留）
-- support_ops.md fuse_op 命中 6/8（FIA 回来 +1：ChunkGatedDeltaRule/Rmsnorm/l2norm/RotaryPositionEmbedding/ScatterNdUpdate/FIA ✅；DynamicQuant/QuantBatchMatmulV4 ❌ 无量化）
+- support_ops.md fuse_op 命中 5/8（FIA 不用 → ChunkGatedDeltaRule/Rmsnorm/l2norm/RotaryPositionEmbedding/ScatterNdUpdate ✅；FIA/DynamicQuant/QuantBatchMatmulV4 ❌）
 
-### 涉及文件
+### 未来重启用 FIA 的前提
 
-| 文件 | 改动 |
+1. **prefill 多 chunk 动态 kvlen**：modeling `fused_attention_forward` 把 `actual_kv_len` 从 `q_len` 改成 `new_kv_cache_pos.max()+1`（动态，chunk N = start+seq），saver 对 prefill **不内联** kvlen（留 Data 引用，接受 PartitionedCall）；decode 仍用 `kvlen=kv_max`（q_len=1 静态可用）。
+2. **或干净的混合方案**（不靠 modeling 内 `if` 分支）：例如 prefill/decode 用不同 wrapper 或 modeling 路径，避免 torch.export 双分支常量 lift；或 saver fix 补传递性 dead 常量剥离。
+3. gemma4 同样有 prefill 多 chunk 限制（q_len=128 + kv_max 退化同因），FIA prefill 多 chunk 修复需两模型共适用。
+
+### 涉及文件（FIA 调查 + 当前全 eager）
+
+| 文件 | 状态 |
 |---|---|
-| `cann_lm/models/qwen3_5/modeling_qwen3_5.py` | 去掉 decode `causal_mask=None` 特例 + `fused_attention_forward`（`_pad_mask_to_kv_square` + atten_mask） |
-| `cann_lm/converter/export/epair_utils.py` | `inline_fused_attn_seq_constants` 加 `kvlen_value` 参数 |
-| `cann_lm/converter/saver.py` | decode 调用传 `kvlen_value=kv_cache_max_len` |
-| `cann_lm/models/fused_ops/support_ops.md` | qwen3.5 OM 算子表 FIA 状态更新 |
+| `cann_lm/models/qwen3_5/modeling_qwen3_5.py` | call site 当前 eager；`fused_attention_forward`/`_pad_mask_to_kv_square` 留 dead code；`causal_mask` always-build（decode 也构造） |
+| `cann_lm/converter/export/epair_utils.py` | `inline_fused_attn_seq_constants` 加 `kvlen_value`（committed 2f4755d，全 eager 下 no-op） |
+| `cann_lm/converter/saver.py` | decode 调用传 `kvlen_value=kv_cache_max_len`（committed，全 eager 下 no-op）；prefill 多 chunk 限制注释 |
+| `cann_lm/models/fused_ops/support_ops.md` | qwen3.5 OM 算子表（全 eager 态） |

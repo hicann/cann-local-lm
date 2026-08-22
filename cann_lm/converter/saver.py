@@ -253,8 +253,14 @@ def save_epair_prefill_decode(
         ep_json_filename="prefill_ep_json_with_ascend_ir.json",
         host_side_weights=host_side_weights,
     )
-    # Inline actual_seq_qlen/kvlen as ge.Const (q_len=seq_len) — per-graph const, no
+    # Inline actual_seq_qlen/kvlen as ge.Const — per-graph const, no
     # tilingDepend/PartitionedCall. Avoids the shared-weights_0.bin name collision.
+    # qlen=seq_len, kvlen=seq_len (prefill 无 past, kv=seq_len 正确).
+    # 注: 多 chunk prefill (prompt > seq_len) 需 kvlen 随 chunk 动态 (start_pos+seq_len),
+    # 静态 ge.Const 无法表达 — 当前 kvlen=seq_len 仅单 chunk 正确, 多 chunk 是预存遗留
+    # (modeling fused_attention_forward 设 actual_kv_len=q_len 非 new_kv_cache_pos.max()+1).
+    # kvlen=kv_max 对 prefill (q_len>1) 不可用 (FIA [seq_len,kv_max] 大矩阵+大量 mask 致退化),
+    # 与 decode (q_len=1, kv_max 可用) 不同. 见 ops_replacement.md.
     inline_fused_attn_seq_constants(
         output_dir / "prefill_ep_json_with_ascend_ir.json", seq_len)
 

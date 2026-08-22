@@ -693,9 +693,10 @@ class Qwen3_5Attention(nn.Module):
             key_states, value_states = past_key_values.update(
                 key_states, value_states, self.layer_idx, new_kv_cache_pos)
 
-        attn_output, attn_weights = fused_attention_forward(
+        attn_output, attn_weights = eager_attention_forward(
             self, query_states, key_states, value_states, attention_mask,
-            new_kv_cache_pos=new_kv_cache_pos,
+            scaling=self.scaling,
+            dropout=0.0 if not self.training else self.attention_dropout,
         )
 
         attn_output = attn_output.reshape(*input_shape, -1).contiguous()

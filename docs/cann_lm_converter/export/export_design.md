@@ -941,7 +941,11 @@ prefill-decode 共享 `weights_0.bin` 带来一个隐患：modeling 里 `torch.t
 - 真 const 不再 tilingDepend → 不进 `PartitionedCall`（OM 回到 4.86GB，而非动态派生的 8.1GB 膨胀）。
 - 不动 modeling（`fused_attention_forward` 保持原 `torch.tensor([q_len])`，CPU eager 不受影响；export decode 被 saver fix 覆盖为 kv_max）。
 
-> **decode `kvlen_value=kv_cache_max_len` 的原因**（qwen3.5 FIA decode 回归根因，详见 [`ops_replacement.md`](../ops_replacement.md)「FIA 回归根因与修复」节）：`actual_seq_kvlen` 语义是"kv 的有效长度"（torchair 文档）。若 decode 烘成静态 `ge.Const(q_len=1)`，FIA kernel **静态截断 kv 读取到 1 个 token**（kv[0:1]）丢全部 past → `1+1=` → `2019-01-01`。正确做法是 decode kvlen=`kv_cache_max_len`（让 kernel 读全 buffer），实际 attend 范围由 **显式 `atten_mask`** 决定（mask + kvlen=kv_max 两者都要；单独 mask 不够——静态 Const=1 仍截断，mask 被忽略）。modeling 须保证 decode full-attn 层拿到非 None 的 4D `attention_mask`（qwen3.5 去掉 `if seq_len==1 and past_len>0: causal_mask=None` 特例）。
+> **decode `kvlen_value=kv_cache_max_len` 的原因**（qwen3.5 FIA decode 回归根因，详见 [`ops_replacement.md`](../ops_replacement.md)「FIA 调查与现状」节）：`actual_seq_kvlen` 语义是"kv 的有效长度"（torchair 文档）。若 decode 烘成静态 `ge.Const(q_len=1)`，FIA kernel **静态截断 kv 读取到 1 个 token**（kv[0:1]）丢全部 past → `1+1=` → `2019-01-01`。正确做法是 decode kvlen=`kv_cache_max_len`（让 kernel 读全 buffer），实际 attend 范围由 **显式 `atten_mask`** 决定（mask + kvlen=kv_max 两者都要；单独 mask 不够——静态 Const=1 仍截断，mask 被忽略）。modeling 须保证 decode full-attn 层拿到非 None 的 4D `attention_mask`（qwen3.5 去掉 `if seq_len==1 and past_len>0: causal_mask=None` 特例）。
+>
+> **prefill `kvlen_value` 限制**（不可用 kv_max，多 chunk 未支持）：prefill 当前用默认 `kvlen_value=None`→qlen=seq_len（**仅单 chunk 正确**，无 past 时 kvlen=seq_len 对）。**不能用 kv_max**——prefill q_len>1 + kvlen=kv_max 会让 FIA kernel 读越界零位产出退化（gemma4 q_len=128 全 pad、qwen3.5 q_len=8 输出 `2222...`，已排除 mask 构造原因：两 kvlen 用同一 padded mask，仅 kvlen 值不同）。多 chunk prefill（prompt > seq_len）正确值应是动态 `new_kv_cache_pos.max()+1`（chunk N = start+seq），静态 ge.Const 无法表达 → FIA prefill 不支持多 chunk。详见 [`ops_replacement.md`](../ops_replacement.md)「prefill FIA 限制」节。
+>
+> **qwen3.5 当前全 eager**（2026-08-22）：FIA decode 修复已验证（committed `2f4755d`）但因 prefill 多 chunk 限制 + 方案 B（eager prefill + FIA decode via modeling `if q_len==1` 分支）撞 torch.export 双分支常量 lift 致 C++ 建图崩溃，**暂回退全 eager**（prefill+decode 都 `eager_attention_forward`）。saver fix 的 `kvlen_value` 逻辑保留（全 eager 下无 FIA 节点→no-op），`fused_attention_forward`/`_pad_mask_to_kv_square` 留 dead code 便于重启用。全 eager 下单/多 chunk prefill + decode 都正确。
 >
 > q_len = `query.shape[2]`：prefill = `seq_len`（参数），decode = 1（`save_epair_prefill_decode` 固定 `seq_len=1`）。内联后旧的 `lifted_tensor` / `Reshape` 引用变 dead，C++ 加载侧忽略。
 >

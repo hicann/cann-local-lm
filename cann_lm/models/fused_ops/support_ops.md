@@ -109,3 +109,73 @@ torch_npu 包 absent；torchair present（`/mnt/workspace/torch-delegate-harmony
 - **converter 函数名笔误**：torchair 多数 converter 函数名拼写为 `conveter_*`（少一个 r，如 `conveter_npu_rms_norm_default`），系 torchair 历史笔误，非本仓问题，引用时照原拼写。
 - **GE 算子名 vs OM 算子名**：converter 产出的 GE 算子（如 `ge.ScatterNdUpdate`/`ge.RmsNorm`）是 IR 阶段名；OM 编译期经融合优化后算子名会变化（`ScatterNdUpdate`/`InplaceUpdate+TensorMove` → OM `ScatterUpdate`+`MemcpyAddrAsync`；`RmsNorm`+残差 Add → OM `InplaceAddRmsNorm`）。详见 AGENTS.md「查看 OM 模型算子」。
 - **converter venv 命中情况**：converter venv 不装 torch_npu，`ge_converter/custom/` 里 `import torch_npu` 会失败；但本仓 `cann_lm::`/`npu::` 算子 schema+Meta 由 `_library.py` 自提供，FX 图只命中 `air::` 路径（`_LazyTorchair` 代理不覆盖源码 torchair），不触发 `npu::` converter，故不冲突。
+
+## OM 算子表对比 support_ops（gemma4 无量化 prefill-decode, Ascend950DT_9575）
+
+> 导出 `epair_gemma4_no_quant`（prefill-decode, seq_len=128 / decode=1）→ C++ `export_llm_model` 编译为 OM（`SOC_VERSION=Ascend950DT_9575`，fusion cfg 关 AUB + AddRmsNorm/InplaceAddRmsNorm，详见 [`ops_replacement.md`](../../../../docs/cann_lm_converter/ops_replacement.md) §7）。下表为 OM 终态算子 vs 本文 support_ops.md 定义。
+
+### fuse_op
+
+| fuse_op | OM 算子 | prefill | decode | 命中 |
+|---|---|---:|---:|---|
+| ChunkGatedDeltaRule | — | 0 | 0 | 模型架构不用（qwen3.5 SSM 才有）|
+| Rmsnorm | RmsNorm | 242 | 242 | ✅ |
+| FusedInferAttention | FusedInferAttentionScore | 35 | 35 | ✅（每层 1 个）|
+| l2norm (L2Normalize) | — | 0 | 0 | 模型架构不用 |
+| RotaryPositionEmbedding | RotaryPositionEmbedding | 50 | 50 | ⚠️ 命中（见下「RoPE 注」）|
+| ScatterNdUpdate | ScatterNdUpdate | 30 | 30 | ✅ |
+
+### quant_op（基线无量化）
+
+| quant_op | OM | prefill | decode | 命中 |
+|---|---|---:|---:|---|
+| DynamicQuant | — | 0 | 0 | 未量化 |
+| QuantBatchMatmulV4 | — | 0 | 0 | 未量化（走 MatMulV3）|
+
+### single_op
+
+| single_op | OM 算子 | prefill | decode | 命中 |
+|---|---|---:|---:|---|
+| Cast | Cast | 66 | 66 | ✅ |
+| Mul | Mul | 105 | 105 | ✅ |
+| splitV | — | 0 | 0 | 未用（StridedSliceV2 覆盖）|
+| concatD | ConcatD | 85 | 85 | ✅ |
+| Transpose | Transpose | 100 | 0 | ✅（prefill 独有；decode seq=1 不需）|
+| Conv2DV2 | — | 0 | 0 | gemma4 无 conv1d |
+| StridedSliceV2 | StridedSliceV2 | 60 | 60 | ✅ |
+| Add | Add | 106 | 106 | ✅ |
+| Swish | — | 0 | 0 | gemma4 用 Gelu |
+| GatherV2 | GatherV2 | 40 | 40 | ✅ |
+| TransData | — | 0 | 0 | 未用 |
+| Sigmoid | — | 0 | 0 | 未用 |
+| MatmulV3 | MatMulV3 | 277 | 277 | ✅ |
+| SoftplusV2 | — | 0 | 0 | 未用 |
+| Gelu | Gelu | 70 | 70 | ✅ |
+
+### OM 框架/融合变体算子（不在 support_ops.md 范畴）
+
+| OM 算子 | prefill | decode | 性质 |
+|---|---:|---:|---|
+| Const | 561 | 559 | 权重/常量（图基础设施）|
+| Data | 77 | 77 | 图输入（基础设施）|
+| NetOutput | 1 | 1 | 图输出（基础设施）|
+| MemcpyAddrAsync | 40 | 40 | 共享层 KV 透传（CANN 基础设施 op）|
+| Muls | 2 | 2 | 标量乘（Mul 标量变体，框架算子，保留，见 ops_replacement.md §8）|
+
+### 最终 OM 算子表
+
+**prefill（1947 个 / 18 种）**：Const 561 · MatMulV3 277 · RmsNorm 242 · Add 106 · Mul 105 · Transpose 100 · ConcatD 85 · Data 77 · Gelu 70 · Cast 66 · StridedSliceV2 60 · RotaryPositionEmbedding 50 · MemcpyAddrAsync 40 · GatherV2 40 · FusedInferAttentionScore 35 · ScatterNdUpdate 30 · Muls 2 · NetOutput 1.
+
+**decode（1845 个 / 17 种）**：同 prefill 但无 Transpose（seq=1 不需转置），Const 559。
+
+### 结论
+
+- **fuse_op**：4/6 命中（Rmsnorm / FusedInferAttention / RotaryPositionEmbedding / ScatterNdUpdate），2 未用是模型架构差异（ChunkGatedDeltaRule SSM、l2norm）。
+- **single_op**：9/14 命中，5 未用是架构差异（splitV / Conv2DV2 / Swish / TransData / Sigmoid / SoftplusV2）。
+- **quant_op**：0/2（基线无量化，DynamicQuant / QuantBatchMatmulV4 均为 0）。
+- **框架算子**（Const / Data / NetOutput / MemcpyAddrAsync / Muls）：本就不属 support_ops.md 范畴。
+- **未覆盖算子全部消除**：`InplaceAddRmsNorm` = 0（关 `AddRmsNormFusionGraphPass` / `InplaceAddRmsNormFusionPass`，§7）；无 `PartitionedCall`（actual_seq 内联为真 `ge.Const`，不进动态子图）。
+
+### ⚠️ RoPE 注
+
+本文 §4 表第 97 行记「gemma4 走默认 `ge.RotaryMul` 分支」，但实测 OM 终态 RoPE 算子为 `RotaryPositionEmbedding`（50，非 `RotaryMul`）。按 torchair `npu_rotary_mul` converter，`RotaryPositionEmbedding` 仅在 arch35 或带 `rotate` 时产出——当前命中此分支（疑似 950DT 被识别为 arch35，或 modeling 传了 `rotate`），与文档描述有出入，待核实。

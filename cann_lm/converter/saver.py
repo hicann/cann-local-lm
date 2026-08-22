@@ -10,7 +10,7 @@ from pathlib import Path
 import torch
 
 from cann_lm.converter.loader import ModelArtifact
-from cann_lm.converter.export.epair_utils import consolidated_weights_save
+from cann_lm.converter.export.epair_utils import consolidated_weights_save, inline_fused_attn_seq_constants
 
 # 额外分解的 aten 算子白名单：torchair 无内置 GE 映射或仅占位 NotImplementedError，分解成有映射的
 # 基元算子（Exp/Log/Add/Select 等）。save_epair / save_epair_prefill_decode 共用，两函数白名单集合
@@ -254,6 +254,10 @@ def save_epair_prefill_decode(
         ep_json_filename="prefill_ep_json_with_ascend_ir.json",
         host_side_weights=host_side_weights,
     )
+    # Inline actual_seq_qlen/kvlen as ge.Const (q_len=seq_len) — per-graph const, no
+    # tilingDepend/PartitionedCall. Avoids the shared-weights_0.bin name collision.
+    inline_fused_attn_seq_constants(
+        output_dir / "prefill_ep_json_with_ascend_ir.json", seq_len)
 
     # Write decode ep_json only (save_weights=False, weights already packed above)
     consolidated_weights_save(
@@ -261,6 +265,10 @@ def save_epair_prefill_decode(
         save_weights=False,
         ep_json_filename="decode_ep_json_with_ascend_ir.json",
     )
+    # decode q_len=1 (seq_len=1, fixed in this mode). Inline as ge.Const so decode
+    # resolves its own value (1) instead of prefill's (128) via shared weights_0.bin.
+    inline_fused_attn_seq_constants(
+        output_dir / "decode_ep_json_with_ascend_ir.json", 1)
 
     copy_tokenizer_files(artifact.tokenizer_files, output_dir)
     save_model_config(artifact, output_dir, use_embeddings=use_embeddings,

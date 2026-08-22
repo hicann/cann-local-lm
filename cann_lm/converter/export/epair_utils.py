@@ -367,3 +367,55 @@ def _pack_host_side_weights_to_dir(
     print(f"Packed {len(host_side_weights)} host-side weight(s) into "
           f"{current_file_idx + 1} file(s) ({total_written / 1024:.0f} KB)")
     return index
+
+
+def inline_fused_attn_seq_constants(ep_json_path, seq_value: int) -> int:
+    """Inline ``FusedInferAttentionScore`` actual_seq_qlen/kvlen as ``ge.Const`` in ep_json.
+
+    prefill-decode 共享 ``weights_0.bin``: decode 的 actual_seq lifted 常量会按同名复用 prefill
+    的值 (128) 而非自己的 (1), 且 Data 引用输入被 GE 标为 tilingDepend -> PartitionedCall
+    (动态子图). 把 actual_seq_qlen/kvlen 内联成真正的 ``ge.Const`` (带本图 q_len 值:
+    prefill=seq_len, decode=1) 既修正逐图取值, 又让算子保持静态 (无 PartitionedCall).
+    q_len = query.shape[2] = prefill 的 seq_len / decode 的 1.
+    """
+    import base64
+    import struct
+
+    dim = ["1"]
+    data = base64.b64encode(struct.pack("<q", int(seq_value))).decode()
+    readable = base64.b64encode(f"[{int(seq_value)}]".encode()).decode()
+
+    def _make_const(name: str) -> dict:
+        return {
+            "name": name,
+            "type": "Const",
+            "attr": {
+                "value": {"t": {"desc": {"dtype": "DT_INT64", "shape": {"dim": dim}, "layout": "ND"},
+                                  "data": data}},
+                "_readable_value": {"s": readable},
+            },
+            "outputDesc": [{"dtype": "DT_INT64", "shape": {"dim": dim}, "layout": "ND"}],
+        }
+
+    with open(ep_json_path) as f:
+        doc = json.load(f)
+    nodes = doc["graph_module"]["graph"]["nodes"]
+    inlined = 0
+    for n in nodes:
+        ops = (n.get("ascend_ir") or {}).get("ops") or []
+        for op in ops:
+            if op.get("type") != "FusedInferAttentionScore":
+                continue
+            ins = op.get("input")
+            if not isinstance(ins, list) or len(ins) < 7 or not ins[5] or not ins[6]:
+                continue
+            qlen_c = _make_const(f"InlineSeqQLen{inlined}")
+            kvlen_c = _make_const(f"InlineSeqKvlen{inlined}")
+            ops.append(qlen_c)
+            ops.append(kvlen_c)
+            ins[5] = f"{qlen_c['name']}:0"
+            ins[6] = f"{kvlen_c['name']}:0"
+            inlined += 1
+    with open(ep_json_path, "w") as f:
+        json.dump(doc, f)
+    return inlined

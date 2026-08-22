@@ -293,7 +293,21 @@ def model_define(model_path, torch_dtype=torch.float16):
         torch_dtype=torch_dtype, 
         trust_remote_code=True, 
     )
-    return model
+    inner = getattr(model, "model", None)
+    language_model = getattr(inner, "language_model", None)
+    if language_model is None:
+        return model
+    text_config = getattr(model.config, "text_config", None) or language_model.config
+    with torch.device("meta"):
+        llm = AutoModelForCausalLM.from_config(text_config, trust_remote_code=True)
+    llm.model = language_model
+    if getattr(text_config, "tie_word_embeddings", False):
+        llm.lm_head.weight = language_model.embed_tokens.weight
+    else:
+        llm.lm_head.weight = torch.nn.Parameter(model.lm_head.weight.detach().clone())
+    llm.eval()
+    del model
+    return llm
 
 
 def generate_config(model_name_or_path, config_path): 

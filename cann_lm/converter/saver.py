@@ -16,7 +16,6 @@ from cann_lm.converter.export.epair_utils import consolidated_weights_save, inli
 # 基元算子（Exp/Log/Add/Select 等）。save_epair / save_epair_prefill_decode 共用，两函数白名单集合
 # 保持一致（曾因 prefill-decode 漏 update 这组致 qwen3.5 softplus 未分解 → GE 转换撞占位 NotImplementedError）。
 _EXTRA_DECOMPOSITION_OPS: frozenset = frozenset({
-    torch.ops.aten.softplus.default,
     torch.ops.aten.eye.default,
     torch.ops.aten.type_as.default,
     torch.ops.aten.index_copy.default,

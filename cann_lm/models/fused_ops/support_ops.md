@@ -179,3 +179,66 @@ torch_npu 包 absent；torchair present（`/mnt/workspace/torch-delegate-harmony
 ### ⚠️ RoPE 注
 
 本文 §4 表第 97 行记「gemma4 走默认 `ge.RotaryMul` 分支」，但实测 OM 终态 RoPE 算子为 `RotaryPositionEmbedding`（50，非 `RotaryMul`）。按 torchair `npu_rotary_mul` converter，`RotaryPositionEmbedding` 仅在 arch35 或带 `rotate` 时产出——当前命中此分支（疑似 950DT 被识别为 arch35，或 modeling 传了 `rotate`），与文档描述有出入，待核实。
+
+---
+
+## qwen3.5 OM 算子表对比 support_ops（无量化 prefill-decode, Ascend910_9362）
+
+> qwen3.5-0.8B 无量化，FIA 回退 eager（decode `actual_seq_kvlen=1` 致 1+1= 回归，详见 [`ops_replacement.md`](../../../../docs/cann_lm_converter/ops_replacement.md)「FIA 回退」节）。SoftplusV2 + L2Normalize 已落地。OM 1456 ops（decode），扁平 so_store=0。
+
+### fuse_op
+
+| fuse_op | OM 算子 | decode | 命中 |
+|---|---|---:|---|
+| ChunkGatedDeltaRule | ChunkGatedDeltaRule | 18 | ✅ |
+| Rmsnorm | RmsNorm | 79 | ✅ |
+| FusedInferAttention | — | 0 | ❌ 回退 eager（decode 回归，见 ops_replacement.md）|
+| l2norm | L2Normalize | 36 | ✅（cann_lm::l2norm → ge.L2Normalize）|
+| RotaryPositionEmbedding | RotaryMul | 12 | ✅ |
+| ScatterNdUpdate | ScatterNdUpdate | 12 | ✅ |
+
+### quant_op（基线无量化）
+
+| quant_op | OM | decode | 命中 |
+|---|---|---:|---|
+| DynamicQuant | — | 0 | 未量化 |
+| QuantBatchMatmulV4 | — | 0 | 未量化 |
+
+### single_op
+
+| single_op | OM 算子 | decode | 命中 |
+|---|---|---:|---|
+| Cast | Cast | 207 | ✅ |
+| Mul | Mul | 84 | ✅（含 Neg→Mul(-1.0) 替换）|
+| splitV | SplitVD | 24 | ✅ 同族 |
+| concatD | ConcatV2D | 55 | ✅ 同族 |
+| Transpose | Transpose | 48 | ✅ |
+| Conv2DV2 | Conv2D | 18 | ✅ 同族 |
+| StridedSliceV2 | StridedSliceD | 61 | ✅ 同族 |
+| Add | Add | 18 | ✅ |
+| Swish | Swish | 60 | ✅ |
+| GatherV2 | GatherV2 | 4 | ✅（含 Index→index_select→GatherV2 替换）|
+| TransData | TransData | 36 | ✅ |
+| Sigmoid | Sigmoid | 24 | ✅ |
+| MatmulV3 | MatMul | 187 | ✅ 同族 |
+| SoftplusV2 | SoftplusV2 | 18 | ✅（cann_lm converter → ge.SoftplusV2，需 reg_register.h 注册）|
+| Gelu | — | 0 | ❌ 模型未用 |
+
+### OM 框架/分解算子（不在 support_ops.md 范畴）
+
+| OM 算子 | decode | 性质 | 可消除? |
+|---|---:|---|---|
+| Const | 341 | 权重/参数/内联 ge.Const（图基础设施）| ❌ |
+| Data | 53 | 图输入（基础设施）| ❌ |
+| NetOutput | 1 | 图输出（基础设施）| ❌ |
+| Muls | 6 | 标量乘（per_layer_input_scale 等，框架算子，保留最优）| ❌ |
+| Exp | 18 | 线性注意力 g 的 `A_log.exp()`（普通 exp，无 support_ops.md 对应）| ❌ g 计算固有 |
+| BatchMatMul | 12 | eager attention 的 QK^T + @V（FIA 回退的代价，6 层×2）| ⚠️ 重新启用 FIA 可消除，但有 decode 回归 |
+
+### 结论
+
+- **fuse_op**：5/8 命中（ChunkGatedDeltaRule / Rmsnorm / l2norm / RotaryPositionEmbedding / ScatterNdUpdate ✅；FIA ❌ 回退 eager；DynamicQuant / QuantBatchMatmulV4 ❌ 无量化）。
+- **single_op**：14/15 命中（Gelu ❌ 模型未用；SoftplusV2 ✅ 已落地需 reg_register.h 注册；Neg→Mul / Index→GatherV2 已替换消除）。
+- **框架算子**（Const / Data / NetOutput / Muls）：本就不属 support_ops.md 范畴。
+- **分解基元**：Exp ×18 是线性注意力 g 计算固有（`A_log.exp()`），无 support_ops.md 对应，不可消除。
+- **BatchMatMul** ×12 是 FIA 回退 eager 的代价（eager attention 用 BatchMatMul+SoftmaxV2 替代 FIA）。重新启用 FIA 可消除，但 FIA decode 有 `actual_seq_kvlen=1` 数值回归（`1+1=` 错），详见 ops_replacement.md。

@@ -115,65 +115,65 @@ export GE_FUSION_SWITCH_FILE=/tmp/fusion_autoub_off.cfg   # 见上 "3. 编译" �
 
 > 新 rope = `Gemma4TextRotaryEmbedding` 预缓存 cos/sin 常量表 + `cos_cached[position_ids]` Gather(npu_tuned 2.3),消除 Pow/Neg/Cos/Sin(原各 2)。代价:cos/sin 表烘焙为 Const,OM +~400MB(sliding 128MB + full 256MB,bf16)。
 
-| 算子 | 数量 | 说明 |
-|---|---|---|
-| Const | 593 | 权重/常量(含 cos/sin 预缓存表) |
-| **MatMul** | 277 | 线性投影(q/k/v/o、mlp gate/up/down、PLE per_layer_model_projection、lm_head) |
-| **RmsNorm** | 207 | 融合 RMSNorm(`npu_rms_norm`) |
-| AutomaticBufferFusionOp | 141 | UB 融合节点(`AutomaticUbFusion` pass 产出,吸收元素算子;**关 AUB 后为 0**) |
-| Transpose | 105 | |
-| **Data** | 77 | 图输入 |
-| **ConcatV2D** | 70 | repeat_kv 的 cat(35层×2 K/V)← 新 repeat_kv |
-| BatchMatMul | 70 | q@kᵀ、attn@v |
-| Cast | 67 | dtype 转换 |
-| RotaryMul | 50 | 融合 RoPE(`npu_rotary_mul`) |
-| MemcpyAddrAsync | 40 | 共享层 KV 透传(层 15-34,20×2) |
-| GatherV2 | 35 | PLE 每层切片 `per_layer_inputs[:,:,i,:]` |
-| SoftmaxV2 | 35 | attention softmax |
-| InplaceAddRmsNorm | 35 | 融合 add+rmsnorm(`npu_add_rms_norm`) |
-| Add | 35 | 残差 + mask 应用(attn_weights+mask) |
-| ScatterUpdate | 30 | KV scatter-write(`index_copy` converter;15 非共享层×2) |
-| **Index** | 5 | rope 的 cos/sin Gather(4)+ output_pos 选位(1)← 新 rope |
-| Muls / NetOutput | 1 / 1 | 标量乘 / 图输出 |
+| 算子　　　　　　　　　　| 数量　| 说明　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　 |
+| -------------------------| -------| ------------------------------------------------------------------------------|
+| Const　　　　　　　　　 | 593　 | 权重/常量(含 cos/sin 预缓存表)　　　　　　　　　　　　　　　　　　　　　　　 |
+| **MatMul**　　　　　　　| 277　 | 线性投影(q/k/v/o、mlp gate/up/down、PLE per_layer_model_projection、lm_head) |
+| **RmsNorm**　　　　　　 | 207　 | 融合 RMSNorm(`npu_rms_norm`)　　　　　　　　　　　　　　　　　　　　　　　　 |
+| AutomaticBufferFusionOp | 141　 | UB 融合节点(`AutomaticUbFusion` pass 产出,吸收元素算子;**关 AUB 后为 0**)　　|
+| Transpose　　　　　　　 | 105　 | 　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　 |
+| **Data**　　　　　　　　| 77　　| 图输入　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　 |
+| **ConcatV2D**　　　　　 | 70　　| repeat_kv 的 cat(35层×2 K/V)← 新 repeat_kv　　　　　　　　　　　　　　　　　 |
+| BatchMatMul　　　　　　 | 70　　| q@kᵀ、attn@v　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　 |
+| Cast　　　　　　　　　　| 67　　| dtype 转换　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　 |
+| RotaryMul　　　　　　　 | 50　　| 融合 RoPE(`npu_rotary_mul`)　　　　　　　　　　　　　　　　　　　　　　　　　|
+| MemcpyAddrAsync　　　　 | 40　　| 共享层 KV 透传(层 15-34,20×2)　　　　　　　　　　　　　　　　　　　　　　　　|
+| GatherV2　　　　　　　　| 35　　| PLE 每层切片 `per_layer_inputs[:,:,i,:]`　　　　　　　　　　　　　　　　　　 |
+| SoftmaxV2　　　　　　　 | 35　　| attention softmax　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　|
+| InplaceAddRmsNorm　　　 | 35　　| 融合 add+rmsnorm(`npu_add_rms_norm`)　　　　　　　　　　　　　　　　　　　　 |
+| Add　　　　　　　　　　 | 35　　| 残差 + mask 应用(attn_weights+mask)　　　　　　　　　　　　　　　　　　　　　|
+| ScatterUpdate　　　　　 | 30　　| KV scatter-write(`index_copy` converter;15 非共享层×2)　　　　　　　　　　　 |
+| **Index**　　　　　　　 | 5　　 | rope 的 cos/sin Gather(4)+ output_pos 选位(1)← 新 rope　　　　　　　　　　　 |
+| Muls / NetOutput　　　　| 1 / 1 | 标量乘 / 图输出　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　|
 
 **无 MaskedFill / Where / SelectV2**(新 wrapper host 化 mask)**无 Pow/Neg/Cos/Sin**(新 rope 预缓存表)。mask 由 host 预构输入,图内只 `Add` 应用;KV 用 `ScatterUpdate` scatter-write;RoPE 用 `RotaryMul` + 预缓存表 `Index` Gather。
 
 ## 推荐 OM:关 AutomaticUbFusion(gemma4_noaub.om,新 rope,2015 个/20 种)
 
-| 算子 | 数量 | 说明 |
-|---|---|---|
-| Const | 593 | 权重 + cos/sin 预缓存表 |
-| MatMul | 277 | 线性投影 |
-| RmsNorm | 207 | 融合 RMSNorm |
-| **Mul** | 105 | 元素乘(scale/PLE combine,AUB 关后独立) |
-| Transpose | 105 | |
-| **Add** | 106 | 残差+mask 加(独立) |
-| Data | 77 | 图输入 |
-| ConcatV2D | 70 | repeat_kv cat |
-| BatchMatMul | 70 | q@kᵀ、attn@v |
-| **Gelu** | 70 | MLP 激活(独立) |
-| Cast | 67 | |
-| RotaryMul | 50 | 融合 RoPE |
-| MemcpyAddrAsync | 40 | 共享 KV 透传 |
-| **Muls** | 37 | 标量乘(独立) |
-| GatherV2 | 35 | PLE 每层切片 |
-| SoftmaxV2 | 35 | attention softmax |
-| InplaceAddRmsNorm | 35 | 融合 add+rmsnorm |
-| ScatterUpdate | 30 | KV scatter |
-| Index | 5 | rope Gather(4)+output_pos(1) |
-| NetOutput | 1 | |
+| 算子　　　　　　　| 数量 | 说明　　　　　　　　　　　　　　　　　 |
+| -------------------| ------| ----------------------------------------|
+| Const　　　　　　 | 593　| 权重 + cos/sin 预缓存表　　　　　　　　|
+| MatMul　　　　　　| 277　| 线性投影　　　　　　　　　　　　　　　 |
+| RmsNorm　　　　　 | 207　| 融合 RMSNorm　　　　　　　　　　　　　 |
+| **Mul**　　　　　 | 105　| 元素乘(scale/PLE combine,AUB 关后独立) |
+| Transpose　　　　 | 105　| 　　　　　　　　　　　　　　　　　　　 |
+| **Add**　　　　　 | 106　| 残差+mask 加(独立)　　　　　　　　　　 |
+| Data　　　　　　　| 77　 | 图输入　　　　　　　　　　　　　　　　 |
+| ConcatV2D　　　　 | 70　 | repeat_kv cat　　　　　　　　　　　　　|
+| BatchMatMul　　　 | 70　 | q@kᵀ、attn@v　　　　　　　　　　　　　 |
+| **Gelu**　　　　　| 70　 | MLP 激活(独立)　　　　　　　　　　　　 |
+| Cast　　　　　　　| 67　 | 　　　　　　　　　　　　　　　　　　　 |
+| RotaryMul　　　　 | 50　 | 融合 RoPE　　　　　　　　　　　　　　　|
+| MemcpyAddrAsync　 | 40　 | 共享 KV 透传　　　　　　　　　　　　　 |
+| **Muls**　　　　　| 37　 | 标量乘(独立)　　　　　　　　　　　　　 |
+| GatherV2　　　　　| 35　 | PLE 每层切片　　　　　　　　　　　　　 |
+| SoftmaxV2　　　　 | 35　 | attention softmax　　　　　　　　　　　|
+| InplaceAddRmsNorm | 35　 | 融合 add+rmsnorm　　　　　　　　　　　 |
+| ScatterUpdate　　 | 30　 | KV scatter　　　　　　　　　　　　　　 |
+| Index　　　　　　 | 5　　| rope Gather(4)+output_pos(1)　　　　　 |
+| NetOutput　　　　 | 1　　| 　　　　　　　　　　　　　　　　　　　 |
 
 ## 对比:默认(AUB 开)vs 关 AUB(均新 rope)
 
-| 算子 | AUB 开 | AUB 关 | 差 |
-|---|---|---|---|
-| **AutomaticBufferFusionOp** | 141 | **0** | -141 |
-| **Mul** | 0 | 105 | +105(元素乘重新独立) |
-| **Add** | 35 | 106 | +71(残差+mask 加) |
-| **Gelu** | 0 | 70 | +70(MLP 激活) |
-| **Muls** | 1 | 37 | +36 |
-| MatMul / RmsNorm / BatchMatMul / ConcatV2D / SoftmaxV2 / RotaryMul / ScatterUpdate / InplaceAddRmsNorm / GatherV2 / Transpose / Cast / MemcpyAddrAsync / Data / Index | 不变 | 不变 | 0 |
-| **总数** | 1874 | **2015** | **+141** |
+| 算子　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　| AUB 开 | AUB 关　 | 差　　　　　　　　　 |
+| -----------------------------------------------------------------------------------------------------------------------------------------------------------------------| --------| ----------| ----------------------|
+| **AutomaticBufferFusionOp**　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　 | 141　　| **0**　　| -141　　　　　　　　 |
+| **Mul**　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　 | 0　　　| 105　　　| +105(元素乘重新独立) |
+| **Add**　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　 | 35　　 | 106　　　| +71(残差+mask 加)　　|
+| **Gelu**　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　| 0　　　| 70　　　 | +70(MLP 激活)　　　　|
+| **Muls**　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　| 1　　　| 37　　　 | +36　　　　　　　　　|
+| MatMul / RmsNorm / BatchMatMul / ConcatV2D / SoftmaxV2 / RotaryMul / ScatterUpdate / InplaceAddRmsNorm / GatherV2 / Transpose / Cast / MemcpyAddrAsync / Data / Index | 不变　 | 不变　　 | 0　　　　　　　　　　|
+| **总数**　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　| 1874　 | **2015** | **+141**　　　　　　 |
 
 `AutomaticUbFusion` 专管**元素算子融合**(Mul/Add/Muls/Gelu),压成 `AutomaticBufferFusionOp`(~2:1);结构性算子(MatMul/RmsNorm/BatchMatMul/ConcatV2D/SoftmaxV2/RotaryMul/ScatterUpdate/InplaceAddRmsNorm/GatherV2)**不受其影响**。新 rope 已把 Pow/Neg/Cos/Sin 在两端都消成 0(与 AUB 无关)。
 

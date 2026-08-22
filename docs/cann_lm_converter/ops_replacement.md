@@ -8,12 +8,12 @@
 
 ### 1. KV cache scatter-write: `index_copy` → `npu_scatter_nd_update`
 
-| | 原 | 替换 |
-|---|---|---|
-| Python | `cache.index_copy(2, kv_pos, kv_new)` | `torch.ops.npu.npu_scatter_nd_update(cache, indices, updates)` |
-| ascend_ir | `ge.InplaceUpdate` + `ge.Transpose` | `ge.ScatterNdUpdate`（+ `ge.TensorMove`） |
-| OM 终态 | `ScatterUpdate` 30 | `ScatterNdUpdate` 30 |
-| support_ops.md | ❌（InplaceUpdate 融合成 ScatterUpdate，不匹配） | ✅ fuse_op `ScatterNdUpdate` 直接命中 |
+| 　　　　　　　 | 原　　　　　　　　　　　　　　　　　　　　　　　| 替换　　　　　　　　　　　　　　　　　　　　　　　　　　　　　 |
+| ----------------| -------------------------------------------------| ----------------------------------------------------------------|
+| Python　　　　 | `cache.index_copy(2, kv_pos, kv_new)`　　　　　 | `torch.ops.npu.npu_scatter_nd_update(cache, indices, updates)` |
+| ascend_ir　　　| `ge.InplaceUpdate` + `ge.Transpose`　　　　　　 | `ge.ScatterNdUpdate`（+ `ge.TensorMove`）　　　　　　　　　　　|
+| OM 终态　　　　| `ScatterUpdate` 30　　　　　　　　　　　　　　　| `ScatterNdUpdate` 30　　　　　　　　　　　　　　　　　　　　　 |
+| support_ops.md | ❌（InplaceUpdate 融合成 ScatterUpdate，不匹配） | ✅ fuse_op `ScatterNdUpdate` 直接命中　　　　　　　　　　　　　 |
 
 - **文件**：`cann_lm/models/gemma4/modeling_gemma4.py` `scatter_kv_to_cache` + `cann_lm/converter/export/_scatter_nd_update_converter.py`（cann_lm 自带 converter 覆盖 torchair，产出 `ge.ScatterNdUpdate`）
 - **语义**：构造 `[b*n*seq, 3]` 多维坐标 indices `(b,n,kv_pos)` + `[b*n*seq, d]` updates，命中 `ge.ScatterNdUpdate` 标准多维 scatter，等价 `index_copy(2, kv_pos, kv_new)`
@@ -162,3 +162,71 @@ gemma4 OM 终态非框架算子**全部命中 support_ops.md 定义**，只剩 `
 | `cann_lm/models/fused_ops/support_ops.md` | 第 4 节 torchair converter 映射 + 备注 |
 | `cann_lm/models/fused_ops/compositte_op.md` | 2.6 节 + P2 标记已落地 |
 | `scripts/set_env.sh` | om fusion cfg 关 AddRmsNorm/InplaceAddRmsNorm 融合 |
+
+---
+
+## FusedInferAttentionScore：扁平化已解但 decode 有数值回归 → 回退 eager
+
+> **当前状态**：FIA 已回退为 `eager_attention_forward`（matmul+softmax+@V）。saver fix（`b489f82`，inline ge.Const）解决了扁平化 + 名字冲突，OM 编译 + 出字通过。但 `1+1=` 算术用例发现 **FIA GE kernel 的 `actual_seq_kvlen=1`（decode）致 qwen3.5 decode 数值回归**。回退 FIA → eager 后 `1+1=2` 正确。SoftplusV2 + L2Normalize 经验证**不是**根因。
+
+### 回归根因：FIA GE kernel 的 `actual_seq_kvlen=1` 致 qwen3.5 decode 数值回归
+
+saver fix 对 decode 内联 `actual_seq_kvlen = ge.Const(1)`（`q_len=1`）。GE FIA kernel 用 `actual_seq_kvlen` 界定 attend 的 kv 范围 → decode 时只 attend `key[0:1]`（1 个 kv，新 token），**忽略 past kv**（位置 1..past）→ decode 无上下文 → 算术错（`1+1=` → `2019-01-01` 而非 `2`）。
+
+对比 CPU eager FIA impl（`fused_infer_attention_score.py:_fa_cpu`）：**忽略 `actual_seq_kvlen`**，做**全 buffer matmul + atten_mask 屏蔽无效位** → 全 past kv 参与注意力 → 上下文完整 → `1+1=2` 正确。
+
+| attention 方案 | `actual_seq_kvlen` (decode) | GE kernel 行为 | past 上下文 | `1+1=` |
+|---|---|---|---|---|
+| **eager**（当前） | 无（不传） | matmul 全 buffer + mask | ✅ 完整 | ✅ `2` 正确 |
+| **FIA**（回退前） | `ge.Const(1)` | attend `key[0:1]` 只 1 kv | ❌ 丢失 | ❌ `2019-01-01` |
+
+### 验证（二分排查）
+
+| 配置 | `1+1=` 输出 | 结论 |
+|---|---|---|
+| 原始 transformers (NPU) | `1+1=2` ✅ | 基线正确 |
+| CPU eager cann_lm（全 fused ops CPU impl） | `1+1=2` ✅ | modeling/ fused CPU impl 正确 |
+| **OM eager attn**（FIA 回退 + SoftplusV2 + L2Normalize） | **`2+1=3...`** ✅ | **FIA 是根因**（eager + SoftplusV2 + L2Normalize → 正确） |
+| OM FIA（SoftplusV2 + L2Normalize） | `2019-01-01` ❌ | FIA GE kernel `actual_seq_kvlen=1` 致回归 |
+
+→ 回退 FIA → `1+1=2` 正确 → **FIA GE kernel 是唯一根因**，SoftplusV2 + L2Normalize 无影响。
+
+### gemma4 vs qwen3.5 对比：saver fix 对 gemma4 正确但 qwen3.5 回归
+
+重新导出 gemma4（pull saver fix 后，ep_json 确认有 `InlineSeqQLen`/`InlineSeqKvlen` = saver fix 生效）+ 重编 OM + 测 `1+1=`：
+
+| 模型 | saver fix | FIA input 数 | `actual_seq_kvlen` | `1+1=` | 正确? |
+|---|---|---:|---|---|---|
+| **gemma4**（新导出，saver fix 生效） | ✅ InlineSeq | 27 | `ge.Const(1)` | `1+1= **2**` | ✅ |
+| **gemma4**（旧 OM，saver fix 未生效） | ❌ dynamic_const | 6 | 未知（常量折叠） | `1+1= **2**` | ✅ |
+| **qwen3.5**（saver fix 生效） | ✅ InlineSeq | 27 | `ge.Const(1)` | `2019-01-01` | ❌ |
+
+**同样的 saver fix（InlineSeq=1）、同样的 FIA input 布局（27 inputs, in[5]/[6]）、同样的 `actual_seq_kvlen=1`，gemma4 正确但 qwen3.5 回归。** 差异在模型特有参数：
+
+| FIA 参数 | gemma4 (正确) | qwen3.5 (回归) |
+|---|---|---|
+| `num_key_value_heads` | 1 | **2** |
+| `softmax_scale` | 1 | **0.0625** |
+| `sparse_mode` | 3 或 4（混合 full/sliding 层） | **3**（始终 full） |
+| `pre_tokens` | int32max 或 sliding_window | **int32max** |
+| FIA 层数 | 35（全部 full-attn） | **6**（24 层中 6 full + 18 线性注意力） |
+| `atten_mask` 构造 | `wrapper._build_mask_full`（`where(k<=q, 0, min)`） | gen 脚本 inline（`zeros` + `mask[cached_len+1:]=min`）—数值等价 |
+| mask source | host 预构（`_build_mask_full`） | host 预构（gen 脚本） |
+
+**无法从 Python 层定位具体哪个参数导致**——可能是 GE FIA kernel 对 `actual_seq_kvlen=1` + qwen3.5 的特定配置（如 `num_key_value_heads=2` 的 GQA ratio、`softmax_scale=0.0625`、或 6 层 FIA + 18 层 ChunkGatedDeltaRule 的混合架构交互）有 bug。需 CANN kernel 层排查或逐参数对照测试。
+
+### 当前 OM 算子状态（FIA 回退后）
+
+- **FusedInferAttentionScore: 0**（回退 eager）
+- **SoftmaxV2: 6**（eager attention 的 softmax 回来，6 full-attn 层）
+- SoftplusV2: 18（g 计算，线性注意力，保留）
+- L2Normalize: 36（l2norm，保留）
+- 总 1456 ops，扁平（so_store=0）
+- support_ops.md fuse_op 命中 5/8（FIA 不再用 → 命中降 1；l2norm/Rmsnorm/RotaryPositionEmbedding/ScatterNdUpdate/ChunkGatedDeltaRule ✅；DynamicQuant/QuantBatchMatmulV4 ❌ 无量化）
+
+### 待解（如要重新启用 FIA for qwen3.5）
+
+1. **逐参数对照测试**：把 qwen3.5 的 FIA 参数逐一改成 gemma4 的值（如 `num_key_value_heads=1`、`softmax_scale=1`、`sparse_mode=4`），测 `1+1=` 是否变正确 → 定位具体哪个参数触发回归。
+2. **或改 decode 的 `actual_seq_kvlen` 取值**：不用 `q_len=1`，而用 `kv_max`（让 GE kernel 读全 buffer），但这之前测过致乱码（`ge.Const(kv_max)` → OM 扁平但输出乱码 "!!"）。需搞清 GE kernel 对 `actual_seq_kvlen` + `atten_mask` 的交互语义。
+3. **或接受 eager attention**（当前方案）：SoftmaxV2 回来（6 个），但 SoftplusV2 + L2Normalize 仍消了分解基元。OM 1456 ops（vs FIA 版 1415，多 41 个 SoftmaxV2+相关）。
+4. **CANN kernel 层排查**：用 CANN tiling log 或 kernel dump 对比 gemma4 vs qwen3.5 的 FIA kernel 执行路径，定位 `actual_seq_kvlen=1` 在不同 `num_key_value_heads`/`softmax_scale` 下的行为差异。

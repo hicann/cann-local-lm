@@ -88,7 +88,7 @@ class ExportWrapper(nn.Module):
             delta_states,
         )
         if output_pos is not None:
-            logits = logits[:, output_pos, :]
+            logits = logits.index_select(1, output_pos.to(torch.int64))
         return logits, *past_kv_flat, *delta_out_flat
 
     def _drive_layers(

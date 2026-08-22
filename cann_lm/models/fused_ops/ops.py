@@ -18,6 +18,7 @@ from . import (  # noqa: F401  (side-effect: define + register_fake/impl)
     chunk_gated_delta_rule,
     dynamic_quant,
     fused_infer_attention_score,
+    l2_norm,
     quant_matmul,
     rms_norm,
     rotary_mul,

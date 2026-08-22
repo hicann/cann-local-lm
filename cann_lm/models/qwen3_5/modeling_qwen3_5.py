@@ -8,6 +8,7 @@ import torch.nn.functional as F
 from torch import nn
 
 from .configuration_qwen3_5 import Qwen3_5TextConfig
+from ..fused_ops import ops as _fused_ops  # noqa: F401  (registers cann_lm fused ops: npu_rotary_mul/npu_rms_norm/npu_scatter_nd_update)
 
 
 class Qwen3_5RMSNorm(nn.Module):
@@ -20,9 +21,9 @@ class Qwen3_5RMSNorm(nn.Module):
         return x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.eps)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        output = self._norm(x.float())
-        output = output * (1.0 + self.weight.float())
-        return output.to(x.dtype)
+        # Qwen/Gemma 偏置约定: gamma = 1 + weight (weight zeros-init); npu_rms_norm 内部 fp32 累加后 cast 回输入 dtype
+        y, _ = torch.ops.npu.npu_rms_norm(x, 1.0 + self.weight, epsilon=self.eps)
+        return y
 
     def extra_repr(self):
         return f"{tuple(self.weight.shape)}, eps={self.eps}"
@@ -36,12 +37,9 @@ class Qwen3_5RMSNormGated(nn.Module):
 
     def forward(self, hidden_states: torch.Tensor, gate: torch.Tensor = None) -> torch.Tensor:
         input_dtype = hidden_states.dtype
-        hidden_states = hidden_states.to(torch.float32)
-        variance = hidden_states.pow(2).mean(-1, keepdim=True)
-        hidden_states = hidden_states * torch.rsqrt(variance + self.variance_epsilon)
-        hidden_states = self.weight * hidden_states.to(input_dtype)
-        hidden_states = hidden_states * F.silu(gate.to(torch.float32))
-        return hidden_states.to(input_dtype)
+        # weight ones-init 标准 gamma (非 1+weight); npu_rms_norm = (x*rstd)*weight, 返回输入 dtype
+        normed, _ = torch.ops.npu.npu_rms_norm(hidden_states, self.weight, epsilon=self.variance_epsilon)
+        return (normed * F.silu(gate.to(torch.float32))).to(input_dtype)
 
 
 class Qwen3_5TextRotaryEmbedding(nn.Module):
@@ -94,8 +92,10 @@ class Qwen3_5TextRotaryEmbedding(nn.Module):
         # 或 2D [batch,seq]; 3 维相同时取 [0] 等价单维, 与原动态算 apply_interleaved_mrope 一致
         if position_ids.ndim == 3:
             position_ids = position_ids[0]
-        cos = self.cos_cached[position_ids]   # [batch, seq, dim]
-        sin = self.sin_cached[position_ids]
+        # Gather over 预缓存常量表 (index_select 替代 advanced indexing, 消除 Index → GatherV2)
+        pos_flat = position_ids.reshape(-1)
+        cos = self.cos_cached.index_select(0, pos_flat).reshape(*position_ids.shape, -1)
+        sin = self.sin_cached.index_select(0, pos_flat).reshape(*position_ids.shape, -1)
         return cos.to(dtype=x.dtype), sin.to(dtype=x.dtype)
 
     def apply_interleaved_mrope(self, freqs: torch.Tensor, mrope_section: list[int]) -> torch.Tensor:
@@ -125,8 +125,8 @@ def apply_rotary_pos_emb(
     rotary_dim = cos.shape[-1]
     q_rot, q_pass = q[..., :rotary_dim], q[..., rotary_dim:]
     k_rot, k_pass = k[..., :rotary_dim], k[..., rotary_dim:]
-    q_embed = (q_rot * cos) + (rotate_half(q_rot) * sin)
-    k_embed = (k_rot * cos) + (rotate_half(k_rot) * sin)
+    q_embed = torch.ops.npu.npu_rotary_mul(q_rot, cos, sin, rotary_mode="half")
+    k_embed = torch.ops.npu.npu_rotary_mul(k_rot, cos, sin, rotary_mode="half")
     q_embed = torch.cat([q_embed, q_pass], dim=-1)
     k_embed = torch.cat([k_embed, k_pass], dim=-1)
     return q_embed, k_embed
@@ -334,6 +334,35 @@ def torch_recurrent_gated_delta_rule(
     return core_attn_out, last_recurrent_state
 
 
+def scatter_kv_to_cache(
+    cache: torch.Tensor,
+    kv_pos: torch.Tensor,
+    kv_new: torch.Tensor,
+) -> torch.Tensor:
+    """Scatter new KV into BNSD cache [b,n,kv_max,d] via npu_scatter_nd_update (标准多维坐标).
+
+    等价 index_copy(2, kv_pos, kv_new). 参考 gemma4/modeling_gemma4.py:scatter_kv_to_cache.
+    export 路径 batch=1 走 npu_scatter_nd_update (ge.ScatterNdUpdate); b>1 回退 index_copy
+    (b 网格未展开). 用 out-of-place 版 (无 _): in-place schema 有 alias annotation, torch.export
+    functionalization 不支持.
+    """
+    b, n, kv_max, d = cache.shape
+    if b != 1:
+        return cache.index_copy(2, kv_pos, kv_new)
+    seq = kv_pos.shape[0]
+    n_grid = torch.tensor(
+        [[i] * kv_max for i in range(n)], device=cache.device, dtype=torch.int64
+    )
+    col_n = n_grid[:, :seq].reshape(-1)
+    col_pos = torch.cat([kv_pos] * n, dim=0)
+    col_b = col_n * 0
+    indices = torch.cat(
+        [col_b.view(1, -1), col_n.view(1, -1), col_pos.view(1, -1)], dim=0
+    ).transpose(0, 1).reshape(-1, 3)
+    updates = kv_new.reshape(-1, d)
+    return torch.ops.npu.npu_scatter_nd_update(cache, indices, updates)
+
+
 class SimpleKVCache:
     """KV cache for full-attention layers. Uses list-based storage (torch.export friendly).
 
@@ -354,9 +383,9 @@ class SimpleKVCache:
             self.values.append(None)
 
         if new_kv_cache_pos is not None and self.keys[layer_idx] is not None:
-            # scatter-write: index_copy 到预分配 buffer 的 new_kv_cache_pos 位置 (K=kv_max 固定)
-            cache_k = self.keys[layer_idx].index_copy(2, new_kv_cache_pos, key_states)
-            cache_v = self.values[layer_idx].index_copy(2, new_kv_cache_pos, value_states)
+            # scatter-write: npu_scatter_nd_update 写入预分配 buffer 的 new_kv_cache_pos (K=kv_max 固定)
+            cache_k = scatter_kv_to_cache(self.keys[layer_idx], new_kv_cache_pos, key_states)
+            cache_v = scatter_kv_to_cache(self.values[layer_idx], new_kv_cache_pos, value_states)
             self.keys[layer_idx] = cache_k
             self.values[layer_idx] = cache_v
         elif self.keys[layer_idx] is None:
@@ -494,7 +523,7 @@ class Qwen3_5GatedDeltaNet(nn.Module):
         value = value.reshape(batch_size, seq_len, -1, self.head_v_dim)
 
         beta = b.sigmoid()
-        g = -self.A_log.float().exp() * F.softplus(a.float() + self.dt_bias)
+        g = self.A_log.float().exp() * F.softplus(a.float() + self.dt_bias) * (-1.0)
 
         if self.num_v_heads // self.num_k_heads > 1:
             query = query.repeat_interleave(self.num_v_heads // self.num_k_heads, dim=2)
@@ -525,11 +554,9 @@ class Qwen3_5GatedDeltaNet(nn.Module):
         # NPU kernel 不做 l2norm (无 use_qk_l2norm 参数), 需在调用前手动 l2norm query/key
         # (参考 cann-recipes-infer modeling_qwen3_5_moe.py:1428-1430); 传 scale=1/sqrt(Dk).
         # 用 mean*Dk 替代 sum (ge converter 不支持 aten.sum, fallback cpu; ReduceMean 支持)
-        _dk = self.head_k_dim
-        q_inv = torch.rsqrt((query_t * query_t).mean(dim=-1, keepdim=True) * _dk + 1e-6)
-        k_inv = torch.rsqrt((key_t * key_t).mean(dim=-1, keepdim=True) * _dk + 1e-6)
-        query_t = query_t * q_inv
-        key_t = key_t * k_inv
+        # l2norm query/key: cann_lm::l2norm → ge.L2Normalize (替代 rsqrt+mean+mul 分解, 36→18 算子)
+        query_t = torch.ops.cann_lm.l2norm(query_t, dim=-1, eps=1e-6)
+        key_t = torch.ops.cann_lm.l2norm(key_t, dim=-1, eps=1e-6)
         scale = 1.0 / (self.head_k_dim ** 0.5)
         core_attn_out_t, last_recurrent_state_npu = torch.ops.npu.npu_chunk_gated_delta_rule(
             query_t, key_t, value_t,

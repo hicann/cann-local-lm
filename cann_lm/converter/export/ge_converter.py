@@ -52,10 +52,21 @@ def register_ge_converters() -> None:
     # ge.DynamicQuant passes the check on the stub env -> full IR in ep_json ->
     # TBE compiler can select the kernel. Do NOT register a duplicate here.
 
-    # @register_fx_node_ge_converter(torch.ops.aten.softplus.default)
-    # def _convert_softplus(x: Any, meta_outputs: Any = None) -> Any:
-    #     del meta_outputs
-    #     return ge.Softplus(x)
+    # softplus: torchair 占位 NotImplementedError; cann_lm 自注册 → ge.SoftplusV2 (support_ops.md).
+    # 需 reg_register.h 注册 SoftplusV2 (否则 GetGEGraph heap 损坏 — 未注册 op 类型致 C++ 未定义行为).
+    # beta/threshold 显式 float() (aten Scalar 是 int, ge .f 字段是 float).
+    @register_fx_node_ge_converter(torch.ops.aten.softplus.default)
+    def _convert_softplus(self: Any, beta: Any = 1, threshold: Any = 20, *, meta_outputs: Any = None) -> Any:
+        del meta_outputs
+        return ge.SoftplusV2(self, beta=float(beta), threshold=float(threshold))
+
+    # l2norm: cann_lm 自定义 op → ge.L2Normalize (support_ops.md fuse_op l2norm).
+    # 替代纯 torch x*rsqrt(mean(x²)*Dk+eps) 分解 (36 Rsqrt+Mul+Mean → 18 L2Normalize).
+    # 需 reg_register.h 注册 L2Normalize.
+    @register_fx_node_ge_converter(torch.ops.cann_lm.l2norm.default)
+    def _convert_l2norm(x: Any, dim: int = -1, eps: float = 1e-6, *, meta_outputs: Any = None) -> Any:
+        del meta_outputs
+        return ge.L2Normalize(x, axis=[dim], eps=float(eps))
 
     # @register_fx_node_ge_converter(torch.ops.aten.eye.default)
     # def _convert_eye(n: Any, m: Any = None, *, dtype: Any = None, device: Any = None,

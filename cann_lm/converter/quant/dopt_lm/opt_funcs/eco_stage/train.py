@@ -287,26 +287,27 @@ def seed_all(seed_value=1234, deterministic=False):
             torch.backends.cudnn.deterministic = True # needed
 
 
-def model_define(model_path, torch_dtype=torch.float16):
-    from transformers import AutoConfig
-    full_cfg = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
-    if hasattr(full_cfg, "text_config"):
-        # 多模态模型 (如 Gemma4ForConditionalGeneration): 取 text_config,
-        # transformers 自动 remap model.language_model.* -> model.* (丢弃 vision/audio 权重),
-        # 使 dopt 的 get_llama() (model.model.layers) 能直接访问文本层, 无需先 extract_gemma4_text.py
-        model = AutoModelForCausalLM.from_pretrained(
-            model_path,
-            config=full_cfg.text_config,
-            torch_dtype=torch_dtype,
-            trust_remote_code=True,
-        )
+def model_define(model_path, torch_dtype=torch.float16): 
+    model = AutoModelForCausalLM.from_pretrained(
+        model_path, 
+        torch_dtype=torch_dtype, 
+        trust_remote_code=True, 
+    )
+    inner = getattr(model, "model", None)
+    language_model = getattr(inner, "language_model", None)
+    if language_model is None:
+        return model
+    text_config = getattr(model.config, "text_config", None) or language_model.config
+    with torch.device("meta"):
+        llm = AutoModelForCausalLM.from_config(text_config, trust_remote_code=True)
+    llm.model = language_model
+    if getattr(text_config, "tie_word_embeddings", False):
+        llm.lm_head.weight = language_model.embed_tokens.weight
     else:
-        model = AutoModelForCausalLM.from_pretrained(
-            model_path,
-            torch_dtype=torch_dtype,
-            trust_remote_code=True,
-        )
-    return model
+        llm.lm_head.weight = torch.nn.Parameter(model.lm_head.weight.detach().clone())
+    llm.eval()
+    del model
+    return llm
 
 
 def generate_config(model_name_or_path, config_path): 
@@ -551,7 +552,7 @@ def ptq_quant_pipline(
     train_file = config["dataset"]["train_files"]
     config["dataset"]["cutoff_len"] = config.get("cutoff_len", 2048)
     if quant_method == 'gptq': 
-        from dopt_lm.weight_quant_ptq.ptq_algo_heissen.ptq_loop import weight_quant_loop
+        from dopt_lm.weight_quant_ptq.ptq_algo_hessian.ptq_loop import weight_quant_loop
     st = time.time()
     nsamples = config["dataset"].get("ptq_samples", 256)
     fp16_flag = config.get('extra_training_config', dict()).get('fp16', False)

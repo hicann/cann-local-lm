@@ -70,7 +70,7 @@ setup_converter_env() {
   export TORCH_DELEGATE_ENABLE_FALLBACK_CODEGEN=0
   export TORCH_DEVICE_BACKEND_AUTOLOAD=0
   export TORCH_DELEGATE_HOME=/mnt/workspace/torch-delegate-harmony
-  export LD_LIBRARY_PATH="${ASCEND_HOME_PATH}/lib64:/mnt/workspace/torchair/build/stubs:${LD_LIBRARY_PATH:-}"
+  export LD_LIBRARY_PATH="/mnt/workspace/torchair/build/stubs:${ASCEND_HOME_PATH}/lib64:${LD_LIBRARY_PATH:-}"
 }
 
 setup_dopt_env() {
@@ -224,7 +224,7 @@ export PYTHONPATH=/mnt/workspace/project/CANN-LM_5883:${PYTHONPATH:-}
 export TORCH_DELEGATE_ENABLE_FALLBACK_CODEGEN=0
 export TORCH_DEVICE_BACKEND_AUTOLOAD=0
 export TORCH_DELEGATE_HOME=/mnt/workspace/torch-delegate-harmony
-export LD_LIBRARY_PATH=${ASCEND_HOME_PATH}/lib64:/mnt/workspace/torchair/build/stubs:${LD_LIBRARY_PATH:-}
+export LD_LIBRARY_PATH=/mnt/workspace/torchair/build/stubs:${ASCEND_HOME_PATH}/lib64:${LD_LIBRARY_PATH:-}
 # venv: /mnt/workspace/torch-delegate-harmony/.venv (torch 2.9.0+cpu, torch_npu 不装)
 
 === dopt env (Step A GPTQ, 量化前置; 系统 python + 真 torch_npu + NPU) ===

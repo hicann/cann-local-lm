@@ -91,7 +91,7 @@ embed_tokens_per_layer.*:                                     0 keys (qwen3 无 
 实测:
 - `bit=8, unsigned_quant=0, offset=0`(sym signed)
 - `materialize_int8_per_channel`: `q=round(w/s).clamp(-128,127)`,`q*s vs weight` **maxdiff=0.0000**(精确重建,因 w 本就是 fakequant = q*s)
-- dopt `do_opt.py:23-24`:`type_dict = {nn.Embedding: QEmbedding, "embedding_min_max": QEmbedding}` → dopt 把 `nn.Embedding`(含 gemma4 `Gemma4TextScaledWordEmbedding` 子类)wrap 成 QEmbedding
+- dopt `do_opt.py` 通过 `visible_type_dict` 按原始精确类型/类名自动选择 wrapper：`nn.Embedding → QEmbedding`，`Gemma4TextScaledWordEmbedding → QGemma4ScaledEmbedding`
 
 ---
 
@@ -195,7 +195,7 @@ host: int8_emb = gather(int8_weight, input_ids)         # [b,s,hidden]
 
 gemma4 dopt 产物**不含** embed_tokens/embed_tokens_per_layer scale → 需重跑 dopt 加 `Quant_Embed_MinMax` 策略给两者:
 
-- dopt `do_opt.py` 已支持 `nn.Embedding → QEmbedding`(`type_dict`),只需 layer_strategy 给 `embed_tokens` + `embed_tokens_per_layer` 配 `target_op: embedding_min_max`
+- dopt `do_opt.py` 已支持按原始类型自动映射 Embedding wrapper；layer_strategy 给 `embed_tokens` + `embed_tokens_per_layer` 配 `Quant_Embed_MinMax` 即可，无需 `target_op`
 - 重跑后 cann_lm 改造代码(qwen3 验证过的路径)直接复用
 - PLE 的 `ple_q`+`ple_scale`:int8 `[b,s,L,h_pl]` + scale `[b,s]`,dequant `ple_q.float()*scale[b,s,1,1]`
 

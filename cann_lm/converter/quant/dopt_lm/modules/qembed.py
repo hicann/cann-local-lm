@@ -3,7 +3,6 @@
 # Copyright Huawei Technologies Co., Ltd. 2010-2026. All rights reserved.
 # 
 # Stage1 minimal: QEmbedding keeps only the torch fakequant forward path.
-# The NPU embedding simulators (int / fakequant) are removed; npu_simulator
 # stays None so set_quant_state's guard still works.
 import torch
 import torch.nn.functional as F
@@ -48,8 +47,6 @@ class QEmbedding(torch.nn.Module):
         self.norm_type = m.norm_type
         self.scale_grad_by_freq = m.scale_grad_by_freq
         self.sparse = m.sparse
-
-        self.npu_simulator = None
 
     def forward(self, x): 
         weight = self.weight
@@ -107,8 +104,6 @@ class QGemma4ScaledEmbedding(torch.nn.Module):
         self.norm_type = m.norm_type
         self.scale_grad_by_freq = m.scale_grad_by_freq
         self.sparse = m.sparse
-
-        self.npu_simulator = None
 
     def set_quant_state(self, weight, input):
         if self.quant_op is not None:

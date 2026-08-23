@@ -1,7 +1,6 @@
 # !/usr/bin/env python
 # -*- coding: utf-8 -*-
 # Copyright Huawei Technologies Co., Ltd. 2010-2025. All rights reserved.
-import os
 import time
 
 import gc
@@ -11,11 +10,9 @@ from dopt_lm.common_tools.log import Logger
 from dopt_lm.opt_funcs.eco_stage.train import model_define
 from dopt_lm.do_opt import paser_quant_config
 from .ptq_algo import WeightQuantHessian
-from .modelutils import find_layers, DEV
+from .modelutils import DEV, empty_device_cache, find_layers
 from .quant import Quantizer
 from .datautils import get_loaders
-if os.getenv('DEVICE', 'cuda') == 'npu': 
-    import torch_npu
 
 
 def get_llama(model, seq_len, torch_dtype=torch.float32): 
@@ -43,6 +40,14 @@ def sort_sequent(one_layers):
         if 'mlp.down' in layer: 
             sequential[3].append(layer)
     return sequential
+
+
+def _get_weight_config(quant_config, layer_name):
+    layer_config = quant_config.get(layer_name)
+    if not isinstance(layer_config, dict):
+        return None
+    weight_config = layer_config.get("weight")
+    return weight_config if isinstance(weight_config, dict) else None
 
 
 @torch.no_grad()
@@ -102,7 +107,7 @@ def llama_sequential(model, dataloader, dev):
                 pass
         del combined_embed
         gc.collect()
-        torch.cuda.empty_cache()
+        empty_device_cache()
     else: 
         input_ids_list = []
         for batch in dataloader: 
@@ -116,7 +121,7 @@ def llama_sequential(model, dataloader, dev):
     layers[0] = layers[0].cpu()
     model.model.embed_tokens = model.model.embed_tokens.cpu()
     model.model.norm = model.model.norm.cpu()
-    torch.cuda.empty_cache()
+    empty_device_cache()
 
     outs = torch.zeros_like(inps)
     attention_mask = cache['attention_mask']
@@ -213,11 +218,12 @@ def llama_sequential(model, dataloader, dev):
             weight_algo = {}
             for name in subset: 
                 layer_name_full = 'model.layers.%d.%s' % (i, name)
-                if args.quant_config.get(layer_name_full, None) is None: 
+                weight_config = _get_weight_config(args.quant_config, layer_name_full)
+                if weight_config is None:
                     continue
                 weight_algo[name] = WeightQuantHessian(subset[name])
                 weight_algo[name].quantizer = Quantizer()
-                wbits = args.quant_config.get(layer_name_full)['weight']['bit']
+                wbits = weight_config['bit']
                 weight_algo[name].quantizer.configure(
                     wbits, perchannel=True, sym=args.sym, mse=False
                 )
@@ -251,27 +257,22 @@ def llama_sequential(model, dataloader, dev):
             outs[j] = call_layer(j, i, layer, capture_kv=True)
         layers[i] = layer.cpu()
         del layer
-        if os.getenv('DEVICE', 'cuda') == 'npu': 
-            torch.npu.empty_cache()
-        else: 
-            torch.cuda.empty_cache()
+        empty_device_cache()
         inps, outs = outs, inps
     stored_kv = {}
     causal_mask_map = {}
     position_embeddings_map = {}
-    if os.getenv('DEVICE', 'cuda') == 'npu': 
-        torch.npu.empty_cache()
-    else: 
-        torch.cuda.empty_cache()
+    empty_device_cache()
 
     ple_proj_key = 'model.per_layer_model_projection'
-    if args.quant_config.get(ple_proj_key, None) is not None: 
+    ple_weight_config = _get_weight_config(args.quant_config, ple_proj_key)
+    if ple_weight_config is not None:
         ple_proj_layer = model.model.per_layer_model_projection.to(dev)
         ple_proj_quant = WeightQuantHessian(ple_proj_layer)
         ple_proj_quant.quantizer = Quantizer()
-        wbits = args.quant_config.get(ple_proj_key)['weight']['bit']
-        groupsize = args.quant_config.get(ple_proj_key)['weight']['group_size']
-        blocksize = args.quant_config.get(ple_proj_key)['weight'].get('blocksize', 128)
+        wbits = ple_weight_config['bit']
+        groupsize = ple_weight_config['group_size']
+        blocksize = ple_weight_config.get('blocksize', 128)
         ple_proj_quant.quantizer.configure(
             wbits, perchannel=True, sym=args.sym, mse=False
         )
@@ -293,28 +294,23 @@ def llama_sequential(model, dataloader, dev):
         ple_proj_quant.free()
         model.model.per_layer_model_projection = ple_proj_layer.cpu()
         del ple_proj_layer
-        if os.getenv('DEVICE', 'cuda') == 'npu': 
-            torch.npu.empty_cache()
-        else: 
-            torch.cuda.empty_cache()
+        empty_device_cache()
 
-    if args.quant_config.get('lm_head', None) is not None: 
+    lm_head_weight_config = _get_weight_config(args.quant_config, 'lm_head')
+    if lm_head_weight_config is not None:
         layer = model.lm_head.to(dev)
         lm_head_q_layer = WeightQuantHessian(layer)
         lm_head_q_layer.quantizer = Quantizer()
-        wbits = args.quant_config.get('lm_head')['weight']['bit']
-        groupsize = args.quant_config.get('lm_head')['weight']['group_size']
-        blocksize = args.quant_config.get('lm_head')['weight'].get('blocksize', 128)
+        wbits = lm_head_weight_config['bit']
+        groupsize = lm_head_weight_config['group_size']
+        blocksize = lm_head_weight_config.get('blocksize', 128)
         lm_head_q_layer.quantizer.configure(
             wbits, perchannel=True, sym=args.sym, mse=False
         )
         for j in range(args.nsamples): 
             lm_head_q_layer.add_batch(inps[j].data, outs[j].data)
         del inps, outs
-        if os.getenv('DEVICE', 'cuda') == 'npu': 
-            torch.npu.empty_cache()
-        else: 
-            torch.cuda.empty_cache()
+        empty_device_cache()
         Logger.info(f"lm_head, Quantizing ... gs:{groupsize}, blocksize:{blocksize}")
         lm_head_q_layer.fasterquant(
             blocksize=blocksize, 
@@ -324,10 +320,7 @@ def llama_sequential(model, dataloader, dev):
         lm_head_q_layer.free()
         model.lm_head = layer.cpu()
         del layer
-        if os.getenv('DEVICE', 'cuda') == 'npu': 
-            torch.npu.empty_cache()
-        else: 
-            torch.cuda.empty_cache()
+        empty_device_cache()
     model.config.use_cache = use_cache
 
     return quantizers

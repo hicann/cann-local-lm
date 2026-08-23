@@ -21,34 +21,25 @@ init_builder()
 
 visible_type_dict = {
     torch.nn.Embedding: QEmbedding,
-    "embedding_min_max": QEmbedding,
     torch.nn.Linear: QLinear,
-    "Linear": QLinear,
     "Gemma4TextScaledWordEmbedding": QGemma4ScaledEmbedding,
 }
 
-invisible_type_dict = {}
-if len(set(visible_type_dict.keys()) & set(invisible_type_dict.keys())) != 0:
-    duplicate_keys = set(visible_type_dict.keys()) & set(invisible_type_dict.keys())
-    raise RuntimeError(
-        f"Conflict detected: The following types are both visible and invisible: {duplicate_keys}"
-    )
-type_dict = {**visible_type_dict, **invisible_type_dict}
 
-
-def get_target_op_cls(m, parsed_config=None, all_visible=True):
-    if parsed_config and parsed_config.get("target_op", None):
-        return type_dict[parsed_config["target_op"]]
-
+def get_target_op_cls(m, parsed_config=None):
+    # Prefer the source module's exact type/class name.  This lets one
+    # quantization strategy work for related modules with different forward
+    # semantics, such as nn.Embedding and Gemma4TextScaledWordEmbedding.
     if type(m) in visible_type_dict:
         return visible_type_dict[type(m)]
     if m.__class__.__name__ in visible_type_dict:
         return visible_type_dict[m.__class__.__name__]
 
-    if type(m) in type_dict:
-        return type_dict[type(m)]
-    if m.__class__.__name__ in type_dict:
-        return type_dict[m.__class__.__name__]
+    # A strategy-level target_op is a fallback for source classes that are not
+    # registered.  A target_op written explicitly in layer_strategy is handled
+    # as an override by get_optimized_op().
+    if parsed_config and parsed_config.get("target_op", None):
+        return visible_type_dict[parsed_config["target_op"]]
     return None
 
 
@@ -57,7 +48,7 @@ def generate_config_file(model, path):
         raise Exception(f"{path} exist")
     layer_dict = dict()
     for name, m in model.named_modules():
-        if get_target_op_cls(m, all_visible=False) is None:
+        if get_target_op_cls(m) is None:
             logger.debug(f"{name} type {type(m)} not suitable")
             continue
         layer_dict[name] = {
@@ -113,7 +104,9 @@ def get_optimized_op(m, layer_config, *args, layer_name=None, **argv):
     parsed_config = parse_layer_config(layer_config)
     if "target_op" in layer_config:
         parsed_config["target_op"] = layer_config["target_op"]
-    target_op = get_target_op_cls(m, parsed_config)
+        target_op = visible_type_dict[parsed_config["target_op"]]
+    else:
+        target_op = get_target_op_cls(m, parsed_config)
     if target_op is None:
         raise Exception(f"bad input type {m.__class__.__name__}, please register first")
 
@@ -127,26 +120,31 @@ def get_optimized_op(m, layer_config, *args, layer_name=None, **argv):
 def paser_quant_config(model, config_file):
     """Parse quant config for GPTQ weight quantization.
 
-    Loads layer_strategy from config file and returns it as-is.
-    The layer config dict will be accessed by ptq_loop.py using keys like
-    'model.layers.{i}.{name}'.
+    Loads active entries from layer_strategy and omits ``float`` entries so
+    the GPTQ loop only sees layers that have an actual quantization strategy.
     """
     if config_file is None:
         logger.info("WARNING!!!!!!!!!!!! NO QUANT CONFIG")
-        return model
+        return {}
     with open(config_file, "r") as f:
         config = json.load(f)
     layer_config = config.get("layer_strategy", dict())
 
-    default_support_types = type_dict
-    for name, m in model.named_modules():
-        if name not in layer_config:
+    parsed_layer_config = {}
+    for name, _ in model.named_modules():
+        module_config = layer_config.get(name)
+        if module_config is None:
             continue
-        logger.info(f"{name} using strategy: {layer_config[name]['quant_strategy']}")
-        layer_config[name]["layer_name"] = name
-        layer_config[name] = parse_layer_config(layer_config[name])
+        strategy = module_config["quant_strategy"]
+        if strategy == "float":
+            logger.info(f"{name} using strategy: float (skip GPTQ)")
+            continue
+        logger.info(f"{name} using strategy: {strategy}")
+        module_config = copy.deepcopy(module_config)
+        module_config["layer_name"] = name
+        parsed_layer_config[name] = parse_layer_config(module_config)
 
-    return layer_config
+    return parsed_layer_config
 
 
 def optimize_model(model, config_file):
@@ -167,13 +165,16 @@ def optimize_model(model, config_file):
 
     for name, m in model.named_modules():
         if name in layer_config:
+            if layer_config[name]["quant_strategy"] == "float":
+                logger.debug(f"{name} using strategy: float (keep original module)")
+                continue
             logger.debug(
                 f"{name} using strategy: ", layer_config[name]["quant_strategy"]
             )
-            layer_config[name]["layer_name"] = name
-            layer_config["m_type"] = m.__class__.__name__
+            module_config = copy.deepcopy(layer_config[name])
+            module_config["layer_name"] = name
             replace_modules[name] = get_optimized_op(
-                m, layer_config[name], layer_name=name
+                m, module_config, layer_name=name
             )
 
     if replace_modules:

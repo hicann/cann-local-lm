@@ -63,7 +63,7 @@
 | 谁跑 dopt | 用户手动跑 dopt | converter 自动 spawn dopt subprocess |
 | 量化算法 | GPTQ（dopt，精度高） | GPTQ（dopt，精度高） |
 | 格式 | 从产物推断 | `--quant-bits` 配（w4a8/w4a16，默认 w4a8） |
-| group_size | 自动推断（从 dopt 产物） | dopt_config 配（默认 256） |
+| group_size | 自动推断（从 dopt 产物） | dopt_config 配（默认 128） |
 | embed 量化 | 自动检测 | dopt_config 配（Quant_Embed_MinMax） |
 | 环境 | converter CPU stubs | converter CPU stubs + subprocess NPU |
 | 状态 | ✅ 已实现 | ⏳ 待实现（方案 C） |
@@ -136,7 +136,7 @@ __init__.py (门面)
 
 | 侧 | 位宽 | 粒度 | 对称/非对称 | scale 来源 | offset |
 |----|------|------|-------------|-----------|--------|
-| 权重 (x2) | int4 (s4) | per-output-channel × per-group(group_size, 默认 256) | 对称 | GPTQ 离线求（`group_scale`） | 0（对称，不存） |
+| 权重 (x2) | int4 (s4) | per-output-channel × per-group(group_size, 默认 128) | 对称 | GPTQ 离线求（`group_scale`） | 0（对称，不存） |
 | 激活 (x1) | int8 (s8) | per-token 动态 | 对称 | 运行时从 x 算（`npu_dynamic_quant` → `DynamicQuant` IR） | 0 |
 | 输出 | fp16/bf16 | — | — | — | — |
 
@@ -144,7 +144,7 @@ __init__.py (门面)
 
 ```python
 "Quant_act_weight_eco": {
-    "weight": {"blocksize": 128, "group_size": 256, "bit": 4, "per_channel": True,
+    "weight": {"blocksize": 128, "group_size": 128, "bit": 4, "per_channel": True,
                "weight_algo": "omni_group_min_max"},
     "input":  {"bit": 8, "per_channel": False, "input_algo": "dyn_s8", "unsigned_quant": False},
 }
@@ -181,7 +181,7 @@ __init__.py (门面)
 
 ### dopt 实测量化范围（gemma4-E4B，346 个 quant 模块）
 
-`dopt_config.json`（796 行）配置：`embed_tokens` → `Quant_Embed_MinMax`（bit=8 int8 per-channel，host gather）、`lm_head` → `Quant_lm_head`（bit=4）、其余 Linear → `Quant_act_weight_eco;256`。dopt 产物里 `lm_head.weight` 与 `model.embed_tokens.weight` 已**实质 untie**（max diff ≈0.01 = GPTQ 修正量，lm_head 是 GPTQ 修正版给 W4、embed 是原始版给 W8）。
+`dopt_config.json`（796 行）配置：`embed_tokens` → `Quant_Embed_MinMax`（bit=8 int8 per-channel，host gather）、`lm_head` → `Quant_lm_head`（bit=4）、其余 Linear → `Quant_act_weight_eco`（默认 group 128）。dopt 产物里 `lm_head.weight` 与 `model.embed_tokens.weight` 已**实质 untie**（max diff ≈0.01 = GPTQ 修正量，lm_head 是 GPTQ 修正版给 W4、embed 是原始版给 W8）。
 
 - **bit 分布**：bit=4 共 344 个（attn q/k/v/o_proj + mlp gate/up/down_proj + PLE per_layer_input_gate/per_layer_projection/per_layer_model_projection + lm_head），bit=8 共 2 个（embed_tokens + embed_tokens_per_layer）。
 - **gemma4 KV 共享**：`k_proj`/`v_proj` 只 0..23（24 层）有独立权重，后 18 层（24..41）复用前层 KV 无独立 k/v_proj——模型结构决定，非漏量化。
@@ -203,7 +203,7 @@ __init__.py (门面)
 │        cutoff_len=512, fp16=true)                                       │
 │   - cann_lm/converter/quant/calibration.json ← 校准语料 (相对 CWD)        │
 │   - cann_lm/converter/quant/dopt_config.json ← --dopt-config (层策略)    │
-│       (layer_strategy: Linear→Quant_act_weight_eco;256,                    │
+│       (layer_strategy: Linear→Quant_act_weight_eco, group_size=128,        │
 │        Embedding→Quant_Embed_MinMax)                                    │
 │                                                                         │
 │  执行: python -m dopt_lm.opt_main --model-path ... --hf_type_save        │
@@ -229,7 +229,7 @@ __init__.py (门面)
 │  cann_lm_converter.py:                                                  │
 │   B. load_model(hf_path) → nn.Module (HF 原始, fp16)                     │
 │   C+D. swap_to_quant_linear_from_dopt(model, quant_path=quant_output,    │
-│                                      group_size=256, act_quant=True):  │
+│                                      group_size=128, act_quant=True):  │
 │      a. load_dopt_state_dict(quant_output) → sd: dict                    │
 │      b. for each nn.Linear (非 skip):                                   │
 │         - sd[name.weight] (GPTQ fp) + sd[...weight_quantizer.s] (scale) │
@@ -400,7 +400,7 @@ class QuantLinear(nn.Module):
 | ~~`swap_to_quant_linear`~~ | ~~70-94~~ | ~~`(model, group_size=128, skip=DEFAULT_SKIP, act_quant=True)`~~ | ~~4~~ | **已删除**（min-max 快速路径移除；dopt 只支持 GPTQ，min-max 精度差无实用价值） |
 | `load_dopt_state_dict` | 97-122 | `(dopt_path: str \| Path) -> dict` | 1 | 接受 `.safetensors` / `.pth` / 目录(含 `model.safetensors`)。返回 `{name: tensor}` dict |
 | `_read_dopt_quant_meta` | 125-148 | `(sd, name, out_f, in_f, group_size) -> tuple[int, float, Tensor \| None]` | 5 | 私有辅助：读 `{name}.quant_op.weight_quantizer.{bit, unsigned_quant, offset}`。bit=int64 标量，unsigned_quant=fp32 标量，offset=fp32 扁平 `[out*groups]`（reshape 到 `[out, in//group]`）。老版 dopt 无 buffer 时 fallback (4, 0.0, None) |
-| `swap_to_quant_linear_from_dopt` | 151-226 | `(model, dopt_path, group_size=256, skip=DEFAULT_SKIP, act_quant=True) -> dict` | 5 | **主路径**（流程 C+D）：① `load_dopt_state_dict` → sd；② 遍历 `nn.Linear`（非 skip）：读 wkey/skey，跳过缺 key 的；reshape s_flat → scale2d；`_read_dopt_quant_meta` → bit/uq/offset；校验 uq==0（symmetric only，否则 ValueError）；校验 offset 全 0（否则 NotImplementedError：方案 A 不支持非对称）；`materialize_int4_with_scale(packed=True)` → `QuantLinear` → setattr 替换；③ 返回 quant-info dict（scheme/group_size/scope/counts/op/encoding/dopt_bit/uq/offset_supported）→ 被 `cann_lm_converter.py` 写进 `model_config.json` 的 `quant_info` 字段 |
+| `swap_to_quant_linear_from_dopt` | 151-226 | `(model, dopt_path, skip=DEFAULT_SKIP, act_quant=True) -> dict` | 5 | **主路径**（流程 C+D）：① `load_dopt_state_dict` → sd；② 遍历 `nn.Linear`（非 skip）：读 wkey/skey，跳过缺 key 的；从 scale shape 自动推断 group_size；reshape s_flat → scale2d；`_read_dopt_quant_meta` → bit/uq/offset；校验 uq==0（symmetric only，否则 ValueError）；校验 offset 全 0（否则 NotImplementedError：方案 A 不支持非对称）；`materialize_int4_with_scale(packed=True)` → `QuantLinear` → setattr 替换；③ 返回 quant-info dict（scheme/group_size/scope/counts/op/encoding/dopt_bit/uq/offset_supported）→ 被 `cann_lm_converter.py` 写进 `model_config.json` 的 `quant_info` 字段 |
 
 模块级常量 `DEFAULT_SKIP = ("embed_tokens", "embed_tokens_per_layer")`（行 33）。**注意 `lm_head` 不在 skip 里**——会被量化成 QuantLinear W4A8（行 30 注释明确）。
 
@@ -445,7 +445,7 @@ __all__ = [
 
 ## dopt_lm 子包详解（已抽取）
 
-> dopt_lm 的完整设计（文件树 / 入口 / GPTQ 调用链 / common_tools / modules / quantizer / opt_funcs / weight_quant_ptq / 代码风格 / 模型加载约束 / 可设置参数清单 / 历史调试档案）已抽取到 [dopt_design.md](./dopt_design.md)。
+> dopt_lm 的完整设计（文件树 / 入口 / GPTQ 调用链 / common_tools / modules / quantizer / opt_funcs/weight_quant_ptq / 代码风格 / 模型加载约束 / 可设置参数清单 / 历史调试档案）已抽取到 [dopt_design.md](./dopt_design.md)。
 ## 方案 A — 自研 quant_matmul_s8s4 算子规格与实现状态
 
 > 路径 C'（复用 CANN V4 整数 int8/int4）经实测不可达 s8s4 正确结果（详见 [附录 B](#附录-b--历史调试与路径选型档案)），故转方案 A：自研 AscendC kernel `quant_matmul_s8s4`，用 **fp32 scale** 做 `q*scale` 反量化，绕开 CANN V4 的 uint64/FP19 与 V4→V3 融合降级。本节给定算子输入输出与计算语义，供实现方对齐；**kernel 内部流水为实现方自由**。
@@ -552,7 +552,7 @@ y[b,m,n] = Σ_k ( x1_q[b,m,k] · x1_scale[b,m] ) · ( x2_q[n,k] · x2_scale[n, k
 3. **CPU-only 适配**：converter 侧 GPTQ 跑不了（需 NPU/GPU + 校准）。**`--quant-path` 已作兜底**：离线机跑 dopt GPTQ 产出（`quant_output/model.safetensors` 或 `trained_quant_weight.pth`），converter 加载它只做物化 + swap + 导出（不跑 GPTQ）。dopt `opt_main` 在本机 NPU 上跑 GPTQ 曾静默卡住（converter 一键式接入待解，见 [一键式量化方案选型](#一键式量化方案选型)）。
 4. **一键式量化（方案 C）已实现**：converter `--quant-method gptq`（`auto_quant.py`：`generate_dopt_config` + `run_auto_quant` spawn dopt subprocess + swap）。w4a16/实测待做，详见 [一键式量化方案选型](#一键式量化方案选型)。
 5. **dopt 函数超规**：`swap.py swap_to_quant_linear_from_dopt` 函数超 50 行，`materialize.py materialize_int4_with_scale` 6 参数（超 5 参数原则）。两者建议按单一职责拆分 + `Int4Spec` dataclass 收敛，当前未拆。
-6. **dopt gemma4 多模态阻塞**：dopt GPTQ 循环写死文本-only `ForCausalLM` 结构（`train.py:290 model_define` 用 `AutoModelForCausalLM`、`ptq_loop.py:21 get_llama` 取 `model.model.layers`）。多模态 `ForConditionalGeneration` 文本层在 `model.language_model.layers`。`QGemma4ScaledEmbedding` 预留未接线（`do_opt.py:visible_type_dict` 无对应分支）。正路是喂文本-only `Gemma4ForCausalLM`，或改 dopt `model_define`/`get_llama` 抽 `model.language_model` 重挂顶层（dopt 改动，需确认）。
+6. **dopt gemma4 多模态约束**：dopt GPTQ 主循环按文本 `ForCausalLM` 结构访问 `model.model.layers`；`model_define` 会从多模态模型抽取并重挂语言模型。`QGemma4ScaledEmbedding` 已通过 `visible_type_dict` 的原始类名分支接入。
 7. **dopt_lm 拼写错误**：目录名 `ptq_algo_heissen` 与类名 `WeightQuantHeissen` 中的 `heissen` 是 `Hessian` 的系统性拼写错误（遍布目录、类、属性 `heissen_matrix`、局部变量、甚至版权头）。因 dopt_lm 不被主仓 import（独立 CLI 运行，产物按文件路径加载），重命名 `heissen→hessian` 不影响 converter 消费链路——只需同步 dopt_lm 内部 import 与 `train.py` 的 import 即可，是低风险纯内部重构。当前未改。
 
 ---

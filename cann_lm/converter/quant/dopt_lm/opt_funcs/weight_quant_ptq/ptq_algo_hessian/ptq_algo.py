@@ -1,7 +1,6 @@
 # !/usr/bin/env python
 # -*- coding: utf-8 -*-
 # Copyright Huawei Technologies Co., Ltd. 2010-2025. All rights reserved.
-import os
 import math
 import time
 
@@ -10,11 +9,13 @@ import torch.nn as nn
 import transformers
 
 from dopt_lm.common_tools.log import Logger
+from .modelutils import DEVICE_TYPE, empty_device_cache, synchronize_device
 from .quant import quantize
 
 
-torch.backends.cuda.matmul.allow_tf32 = False
-torch.backends.cudnn.allow_tf32 = False
+if DEVICE_TYPE == "cuda":
+    torch.backends.cuda.matmul.allow_tf32 = False
+    torch.backends.cudnn.allow_tf32 = False
 
 
 class WeightQuantHessian:
@@ -100,7 +101,7 @@ class WeightQuantHessian:
         damp = percdamp * torch.mean(torch.diag(hessian_mat))
         diag = torch.arange(self.columns, device=self.dev)
         hessian_mat[diag, diag] += damp
-        if os.getenv("DEVICE", "cuda") == 'npu':
+        if DEVICE_TYPE == "npu":
             hessian_cpu = hessian_mat.cpu()
             del hessian_mat
             hessian_cpu = torch.linalg.cholesky(hessian_cpu)
@@ -154,10 +155,7 @@ class WeightQuantHessian:
 
             weight_matrix[:, i2:] -= loss_error.matmul(hinv[i1:i2, i2:])
 
-        if os.getenv("DEVICE", "cuda") == 'npu':
-            torch.npu.synchronize()
-        else:
-            torch.cuda.synchronize()
+        synchronize_device()
         Logger.info('time %.2f' % (time.time() - tick))
         Logger.info('quant loss: %.6f' % (torch.sum(total_losses).item()))
 
@@ -179,7 +177,4 @@ class WeightQuantHessian:
 
     def free(self):
         self.hessian_matrix = None
-        if os.getenv("DEVICE", "cuda") == 'npu':
-            torch.npu.empty_cache()
-        else:
-            torch.cuda.empty_cache()
+        empty_device_cache()

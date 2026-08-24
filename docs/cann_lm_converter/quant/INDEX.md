@@ -31,7 +31,7 @@
 | `dopt_lm/opt_main.py` | CLI 入口 |
 | `dopt_lm/do_opt.py` | 核心调度：`optimize_model` / `paser_quant_config` |
 | `dopt_lm/opt_funcs/eco_stage/train.py` | orchestrator：`weight_quant_pipline` / `ptq_quant_pipline` / `train`（KD） |
-| `dopt_lm/weight_quant_ptq/ptq_algo_heissen/` | GPTQ 算法实现（`WeightQuantHeissen` / `fasterquant` / `llama_sequential`） |
+| `dopt_lm/opt_funcs/weight_quant_ptq/ptq_algo_hessian/` | GPTQ 算法实现（`WeightQuantHeissen` / `fasterquant` / `llama_sequential`） |
 
 ### 算子定义与 GE converter
 

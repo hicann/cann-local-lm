@@ -40,9 +40,9 @@ packages = [
     "dopt_lm.modules",
     "dopt_lm.opt_funcs",
     "dopt_lm.opt_funcs.eco_stage",
+    "dopt_lm.opt_funcs.weight_quant_ptq",
+    "dopt_lm.opt_funcs.weight_quant_ptq.ptq_algo_hessian",
     "dopt_lm.quantizer",
-    "dopt_lm.weight_quant_ptq",
-    "dopt_lm.weight_quant_ptq.ptq_algo_hessian",
 ]
 
 [tool.setuptools.package-dir]

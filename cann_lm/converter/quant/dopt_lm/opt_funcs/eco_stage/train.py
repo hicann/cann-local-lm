@@ -6,6 +6,7 @@ import time
 import random
 import json
 import yaml
+from contextlib import nullcontext
 from tqdm import tqdm
 import numpy as np
 import torch
@@ -23,9 +24,13 @@ from dopt_lm.do_opt import (
 
 
 os.environ["WANDB_MODE"]="offline"
-device_type = os.getenv("DEVICE", "cuda")
-if device_type  == "npu": 
-    import torch_npu
+SUPPORTED_DEVICE_TYPES = {"cpu", "cuda", "npu"}
+device_type = os.getenv("DEVICE", "cuda").strip().lower()
+if device_type not in SUPPORTED_DEVICE_TYPES:
+    supported = ", ".join(sorted(SUPPORTED_DEVICE_TYPES))
+    raise ValueError(f"Unsupported DEVICE={device_type!r}; expected one of: {supported}")
+if device_type == "npu":
+    import torch_npu  # noqa: F401 - registers the torch.npu backend
 
 
 def check_is_trainable(name, trainable_keys): 
@@ -82,10 +87,13 @@ def get_processed_dataset(dataset_files, tokenizer, dataset_config, train_sample
     return None
 
 
-if device_type == "npu": 
+if device_type == "npu":
     from torch.npu.amp import GradScaler, autocast
-else: 
+elif device_type == "cuda":
     from torch.cuda.amp import GradScaler, autocast
+else:
+    GradScaler = None
+    autocast = nullcontext
 
 
 def custom_model_generation(model, no_split_module_classes=None): 
@@ -97,18 +105,19 @@ def custom_model_generation(model, no_split_module_classes=None):
 
     skip_keys = getattr(model, "_skip_keys_device_placement", None)
 
+    dispatch_dtype = "float32" if device_type == "cpu" else "float16"
     max_memory = get_balanced_memory(
         model, 
         max_memory=None, 
         no_split_module_classes=no_split_module_classes, 
-        dtype="float16", 
+        dtype=dispatch_dtype,
         low_zero=False, 
     )
     device_map = infer_auto_device_map(
         model, 
         max_memory=max_memory, 
         no_split_module_classes=no_split_module_classes, 
-        dtype="float16", 
+        dtype=dispatch_dtype,
     )
     dispatched_model = dispatch_model(model, device_map=device_map, skip_keys=skip_keys)
     return dispatched_model
@@ -280,11 +289,13 @@ def seed_all(seed_value=1234, deterministic=False):
             torch.backends.cudnn.deterministic = True # needed
     elif device_type == "npu": 
         if torch.npu.is_available(): 
-            logger.info("CUDA is available")
+            logger.info("NPU is available")
             torch.use_deterministic_algorithms(deterministic)
             torch.npu.manual_seed(seed_value)
             torch.npu.manual_seed_all(seed_value) # gpu vars
             torch.backends.cudnn.deterministic = True # needed
+    else:
+        logger.info("using CPU")
 
 
 def model_define(model_path, torch_dtype=torch.float16): 
@@ -524,6 +535,10 @@ def weight_quant_pipline(
     with open(config_yaml, "r") as f: 
         config = yaml.load(f, Loader=yaml.SafeLoader)
         config['config_path'] = dopt_config
+    extra_training_config = config.setdefault('extra_training_config', {})
+    if device_type == "cpu" and extra_training_config.get('fp16', False):
+        logger.warning("CPU mode does not use fp16; falling back to float32")
+        extra_training_config['fp16'] = False
     os.makedirs(output_dir, exist_ok=True)
     with open(f"{output_dir}/config.yaml", 'w') as file: 
         yaml.dump(config,file)
@@ -552,7 +567,7 @@ def ptq_quant_pipline(
     train_file = config["dataset"]["train_files"]
     config["dataset"]["cutoff_len"] = config.get("cutoff_len", 2048)
     if quant_method == 'gptq': 
-        from dopt_lm.weight_quant_ptq.ptq_algo_hessian.ptq_loop import weight_quant_loop
+        from dopt_lm.opt_funcs.weight_quant_ptq.ptq_algo_hessian.ptq_loop import weight_quant_loop
     st = time.time()
     nsamples = config["dataset"].get("ptq_samples", 256)
     fp16_flag = config.get('extra_training_config', dict()).get('fp16', False)

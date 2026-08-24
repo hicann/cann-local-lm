@@ -36,7 +36,7 @@ strategy_dict = {
     "Quant_act_weight_eco": {
         "weight": {
             "blocksize": 128,
-            "group_size": 256,
+            "group_size": 128,
             "bit": 4,
             "per_channel": True,
             "weight_algo": "omni_group_min_max",
@@ -49,28 +49,19 @@ strategy_dict = {
         },
     },
     "Quant_Embed_MinMax" : {
-        "target_op" : "embedding_min_max",
         "weight" : {
             "bit"           : 8,
             "per_channel"   : True,
             "weight_algo"   : "min_max",
             "fp16"          : True,
-        }
-    },
-    "Quant_Gemma4_Embed" : {
-        "weight" : {
-            "bit"           : 8,
-            "per_channel"   : True,
-            "weight_algo"   : "min_max",
-            "fp16"          : True,
-            "tie_lmhead"    : False,
+            "tie_lmhead"    : False
         }
     },
     "Quant_Dummy": {"quant_info": "default version"},
     "Quant_lm_head" : {
             "weight" : {
                 "bit"           : 4,
-                "group_size"    : 256,
+                "group_size"    : 128,
                 "blocksize"     : 128,
                 "per_channel"   : True,
                 "weight_algo"   : "omni_group_min_max",
@@ -91,7 +82,7 @@ def get_optimize_cfg(quant_strategy):
 
     if quant_strategy not in strategy_dict:
         raise Exception(f"not support {quant_strategy}")
-    cfg = strategy_dict.get(quant_strategy, dict())
+    cfg = copy.deepcopy(strategy_dict.get(quant_strategy, dict()))
 
     if group_size:
         cfg["weight"]["group_size"] = int(group_size)

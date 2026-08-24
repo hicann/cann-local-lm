@@ -416,14 +416,15 @@ def inline_fused_attn_seq_constants(ep_json_path, qlen_value: int, kvlen_value: 
             if op.get("type") != "FusedInferAttentionScore":
                 continue
             ins = op.get("input")
-            if not isinstance(ins, list) or len(ins) < 7 or not ins[5] or not ins[6]:
-                continue
+            if not isinstance(ins, list) or len(ins) < 7 or not ins[5]:
+                continue  # qlen (ins[5]) 必须有; kvlen (ins[6]) 可空 (kvlen=None 新方案: op 读全 buffer, 由 atten_mask 控制有效区段)
             qlen_c = _make_const(f"InlineSeqQLen{inlined}", qlen_value)
-            kvlen_c = _make_const(f"InlineSeqKvlen{inlined}", kvlen_value)
             ops.append(qlen_c)
-            ops.append(kvlen_c)
             ins[5] = f"{qlen_c['name']}:0"
-            ins[6] = f"{kvlen_c['name']}:0"
+            if ins[6]:  # kvlen 存在 (旧 kvlen=常量方案) 才内联; None/空 (新方案) 跳过
+                kvlen_c = _make_const(f"InlineSeqKvlen{inlined}", kvlen_value)
+                ops.append(kvlen_c)
+                ins[6] = f"{kvlen_c['name']}:0"
             inlined += 1
     with open(ep_json_path, "w") as f:
         json.dump(doc, f)

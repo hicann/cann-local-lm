@@ -15,8 +15,8 @@ import torch
 
 # input_ids 入图 OM (已清除, 需用 CLI `cann_lm_converter.py --no-use-embeddings --mode prefill-decode`
 # 重新导出+编译 prefill/decode 两图). embeddings 入图单 OM 验证用 run_qwen3_5_om_emb.py.
-PREFILL_OM = "/tmp/opencode/qwen3_5_pd/prefill.om"
-DECODE_OM = "/tmp/opencode/qwen3_5_pd/decode.om"
+PREFILL_OM = os.environ.get("PREFILL_OM", "/tmp/opencode/qwen3_5_pd/prefill.om")
+DECODE_OM = os.environ.get("DECODE_OM", "/tmp/opencode/qwen3_5_pd/decode.om")
 HF = "/mnt/workspace/data/models/Qwen3.5-0.8B"
 KV_MAX = 2048; DEV = 0; MAX_NEW = 20; PREFILL_SEQ = 8
 sys.path.insert(0, "/mnt/workspace/project/CANN-LM_5883")

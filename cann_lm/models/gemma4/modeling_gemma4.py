@@ -252,15 +252,15 @@ def fused_attention_forward(
     else:
         actual_kv_len = torch.tensor(key.shape[2], dtype=torch.int64, device=query.device)
     actual_seq_qlen = torch.tensor([q_len], dtype=torch.int64, device=query.device)
-    actual_seq_kvlen = actual_kv_len.reshape(1).to(torch.int64)
+    actual_seq_kvlen = None  # sparse_mode=0 + kvlen=None: 纯靠 bool mask 控制有效区段
     # atten_mask: sparse_mode=3/4 要求 atten_mask 非空 (bool [*, kv_len, kv_len] 方阵).
     # cann_lm float mask [*, q_len, kv_len] (0.0=attend k<=q, min=mask out k>q) -> bool 转换 +
     # pad q 维到 kv_len (融合算子用 actual_seq_qlen 切片前 q_len 行). 试不取反 (False=attend).
     atten_mask_bool = _pad_mask_to_kv_square(attention_mask, key.shape[2]) if attention_mask is not None else None
     if module.is_sliding:
-        sparse_mode, pre_tokens = 4, module.sliding_window
+        sparse_mode, pre_tokens = 0, module.sliding_window  # 0=NO_MASK: 无强制 band, 纯靠 bool mask (移除 band 冲突)
     else:
-        sparse_mode = 3
+        sparse_mode = 0
         pre_tokens = torch.iinfo(torch.int32).max
     attn_output, _ = torch.ops.npu.npu_fused_infer_attention_score_v2(
         query, key, value,

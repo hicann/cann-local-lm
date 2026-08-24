@@ -98,11 +98,11 @@
 
 ### 8. `Muls`: 保留（替换不划算）
 
-| | 原（保留） | 尝试替换 |
-|---|---|---|
-| Python | `x * float`（`per_layer_input_scale`/`per_layer_model_projection_scale`） | `x * torch.tensor(scale)` |
-| ascend_ir | `ge.Muls` 2 | `ge.Mul` +2 + `ge.Fill` 35 + Const 大增 |
-| support_ops.md | ❌ Muls 未列（框架算子） | Mul ✅ 但 Fill ❌ |
+|                | 原（保留）　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　| 尝试替换　　　　　　　　　　　　　　　　|
+| ----------------| ---------------------------------------------------------------------------| -----------------------------------------|
+| Python         | `x * float`（`per_layer_input_scale`/`per_layer_model_projection_scale`） | `x * torch.tensor(scale)`　　　　　　　 |
+| ascend_ir      | `ge.Muls` 2　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　 | `ge.Mul` +2 + `ge.Fill` 35 + Const 大增 |
+| support_ops.md | ❌ Muls 未列（框架算子）　　　　　　　　　　　　　　　　　　　　　　　　　 | Mul ✅ 但 Fill ❌　　　　　　　　　　　　 |
 
 - **文件**：`export_wrapper.py`（`* tm.per_layer_model_projection_scale` / `* tm.per_layer_input_scale`）
 - **决定**：**保留 Muls**。`Muls` 是 GE 高效标量乘专用算子（框架算子，类 Const/Data/MemcpyAddrAsync，本就不属 support_ops.md 范畴）。替换成 `Mul+Const` 会引入 `Fill` 35（标量 broadcast 填充），净 +35 算子，得不偿失
@@ -119,27 +119,27 @@
 
 ## 最终 OM 算子（prefill.om，1979 个）
 
-| 算子 | 数量 | support_ops.md 命中 |
-|---|---:|---|
-| Const | 593 | 框架算子 |
-| MatMul | 277 | ⚠️ MatmulV3 同族 |
-| RmsNorm | 242 | ✅ fuse Rmsnorm |
-| Add | 106 | ✅ single Add |
-| Mul | 105 | ✅ single Mul |
-| Transpose | 100 | ✅ single Transpose |
-| ConcatV2D | 85 | ⚠️ concatD 同族 |
-| Data | 77 | 框架算子 |
-| Gelu | 70 | ✅ single Gelu |
-| Cast | 66 | ✅ single Cast |
-| StridedSliceD | 60 | ⚠️ StridedSliceV2 同族 |
-| RotaryMul | 50 | ✅ fuse RotaryPositionEmbedding |
-| GatherV2 | 40 | ✅ single GatherV2 |
-| MemcpyAddrAsync | 40 | 框架算子 |
-| FusedInferAttentionScore | 35 | ✅ fuse FusedInferAttention |
-| ScatterNdUpdate | 30 | ✅ fuse ScatterNdUpdate |
-| Muls | 2 | 框架算子（保留） |
-| NetOutput | 1 | 框架算子 |
-| **Range/BroadcastTo/Pack/Index/IndexByTensor/InplaceAddRmsNorm** | **0** | ✅ 全消除 |
+| 算子　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　 | 数量　| support_ops.md 命中　　　　　　|
+| ------------------------------------------------------------------| ------:| --------------------------------|
+| Const　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　| 593　 | 框架算子　　　　　　　　　　　 |
+| MatMul　　　　　　　　　　　　　　　　　　　　　　　　　　　　　 | 277　 | ⚠️ MatmulV3 同族　　　　　　　　|
+| RmsNorm　　　　　　　　　　　　　　　　　　　　　　　　　　　　　| 242　 | ✅ fuse Rmsnorm　　　　　　　　 |
+| Add　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　| 106　 | ✅ single Add　　　　　　　　　 |
+| Mul　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　| 105　 | ✅ single Mul　　　　　　　　　 |
+| Transpose　　　　　　　　　　　　　　　　　　　　　　　　　　　　| 100　 | ✅ single Transpose　　　　　　 |
+| ConcatV2D　　　　　　　　　　　　　　　　　　　　　　　　　　　　| 85　　| ⚠️ concatD 同族　　　　　　　　 |
+| Data　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　 | 77　　| 框架算子　　　　　　　　　　　 |
+| Gelu　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　 | 70　　| ✅ single Gelu　　　　　　　　　|
+| Cast　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　 | 66　　| ✅ single Cast　　　　　　　　　|
+| StridedSliceD　　　　　　　　　　　　　　　　　　　　　　　　　　| 60　　| ⚠️ StridedSliceV2 同族　　　　　|
+| RotaryMul　　　　　　　　　　　　　　　　　　　　　　　　　　　　| 50　　| ✅ fuse RotaryPositionEmbedding |
+| GatherV2　　　　　　　　　　　　　　　　　　　　　　　　　　　　 | 40　　| ✅ single GatherV2　　　　　　　|
+| MemcpyAddrAsync　　　　　　　　　　　　　　　　　　　　　　　　　| 40　　| 框架算子　　　　　　　　　　　 |
+| FusedInferAttentionScore　　　　　　　　　　　　　　　　　　　　 | 35　　| ✅ fuse FusedInferAttention　　 |
+| ScatterNdUpdate　　　　　　　　　　　　　　　　　　　　　　　　　| 30　　| ✅ fuse ScatterNdUpdate　　　　 |
+| Muls　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　 | 2　　 | 框架算子（保留）　　　　　　　 |
+| NetOutput　　　　　　　　　　　　　　　　　　　　　　　　　　　　| 1　　 | 框架算子　　　　　　　　　　　 |
+| **Range/BroadcastTo/Pack/Index/IndexByTensor/InplaceAddRmsNorm** | **0** | ✅ 全消除　　　　　　　　　　　 |
 
 ## 结论
 

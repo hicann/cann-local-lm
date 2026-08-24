@@ -265,6 +265,9 @@ def save_epair_prefill_decode(
     # (modeling fused_attention_forward 设 actual_kv_len=q_len 非 new_kv_cache_pos.max()+1).
     # kvlen=kv_max 对 prefill (q_len>1) 不可用 (FIA [seq_len,kv_max] 大矩阵+大量 mask 致退化),
     # 与 decode (q_len=1, kv_max 可用) 不同. 见 ops_replacement.md.
+    # 实证 (fia_static_kvmax §14.2/14.6 + 2026-08-24 bool 方阵 mask 重测):
+    # bool 方阵 mask (直接给 FIA, 跳过 float→bool 转换) + kvlen=kv_max 仍退化 (全 pad 0),
+    # 证实退化是 arch22 kernel 对 [actual:s2Size] 不 honor mask 的硬限制, 非 mask 问题.
     inline_fused_attn_seq_constants(
         output_dir / "prefill_ep_json_with_ascend_ir.json", seq_len)
 

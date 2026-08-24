@@ -210,7 +210,7 @@ def fused_attention_forward(
     else:
         actual_kv_len = torch.tensor(key.shape[2], dtype=torch.int64, device=query.device)
     actual_seq_qlen = torch.tensor([q_len], dtype=torch.int64, device=query.device)
-    actual_seq_kvlen = actual_kv_len.reshape(1).to(torch.int64)
+    actual_seq_kvlen = None  # sparse_mode=0 + kvlen=None: 纯靠 bool mask 控制有效区段 (见 gemma4 验证)
     atten_mask_bool = _pad_mask_to_kv_square(attention_mask, key.shape[2]) if attention_mask is not None else None
     attn_output, _ = torch.ops.npu.npu_fused_infer_attention_score_v2(
         query, key, value,
@@ -218,7 +218,7 @@ def fused_attention_forward(
         num_key_value_heads=module.config.num_key_value_heads,
         softmax_scale=module.scaling,
         input_layout="BNSD",
-        sparse_mode=3,
+        sparse_mode=0,  # NO_MASK: 无强制 band, 纯靠 bool mask (gemma4 验证: sparse_mode=0+kvlen=None 静态可行)
         pre_tokens=torch.iinfo(torch.int32).max,
         next_tokens=0,
         atten_mask=atten_mask_bool,
@@ -693,16 +693,15 @@ class Qwen3_5Attention(nn.Module):
             key_states, value_states = past_key_values.update(
                 key_states, value_states, self.layer_idx, new_kv_cache_pos)
 
-        attn_output, attn_weights = eager_attention_forward(
+        attn_output, _ = fused_attention_forward(
             self, query_states, key_states, value_states, attention_mask,
-            scaling=self.scaling,
-            dropout=0.0 if not self.training else self.attention_dropout,
+            new_kv_cache_pos=new_kv_cache_pos,
         )
 
         attn_output = attn_output.reshape(*input_shape, -1).contiguous()
         attn_output = attn_output * torch.sigmoid(gate)
         attn_output = self.o_proj(attn_output)
-        return attn_output, attn_weights
+        return attn_output, None
 
 
 class Qwen3_5MLP(nn.Module):

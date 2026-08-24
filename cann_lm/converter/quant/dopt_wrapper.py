@@ -22,8 +22,7 @@ if str(_PROJECT_ROOT) not in sys.path:
 
 _LINEAR_STRATEGY = "Quant_act_weight_eco"
 _LM_HEAD_STRATEGY = "Quant_lm_head"
-_EMBED_STRATEGY = "Quant_Embed_MinMax"
-_GEMMA4_EMBED_STRATEGY = "Quant_Gemma4_Embed"
+_EMBED_STRATEGY = "Quant_Embed_MinMax"  # dopt 53ad5ec 删了 Quant_Gemma4_Embed, gemma4 embed 也用此
 
 
 def _read_model_type(model_path: str) -> str:
@@ -43,7 +42,7 @@ def _build_layer_strategy(model, model_type: str) -> dict:
                 strategy = _LINEAR_STRATEGY
             layer_strategy[name] = {"type": str(type(m)), "quant_strategy": strategy}
         elif isinstance(m, torch.nn.Embedding):
-            strategy = _GEMMA4_EMBED_STRATEGY if model_type.startswith("gemma4") else _EMBED_STRATEGY
+            strategy = _EMBED_STRATEGY
             layer_strategy[name] = {"type": str(type(m)), "quant_strategy": strategy}
     return layer_strategy
 

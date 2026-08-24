@@ -91,8 +91,10 @@ def save_epair(
         batch=1,
     ).eval()
 
-    # quant_embeddings 自动从 embed_quant 推断 (embed_quant 非空 = dopt 产物含 embed scale)
-    quant_embeddings = embed_quant is not None
+    # quant_embeddings 自动从 embed_quant 推断 (非空 dict = dopt 产物含 embed scale)。
+    # 用 bool() 而非 `is not None`: dopt 未量化 embed 时 swap 返回空 dict {},
+    # 此时应 fallback 到 float embed_tokens (非量化路径), 不能误判为 True 致 KeyError。
+    quant_embeddings = bool(embed_quant)
     if quant_embeddings:
         wrapper.set_quant_embeddings(embed_quant)
 
@@ -197,8 +199,10 @@ def save_epair_prefill_decode(
         batch=1,
     ).eval()
 
-    # quant_embeddings 自动从 embed_quant 推断 (embed_quant 非空 = dopt 产物含 embed scale)
-    quant_embeddings = embed_quant is not None
+    # quant_embeddings 自动从 embed_quant 推断 (非空 dict = dopt 产物含 embed scale)。
+    # 用 bool() 而非 `is not None`: dopt 未量化 embed 时 swap 返回空 dict {},
+    # 此时应 fallback 到 float embed_tokens (非量化路径), 不能误判为 True 致 KeyError。
+    quant_embeddings = bool(embed_quant)
     if quant_embeddings:
         wrapper.set_quant_embeddings(embed_quant)
 

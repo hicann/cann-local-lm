@@ -91,9 +91,20 @@ def load_dopt_state_dict(dopt_path: str | Path) -> dict:
         with safe_open(str(p), "pt") as sf:
             for k in sf.keys():
                 sd[k] = sf.get_tensor(k)
-        return sd
-    # .pth (torch.save state_dict)
-    return torch.load(str(p), map_location="cpu")
+    else:
+        # .pth (torch.save state_dict)
+        sd = torch.load(str(p), map_location="cpu")
+    # Normalize FQN: transformers' Qwen3_5ForCausalLM.save_pretrained wraps the text
+    # llm state_dict into VLM structure (model.language_model.*) when saving; gemma4's
+    # save_pretrained saves as-is (model.*). Strip language_model. prefix so the dopt
+    # sd is text-only (model.*) for both — cann_lm (text-only model.*) then matches.
+    if any(k.startswith("model.language_model.") for k in sd):
+        sd = {
+            ("model." + k[len("model.language_model."):])
+            if k.startswith("model.language_model.") else k: v
+            for k, v in sd.items()
+        }
+    return sd
 
 
 def _read_dopt_quant_meta(
@@ -126,13 +137,14 @@ def _read_dopt_quant_meta(
 # converter venv 不装 dopt_lm 不能 import,硬编码;新增带 weight 量化的策略时需同步更新此处.
 # 注意: 只含策略配置 (group_size/bit/blocksize/per_channel/weight_algo);
 #       unsigned_quant/offset 是 GPTQ 运行时状态 (dopt 写到 safetensors buffer),不在 config.
+# dopt 53ad5ec 把 group_size 从 256 改成 128 (Quant_act_weight_eco + Quant_lm_head), 此处同步.
 _STRATEGY_DEFAULT_PARAMS: dict[str, dict] = {
     "Quant_act_weight_eco": {
-        "group_size": 256, "bit": 4, "blocksize": 128,
+        "group_size": 128, "bit": 4, "blocksize": 128,
         "per_channel": True, "weight_algo": "omni_group_min_max",
     },
     "Quant_lm_head": {
-        "group_size": 256, "bit": 4, "blocksize": 128,
+        "group_size": 128, "bit": 4, "blocksize": 128,
         "per_channel": True, "weight_algo": "omni_group_min_max",
     },
 }

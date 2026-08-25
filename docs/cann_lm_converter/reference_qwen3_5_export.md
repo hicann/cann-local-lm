@@ -139,7 +139,7 @@ qwen3_5 的 4D 透传是为导出新增的（gemma4 / qwen3 原生就有），�
 
 ## 4. 线性注意力导出（核心问题）
 
-qwen3.5 有 18 层线性注意力（GatedDeltaNet），这是导出问题的集中点。`GatedDeltaNet.forward`（`modeling_qwen3_5.py:415-506`）的 prefill 路径调 `torch_chunk_gated_delta_rule`（~78 行 Python for 循环），decode 路径调 `torch_recurrent_gated_delta_rule`（逐 token for 循环）。
+qwen3.5 有 18 层线性注意力（GatedDeltaNet），这是导出问题的集中点。`GatedDeltaNet.forward`（`modeling_qwen3_5.py`，外部依赖 transformers 源码）的 prefill 路径调 `torch_chunk_gated_delta_rule`（~78 行 Python for 循环），decode 路径调 `torch_recurrent_gated_delta_rule`（逐 token for 循环）。
 
 ### 4.1 原始 segfault（纯 torch for 循环）
 
@@ -172,9 +172,9 @@ qwen3.5 有 18 层线性注意力（GatedDeltaNet），这是导出问题的集�
    - inputs: query/key/value/beta/initial_state/actual_seq_lengths + g(optional)
    - outputs: out/final_state，attr: `scale_value`（float，default 1.0）
 
-3. **`cann_lm/models/qwen3_5/modeling_qwen3_5.py:487`** — modeling 用 `torch.ops.npu.npu_chunk_gated_delta_rule(...)` 替代 `torch_chunk_gated_delta_rule`，单 GE 节点替代 19418 节点展开。
+3. **`cann_lm/models/qwen3_5/modeling_qwen3_5.py` 的 npu_chunk_gated_delta_rule 调用** — modeling 用 `torch.ops.npu.npu_chunk_gated_delta_rule(...)` 替代 `torch_chunk_gated_delta_rule`，单 GE 节点替代 19418 节点展开。
 
-4. **`examples/export_llm_model/om_npu_verify/reg_register.h:451`** — C++ 侧注册 `REG_OP(ChunkGatedDeltaRule)`（inputs/outputs/attr）。
+4. **`examples/test_converter/export_llm_model/om_npu_verify/reg_register.h` 的 `REG_OP(ChunkGatedDeltaRule)`** — C++ 侧注册 `REG_OP(ChunkGatedDeltaRule)`（inputs/outputs/attr）。
 
 **效果**：`torch.export` 节点数从 19418 降到 2866，`export_to_epair` 不再 segfault，ep_json 生成，Python ep 回环验证通过。
 
@@ -183,7 +183,7 @@ qwen3.5 有 18 层线性注意力（GatedDeltaNet），这是导出问题的集�
 epair 导出层解决后，跑 C++ `aclgrphBuildModel` 编译 OM 时，**infershape 阶段失败**：
 
 ```
-[ERROR] [chunk_gated_delta_rule_infershape.cpp:66]
+[ERROR] [chunk_gated_delta_rule_infershape.cpp]（外部依赖，CANN 9.2.0）
   OpName:[ChunkGatedDeltaRule] value dim num should be 3, but got 4
 [ERROR] InferShapeOnCompile: ... op_desc[ChunkGatedDeltaRule], ret[-1]
 [ERROR] aclgrphBuildModel failed, status: 1343242270
@@ -242,7 +242,7 @@ epair 导出层解决后，跑 C++ `aclgrphBuildModel` 编译 OM 时，**infersh
 
 > 注：infershape.cpp（OM 编译图模式 infershape pass 报错点）源码 gitcode 渲染异常未取到，但其报错 `value dim num should be 3` 与 tiling.cpp 的 `CheckDim(value, 3)` 逻辑完全对应（两个阶段都校验维度数，文案略异：infershape 旧 "dim num"，tiling 新 "number of dimensions"）。
 
-**modeling 实际传（BHSD 4D）**（`modeling_qwen3_5.py:467-491`）：
+**modeling 实际传（BHSD 4D）**（`modeling_qwen3_5.py`，外部依赖 transformers 源码）：
 - query/key/value: `[B, H, seq, D]` 4D（BHSD，经 `transpose(1,2)` 从 BSHD 转来）
 - beta/g: `[B, H, seq]` 3D
 - initial_state: `[B, Nv, Dv, Dk]` 4D（这个对了）
@@ -418,9 +418,9 @@ out CPU[:5] = [-0.000460, 0.000203, 0.00223, -0.00124, 0.000866]
 ```
 
 **根因定位**：
-- CPU `torch_chunk_gated_delta_rule`（`modeling_qwen3_5.py:212`）：`scale = 1/(query.shape[-1]**0.5); query = query * scale` —— CPU 内部缩放 query
-- NPU `ge_converter.py:113`：`op.attr["scale_value"].f = scale if scale is not None else 1.0` —— modeling 未传 scale，默认 1.0，kernel 不缩放 query
-- kernel 源码（`arch22/chunk_gated_delta_rule_stage1.h:676`）：`Muls(qUbFloat_, qUbFloatCon_, scale_, ...)` —— 确实用 scale 缩放 query
+- CPU `torch_chunk_gated_delta_rule`（`modeling_qwen3_5.py`，外部依赖 transformers 源码）：`scale = 1/(query.shape[-1]**0.5); query = query * scale` —— CPU 内部缩放 query
+- NPU `ge_converter.py`（外部依赖，torchair 源码）：`op.attr["scale_value"].f = scale if scale is not None else 1.0` —— modeling 未传 scale，默认 1.0，kernel 不缩放 query
+- kernel 源码（`arch22/chunk_gated_delta_rule_stage1.h`，外部依赖，CANN 9.2.0 kernel 源码）：`Muls(qUbFloat_, qUbFloatCon_, scale_, ...)` —— 确实用 scale 缩放 query
 - 比值 mean=11.34 ≈ sqrt(D_k)=sqrt(128)=11.314 —— 数值吻合
 
 **验证（CPU 改 `apply_scale=False`，不 scale query）**：

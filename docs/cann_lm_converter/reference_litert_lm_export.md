@@ -49,7 +49,7 @@ Google 的**生产级 LLM 编排层**，跑在 LiteRT（TFLite 后继）上，�
 
 图权分离和我们的 `ep_json` + `weights_*.bin` **同构**。差异只在它打包成单文件。
 
-## 4. `TfLiteModelType`（确认，`litertlm_builder.py:208`）
+## 4. `TfLiteModelType`（确认，`litertlm_builder.py:208`，外部依赖 litert 框架）
 
 ```python
 class TfLiteModelType(enum.Enum):
@@ -63,7 +63,7 @@ class TfLiteModelType(enum.Enum):
 
 ### 5.1 两个签名 runner
 
-`runtime/executor/llm_litert_compiled_model_executor.cc:80-81`：
+`runtime/executor/llm_litert_compiled_model_executor.cc:80-81`（外部依赖 litert 框架）：
 
 ```cpp
 constexpr absl::string_view kPrefillSignatureRunner = "prefill";
@@ -72,7 +72,7 @@ constexpr absl::string_view kDecodeSignatureRunner  = "decode";
 
 runtime 通过 `compiled_model.FindSignature(signature)` 取对应签名 runner，按阶段调 prefill 或 decode。**两个签名共用同一套输入张量名**（`ModelSignatures` 结构体，prefill/decode 通用）。
 
-### 5.2 `ModelSignatures` 结构体（`litert_compiled_model_executor_utils.h:55`）
+### 5.2 `ModelSignatures` 结构体（`litert_compiled_model_executor_utils.h:55`，外部依赖 litert 框架）
 
 ```cpp
 struct ModelSignatures {
@@ -86,7 +86,7 @@ struct ModelSignatures {
 };
 ```
 
-### 5.3 默认张量名（`litert_compiled_model_executor_utils.cc:71-89`）
+### 5.3 默认张量名（`litert_compiled_model_executor_utils.cc:71-89`，外部依赖 litert 框架）
 
 runtime 按"候选名列表"自动匹配（支持多种命名变体）：
 
@@ -100,7 +100,7 @@ runtime 按"候选名列表"自动匹配（支持多种命名变体）：
 | int32 参数 | `param_tensor` | `param_tensor` |
 | 输出 logits | `logits` | `logits` |
 
-### 5.4 KV cache 张量命名约定（`GetKVCacheRootNames`, `utils.cc:189`）
+### 5.4 KV cache 张量命名约定（`GetKVCacheRootNames`, `utils.cc:189`，外部依赖 litert 框架）
 
 KV cache 是**每层一对 (k, v) 显式输入也显式输出**，按"根名 + 层号"命名。runtime 扫输入/输出名自动探测三种约定之一：
 
@@ -188,20 +188,21 @@ litert-torch（原 ai_edge_torch）是 LiteRT-LM 的模型导出工具，源码�
 litert_torch/__init__.py              → 导出 convert(), signature()
   │
   ▼
-_convert/interface.py:274             convert()           ← Python API 入口
+（以下流程图引用 litert 框架外部依赖源码，行号随上游版本）
+_convert/interface.py                convert()           ← Python API 入口
   │  创建 Converter，调用 Converter.convert()
   ▼
-_convert/interface.py:131            Converter.convert() ← 添加签名 + 触发转换
+_convert/interface.py               Converter.convert() ← 添加签名 + 触发转换
   │  遍历 Signature 列表
   ▼
-_convert/core.py:79                  convert_signatures()← 对每个签名调 torch.export
+_convert/core.py                    convert_signatures()← 对每个签名调 torch.export
   │  torch.export.export(module, args, kwargs, dynamic_shapes)
   │  → FX passes (优化)
   ▼
-_convert/litert_converter.py:104      exported_programs_to_flatbuffer() ← MLIR → .tflite
+_convert/litert_converter.py         exported_programs_to_flatbuffer() ← MLIR → .tflite
   │  ExportedProgram → MLIR → convert_to_tfl passes → flatbuffer
   ▼
-model.py:182                         LiteRTModel.export(path) ← 写 .tflite 文件
+model.py                            LiteRTModel.export(path) ← 写 .tflite 文件
 ```
 
 最简用法（`generative/examples/test_models/convert_toy_model.py`）：

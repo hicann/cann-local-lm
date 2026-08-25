@@ -6,7 +6,7 @@
 >
 > CLI 入口见 [cli_design.md](../cli/cli_design.md)，量化接入见 [quant_design.md](../quant/quant_design.md)。
 >
-> 最后更新: 2026-08-22
+> 状态: 待核对 | 最后核对: 2026-08-22
 
 ## 目录
 
@@ -1198,7 +1198,7 @@ HF (Gemma4ClippableLinear):           cann_lm (nn.Linear):
 3. **generation_config.json 处理** — 当前已从 `collect_tokenizer_files` 中移除。后续需要在 `llm_config` 中单独处理 `generation_config.json` 的参数（temperature/top_p/top_k/max_length 等），需和 llm_engine 确认使用哪些字段后再实现
 4. **图的导出输入输出接口** — 需要确定如何统一导出输入输出（个数不确定，且可能比较多）
 5. **qwen3.5 线性注意力导出** — 详见 [reference_qwen3_5_export.md](../reference_qwen3_5_export.md)
-6. **新 ExportWrapper 的 ep_json 格式与 C++ 解析器不兼容** — **[已解决]** C++ `epair_model_parser.cc:187-203` 的 `parse_named_arg` 已支持 `arg.name` 和 `arg.as_tensor.name` 两种格式
+6. **新 ExportWrapper 的 ep_json 格式与 C++ 解析器不兼容** — **[已解决]** C++ `epair_model_parser.cc` 的 `parse_named_arg` 已支持 `arg.name` 和 `arg.as_tensor.name` 两种格式
 7. **qwen3 / qwen3.5 scatter-write 改造** — 当前方案 B（预分配 buffer + `index_copy` scatter-write）仅实现 gemma4。qwen3 和 qwen3.5 的 attention 层同样需要从 `torch.cat` 改为 `index_copy` + 预分配 buffer。详见 [reference_qwen3_5_export.md](../reference_qwen3_5_export.md) "scatter-write 改造"
 8. **aten.index_copy.default GE converter 缺失** — **[已解决]** 在 `converter/export/ge_converter.py` 注册 `aten.index_copy.default` converter，用 `ge.InplaceUpdate` + `ge.TransposeD` 实现
 

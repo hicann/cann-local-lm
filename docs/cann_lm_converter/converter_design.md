@@ -9,7 +9,7 @@
 > - **模块索引** → [INDEX.md](./cli/INDEX.md) / [INDEX.md](./export/INDEX.md) / [INDEX.md](./quant/INDEX.md)
 > - **参考文档** → 见 [模块导航](#模块导航)
 >
-> 最后更新: 2026-08-15
+> 状态: 待核对 | 最后核对: 2026-08-15
 
 ## 目录
 
@@ -171,7 +171,7 @@ C++ EpairModelLoader → GetGEGraph → aclgrphBuildModel → .om        ← exp
 
 - **一步化流程未实现** — GPTQ 与导出仍是两步磁盘桥接，三处改动点待落地
 - **dopt gemma4 多模态阻塞** — dopt GPTQ 循环写死文本-only `ForCausalLM` 结构
-- **dopt_lm `heissen` 拼写错误** — 系统性 `Hessian` 拼写错误待重命名
+- ~~**dopt_lm `heissen` 拼写错误**~~ **已修复** — 源码已用 `ptq_algo_hessian` / `WeightQuantHessian` / `hessian_matrix`（正确拼写）
 - **dopt 函数超规** — `swap_to_quant_linear_from_dopt` 76 行 / `materialize_int4_per_group_symmetric` 6 参数，待按 dataclass 拆分收敛
 
 ### 已解决

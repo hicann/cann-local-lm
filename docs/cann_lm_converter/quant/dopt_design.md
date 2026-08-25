@@ -4,7 +4,7 @@
 >
 > converter 侧量化接入（`materialize` / `swap` / `quant_linear`）见 [quant_design.md](./quant_design.md)。
 >
-> 最后更新: 2026-08-15
+> 状态: 当前采用（部分核对：heissen 拼写已修正） | 最后核对: 2026-08-25
 
 ## 目录
 
@@ -247,7 +247,7 @@ dopt 可设置的量化参数分布在 4 个层面。**用户实际可设的只�
 | `norm` / `grid` / `maxshrink` | `2.4` / `100` / `0.8` | `configure` | mse shrink 参数 |
 | `trits` | `False` | `configure` | trits |
 
-> **结论**：④ 的参数（`percdamp` / `act_order` / `static_groups` / `true_sequential` / `sym` / `norm` / `grid` / `maxshrink` / `trits` 等）**硬编码在 `QuantArgs` / `configure` 默认值，CLI 和配置文件都不暴露**。要改得改源码（`ptq_loop.py:336 QuantArgs` 默认值，或 `weight_quant_loop` 调用参数）。`blocksize` 虽在 `strategy_dict` 里，但 `get_optimize_cfg` 只支持 `;group_size` 覆盖，**不支持 `;blocksize` 覆盖**——改 blocksize 要改 `strategy_dict`。
+> **结论**：④ 的参数（`percdamp` / `act_order` / `static_groups` / `true_sequential` / `sym` / `norm` / `grid` / `maxshrink` / `trits` 等）**硬编码在 `QuantArgs` / `configure` 默认值，CLI 和配置文件都不暴露**。要改得改源码（`ptq_loop.py` 的 `QuantArgs` 默认值，或 `weight_quant_loop` 调用参数）。`blocksize` 虽在 `strategy_dict` 里，但 `get_optimize_cfg` 只支持 `;group_size` 覆盖，**不支持 `;blocksize` 覆盖**——改 blocksize 要改 `strategy_dict`。
 
 ## 文件树
 
@@ -305,7 +305,7 @@ dopt_lm/                                           (24 文件, ~2759 行)
 ```
 ptq_quant_pipline(base_model, config, output_dir, hf_type_save, quant_method='gptq')
   │
-  ├─ [1] from ptq_algo_heissen.ptq_loop import weight_quant_loop
+  ├─ [1] from ptq_algo_hessian.ptq_loop import weight_quant_loop
   │      weight_q_quantizer, weight_q_weight = weight_quant_loop(
   │          base_model, data_set=train_file, nsamples, seed=1234,
   │          seq_len, quant_config=config_path, torch_dtype)
@@ -415,7 +415,7 @@ dopt 的**推理期 fakequant 实现**，不是导出用算子。把 `nn.Linear`
 
 这是 **GPTQ**（Generative Pre-trained Transformer Quantization，Frantar et al. ICLR 2023）的 vendored 实现，命名特征完全对应参考实现：`fasterquant` = GPTQ 的逐列 Cholesky 求逆更新算法；`percdamp` = Hessian 对角阻尼系数（默认 0.01）；`actorder` = 按激活幅度降序重排列；`static_groups` = 预先按 groupsize 静态分组找 scale。
 
-**Hessian 的本质**：`WeightQuantHeissen.add_batch` 累积的 `heissen_matrix` 实际是**输入激活的 Gram 矩阵** `X^T X`（GPTQ 论文里记作 Hessian 的近似，因为重建误差 `||W - Wq||_X^2` 的二阶项 Hessian 就是 `2 * X^T X`）。`fasterquant` 用 `H + damp*I` 后 Cholesky 求逆 `Hinv`，逐列按 `q = argmin_q ||w - q||_H` 的闭式解更新（误差沿 `hinv` 行反向传播到未量化列）。
+**Hessian 的本质**：`WeightQuantHessian.add_batch` 累积的 `hessian_matrix` 实际是**输入激活的 Gram 矩阵** `X^T X`（GPTQ 论文里记作 Hessian 的近似，因为重建误差 `||W - Wq||_X^2` 的二阶项 Hessian 就是 `2 * X^T X`）。`fasterquant` 用 `H + damp*I` 后 Cholesky 求逆 `Hinv`，逐列按 `q = argmin_q ||w - q||_H` 的闭式解更新（误差沿 `hinv` 行反向传播到未量化列）。
 
 | 文件 | 职责 |
 |------|------|
@@ -429,18 +429,18 @@ dopt 的**推理期 fakequant 实现**，不是导出用算子。把 `nn.Linear`
 
 dopt_lm 是 vendored 代码，不完全遵循 AGENTS.md 的"单函数 50 行 / 参数不超过 5 个"原则。主要超标点：
 
-| 文件:行 | 函数 | 长度/参数数 | 备注 |
+| 文件 | 函数 | 长度/参数数 | 备注 |
 |---------|------|------------|------|
-| `ptq_algo_heissen/ptq_loop.py:49` | `llama_sequential(model, dataloader, dev)` | **~284 行** | 含 Catcher、多层类型预算、PLE/KV 共享、逐层循环、PLE 投影、lm_head 五大块全塞一个函数，且依赖模块级全局 `args` |
-| `opt_funcs/eco_stage/train.py:368` | `train(base_model, config, output_dir, hf_type_save, **argv)` | **~109 行** | 装配 trainer 全流程硬塞一处 |
-| `ptq_algo_heissen/ptq_algo.py:60` | `fasterquant(blocksize, percdamp, groupsize, actorder, static_groups)` | **~118 行 / 6 参数** | GPTQ 主算法，dead 列/actorder/cholesky/逐列更新/group_scale 拼装五段混在一起 |
-| `quantizer/qmin_max.py:72` | `MinMaxGrid.__init__` | **9 参数** | `(self, father, bit, per_channel, unsigned_quant, quant_id, channel_id, reserve_bit, fp16, **argv)` |
-| `ptq_algo_heissen/quant.py:25` | `Quantizer.configure` | **9 参数** | `(self, bits, perchannel, sym, mse, norm, grid, maxshrink, trits)` |
-| `ptq_algo_heissen/ptq_loop.py:354` | `weight_quant_loop` | **7 参数** | `(model_name_or_path, data_set, nsamples, seed, seq_len, quant_config, torch_dtype)` |
-| `opt_funcs/eco_stage/train.py:304` | `prepare_model` | **8 参数** | `(model, resume_ckpt, quant_config, config, requires_grad, trainable_keys, refresh, device)` |
+| `ptq_algo_hessian/ptq_loop.py` 的 `llama_sequential` | `llama_sequential(model, dataloader, dev)` | **~284 行** | 含 Catcher、多层类型预算、PLE/KV 共享、逐层循环、PLE 投影、lm_head 五大块全塞一个函数，且依赖模块级全局 `args` |
+| `opt_funcs/eco_stage/train.py` 的 `train` | `train(base_model, config, output_dir, hf_type_save, **argv)` | **~109 行** | 装配 trainer 全流程硬塞一处 |
+| `ptq_algo_hessian/ptq_algo.py` 的 `fasterquant` | `fasterquant(blocksize, percdamp, groupsize, actorder, static_groups)` | **~118 行 / 6 参数** | GPTQ 主算法，dead 列/actorder/cholesky/逐列更新/group_scale 拼装五段混在一起 |
+| `quantizer/qmin_max.py` 的 `MinMaxGrid.__init__` | `MinMaxGrid.__init__` | **9 参数** | `(self, father, bit, per_channel, unsigned_quant, quant_id, channel_id, reserve_bit, fp16, **argv)` |
+| `ptq_algo_hessian/quant.py` 的 `Quantizer.configure` | `Quantizer.configure` | **9 参数** | `(self, bits, perchannel, sym, mse, norm, grid, maxshrink, trits)` |
+| `ptq_algo_hessian/ptq_loop.py` 的 `weight_quant_loop` | `weight_quant_loop` | **7 参数** | `(model_name_or_path, data_set, nsamples, seed, seq_len, quant_config, torch_dtype)` |
+| `opt_funcs/eco_stage/train.py` 的 `prepare_model` | `prepare_model` | **8 参数** | `(model, resume_ckpt, quant_config, config, requires_grad, trainable_keys, refresh, device)` |
 
 其他风格问题：
-- **模块级全局可变状态**：`ptq_loop.py:351` `args = QuantArgs()` 是模块全局单例，`llama_sequential` 内部直接读写 `args.nsamples`/`args.quant_config`/`args.sym` 等，且 `weight_quant_loop` 也改它——非纯函数，并发/重入会出错。
+- **模块级全局可变状态**：`ptq_loop.py` 的 `args = QuantArgs()` 是模块全局单例，`llama_sequential` 内部直接读写 `args.nsamples`/`args.quant_config`/`args.sym` 等，且 `weight_quant_loop` 也改它——非纯函数，并发/重入会出错。
 - **绝对 import 与相对 import 混用**：`do_opt.py` 用相对 `.common_tools.log`，而 `opt_main.py`、`ptq_loop.py`、`qeval.py`、`qmanager.py`、`qmin_max.py`、`modules/*.py` 用绝对 `from dopt_lm.xxx`——要求 `cann_lm/converter/quant` 在 `PYTHONPATH`。
 - **异常控制流**：`llama_sequential` 用 `raise ValueError` 在 `Catcher.forward` 里中断来抓输入（标准 GPTQ trick，但脆弱）。
 - **拼写出错贯穿全局**：`paser_quant_config`（应为 `parse`）、`trainedable`（应为 `trainable`）、`pipline`（应为 `pipeline`，多处）。
@@ -448,8 +448,8 @@ dopt_lm 是 vendored 代码，不完全遵循 AGENTS.md 的"单函数 50 行 / �
 ## 模型加载约束（gemma4 多模态阻塞）
 
 GPTQ 循环写死**文本-only ForCausalLM** 结构假设：
-- `train.py:290` `model_define` = `AutoModelForCausalLM.from_pretrained(model_path, ...)`——对 `ForConditionalGeneration` 架构（多模态）多半直接找不到类报错；
-- `ptq_loop.py:21` `get_llama` + `llama_sequential:54` 取 `model.model.layers` / `model.model.embed_tokens` / `model.model.norm` / `model.lm_head`——多模态模型的文本层在 `model.language_model.layers`（如 gemma4-E4B，42 层），非 `model.model.layers`。
+- `train.py` 的 `model_define` = `AutoModelForCausalLM.from_pretrained(model_path, ...)`——对 `ForConditionalGeneration` 架构（多模态）多半直接找不到类报错；
+- `ptq_loop.py` 的 `get_llama` + `llama_sequential` 取 `model.model.layers` / `model.model.embed_tokens` / `model.model.norm` / `model.lm_head`——多模态模型的文本层在 `model.language_model.layers`（如 gemma4-E4B，42 层），非 `model.model.layers`。
 
 **gemma4 适配现状**：`modules/qembed.py` 的 `QGemma4ScaledEmbedding` 处理 gemma4 的 `scalar_embed_scale`/`embed_scale`，forward 末尾执行 `out = out * self.embed_scale`；`do_opt.py` 已通过原始类名 `Gemma4TextScaledWordEmbedding` 自动映射到该 wrapper。
 

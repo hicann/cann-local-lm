@@ -77,20 +77,20 @@ GetS2SizeForBatchContinuous() {
 
 ### 3.3 mask 形状不是直接杠杆(但仍是可旋钮变量)
 
-FIA 实际收到的 atten_mask 是 **bool 方阵 `[b,1,kv_max,kv_max]`**,不是矩形——经 `modeling_gemma4.py:213 _pad_mask_to_kv_square` 把 graph 输入的 float 矩形 `[b,1,seq,kv_max]` 的 q 维 pad 到 kv_max(后 `kv_max-seq` 行全 True=mask out,无 query,不影响因果)。方阵 padding 本身不是多 chunk 问题,但说明 mask rank(方阵 vs 矩形)是可旋钮变量(§5 D)。
+FIA 实际收到的 atten_mask 是 **bool 方阵 `[b,1,kv_max,kv_max]`**,不是矩形——经 `modeling_gemma4.py` 的 `_pad_mask_to_kv_square` 把 graph 输入的 float 矩形 `[b,1,seq,kv_max]` 的 q 维 pad 到 kv_max(后 `kv_max-seq` 行全 True=mask out,无 query,不影响因果)。方阵 padding 本身不是多 chunk 问题,但说明 mask rank(方阵 vs 矩形)是可旋钮变量(§5 D)。
 
 ## 4. 多 chunk mask 分析
 
 ### 4.1 mask 值构造:多 chunk 正确
 
-**gemma4**(`cann_lm/models/gemma4/export_wrapper.py:177 _build_mask_full`):
+**gemma4**(`cann_lm/models/gemma4/export_wrapper.py` 的 `_build_mask_full`):
 ```python
 q = new_kv_cache_pos.to(dtype).unsqueeze(1)   # [seq,1] 绝对 buffer 位 (chunk N = start..start+seq-1)
 k = torch.arange(kv_max).unsqueeze(0)          # [1, kv_max]
 mask = torch.where(k <= q, 0.0, finfo.min)     # [seq, kv_max] 绝对位 causal
 ```
 
-**qwen3.5**(`examples/.../om_npu_verify/run_qwen3_5_gen.py:124`):
+**qwen3.5**(`examples/test_converter/export_llm_model/om_npu_verify/run_qwen3_5_gen.py` 的 inline mask):
 ```python
 q_pos = torch.arange(start_pos, start_pos+PREFILL_SEQ).unsqueeze(1)  # 绝对位
 k_pos = torch.arange(KV_MAX).unsqueeze(0)
@@ -123,23 +123,23 @@ mask = torch.where(k_pos <= q_pos, 0.0, minv=-1e4)  # 绝对位 causal + pad 行
 
 | 旋钮 | 当前 | 改 | 改动点(file:line) | 假设 |
 |---|---|---|---|---|
-| **A'** | sparse_mode=3(full)/4(sliding) | 3→**1**(ALL_MASK) | `cann_lm/models/gemma4/modeling_gemma4.py:263`(full 层;sliding :261 保持 4) | 代码强制 `pre=MAX/next=MAX`(band 全 attend)→ **显式 mask 单独驱动 causal**。注:`3→0`(NO_MASK)单独是 **no-op**(mode 0 + attr pre=MAX/next=0 + mask 仍走 causal band,与 mode 3 同);要 mode 0 须同时改 `pre=MAX/next=MAX`(记作 A'',与 A' 等价)。**对多 chunk 是必选**(让绝对位 mask 独占 causal)。**概率最高** |
-| **B** | inner_precise=0(默认) | 0→**1** | `modeling_gemma4.py:265` 调用加 `inner_precise=1` kwarg | 改 softmax 数值路径,若退化是数值污染,高精度档可能正确处理 |
-| **C** | mask float(0.0/finfo.min) | float→**bool**(False=attend/True=mask) | `cann_lm/models/gemma4/export_wrapper.py:177-184` + `:186-201`(`_build_mask_full`/`_sliding` 返回 `~(k<=q)` bool);`_pad_mask_to_kv_square` 跳过 bool 转换 | kernel mask 应用路径分流(加性 score+=min → 乘性/skip) |
-| **D** | mask rank 4D `[b,1,seq,kv_max]` | 4D→**2D `[seq,kv_max]`**(MASK_DIM SS) | `export_wrapper.py:184` 去 `unsqueeze(0).unsqueeze(0).expand(...)`;`modeling_gemma4.py:213 _pad_mask_to_kv_square` 跳过 pad | kernel MASK_DIM code path 分流(B1SS→SS) |
-| **E** | masked 值 `finfo.min`(gemma4) | →**-1e4**(有限大负) | `export_wrapper.py:180,195` `min_val = -1e4` | 避免 -inf 在 online softmax merge 全掩码块传播;**只对 gemma4 有效**(qwen3.5 gen 本就用 -1e4 仍退化,已耗尽) |
+| **A'** | sparse_mode=3(full)/4(sliding) | 3→**1**(ALL_MASK) | `cann_lm/models/gemma4/modeling_gemma4.py` 的 sparse_mode 设置（full 层;sliding 保持 4） | 代码强制 `pre=MAX/next=MAX`(band 全 attend)→ **显式 mask 单独驱动 causal**。注:`3→0`(NO_MASK)单独是 **no-op**(mode 0 + attr pre=MAX/next=0 + mask 仍走 causal band,与 mode 3 同);要 mode 0 须同时改 `pre=MAX/next=MAX`(记作 A'',与 A' 等价)。**对多 chunk 是必选**(让绝对位 mask 独占 causal)。**概率最高** |
+| **B** | inner_precise=0(默认) | 0→**1** | `modeling_gemma4.py` 的 FIA op 调用加 `inner_precise=1` kwarg | 改 softmax 数值路径,若退化是数值污染,高精度档可能正确处理 |
+| **C** | mask float(0.0/finfo.min) | float→**bool**(False=attend/True=mask) | `cann_lm/models/gemma4/export_wrapper.py` 的 `_build_mask_full`/`_build_mask_sliding` 返回 `~(k<=q)` bool;`_pad_mask_to_kv_square` 跳过 bool 转换 | kernel mask 应用路径分流(加性 score+=min → 乘性/skip) |
+| **D** | mask rank 4D `[b,1,seq,kv_max]` | 4D→**2D `[seq,kv_max]`**(MASK_DIM SS) | `export_wrapper.py` 的 `_build_mask_full` 去 `unsqueeze(0).unsqueeze(0).expand(...)`;`modeling_gemma4.py` 的 `_pad_mask_to_kv_square` 跳过 pad | kernel MASK_DIM code path 分流(B1SS→SS) |
+| **E** | masked 值 `finfo.min`(gemma4) | →**-1e4**(有限大负) | `export_wrapper.py` 的 `_build_mask_full`/`_build_mask_sliding` 的 `min_val = -1e4` | 避免 -inf 在 online softmax merge 全掩码块传播;**只对 gemma4 有效**(qwen3.5 gen 本就用 -1e4 仍退化,已耗尽) |
 
 ### 5.1 self-control mask 构造规范(旋钮 C+D+A' 的组合落地形态)
 
 要让 atten_mask **完全自控**(不依赖 sparse_mode 的 band、不依赖 qlen 绝对定位),把旋钮 C(dtype bool)+ D(rank 矩形)+ A'(sparse_mode=1) 组合成一套 mask 构造规范:
 
-| 维度 | 形态 | 理由 |
-|---|---|---|
-| dtype | `torch.bool` | gemma4 FIA 已用 bool 工作过(经 `_pad_mask_to_kv_square` float→bool);走"乘性/block-skip"路径,避免 float `finfo.min`(-inf)在 online softmax merge 全掩码块传播(退化根因推测) |
-| value 约定 | `False=attend, True=mask out` | gemma4 实证(`mask.bool()`:0.0→False=attend, finfo.min→True=mask) |
-| shape | `[batch, 1, q_len, kv_max]`(4D B1SS,**矩形**,q_dim=q_len 不 pad) | q_dim 匹配 `actual_seq_qlen`,kv_dim 匹配 `actual_seq_kvlen=kv_max`;跳过 `_pad_mask_to_kv_square` 的方阵 padding(无 query 的 pad 行本就无影响) |
-| content | **绝对位 causal** | 多 chunk 正确核心:prefill chunk N `mask[q,k]=(k > start+q)`;decode `mask[0,k]=(k > cached_len)`。query@绝对位 attend `kv[0:绝对位+1]` |
-| sparse_mode | `1`(ALL_MASK) | 代码强制 `pre=MAX/next=MAX` → band 全 attend → **显式 mask 单独驱动 causal**(见 §4.2/§5 A' 论证) |
+| 维度　　　　| 形态　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　 | 理由　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　 |
+| -------------| ------------------------------------------------------------------| ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| dtype　　　 | `torch.bool`　　　　　　　　　　　　　　　　　　　　　　　　　　 | gemma4 FIA 已用 bool 工作过(经 `_pad_mask_to_kv_square` float→bool);走"乘性/block-skip"路径,避免 float `finfo.min`(-inf)在 online softmax merge 全掩码块传播(退化根因推测) |
+| value 约定　| `False=attend, True=mask out`　　　　　　　　　　　　　　　　　　| gemma4 实证(`mask.bool()`:0.0→False=attend, finfo.min→True=mask)　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　 |
+| shape　　　 | `[batch, 1, q_len, kv_max]`(4D B1SS,**矩形**,q_dim=q_len 不 pad) | q_dim 匹配 `actual_seq_qlen`,kv_dim 匹配 `actual_seq_kvlen=kv_max`;跳过 `_pad_mask_to_kv_square` 的方阵 padding(无 query 的 pad 行本就无影响)　　　　　　　　　　　　　　　|
+| content　　 | **绝对位 causal**　　　　　　　　　　　　　　　　　　　　　　　　| 多 chunk 正确核心:prefill chunk N `mask[q,k]=(k > start+q)`;decode `mask[0,k]=(k > cached_len)`。query@绝对位 attend `kv[0:绝对位+1]`　　　　　　　　　　　　　　　　　　　|
+| sparse_mode | `1`(ALL_MASK)　　　　　　　　　　　　　　　　　　　　　　　　　　| 代码强制 `pre=MAX/next=MAX` → band 全 attend → **显式 mask 单独驱动 causal**(见 §4.2/§5 A' 论证)　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　 |
 
 **构造代码**:
 ```python
@@ -164,11 +164,11 @@ mask = (k > cached_len).view(1,1,1,kv_max).expand(batch,1,1,kv_max)  # [b,1,1,kv
 
 | 文件:line | 改动 |
 |---|---|
-| `cann_lm/models/gemma4/export_wrapper.py:177-184` `_build_mask_full` | 返回 `~(k <= q_abs)` bool(去 float/min_val);保持 `[b,1,seq,kv_max]` 矩形 |
-| `cann_lm/models/gemma4/export_wrapper.py:186-201` `_build_mask_sliding` | 同上(sliding 层另加窗口条件 `& (diff <= w-1)`) |
-| `cann_lm/models/gemma4/modeling_gemma4.py:213-226` `_pad_mask_to_kv_square` | 跳过(mask 已 bool 矩形);或保留只做 dtype 校验 |
-| `cann_lm/models/gemma4/modeling_gemma4.py:263` | `sparse_mode=3` → `1`(ALL_MASK) |
-| `examples/.../om_npu_verify/run_qwen3_5_gen.py:124-131, 246-248` | inline mask 改 bool 绝对位;qwen3.5 re-enable FIA 后同步 |
+| `cann_lm/models/gemma4/export_wrapper.py` 的 `_build_mask_full` | 返回 `~(k <= q_abs)` bool(去 float/min_val);保持 `[b,1,seq,kv_max]` 矩形 |
+| `cann_lm/models/gemma4/export_wrapper.py` 的 `_build_mask_sliding` | 同上(sliding 层另加窗口条件 `& (diff <= w-1)`) |
+| `cann_lm/models/gemma4/modeling_gemma4.py` 的 `_pad_mask_to_kv_square` | 跳过(mask 已 bool 矩形);或保留只做 dtype 校验 |
+| `cann_lm/models/gemma4/modeling_gemma4.py` 的 sparse_mode 设置 | `sparse_mode=3` → `1`(ALL_MASK) |
+| `examples/test_converter/export_llm_model/om_npu_verify/run_qwen3_5_gen.py` 的 inline mask | inline mask 改 bool 绝对位;qwen3.5 re-enable FIA 后同步 |
 
 → 此形态即 §6 Phase 2 **C+D+A'** 组合,也是 §7 决策树"variant B + A"目标组合的 mask 侧面具化。
 
@@ -176,16 +176,16 @@ mask = (k > cached_len).view(1,1,1,kv_max).expand(batch,1,1,kv_max)  # [b,1,1,kv
 
 ### 前置不变量(每轮保持)
 - gemma4 FIA 已在 export 激活(`prefill.om` 35 个 FIA),改 modeling 直接影响 export。
-- 始终显式 `export SOC_VERSION=...`(`examples/test_converter/export_llm_model/main.cpp:104-106` 默认值与注释不符)。
-- fusion cfg 不动(关 AUB + AddRmsNorm,`scripts/set_env.sh:82`,跨 SoC 复用)。
+- 始终显式 `export SOC_VERSION=...`(`examples/test_converter/export_llm_model/main.cpp` 的 SOC_VERSION 默认值与注释不符)。
+- fusion cfg 不动(关 AUB + AddRmsNorm,`scripts/set_env.sh` 的 fusion cfg 段,跨 SoC 复用)。
 - 三套 env 互不叠加:`converter`(导出)/`om`(编译)/`npu`(出字)。
 
 ### Phase 0 — 双 variant baseline(910 + 950 各测)
 
 | variant | 实现 | actualSeqLenFlag | 测什么 |
 |---|---|---|---|
-| **A** | `cann_lm/converter/saver.py:264-265` 加 `kvlen_value=kv_cache_max_len`(`kv_cache_max_len` 在 `saver.py:158` 作用域可见) | true | 复现文档退化(Const 路径) |
-| **B** | `cann_lm/models/gemma4/modeling_gemma4.py:254-255` `actual_seq_qlen=None; actual_seq_kvlen=None`(不构造 tensor);**saver 不动**(ep_json input[5]/[6] 空 → `cann_lm/converter/export/epair_utils.py:419 if not ins[5] or not ins[6]: continue` 自动 skip) | **false** | 兜底 tiling 路径退化是否复现/不同(文档未测) |
+| **A** | `cann_lm/converter/saver.py` 的 prefill kvlen 加 `kvlen_value=kv_cache_max_len`（`kv_cache_max_len` 在 `saver.py` 的 `save_epair_prefill_decode` 参数作用域可见） | true | 复现文档退化(Const 路径) |
+| **B** | `cann_lm/models/gemma4/modeling_gemma4.py` 的 FIA op 调用改 `actual_seq_qlen=None; actual_seq_kvlen=None`(不构造 tensor);**saver 不动**(ep_json input[5]/[6] 空 → `cann_lm/converter/export/epair_utils.py` 的 `inline_fused_attn_seq_constants` 遇空 input skip) | **false** | 兜底 tiling 路径退化是否复现/不同(文档未测) |
 
 **执行**(每 variant 每 SoC 一轮):
 ```bash
@@ -210,7 +210,7 @@ python3 examples/test_converter/export_llm_model/om_npu_verify/run_gemma4_gen.py
 - 910 任一 variant 不退化(CANN 版本漂移)→ 前提动摇,停。
 
 ### Phase 1 — E 旋钮(便宜,基于 baseline OM 不重编)
-gemma4/export_wrapper.py:180,195 `finfo.min` → `-1e4`,重跑 `run_gemma4_gen.py`(同 OM)。只对 gemma4 有效。
+gemma4 `export_wrapper.py` 的 `_build_mask_full`/`_build_mask_sliding` 的 `min_val` `finfo.min` → `-1e4`,重跑 `run_gemma4_gen.py`(同 OM)。只对 gemma4 有效。
 PASS → Phase 5;FAIL → Phase 2。
 
 ### Phase 2 — 单旋钮扫(gemma4×910,每轮 re-export+recompile)
@@ -226,8 +226,8 @@ PASS → Phase 5;FAIL → Phase 2。
 - **gemma4×950**:命中组合 re-export+recompile on 950,`run_gemma4_gen.py` 验证。
 - **qwen3.5**(摩擦大):
   1. `cann_lm/models/qwen3_5/modeling_qwen3_5.py` call site 切回 `fused_attention_forward`(当前全 eager,FIA 是 dead code);
-  2. 同步命中旋钮值到 `modeling_qwen3_5.py:221`(A' sparse_mode)、`:215`(B);
-  3. mask 旋钮 C/D/E 同步到 `examples/.../om_npu_verify/run_qwen3_5_gen.py:124-131` inline mask;
+  2. 同步命中旋钮值到 `modeling_qwen3_5.py` 的 sparse_mode（A'）、inner_precise（B）;
+  3. mask 旋钮 C/D/E 同步到 `examples/test_converter/export_llm_model/om_npu_verify/run_qwen3_5_gen.py` 的 inline mask;
   4. re-export+recompile on 910 & 950;
   5. `run_qwen3_5_gen.py` 单 chunk("1+1="→"2")。
 
@@ -266,24 +266,24 @@ Phase 0 (variant A + B × 910 + 950)
 
 | 主题 | 文件:line |
 |---|---|
-| saver prefill kvlen=seq_len(当前) | `cann_lm/converter/saver.py:264-265` |
-| saver prefill 改 kv_max(variant A) | `cann_lm/converter/saver.py:264-265` 加 `kvlen_value=kv_cache_max_len`(`kv_cache_max_len` 参数 `saver.py:158`) |
-| saver decode kvlen=kv_max(已落地) | `cann_lm/converter/saver.py:276-277` |
-| inline_fused_attn_seq_constants 实现 | `cann_lm/converter/export/epair_utils.py:372-430`(`:390-391` kvlen 默认 None→用 qlen;`:419` 遇空 input skip) |
-| modeling FIA call(variant B 改 None) | `cann_lm/models/gemma4/modeling_gemma4.py:254-255`(qlen/kvlen 构造)、`:265-277`(op 调用) |
-| sparse_mode A' 旋钮(3→1 ALL_MASK) | `cann_lm/models/gemma4/modeling_gemma4.py:263`(full)/`:261`(sliding) |
-| inner_precise B 旋钮 | `cann_lm/models/gemma4/modeling_gemma4.py:265` 加 kwarg |
-| mask 取值 E 旋钮 | `cann_lm/models/gemma4/export_wrapper.py:180,195`(`_build_mask_full`/`_sliding` 的 `min_val`) |
-| mask dtype C 旋钮 | `cann_lm/models/gemma4/export_wrapper.py:177-184` + `:186-201` |
-| mask rank D 旋钮 | `cann_lm/models/gemma4/export_wrapper.py:184` |
-| _pad_mask_to_kv_square(float 矩形→bool 方阵) | `cann_lm/models/gemma4/modeling_gemma4.py:213-226` |
-| qwen3.5 re-enable FIA | `cann_lm/models/qwen3_5/modeling_qwen3_5.py` call site(切回 `fused_attention_forward`,`:186-228` 是 dead code) |
-| qwen3.5 gen inline mask | `examples/test_converter/export_llm_model/om_npu_verify/run_qwen3_5_gen.py:124-131` |
-| FIA schema + fake + CPU eager | `cann_lm/models/fused_ops/fused_infer_attention_score.py:34-100` |
-| FIA GE converter | `cann_lm/converter/export/_fused_infer_attention_score_v2_converter.py:31-119` |
-| OM 编译入口(SOC_VERSION env) | `examples/test_converter/export_llm_model/main.cpp:104-106` |
-| OM 编译入口(GE_FUSION_SWITCH_FILE) | `examples/test_converter/export_llm_model/main.cpp:30-32` |
-| fusion cfg 内容 | `scripts/set_env.sh:82` |
+| saver prefill kvlen=seq_len(当前) | `cann_lm/converter/saver.py` 的 prefill kvlen 设置 |
+| saver prefill 改 kv_max(variant A) | `cann_lm/converter/saver.py` 的 prefill kvlen 加 `kvlen_value=kv_cache_max_len`（`kv_cache_max_len` 参数见 `save_epair_prefill_decode` 签名） |
+| saver decode kvlen=kv_max(已落地) | `cann_lm/converter/saver.py` 的 decode kvlen 设置 |
+| inline_fused_attn_seq_constants 实现 | `cann_lm/converter/export/epair_utils.py` 的 `inline_fused_attn_seq_constants`（kvlen 默认 None→用 qlen;遇空 input skip） |
+| modeling FIA call(variant B 改 None) | `cann_lm/models/gemma4/modeling_gemma4.py` 的 FIA op 调用（qlen/kvlen 构造 + op 调用） |
+| sparse_mode A' 旋钮(3→1 ALL_MASK) | `cann_lm/models/gemma4/modeling_gemma4.py` 的 sparse_mode 设置（full/sliding） |
+| inner_precise B 旋钮 | `cann_lm/models/gemma4/modeling_gemma4.py` 的 FIA op 调用加 kwarg |
+| mask 取值 E 旋钮 | `cann_lm/models/gemma4/export_wrapper.py` 的 `_build_mask_full`/`_build_mask_sliding` 的 `min_val` |
+| mask dtype C 旋钮 | `cann_lm/models/gemma4/export_wrapper.py` 的 `_build_mask_full`/`_build_mask_sliding` |
+| mask rank D 旋钮 | `cann_lm/models/gemma4/export_wrapper.py` 的 `_build_mask_full` 去 unsqueeze |
+| _pad_mask_to_kv_square(float 矩形→bool 方阵) | `cann_lm/models/gemma4/modeling_gemma4.py` 的 `_pad_mask_to_kv_square` |
+| qwen3.5 re-enable FIA | `cann_lm/models/qwen3_5/modeling_qwen3_5.py` 的 FIA call site（切回 `fused_attention_forward`，原 dead code 已弃） |
+| qwen3.5 gen inline mask | `examples/test_converter/export_llm_model/om_npu_verify/run_qwen3_5_gen.py` 的 inline mask |
+| FIA schema + fake + CPU eager | `cann_lm/models/fused_ops/fused_infer_attention_score.py` 的 schema+fake+CPU impl |
+| FIA GE converter | `cann_lm/converter/export/_fused_infer_attention_score_v2_converter.py` 的 GE converter |
+| OM 编译入口(SOC_VERSION env) | `examples/test_converter/export_llm_model/main.cpp` 的 SOC_VERSION 设置 |
+| OM 编译入口(GE_FUSION_SWITCH_FILE) | `examples/test_converter/export_llm_model/main.cpp` 的 GE_FUSION_SWITCH_FILE 设置 |
+| fusion cfg 内容 | `scripts/set_env.sh` 的 fusion cfg 段 |
 | CLI 批量导出(case_2=gemma4) | `examples/test_converter/export_llm_model/cann_lm_cli_export/run_pd6_cases.sh` |
 | prefill NPU 验证(gemma4) | `examples/test_converter/export_llm_model/om_npu_verify/run_gemma4_gen.py` |
 | prefill NPU 验证(qwen3.5) | `examples/test_converter/export_llm_model/om_npu_verify/run_qwen3_5_gen.py` |

@@ -4,21 +4,22 @@
 >
 > 量化方案：**W4A8 s8s4**（激活 s8 per-token 动态对称 + 权重 s4 per-group 对称）
 >
-> 算子实现：**方案 A — 自研 `cann_lm::quant_matmul_s8s4`（已落地）**。早期路径 C'（复用 CANN `QuantBatchMatmulV4` 整数 int8/int4）经实测不可达 s8s4 正确结果（V4 要求 uint64 deqScale，且 int8/int4 在 V4→V3 融合 pass 中降级、无预编译 kernel），故转为自研算子，用 **fp32 scale** 做 `q*scale` 反量化绕开 CANN V4 失败点。详见下文 [方案 A 算子规格与实现状态](#方案-a--自研-quant_matmul_s8s4-算子规格与实现状态)。
+> 算子实现：**路径 C' — 复用 CANN 原生 `npu::npu_quant_matmul` → `ge.QuantBatchMatmulV4`（当前采用）**。早期曾试方案 A（自研 `cann_lm::quant_matmul_s8s4`），后回退到 C'：converter 侧 `_quant_matmul_converter.py` 用 V4 **full IR**（所有输入含 None placeholder，让 V4→V3 TBE 融合正确把 `x2_scale` 映射到 V3 的 `scale` 输入）+ **dummy bias zeros[N] workaround**（绕开 CANN V4 `InferNDimWithBias` 不支持 bias=nullptr 的限制），使整数 int8/int4 s8s4 经 V4→V3 融合后落到预编译 kernel 可达。详见下文 [路径 C' 算子规格与实现状态](#路径-c--npu_quant_matmul--v4-算子规格与实现状态)。
 >
-> 最后更新：2026-08-15
+> 状态: 当前采用 | 最后核对: 2026-08-25 | ADR: 待记（方案 A→路径 C' 历史见本文"历史档案"段）
 
 ## 目录
 
 - [概述](#概述)
+- [量化工具链分工设计](#量化工具链分工设计)
 - [quant 包架构](#quant-包架构)
 - [量化策略](#量化策略)
 - [端到端流程](#端到端流程)
 - [quant 顶层文件详解](#quant-顶层文件详解)
 - [dopt_lm 子包详解](./dopt_design.md)（已抽取到独立文档）
-- [方案 A — 自研 quant_matmul_s8s4 算子规格与实现状态](#方案-a--自研-quant_matmul_s8s4-算子规格与实现状态)
+- [路径 C' — npu_quant_matmul → V4 算子规格与实现状态](#路径-c--npu_quant_matmul--v4-算子规格与实现状态)
 - [C++ 注册与产物](#c-注册与产物)
-- [weight_scale 落盘格式：fp32→uint64 位模式转换（方案 A vs B）](#weight_scale-落盘格式fp32uint64-位模式转换方案-a-vs-b)
+- [weight_scale 落盘格式：fp32→uint64 位模式转换](#weight_scale-落盘格式fp32uint64-位模式转换)
 - [已知问题与遗留](#已知问题与遗留)
 - [附录 A — CANN QuantBatchMatmulV3 / V4 op_graph 源码分析（历史档案）](#附录-a--cann-quantbatchmatmulv3--v4-op_graph-源码分析历史档案)
 - [附录 B — 历史调试与路径选型档案](./dopt_design.md)（已抽取到 dopt_design.md "附录"）
@@ -32,12 +33,12 @@
 `cann_lm/converter/quant/` 下内置两块：
 
 1. **dopt_lm（vendored GPTQ 框架）**：在 **NPU/GPU** 上对 HF 模型做 GPTQ 权重量化，产出 per-layer `group_scale`（per-channel × per-group 对称，offset=0）+ GPTQ 修正后的 fp16 权重，落盘 `trained_quant_weight.pth` 或 `model.safetensors`。dopt 自身只做 fakequant（权重留在 fp16），不物化真 int4，不接 converter 导出。**dopt 的完整设计（文件树 / 入口 / GPTQ 调用链 / 可设置参数清单 / 历史调试档案）见 [dopt_design.md](./dopt_design.md)**。
-2. **converter 侧量化接入（`materialize.py` / `quant_linear.py` / `swap.py` / `__init__.py`）**：在 **CPU venv + torchair stubs** 上加载 dopt 产物，物化成真 int4 payload + fp32 scale，把 `nn.Linear` 替换成 `QuantLinear`（forward 调 `cann_lm::quant_matmul_s8s4`），然后 `torch.export` 产出含 `quant_matmul_s8s4` + `DynamicQuant` 节点的 epair。
+2. **converter 侧量化接入（`materialize.py` / `quant_linear.py` / `swap.py` / `auto_quant.py` / `dopt_wrapper.py` / `__init__.py`）**：在 **CPU venv + torchair stubs** 上加载 dopt 产物，物化成真 int4 payload + fp32 scale，把 `nn.Linear` 替换成 `QuantLinear`（forward 调 `npu::npu_dynamic_quant` + `npu::npu_quant_matmul`），然后 `torch.export` 产出含 `npu_quant_matmul` + `DynamicQuant` 节点的 epair。
 
 ### 能力边界
 
 - **输入**：HF 模型目录 + 校准数据（`quant/calibration.json`）+ dopt GPTQ 产物（`quant_output/model.safetensors` 或 `.pth`）。
-- **输出**：epair 模型目录，其 `*_ep_json_with_ascend_ir.json` 含 `quant_matmul_s8s4` + `DynamicQuant` IR 节点，权重 bin 含 nibble-packed int4（int8 存储）+ fp32 scale，`model_config.json` 含 `quant_info` 字段。
+- **输出**：epair 模型目录，其 `*_ep_json_with_ascend_ir.json` 含 `npu::npu_quant_matmul` + `npu::npu_dynamic_quant` IR 节点，权重 bin 含 nibble-packed int4（int8 存储）+ fp32 scale，`model_config.json` 含 `quant_info` 字段。
 - **量化范围**：全部 `nn.Linear`（attn q/k/v/o_proj + mlp gate/up/down_proj + gemma4 的 `per_layer_input_gate` / `per_layer_projection` / `per_layer_model_projection` + `lm_head`），**仅 `embed_tokens` / `embed_tokens_per_layer` 不走 Linear swap**——它们是 `nn.Embedding`，由 `swap_embeddings_from_dopt` 走 W8 host gather（converter 自动检测 dopt 产物含 embed scale 即做）。
 - **不包含**：CPU-only 环境跑 GPTQ（GPTQ 需 NPU/GPU + 校准，CPU 跑不了，见 [已知问题](#已知问题与遗留)）；GPTQ 与导出的内存链路一体化（仍两步磁盘桥接，见 [端到端流程](#端到端流程)）。
 
@@ -86,48 +87,55 @@
 
 ```
 cann_lm/converter/quant/
-├── __init__.py              (47 行)  包门面，re-export 6 个公共符号
-├── materialize.py           (162 行) 权重物化纯函数：fp → (int4 payload, fp32 scale)
-├── quant_linear.py          (81 行)  导出用 QuantLinear nn.Module，forward 发射 quant_matmul_s8s4 IR
-├── swap.py                  (226 行) 算子 IR 替换 + dopt 产物加载 + 量化元信息读取
-├── config.yaml              (10 行)  dopt GPTQ 校准训练配置（dopt_lm.opt_main 的 --optimize-config）
-├── calibration.json         (557KB)  GPTQ 校准语料（dopt 内部消费，不经 4 个 .py 文件）
-├── dopt_config.json         (34KB)   dopt 层策略配置（dopt 内部 --dopt-config）
-├── dopt_lm/                 (28 文件) vendored GPTQ 框架（独立 CLI 运行）
+├── __init__.py              (51 行)  包门面，re-export 7 个公共符号
+├── materialize.py           (138 行) 权重物化纯函数：fp → (int4 payload, fp32 scale) + transdata_scale/restore_scale
+├── quant_linear.py          (86 行)  导出用 QuantLinear nn.Module，forward 发射 npu::npu_quant_matmul IR
+├── swap.py                  (398 行) 算子 IR 替换 + dopt 产物加载 + 量化元信息读取 + 层策略解析
+├── auto_quant.py            (121 行) 一键式量化（方案 C：spawn dopt subprocess，检测 NPU/GPU）
+├── dopt_wrapper.py          (92 行)  dopt subprocess 主体（model_define + weight_quant_pipline）
+├── download_dataset.py      (469 行) 校准数据集下载脚本（辅助，非主链路）
+├── config.yaml              (8 行)   dopt GPTQ 校准训练配置（dopt_wrapper via --optimize-config）
+├── calibration.json         (557KB)  GPTQ 校准语料（dopt 内部消费，不经 .py 文件）
+├── dopt_config.json         (34KB)   dopt 层策略配置（场景 1 离线用；场景 2 由 auto_quant/dopt_wrapper 自动生成）
+├── calibrate_sets/                   校准数据集子目录
+├── dopt_lm/                 (vendored GPTQ 框架，独立 CLI 运行)
 └── quant_output/            (dopt 产物) model.safetensors + config.json + config.yaml
 ```
 
 ### 依赖关系
 
 ```
-__init__.py (门面)
-    │  re-export
+__init__.py (门面, re-export 7 符号)
+    │
     ├── materialize.py      ← 叶子，仅 import torch
-    ├── quant_linear.py     ← import cann_lm.models.fused_ops.ops (注册副作用)
+    ├── quant_linear.py     ← import cann_lm.models.fused_ops.ops (注册副作用: npu_quant_matmul + npu_dynamic_quant)
     └── swap.py             ← 相对 import materialize + quant_linear
-                                ↑
-                                │ 唯一外部消费者
-                cann_lm_converter.py:90, 105
-                    from cann_lm.converter.quant import (
-                        swap_to_quant_linear_from_dopt,     # 主 swap 路径
-                        swap_embeddings_from_dopt,          # embedding host gather
-                        load_dopt_state_dict,               # dopt 产物加载
-                    )
+
+auto_quant.py               ← 场景 2 入口，subprocess 调 dopt_wrapper.py (独立进程，不 import swap)
+                                    ↑
+                                    │ 外部消费者
+                cann_lm_converter.py:
+                    场景 2:        from cann_lm.converter.quant.auto_quant import run_auto_quant
+                    场景 1/2 共用:  from cann_lm.converter.quant import swap_from_dopt
 ```
 
-- **无循环依赖**：`materialize ← swap → quant_linear` 的有向无环图；`materialize` 与 `quant_linear` 互不依赖。
-- **`__all__` 暴露 6 个符号**（`__init__.py:38-47`）：其中只有 3 个（`swap_to_quant_linear_from_dopt` / `swap_embeddings_from_dopt` / `load_dopt_state_dict`）被 `cann_lm_converter.py` 实际 import；其余 3 个（`materialize_int4_with_scale` / `materialize_int8_per_channel` / `QuantLinear`）经 `swap.py` 内部相对 import 使用，对外暴露为测试/将来直接调用预留。
+- **无循环依赖**：`materialize ← swap → quant_linear` 的有向无环图；`materialize` 与 `quant_linear` 互不依赖；`auto_quant.py` 与 `swap.py` 解耦（subprocess 不 import swap）。
+- **`__all__` 暴露 7 个符号**（见 `__init__.py` 的 `__all__`）：其中 **2 个** 被 `cann_lm_converter.py` 实际 import —— `swap_from_dopt`（主路径，场景 1/2 共用，一次 load sd 同时做 Linear swap + Embedding 抽取）+ `run_auto_quant`（从 `auto_quant` 直接 import，场景 2 spawn subprocess）。其余 5 个对外暴露为测试/离线/将来直接调用预留：
+  - `swap_to_quant_linear_from_dopt`（向后兼容薄 wrapper，场景 1 离线用户或单独 Linear swap 用，已非主路径）
+  - `swap_embeddings_from_dopt`（embedding int8+scale 抽取，被 `swap_from_dopt` 内部组合调用）
+  - `load_dopt_state_dict`（dopt 产物加载，被 `swap_from_dopt`/`swap_to_quant_linear_from_dopt` 内部调用）
+  - `materialize_int4_per_group_symmetric` / `materialize_int8_per_channel_symmetric` / `QuantLinear`（经 `swap.py` 内部相对 import 使用）
 
 ### I/O 定位
 
 | 文件 | 谁读 | 怎么读 |
 |------|------|--------|
-| `config.yaml` | `dopt_lm.opt_main`（via `--optimize-config`，见 `scripts/quant_export.sh`） | dopt 内部，**不经 4 个 .py 文件** |
-| `calibration.json` | dopt GPTQ 校准（相对 CWD = `quant/`） | dopt 内部，**不经 4 个 .py 文件** |
-| `dopt_config.json` | `dopt_lm.opt_main`（via `--dopt-config`） | dopt 内部，**不经 4 个 .py 文件** |
-| `quant_output/model.safetensors` | `swap.load_dopt_state_dict(quant_path)`（`swap.py:97-122`，用 `safetensors.safe_open`） | **swap.py 唯一读的 I/O** |
+| `config.yaml` | `dopt_wrapper.py`（via `--optimize-config`） | dopt subprocess 内部，**不经 converter 侧 .py** |
+| `calibration.json` | dopt GPTQ 校准（相对 CWD = `quant/`） | dopt subprocess 内部，**不经 converter 侧 .py** |
+| `dopt_config.json` | 场景 1：dopt `--dopt-config` + converter 侧 `swap._read_quant_param_map` 解析层策略 | **converter 侧 swap.py 也读**（从 dopt 产物目录解析 `{层名: 量化参数}`） |
+| `quant_output/model.safetensors` | `swap.load_dopt_state_dict(quant_path)`（`swap.py` 的 `load_dopt_state_dict`，用 `safetensors.safe_open`） | swap.py 读 |
 
-**结论**：4 个 Python 文件里，**只有 `swap.py` 的 `load_dopt_state_dict` 做 I/O**（读 safetensors/.pth），其他 3 个文件完全无 I/O、无状态、纯计算。`config.yaml` / `calibration.json` / `dopt_config.json` 全是 dopt GPTQ 阶段的输入，与 converter 这 4 个文件只间接相关（经 dopt 产物 `model.safetensors` 影响 converter）。
+**结论**：converter 侧 5 个 .py 里，`swap.py`（`load_dopt_state_dict` + `_read_quant_param_map`）和 `auto_quant.py`（spawn subprocess）做 I/O；`materialize.py` / `quant_linear.py` / `dopt_wrapper.py` 完全无 I/O、无状态（`dopt_wrapper.py` 在 subprocess 内跑，I/O 走 dopt_lm）。`config.yaml` / `calibration.json` 全是 dopt GPTQ 阶段输入；`dopt_config.json` 双重角色：dopt 内部消费 + converter 侧 `swap.py` 解析层策略（`_read_quant_param_map`，方案 C 的 group_size/bit 来源）。
 
 ---
 
@@ -152,13 +160,13 @@ __init__.py (门面)
 ```
 
 - `group_size` 可经 `"Quant_act_weight_eco;128"` 语法覆盖（`strategy.get_optimize_cfg`）。
-- `dyn_s8` = 激活动态 per-token int8（signed）—— 对应 W4A8 的 A8 侧，运行时算 per-token scale 传给 `quant_matmul_s8s4` 的 `x1_scale`。
+- `dyn_s8` = 激活动态 per-token int8（signed）—— 对应 W4A8 的 A8 侧，运行时算 per-token scale 传给 `npu_quant_matmul` 的 `pertoken_scale`。
 - `omni_group_min_max` = LSQ 风格可学习 `quant_alpha` + sigmoid 自适应 scale 的 per-group 权重量化器（`dopt_lm/quantizer/qmin_max.py:OmniGroupMinMaxGridWeight`）。
 
 ### 量化范围与校准
 
 - **范围**：全部 `nn.Linear`（`q_proj/k_proj/v_proj/o_proj/gate_proj/up_proj/down_proj/per_layer_input_gate/per_layer_projection/per_layer_model_projection` + `lm_head`）。
-- **lm_head 量化**（重要）：`swap.DEFAULT_SKIP = ("embed_tokens", "embed_tokens_per_layer")`（`swap.py:33`）**不含 `lm_head`** → `lm_head` 作为大 NPU-side Linear 按 W4 QuantLinear 消费。converter 部署形态为 host-embed + NPU-lm_head（`tie_word_embeddings` 必须解 tie：embed 在 host、lm_head 在 NPU，不同计算域无法共享权重）。
+- **lm_head 量化**（重要）：`swap.DEFAULT_SKIP = ("embed_tokens", "embed_tokens_per_layer")`（`swap.py` 的 `DEFAULT_SKIP`）**不含 `lm_head`** → `lm_head` 作为大 NPU-side Linear 按 W4 QuantLinear 消费。converter 部署形态为 host-embed + NPU-lm_head（`tie_word_embeddings` 必须解 tie：embed 在 host、lm_head 在 NPU，不同计算域无法共享权重）。
 - **embed_tokens / embed_tokens_per_layer**：是 `nn.Embedding`（非 Linear，Linear swap 不触及），由 `swap_embeddings_from_dopt` 消费 W8 host gather——converter 自动检测 dopt 产物含 embed scale 即做（embed 外置，图内无 embed_tokens 节点，`--use-embeddings` 默认 True）。
 - **校准数据**：`cann_lm/converter/quant/calibration.json`（557KB）。
 - **`config.yaml` 实际内容**（`quant/config.yaml`，10 行）：
@@ -197,19 +205,27 @@ __init__.py (门面)
 ┌─────────────────────────────────────────────────────────────────────────┐
 │  OFFLINE (NPU, 系统 Python 3.11.4 + 真 torch_npu) — Step A: dopt GPTQ   │
 │                                                                         │
+│  两种触发:                                                               │
+│   场景 1 (--quant-path): 用户手动跑, dopt_config.json 手动提供或        │
+│           generate_dopt_config 辅助生成                                 │
+│   场景 2 (--quant-method gptq): auto_quant.run_auto_quant 检测 NPU/GPU   │
+│           → spawn dopt_wrapper.py subprocess (NPU env, cwd=quant/)      │
+│           → dopt_wrapper 内 _build_layer_strategy 自动生成 dopt_config  │
+│                                                                         │
 │  输入:                                                                   │
-│   - HF 模型 (--hf-path)                                                  │
+│   - HF 模型 (--hf-path / --model-path)                                  │
 │   - cann_lm/converter/quant/config.yaml      ← --optimize-config         │
 │       (dataset.train_files=calibration.json, ptq_samples=1024,            │
 │        cutoff_len=512, fp16=true)                                       │
 │   - cann_lm/converter/quant/calibration.json ← 校准语料 (相对 CWD)        │
-│   - cann_lm/converter/quant/dopt_config.json ← --dopt-config (层策略)    │
+│   - dopt_config.json ← --dopt-config (层策略)                            │
 │       (layer_strategy: Linear→Quant_act_weight_eco, group_size=128,        │
-│        Embedding→Quant_Embed_MinMax)                                    │
+│        lm_head→Quant_lm_head, Embedding→Quant_Embed_MinMax)             │
 │                                                                         │
-│  执行: python -m dopt_lm.opt_main --model-path ... --hf_type_save        │
+│  执行: python dopt_wrapper.py --model-path ... --hf-type-save           │
+│        (或场景 1 手动 python -m dopt_lm.opt_main)                       │
 │                                                                         │
-│  产物 (quant_output/):                                                   │
+│  产物 (quant_output/ 或场景 2 临时盘):                                    │
 │   - model.safetensors (~3GB) ← load_dopt_state_dict 读这个               │
 │     keys:                                                               │
 │       model.layers.N.self_attn.q_proj.weight            (GPTQ fp16)     │
@@ -221,42 +237,51 @@ __init__.py (门面)
 │       model.embed_tokens.quant_op.weight_quantizer.s (per-channel)     │
 │   - config.json (HF 模型 config 副本)                                   │
 │   - config.yaml (dopt 写的训练回放)                                     │
+│   - dopt_config.json (层策略, 场景 2 由 wrapper 生成; converter 侧      │
+│     _read_quant_param_map 也读它解析 group_size/bit)                    │
 └─────────────────────────────────────────────────────────────────────────┘
                                     │
-                                    ▼ 磁盘桥接
+                                    ▼ 磁盘桥接 (场景 1: 用户产物; 场景 2: 临时盘)
 ┌─────────────────────────────────────────────────────────────────────────┐
 │  CONVERTER (CPU venv, torchair stubs) — Step B-E                         │
 │                                                                         │
 │  cann_lm_converter.py:                                                  │
-│   B. load_model(hf_path) → nn.Module (HF 原始, fp16)                     │
-│   C+D. swap_to_quant_linear_from_dopt(model, quant_path=quant_output,    │
-│                                      group_size=128, act_quant=True):  │
-│      a. load_dopt_state_dict(quant_output) → sd: dict                    │
-│      b. for each nn.Linear (非 skip):                                   │
-│         - sd[name.weight] (GPTQ fp) + sd[...weight_quantizer.s] (scale) │
-│         - _read_dopt_quant_meta → bit/uq/offset (校验 uq==0, offset 全 0)│
-│         - materialize_int4_with_scale(w, scale2d, gs, packed=True)       │
-│           → (weight_q int8 [n,k//2] nibble-packed, weight_scale fp32)   │
-│         - QuantLinear(weight_q, weight_scale, gs, bias, act_quant=True) │
-│         - setattr 替换 nn.Linear                                        │
-│      c. return quant_info dict → artifact.quant_info                    │
-│   (embed 自动检测, embed_quant 非空时):                                  │
-│      swap_embeddings_from_dopt(sd, model) → embed_quant dict            │
-│      → saver 经 wrapper.set_quant_embeddings() 注入图入口                │
+│   B. load_model(hf_path) → nn.Module (cann_lm, fp16)                    │
+│      (场景 2: 在 run_auto_quant 之后, subprocess 已退出才 load)          │
+│   C+D. swap_from_dopt(model, dopt_out_path):  # 主路径, 一次 load       │
+│      a. load_dopt_state_dict(dopt_out_path) → sd: dict                   │
+│      b. _read_quant_param_map(dopt_out_path) → param_map (层策略)       │
+│      c. _swap_linear_from_sd(model, sd, param_map=param_map):           │
+│         for each nn.Linear (非 DEFAULT_SKIP):                           │
+│           - sd[name.weight] (GPTQ fp) + sd[...weight_quantizer.s] (s)  │
+│           - group_size: param_map[name] 优先, fallback _infer_group_size│
+│           - _read_dopt_quant_meta → bit/uq/offset (校验 uq==0, offset 全0)│
+│           - materialize_int4_per_group_symmetric(w, scale2d, gs,       │
+│             signed=True, nbits=bit, packed=True)                        │
+│             → (weight_q int8 [n,k//2] nibble-packed, weight_scale fp32) │
+│           - 预转置: weight_q [n,k//2]→[k//2,n], scale [n,k//g]→[k//g,n] │
+│           - QuantLinear(weight_q, weight_scale, gs, bias, act_quant=True)│
+│           - setattr 替换 nn.Linear                                      │
+│         return quant_info dict → artifact.quant_info                    │
+│      d. swap_embeddings_from_dopt(sd, model) → embed_quant dict         │
+│         → saver 经 wrapper.set_quant_embeddings() 注入图入口             │
+│      return (quant_info, embed_quant)                                  │
 │   E. save_epair_prefill_decode(...)                                      │
-│      → torch.export(model) → ep_json (含 quant_matmul_s8s4 +            │
-│         DynamicQuant IR) + weights_*.bin (int4 packed + fp32 scale)    │
+│      → torch.export(model) → ep_json (含 npu::npu_quant_matmul +        │
+│         npu::npu_dynamic_quant IR) + weights_*.bin (int4 packed +       │
+│         fp32 scale, weight_scale 落盘经 transdata_scale 转 int64)       │
 │         + model_config.json (含 quant_info) + weight_info.json         │
 └─────────────────────────────────────────────────────────────────────────┘
                                     │
                                     ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
 │  最终产物 (epair 格式, output-dir/)                                      │
-│   - prefill_ep_json_with_ascend_ir.json  (含 cann_lm::quant_matmul_s8s4 │
-│     节点 + npu::npu_dynamic_quant 节点, QuantLinear 在 nn_module_stack) │
+│   - prefill_ep_json_with_ascend_ir.json  (含 npu::npu_quant_matmul 节点  │
+│     + npu::npu_dynamic_quant 节点, QuantLinear 在 nn_module_stack)      │
 │   - decode_ep_json_with_ascend_ir.json                                  │
-│   - weights_*.bin  (int4 nibble-packed int8 + fp32 scale buffer)        │
-│   - model_config.json (quant_info: scheme/group_size/n_quantized/...)   │
+│   - weights_*.bin  (int4 nibble-packed int8 + fp32 scale buffer,        │
+│     weight_scale 落盘为 int64 位模式)                                    │
+│   - model_config.json (quant_info: scheme/group_size/bit/n_quantized/...)│
 │   - weight_info.json                                                    │
 │   (host-embeddings 模式额外: embed_tokens_q.bin int8 +                  │
 │    embed_tokens_scale.bin fp32, host 查表)                              │
@@ -327,38 +352,45 @@ DEVICE=npu python cann_lm_converter.py \
 1. **阶段 1（临时盘，已实现）**：subprocess 产物到临时盘（`tempfile`），converter 读临时盘 swap。简单，复用 `--quant-path` 逻辑。代价：临时盘 IO。
 2. **阶段 2（内存管道，待实现）**：subprocess 产物到内存管道（pickle/mmap/共享内存），converter 读管道 swap。省 IO 但复杂。7B+ 大模型受益。
 
-**实现状态**（`auto_quant.py`）：
+**实现状态**（`auto_quant.py` + `dopt_wrapper.py`）：
 1. **subprocess 环境** ✅：`PYTHONPATH` 加 `quant/` + `DEVICE=npu` + `LD_LIBRARY_PATH` 去 stubs；`DOPT_PYTHON` 环境变量可覆盖系统 Python 路径
 2. **calibration 路径** ✅：subprocess `cwd=cann_lm/converter/quant/`（config.yaml 的 `train_files` 相对 CWD）
-3. **dopt_config 生成** ✅：`generate_dopt_config` 遍历 cann_lm 模型自动生成（按 `quant_bits` 映射 strategy），不依赖 `quant/dopt_config.json`
+3. **dopt_config 生成** ✅：场景 2 由 `dopt_wrapper._build_layer_strategy` 在 subprocess 内遍历 transformers model 自动生成（不依赖 `quant/dopt_config.json`）；场景 1 离线由 `auto_quant.generate_dopt_config` 遍历 cann_lm `artifact.model` 辅助生成
 4. **subprocess 失败处理** ✅：退出码非 0 raise `RuntimeError`，保留临时产物路径供调试
-5. **w4a16 strategy** ⏳ 待实现：无 preset W4A16 Linear strategy，当前 `NotImplementedError`
-6. **临时盘清理** ⏳ 待实现：当前不清理（保留供调试），7B+ 大文件需 `shutil.rmtree`
-7. **实测验证** ⏳ 待做：cann_lm 层名 vs HF 匹配、subprocess 环境跑通、calibration 匹配
+5. **设备检测** ✅：`_detect_device_type` 优先读父进程 `DEVICE`，未设才 spawn 检测（`torch_npu`/`torch.cuda`）；关 `ASCEND_SLOG_PRINT_TO_STDOUT` 防 CANN 日志污染 stdout 解析；纯 CPU 报错并提示用 `--quant-path`
+6. **dopt_wrapper 主体** ✅：`model_define`（transformers fp16）+ `weight_quant_pipline`（GPTQ）已落地，`--hf-type-save` 产 safetensors
+7. **w4a8** ✅：`dopt_wrapper.parse_args` 的 `--quant-bits` default=`w4a8`，choices=`["w4a8"]`
+8. **w4a16** ❌ 不支持：`choices=["w4a8"]` 限制，无 preset W4A16 Linear strategy
+9. **临时盘清理** ⏳ 待实现：当前不清理（保留供调试），7B+ 大文件需 `shutil.rmtree`
+10. **实测验证** ⏳ 待做：cann_lm 层名 vs HF 匹配、subprocess 环境跑通、calibration 匹配
 
 > `--quant-path`（消费已存在的 dopt 磁盘产物，CPU-only 机或用户已手动跑 dopt）保留作兜底，与 `--quant-method gptq`（自动 spawn dopt）互斥。`--quant-bits` 仅 `--quant-method` 时生效。
-### `materialize.py`（162 行）— 权重物化纯函数
+### `materialize.py`（138 行）— 权重物化纯函数
 
 纯函数模块，把 fp16/bf16/fp32 的 `nn.Linear` 权重 `[out, in]` 物化成量化 payload + per-group/per-channel scale。**无状态、无副作用、无外部 I/O**。是整个量化链路的"数值核心"。
 
-| 函数 | 行 | 签名 | 参数数 | 作用 |
+| 函数/常量 | 行 | 签名 | 参数数 | 作用 |
 |------|----|------|--------|------|
-| `pack_int4` | 30-44 | `(q: Tensor) -> Tensor` | 1 | Nibble-pack signed int4（存为 int8）成 `[n, k//2]` int8；byte[i] = int4(k=2i+1)<<4 \| int4(k=2i)。私有辅助，**不在 `__all__`** |
-| ~~`materialize_int4`~~ | ~~47-87~~ | ~~`(weight, group_size=128, signed=True, nbits=4, packed=False)`~~ | ~~5~~ | **已删除**（min-max 路径移除；converter 只走 dopt GPTQ via `materialize_int4_with_scale`） |
-| `materialize_int4_with_scale` | 90-129 | `(weight, scale, group_size, signed=True, nbits=4, packed=False) -> (Tensor, Tensor)` | **6** | 用 dopt 预算好的 per-group scale（GPTQ-optimized）量化，scale 原样返回。**主路径**，被 `swap_to_quant_linear_from_dopt` 调用 |
-| `materialize_int8_per_channel` | 132-162 | `(weight, scale, signed=True) -> (Tensor, Tensor)` | 3 | 8-bit per-row 对称量化（匹配 dopt `Quant_Embed_MinMax`），产出 (int8 `[vocab,hidden]`, fp32 scale `[vocab]`)。被 `swap_embeddings_from_dopt` 调用 |
+| `_SCALE_MASK` | 30 | 模块级常量 `0x00000000FFFFE000` | — | 位掩码：截断尾数低 13 位 + 高 32 位清零（落盘格式） |
+| `transdata_scale` | 33-39 | `(scale_fp32: Tensor) -> Tensor` | 1 | fp32 → int64 位模式 + `& _SCALE_MASK`（落盘格式转换）。torch 无 uint64，用 int64（位模式相同） |
+| `restore_scale` | 42-44 | `(scale_packed: Tensor) -> Tensor` | 1 | int64（位模式 + 掩码）→ fp32（尾数低 13 位为 0，精度降低）。方案 A 遗留，当前不调但保留 |
+| `pack_int4` | 47-60 | `(q: Tensor) -> Tensor` | 1 | Nibble-pack signed int4（存为 int8）成 `[..., k//2]` int8；byte[i] = int4(k=2i+1)<<4 \| int4(k=2i)。私有辅助，不在 `__all__` |
+| `materialize_int4_per_group_symmetric` | 63-105 | `(weight, scale, group_size, signed=True, nbits=4, packed=False) -> (Tensor, Tensor)` | **6** | **主路径**：用 dopt 预算好的 per-group scale（GPTQ-optimized）量化，scale 原样返回。被 `_swap_linear_from_sd` 调用 |
+| `materialize_int8_per_channel_symmetric` | 108-138 | `(weight, scale, signed=True) -> (Tensor, Tensor)` | 3 | 8-bit per-row（per-vocab-channel）对称量化（匹配 dopt `Quant_Embed_MinMax`），产出 (int8 `[vocab,hidden]`, fp32 scale `[vocab]`)。被 `swap_embeddings_from_dopt` 调用 |
 
-**内部数值管线**（4 步，对 `materialize_int4` / `materialize_int4_with_scale` 同构）：
+**内部数值管线**（对 `materialize_int4_per_group_symmetric`，4 步）：
 1. 预处理：`w = weight.detach().float()` + shape 校验（`in_f % group_size == 0`，`scale.shape == (out_f, in_f // group_size)`）。
-2. scale 计算/广播：`materialize_int4` 用 `wg.abs().amax(-1)/qmax`；`materialize_int4_with_scale` 直接用入参 scale；都 `repeat_interleave(group_size)` 到 `[out, in]`。
+2. scale 广播：`scale_exp = scale.float().repeat_interleave(group_size, dim=-1)` 到 `[out, in]`。
 3. 量化 + 截断：`q = torch.round(w / scale_exp)`；signed → `clamp(-qmax, qmax)`（4-bit → `[-7, 7]`）；unsigned → `clamp(0, 2*qmax+1)`。
 4. packing + 返回：`q.to(int8)`；`packed=True` → `pack_int4(q)` 返回 `[out, in//2]`；否则返回 `[out, in]`。返回 `(payload, scale.to(float32))`。
 
-> **代码风格观察**：`materialize_int4_with_scale` 有 **6 个参数**（超 AGENTS.md "参数不超过 5 个" 原则）。建议聚合 `signed`/`nbits`/`packed` 三个量化格式参数为 `Int4Spec`/`QuantFormat` dataclass（三者共同描述"int4 编码格式"，语义内聚），让签名变成 4 参数。当前未拆。
+> **代码风格观察**：`materialize_int4_per_group_symmetric` 有 **6 个参数**（超 AGENTS.md "参数不超过 5 个" 原则）。建议聚合 `signed`/`nbits`/`packed` 三个量化格式参数为 `Int4Spec`/`QuantFormat` dataclass（三者共同描述"int4 编码格式"，语义内聚），让签名变成 4 参数。当前未拆。
 
-### `quant_linear.py`（81 行）— 导出用 QuantLinear
+> **docstring 遗留**：文件头 docstring（15-25 行）仍写 "int4 signed values stored 1/byte = unpack" + "本模块为 unpack+signed 占位实现，先跑通 Python 流程，CANN 对齐后续"，但实际 `pack_int4` 已实现 nibble-pack、`materialize_int4_per_group_symmetric` 支持 `packed=True`，早已非占位实现。docstring 待更新。
 
-定义 `QuantLinear(nn.Module)`，作为导出路径上 `nn.Linear` 的替身。其 `forward` 显式调用 `torch.ops.npu.npu_dynamic_quant`（激活量化）+ `torch.ops.cann_lm.quant_matmul_s8s4`（权重 int4 matmul），使得 `torch.export` 产出的图里直接是这两个 custom op 节点（而非 `aten.mm`/`MatMul`），后续经 `_quant_matmul_s8s4_converter.py` 映射到方案 A 自研 GE 算子。
+### `quant_linear.py`（86 行）— 导出用 QuantLinear
+
+定义 `QuantLinear(nn.Module)`，作为导出路径上 `nn.Linear` 的替身。其 `forward` 显式调用 `torch.ops.npu.npu_dynamic_quant`（激活量化）+ `torch.ops.npu.npu_quant_matmul`（权重 int4 matmul），使得 `torch.export` 产出的图里直接是这两个 custom op 节点（而非 `aten.mm`/`MatMul`），后续经 `_quant_matmul_converter.py` 映射到 `ge.QuantBatchMatmulV4`。
 
 ```python
 class QuantLinear(nn.Module):
@@ -366,147 +398,202 @@ class QuantLinear(nn.Module):
                  group_size: int, bias: Tensor | None = None,
                  act_quant: bool = True):  # 5 参数（不含 self）
         # act_quant=False 直接 raise NotImplementedError (W4A16 不支持)
-        # weight_q: int8 [n, k//2] nibble-packed → register_buffer
-        # weight_scale: fp32 [n, k//g] → register_buffer
-        # bias is None → self.bias = None (无 dummy-zeros workaround)
+        # weight_q: int8 [k//2, n] nibble-packed (预转置) → register_buffer
+        # weight_scale: fp32 [k//g, n] (预转置) → register_buffer
+        # bias is None → self.bias = None (forward 传 None, GE converter 侧塞 dummy)
 
     def forward(self, x: Tensor) -> Tensor:
         x_q, x_scale = torch.ops.npu.npu_dynamic_quant(x)          # 激活 s8 per-token
-        out = torch.ops.cann_lm.quant_matmul_s8s4(
-            x_q, x_scale, self.weight_q, self.weight_scale,
-            bias=self.bias,                                          # None when source Linear has no bias
-            group_size=self.group_size,                              # 单 int attr (非 V4 的 [m,n,k] 48-bit pack)
-            output_dtype=_OUT_DTYPE_CODE.get(x.dtype, 5),           # fp16=5, bf16=7, fp32=6
+        out = torch.ops.npu.npu_quant_matmul(
+            x_q, self.weight_q, self.weight_scale,
+            pertoken_scale=x_scale,                      # per-token act scale (kwarg)
+            bias=self.bias,                              # None when source Linear has no bias
+            group_sizes=[1, 1, self.group_size],         # V4 3-element [m,n,k]; K-group at index [2]
+            output_dtype=_OUT_DTYPE_CODE.get(x.dtype, 5),  # fp16=5, bf16=7, fp32=6
             transpose_x1=False,
-            transpose_x2=True,                                       # x2 自然朝向, kernel 内转置
+            transpose_x2=False,                           # x2 已预转置到 [k//2, n], meta 取 N=x2.size(-1)
         )
         return out
 ```
 
-模块级常量 `_OUT_DTYPE_CODE = {torch.float16: 5, torch.bfloat16: 7, torch.float32: 6}` 把 torch dtype 映射到 GE output_dtype 编码。`from cann_lm.models.fused_ops import ops as _fused_ops  # noqa: F401`（行 36）为注册 `quant_matmul_s8s4` + `npu_dynamic_quant` 两个 custom op 的副作用，不直接用其符号。
+模块级常量 `_OUT_DTYPE_CODE = {torch.float16: 5, torch.bfloat16: 7, torch.float32: 6}` 把 torch dtype 映射到 GE output_dtype 编码。`from cann_lm.models.fused_ops import ops as _fused_ops  # noqa: F401`（行 37）为注册 `npu_quant_matmul` + `npu_dynamic_quant` 两个 custom op 的副作用，不直接用其符号。
 
-**约定**（方案 A，s8s4 对称，offset=0）：
-- weight_q / weight_scale 在 **自然** nn.Linear 朝向 `[n, k]` / `[n, k//g]`（**无预转置**）；`transpose_x2=True`（kernel 内部转置喂 cube）。
-- 激活：`npu_dynamic_quant` → int8 x1 + per-token fp32 x1_scale。
-- bias 可选 `[n]`（output dtype）；源 Linear 无 bias 时为 None（**无 dummy-zeros workaround**——方案 A 的 op bias 真正可选）。
+**约定**（路径 C'，s8s4 对称，offset=0）：
+- weight_q / weight_scale **预转置** 到 `[k//2, n]` / `[k//g, n]`（swap.py 物化后 `transpose(-1,-2)`）；`transpose_x2=False`（meta 取 `N = x2.size(-1)`，GE converter 硬编码 `transpose_x2=False`）。
+- 激活：`npu_dynamic_quant` → int8 x1 + per-token fp32 x1_scale（作为 `pertoken_scale` kwarg 传入）。
+- bias 可选 `[n]`（output dtype）；源 Linear 无 bias 时 forward 传 None，但 GE converter `_quant_matmul_converter.py` 的 dummy bias workaround 侧塞 dummy zeros[N]（CANN V4 `InferNDimWithBias` 不支持 bias=nullptr 的限制）。
+- `group_sizes=[1, 1, g]`：V4 的 3-element [m,n,k] 48-bit 编码，K-group 在 index [2]。
 
-### `swap.py`（226 行）— 算子 IR 替换 + dopt 产物加载
+### `swap.py`（398 行）— 算子 IR 替换 + dopt 产物加载
 
-在 `torch.export` 之前，**就地遍历** `model.named_modules()`，把目标 `nn.Linear` 替换成 `QuantLinear`（物化 int4 权重）、把目标 `nn.Embedding` 的 int8+scale 抽出来供 host gather（不替换成图模块）。还提供 dopt GPTQ 产物的加载器 + 量化元信息读取器。是 `cann_lm_converter.py` 唯一直接调用的模块。
+在 `torch.export` 之前，**就地遍历** `model.named_modules()`，把目标 `nn.Linear` 替换成 `QuantLinear`（物化 int4 权重）、把目标 `nn.Embedding` 的 int8+scale 抽出来供 host gather（不替换成图模块）。还提供 dopt GPTQ 产物的加载器 + 量化元信息读取器 + 层策略解析器。是 `cann_lm_converter.py` 主路径（`swap_from_dopt`）唯一直接调用的模块。
 
-| 函数 | 行 | 签名 | 参数数 | 作用 |
+| 函数/常量 | 行 | 签名 | 参数数 | 作用 |
 |------|----|------|--------|------|
-| `swap_embeddings_from_dopt` | 36-58 | `(sd: dict, model: Module) -> dict[str, tuple[Tensor, Tensor]]` | 2 | 遍历 `nn.Embedding`，从 sd 读 `{name}.weight` (fakequant) + `{name}.quant_op.weight_quantizer.s`，`materialize_int8_per_channel` → `{wrapper_fqn: (int8, scale)}`。**不** swap 成图模块（embedding 外置给 host gather）。跳过无 scale 的（如 gemma4 per_layer 未量化） |
-| `_resolve_parent` | 61-67 | `(model: Module, dotted_name: str) -> tuple[Module, str]` | 2 | 私有辅助：把 `"a.b.c"` 拆成 `(parent=a.b module, leaf="c")`，供 setattr 替换 |
-| ~~`swap_to_quant_linear`~~ | ~~70-94~~ | ~~`(model, group_size=128, skip=DEFAULT_SKIP, act_quant=True)`~~ | ~~4~~ | **已删除**（min-max 快速路径移除；dopt 只支持 GPTQ，min-max 精度差无实用价值） |
-| `load_dopt_state_dict` | 97-122 | `(dopt_path: str \| Path) -> dict` | 1 | 接受 `.safetensors` / `.pth` / 目录(含 `model.safetensors`)。返回 `{name: tensor}` dict |
-| `_read_dopt_quant_meta` | 125-148 | `(sd, name, out_f, in_f, group_size) -> tuple[int, float, Tensor \| None]` | 5 | 私有辅助：读 `{name}.quant_op.weight_quantizer.{bit, unsigned_quant, offset}`。bit=int64 标量，unsigned_quant=fp32 标量，offset=fp32 扁平 `[out*groups]`（reshape 到 `[out, in//group]`）。老版 dopt 无 buffer 时 fallback (4, 0.0, None) |
-| `swap_to_quant_linear_from_dopt` | 151-226 | `(model, dopt_path, skip=DEFAULT_SKIP, act_quant=True) -> dict` | 5 | **主路径**（流程 C+D）：① `load_dopt_state_dict` → sd；② 遍历 `nn.Linear`（非 skip）：读 wkey/skey，跳过缺 key 的；从 scale shape 自动推断 group_size；reshape s_flat → scale2d；`_read_dopt_quant_meta` → bit/uq/offset；校验 uq==0（symmetric only，否则 ValueError）；校验 offset 全 0（否则 NotImplementedError：方案 A 不支持非对称）；`materialize_int4_with_scale(packed=True)` → `QuantLinear` → setattr 替换；③ 返回 quant-info dict（scheme/group_size/scope/counts/op/encoding/dopt_bit/uq/offset_supported）→ 被 `cann_lm_converter.py` 写进 `model_config.json` 的 `quant_info` 字段 |
+| `DEFAULT_SKIP` | 37 | 模块级常量 `("embed_tokens", "embed_tokens_per_layer")` | — | Linear swap 跳过名单。**`lm_head` 不在 skip 里**——会被量化成 QuantLinear W4A8 |
+| `swap_embeddings_from_dopt` | 40-62 | `(sd: dict, model: Module) -> dict[str, tuple[Tensor, Tensor]]` | 2 | 遍历 `nn.Embedding`，从 sd 读 `{name}.weight` (fakequant) + `{name}.quant_op.weight_quantizer.s`，`materialize_int8_per_channel_symmetric` → `{wrapper_fqn: (int8, scale)}`。**不** swap 成图模块（embedding 外置给 host gather）。跳过无 scale 的（如 gemma4 per_layer 未量化） |
+| `_resolve_parent` | 65-71 | `(model: Module, dotted_name: str) -> tuple[Module, str]` | 2 | 私有辅助：把 `"a.b.c"` 拆成 `(parent=a.b module, leaf="c")`，供 setattr 替换 |
+| `load_dopt_state_dict` | 74-110 | `(dopt_path: str \| Path) -> dict` | 1 | 接受 `.safetensors` / `.pth` / 目录(含 `model.safetensors`)。规范化 `model.language_model.*` 前缀（VLM → text-only，cann_lm 匹配）。返回 `{name: tensor}` dict |
+| `_read_dopt_quant_meta` | 113-136 | `(sd, name, out_f, in_f, group_size) -> tuple[int, float, Tensor \| None]` | 5 | 私有辅助：读 `{name}.quant_op.weight_quantizer.{bit, unsigned_quant, offset}`。bit=int64 标量，unsigned_quant=fp32 标量，offset=fp32 扁平 `[out*groups]`（reshape 到 `[out, in//group]`）。老版 dopt 无 buffer 时 fallback (4, 0.0, None) |
+| `_STRATEGY_DEFAULT_PARAMS` | 144-153 | 模块级常量 dict | — | dopt 策略默认参数硬编码（`Quant_act_weight_eco` / `Quant_lm_head` 的 group_size=128/bit=4/blocksize=128/per_channel/weight_algo=omni_group_min_max）。converter venv 不装 dopt_lm 不能 import，硬编码；新增带 weight 量化的策略时需同步更新 |
+| `_read_quant_param_map` | 156-197 | `(dopt_path: str \| Path \| None) -> dict[str, dict]` | 1 | 从 dopt 产物目录的 `dopt_config.json` 解析 `{层名: weight 侧量化参数 dict}`。后缀解析（`"Quant_act_weight_eco;128"` → strategy + gs_override）+ `_STRATEGY_DEFAULT_PARAMS` 默认值。无 dopt_config.json / 层未配置 / 策略无默认参数 → 不在该 dict |
+| `_infer_group_size` | 200-234 | `(s_flat: Tensor, out_f: int, in_f: int, name: str) -> tuple[int, int]` | 4 | 从 dopt scale s_flat（扁平 `[out*groups]`）推断 (group_size, groups)。支持 pergroup/perchannel；拒绝 pertensor（numel==1）/ 非 1D / numel 不是 out_f 整数倍 |
+| `_swap_linear_from_sd` | 237-350 | `(model, sd, skip=DEFAULT_SKIP, act_quant=True, param_map=None) -> dict` | 5 | **核心 swap 逻辑**（接收已加载 sd，避免重复 IO）。遍历 `nn.Linear`（非 skip）：读 w_gptq/s_flat；group_size 来源优先级 `param_map[name]` > `_infer_group_size`；reshape s_flat → scale2d；`_read_dopt_quant_meta` → bit/uq/offset；校验 uq==0（symmetric only，否则 ValueError）；校验 offset 全 0（否则 NotImplementedError）；`materialize_int4_per_group_symmetric(packed=True)` → 预转置 `[k//2,n]`/`[k//g,n]` → `QuantLinear` → setattr 替换。返回 quant-info dict |
+| `swap_to_quant_linear_from_dopt` | 353-371 | `(model, dopt_path, skip=DEFAULT_SKIP, act_quant=True) -> dict` | 4 | **向后兼容薄 wrapper**：`load_dopt_state_dict` + `_read_quant_param_map` + 调 `_swap_linear_from_sd`。仅供场景 1 离线用户或单独 Linear swap 用；主进程场景 1/2 用 `swap_from_dopt` |
+| `swap_from_dopt` | 374-398 | `(model, dopt_path, skip=DEFAULT_SKIP, act_quant=True) -> tuple[dict, dict]` | 4 | **主路径**（场景 1/2 共用）：一次 `load_dopt_state_dict` + `_read_quant_param_map` → `_swap_linear_from_sd`（Linear swap）+ `swap_embeddings_from_dopt`（Embedding 抽取）。避免 `swap_to_quant_linear_from_dopt` + `swap_embeddings_from_dopt` 二次 load IO。返回 `(quant_info, embed_quant)` |
 
-模块级常量 `DEFAULT_SKIP = ("embed_tokens", "embed_tokens_per_layer")`（行 33）。**注意 `lm_head` 不在 skip 里**——会被量化成 QuantLinear W4A8（行 30 注释明确）。
+> **代码风格观察**：`_swap_linear_from_sd` 函数体超 50 行（超 AGENTS.md 原则）。该函数承担太多职责（遍历 Linear + 读 scale + 读 meta + 校验 uq + 校验 offset + materialize + 预转置 + 实例化 + 替换 + 计数 + 构造返回 dict）。建议按单一职责拆成 `_validate_dopt_quant_meta(uq, offset)` + `_build_quant_info(...)` 等。当前未拆。
 
-> **代码风格观察**：`swap_to_quant_linear_from_dopt` 函数体超 50 行（超 AGENTS.md 原则）。该函数承担太多职责（加载 sd + 遍历 Linear + 读 scale + 读 meta + 校验 uq + 校验 offset + materialize + 实例化 + 替换 + 计数 + 构造返回 dict），按单一职责拆成：
-> - `swap_to_quant_linear_from_sd(model, sd, ...)`（收内存 dict，做核心 swap）
-> - `swap_to_quant_linear_from_dopt(model, dopt_path, ...)`（前者 load 后转发）
-> - `_validate_dopt_quant_meta(uq, offset)`（校验 uq==0 / offset 全 0）
-> - `_build_quant_info(...)`（构造返回 dict）
->
-> 当前未拆。
+### `__init__.py`（51 行）— 包门面
 
-### `__init__.py`（47 行）— 包门面
-
-re-export 6 个公共符号（`__init__.py:38-47` 的 `__all__`）：
+re-export 7 个公共符号（见 `__init__.py` 的 `__all__`）：
 
 ```python
-from .materialize import materialize_int4_with_scale, materialize_int8_per_channel
+from .materialize import materialize_int4_per_group_symmetric, materialize_int8_per_channel_symmetric
 from .quant_linear import QuantLinear
 from .swap import (
     load_dopt_state_dict,
     swap_to_quant_linear_from_dopt,
+    swap_from_dopt,
     swap_embeddings_from_dopt,
 )
 
 __all__ = [
-    "materialize_int4_with_scale",
-    "materialize_int8_per_channel",
+    "materialize_int4_per_group_symmetric",
+    "materialize_int8_per_channel_symmetric",
     "QuantLinear",
     "swap_to_quant_linear_from_dopt",
+    "swap_from_dopt",
     "swap_embeddings_from_dopt",
     "load_dopt_state_dict",
 ]
 ```
 
-顶部 docstring（行 15-27）概述了量化两条入口路径与 dopt_lm 离线运行的关系。6 个符号中只有 **3 个**（`swap_to_quant_linear_from_dopt` / `swap_embeddings_from_dopt` / `load_dopt_state_dict`）被 `cann_lm_converter.py` 实际 import；其余 3 个经 `swap.py` 内部相对 import 使用，对外暴露为测试/将来直接调用预留。
+顶部 docstring（行 15-32）概述了量化两条入口路径与 dopt_lm 离线运行的关系。7 个符号中只有 **2 个** 被 `cann_lm_converter.py` 实际 import —— `swap_from_dopt`（主路径，从 `__init__` import）+ `run_auto_quant`（从 `auto_quant` 直接 import，场景 2）。其余 5 个对外暴露为测试/离线/将来直接调用预留。
 
-### `config.yaml`（10 行）— dopt GPTQ 训练配置
+### `auto_quant.py`（121 行）— 一键式量化（方案 C）
 
-**不是** 4 个 Python 文件的输入！它是 `dopt_lm.opt_main` 的 `--optimize-config` 参数文件，描述 GPTQ 校准的训练配置：校准语料是同目录的 `calibration.json`，采样 1024 条，截断长度 512，fp16 训练+存盘。内容见 [量化范围与校准](#量化范围与校准)。
+converter `--quant-method gptq` 一键触发：检测 NPU/GPU → spawn `dopt_wrapper.py` subprocess（NPU env）跑 GPTQ → 临时盘产物 → converter swap。与主进程 CPU stubs 环境隔离。
+
+| 函数 | 行 | 签名 | 参数数 | 作用 |
+|------|----|------|--------|------|
+| `_build_layer_strategy` | 20-37 | `(model, model_type: str) -> dict` | 2 | 遍历 `model.named_modules` 赋量化策略（Linear→`Quant_act_weight_eco`，lm_head→`Quant_lm_head`，Embedding→`Quant_Embed_MinMax`）。cann_lm 与 transformers 层名一致，通用 |
+| `generate_dopt_config` | 40-49 | `(artifact, quant_bits: str) -> str` | 2 | 场景 1 离线辅助：遍历 cann_lm `artifact.model` 生成 dopt_config，返回临时文件路径（`examples/run_pd4_cases.sh:gen_dopt_config` 依赖） |
+| `_run_dopt_subprocess` | 52-77 | `(hf_path: str, quant_bits: str, device: str) -> str` | 3 | 方案 C 主体：spawn `dopt_wrapper.py` subprocess（NPU env，`PYTHONPATH` 加 `quant/`、`DEVICE=npu`、`LD_LIBRARY_PATH` 去 stubs；`DOPT_PYTHON` 可覆盖系统 Python 路径）。退出码非 0 raise `RuntimeError`，保留临时产物供调试 |
+| `_detect_device_type` | 80-108 | `() -> str \| None` | 0 | 检测系统计算设备：优先读父进程 `DEVICE`，未设才 spawn 检测（`torch_npu`/`torch.cuda`）。关 `ASCEND_SLOG_PRINT_TO_STDOUT` 防 CANN 日志污染 stdout 解析 |
+| `run_auto_quant` | 111-121 | `(hf_path: str, quant_bits: str) -> str` | 2 | **主入口**：检测 NPU/GPU → 方案 C (subprocess) / 纯 CPU 报错。返回 dopt_out_dir 路径 |
+
+### `dopt_wrapper.py`（92 行）— dopt subprocess 主体
+
+被 `auto_quant._run_dopt_subprocess` 通过 `python <path>/dopt_wrapper.py ...` 调用。subprocess 用系统 Python（有 torch_npu + transformers + NPU env），不走 cann_lm 的 venv。
+
+| 函数 | 行 | 签名 | 参数数 | 作用 |
+|------|----|------|--------|------|
+| `_read_model_type` | 28-30 | `(model_path: str) -> str` | 1 | 从 `config.json` 读 `model_type` |
+| `_build_layer_strategy` | 33-47 | `(model, model_type: str) -> dict` | 2 | 同 `auto_quant._build_layer_strategy`（subprocess 内独立实现，不 import auto_quant） |
+| `parse_args` | 50-57 | `() -> Namespace` | 0 | `--model-path` / `--optimize-config` / `--output-dir` / `--hf-type-save` / `--quant-bits`（default=`w4a8`, choices=`["w4a8"]`，w4a16 不支持） |
+| `main` | 60-88 | `() -> None` | 0 | 读 model_type → `model_define`（transformers fp16）→ 生成 dopt_config.json → `del model` + `gc.collect` → `weight_quant_pipline`（GPTQ）→ 产物到 `--output-dir` |
+
+### `config.yaml`（8 行）— dopt GPTQ 训练配置
+
+是 `dopt_wrapper.py` 的 `--optimize-config` 参数文件，描述 GPTQ 校准的训练配置：校准语料是同目录的 `calibration.json`，采样 1024 条，截断长度 512，fp16 训练+存盘。内容见 [量化范围与校准](#量化范围与校准)。
+
+> **注意**：`cutoff_len: 512` 在旧版文件里曾重复定义两次（YAML 后者覆盖前者），当前 8 行版本已去重。`ptq_samples=1024`。
 
 ---
 
 ## dopt_lm 子包详解（已抽取）
 
 > dopt_lm 的完整设计（文件树 / 入口 / GPTQ 调用链 / common_tools / modules / quantizer / opt_funcs/weight_quant_ptq / 代码风格 / 模型加载约束 / 可设置参数清单 / 历史调试档案）已抽取到 [dopt_design.md](./dopt_design.md)。
-## 方案 A — 自研 quant_matmul_s8s4 算子规格与实现状态
+## 路径 C' — npu_quant_matmul → V4 算子规格与实现状态
 
-> 路径 C'（复用 CANN V4 整数 int8/int4）经实测不可达 s8s4 正确结果（详见 [附录 B](#附录-b--历史调试与路径选型档案)），故转方案 A：自研 AscendC kernel `quant_matmul_s8s4`，用 **fp32 scale** 做 `q*scale` 反量化，绕开 CANN V4 的 uint64/FP19 与 V4→V3 融合降级。本节给定算子输入输出与计算语义，供实现方对齐；**kernel 内部流水为实现方自由**。
+> 当前采用：复用 CANN 原生 `npu::npu_quant_matmul`，FX→GE converter `_quant_matmul_converter.py` 映射到 `ge.QuantBatchMatmulV4`，经 V4→V3 TBE 融合落到预编译 kernel。
+>
+> **历史**：早期曾选方案 A（自研 `cann_lm::quant_matmul_s8s4`，用 fp32 scale 做 `q*scale` 反量化绕开 CANN V4 的 uint64/FP19 与 V4→V3 融合降级）。后回退到 C'：converter 侧 `_quant_matmul_converter.py` 用 V4 **full IR**（所有输入含 None placeholder）让 V4→V3 融合正确把 `x2_scale` 映射到 V3 的 `scale` 输入 + **dummy bias zeros[N] workaround** 绕开 `InferNDimWithBias` 不支持 bias=nullptr，使整数 int8/int4 s8s4 经 V4→V3 融合后落到预编译 kernel 可达。方案 A 的自研 kernel 规格与流水参考作为历史档案保留在本节末尾。
 
-### 实现状态（已全部落地）
+### 实现状态（已落地）
 
-方案 A 的算子定义 + converter 链路改造**7 项全部完成**：
+路径 C' 的算子定义 + converter 链路改造：
 
 | # | 改造项 | 实现位置 | 状态 |
 |---|--------|---------|------|
-| 1 | `materialize_int4_with_scale(..., packed=True)` 产出 nibble-packed int8 `[n, k//2]` | `cann_lm/converter/quant/materialize.py:30-44, 90-129`（`pack_int4` + `packed` 参数） | ✅ 已实现 |
-| 2 | `QuantLinear` 删预转置，权重/scale 自然朝向 `[n, k]`/`[n, k//g]`，`transpose_x2=True` | `cann_lm/converter/quant/quant_linear.py:24-30, 73-81` | ✅ 已实现 |
-| 3 | `group_size=g` 单 int attr（非 V4 的 `[m,n,k]` 48-bit pack） | `cann_lm/converter/quant/quant_linear.py:76` | ✅ 已实现 |
-| 4 | 源 Linear 无 bias 时 `bias=None`（无 dummy-zeros workaround） | `cann_lm/converter/quant/quant_linear.py:30, 66-69, 75` | ✅ 已实现 |
-| 5 | `cann_lm::quant_matmul_s8s4` + `transpose_x2=True`（取代 `npu::npu_quant_matmul`） | `cann_lm/converter/quant/quant_linear.py:73-81` | ✅ 已实现 |
-| 6 | `_quant_matmul_s8s4_converter.py` 映射到方案 A 自定义 GE op | `cann_lm/converter/export/_quant_matmul_s8s4_converter.py` | ✅ 已实现 |
-| 7 | 三个 `reg_register.h` 注册 `QuantMatmulS8S4` + `QuantBatchMatmulV4` + `DynamicQuant` | `examples/reg_register.h`、`examples/export_and_load_epair/reg_register.h`、`examples/export_llm_model/om_npu_verify/reg_register.h` | ✅ 已实现 |
+| 1 | `materialize_int4_per_group_symmetric(..., packed=True)` 产出 nibble-packed int8 `[n, k//2]` | `cann_lm/converter/quant/materialize.py` 的 `pack_int4` / `materialize_int4_per_group_symmetric` | ✅ |
+| 2 | `QuantLinear` 权重/scale **预转置** 到 `[k//2, n]`/`[k//g, n]`，`transpose_x2=False` | `cann_lm/converter/quant/quant_linear.py` 的 `__init__`/`forward` + `swap.py` 的预转置 | ✅ |
+| 3 | `group_sizes=[1,1,g]` 三元组（V4 48-bit 编码，K-group at index [2]） | `cann_lm/converter/quant/quant_linear.py` 的 `group_sizes` | ✅ |
+| 4 | bias=None 时 forward 传 None，GE converter 侧塞 dummy zeros[N] | `quant_linear.py` 的 `forward` + `_quant_matmul_converter.py` 的 dummy bias workaround | ✅ |
+| 5 | `npu::npu_quant_matmul`（CANN 原生，取代自研 `quant_matmul_s8s4`） | `cann_lm/converter/quant/quant_linear.py` 的 `forward` | ✅ |
+| 6 | `_quant_matmul_converter.py` 映射到 `ge.QuantBatchMatmulV4`（V4 full IR + dummy bias） | `cann_lm/converter/export/_quant_matmul_converter.py` | ✅ |
+| 7 | `reg_register.h` 注册 `QuantBatchMatmulV4` + `DynamicQuant`（无 QuantMatmulS8S4） | `examples/reg_register.h`、`examples/export_and_load_epair/reg_register.h`、`examples/export_llm_model/om_npu_verify/reg_register.h` | ✅ |
+| 8 | custom op schema + fake-meta + CPU impl 自提供（converter venv 无 torch_npu） | `cann_lm/models/fused_ops/quant_matmul.py`（schema + fake-meta + CPU impl） | ✅ |
 
-custom op 定义在 `cann_lm/models/fused_ops/quant_matmul_s8s4.py`（fake/meta only），GE 转换器 `_quant_matmul_s8s4_converter.py` 把 `cann_lm::quant_matmul_s8s4` 映射到方案 A 自研 GE 算子。
+custom op 定义在 `cann_lm/models/fused_ops/quant_matmul.py`（schema + fake-meta + CPU PoC impl），GE 转换器 `_quant_matmul_converter.py` 把 `npu::npu_quant_matmul` 映射到 `ge.QuantBatchMatmulV4`。converter venv 不装 torch_npu，由 `_library.py` 自提供 schema+fake-meta（`_HAS_TORCH_NPU=False` 路径），torch.export 能 trace。
 
 ### 计算语义（s8s4 对称，offset=0）
 
-记激活 `x1` `[b, m, k]`、权重 `x2` `[n, k]`（nn.Linear 自然朝向）、group_size `g`（`k%g==0`）：
+记激活 `x1` `[b, m, k]`、权重 `x2` `[n, k]`（nn.Linear 自然朝向，物化后预转置到 `[k, n]`/`[k//2, n]`）、group_size `g`（`k%g==0`）：
 
 ```
 y[b,m,n] = Σ_k ( x1_q[b,m,k] · x1_scale[b,m] ) · ( x2_q[n,k] · x2_scale[n, k//g] ) + bias[n]
 ```
 
 - `x1_q` int8（per-token 动态对称，每行一个 scale）、`x2_q` int4（per-channel×per-group 对称，每 (n,group) 一个 scale）。
-- `x1_scale[b,m]` 是 per-token，**可提到 k 求和之外**（kernel 里后乘即可）。
-- `x2_scale[n, k//g]` 是 per-group，**在 k 求和之内**（每组 g 个元素共用一个，反量化时按组广播，无法提到求和之外）。
+- `x1_scale[b,m]` 是 per-token（V4 的 `pertoken_scale` 输入），**可提到 k 求和之外**。
+- `x2_scale[n, k//g]` 是 per-group（V4 的 `x2_scale`/V3 的 `scale` 输入），**在 k 求和之内**（每组 g 个元素共用一个，反量化时按组广播，无法提到求和之外）。
 
-### 算子签名（已落地实现）
+### 算子签名（`npu::npu_quant_matmul`）
 
 | 方向 | 名称 | dtype | shape | 语义/来源 |
 |---|---|---|---|---|
-| in | `x1` | int8 | `[b, m, k]` | 来自 DynamicQuant 的已量化激活 |
-| in | `x1_scale` | fp32 | `[b, m]` | per-token scale，来自 DynamicQuant |
-| in | `x2` | int4（packed） | `[n, k]` 逻辑 ≈ `[n, k//2]` int8 物理 | nn.Linear 权重物化后的 int4 |
-| in | `x2_scale` | fp32 | `[n, k//g]` | per-channel×per-group，来自 GPTQ |
-| in（opt） | `bias` | 同输出 | `[n]` | 融合 add，省一个节点 |
-| attr | `group_size` | int | — | K 轴分组 g |
-| attr | `output_dtype` | int | — | 1=fp16 / 27=bf16 |
+| in | `x1` | int8 | `[b, m, k]` | 来自 `npu_dynamic_quant` 的已量化激活 |
+| in | `x2` | int4（packed int8） | `[k//2, n]`（**预转置**） | nn.Linear 权重物化后 int4 nibble-packed |
+| in | `scale` | fp32 | `[k//g, n]`（**预转置**） | per-K-group × per-output-channel，来自 GPTQ（V4 的 `x2_scale`） |
+| in（opt） | `pertoken_scale` | fp32 | `[b, m]` | per-token scale，来自 `npu_dynamic_quant`（V4 的 `x1_scale`） |
+| in（opt） | `offset` | fp32 | `[k//g, n]` | per-group offset（V4 的 `x2_offset`）；当前校验必须全 0（symmetric only） |
+| in（opt） | `bias` | 同输出 | `[n]` | 融合 add；None 时 GE converter 塞 dummy zeros[N] |
+| attr | `group_sizes` | int[3] | — | V4 48-bit 编码 `[m, n, k]`，K-group at index [2]（`[1, 1, g]`） |
+| attr | `output_dtype` | int | — | 5=fp16 / 7=bf16 / 6=fp32 |
 | attr | `transpose_x1` | bool | — | 默认 False（激活恒不转） |
-| attr | `transpose_x2` | bool | — | 默认 True（x2 给 `[n,k]`，kernel 内部转置喂 cube，对齐 CANN 约定） |
+| attr | `transpose_x2` | bool | — | 默认 False（x2 已预转置到 `[k//2, n]`，meta 取 `N=x2.size(-1)`） |
 | out | `y` | fp16/bf16 | `[b, m, n]` | — |
 
-### 硬需求 vs 设计选择
+> **schema 全貌**（`quant_matmul.py` 的 schema 定义）：`npu_quant_matmul(Tensor x1, Tensor x2, Tensor scale, *, Tensor? offset, Tensor? pertoken_scale, Tensor? bias, int? output_dtype, int? x1_dtype, int? x2_dtype, int? pertoken_scale_dtype, int? scale_dtype, int[]? group_sizes, Tensor? y_scale, bool transpose_x1=False, bool transpose_x2=False) -> (Tensor y)`。`x1_dtype`/`x2_dtype`/`*_scale_dtype` 用于 Bitcast（mxfp4/a8w4 浮点 dtype 分支，已删）。
 
-- **硬需求（s8s4 spec，不可改）**：`x1=int8 per-token 对称`、`x2=int4 per-channel×per-group 对称`、输出 fp16/bf16、offset=0。
-- **设计选择（推荐，实现方可改）**：
-  1. **激活量化拆出 op 外**：DynamicQuant 独立（已可用、已注册 `ge.DynamicQuant`），本 op 只做"已量化 int8×int4 → fp16"。权衡：若要更少图节点可把 per-token max/div 融进 op，但 cube+vector 混合融合更复杂。
-  2. **scale 用 fp32**：精度参考 W8A8 已验证路径（`examples/verify_quant_matmul_v4_w8a8.py` maxdiff≈0 用 fp32 pertoken）；x2_scale 沿用 dopt/GPTQ 产出的 fp32。fp16 占带宽更小但有精度风险，实现方可据 kernel 实测定。
-  3. **x2 nibble-packed `[n, k//2] int8`**：比 unpack 省 2x 带宽。kernel 内部 L1/L0B 的具体布局是实现方自由（CANN 用 NZ/int4pack，不必照搬）。
-  4. **transpose_x2=True**：让 converter 不必预转置权重（更干净），kernel 在 L1 load 时处理转置。
-  5. **不带 offset 输入**：对称=0；非对称未来再加 dormant 字段。
+### GE converter 关键技术（`_quant_matmul_converter.py`）
 
-### kernel 内部流水参考（非 I/O 约束）
+1. **V4 full IR**（行 109-124）：`ge.QuantBatchMatmulV4(x1, x2, bias, x1_scale=pertoken_scale, x2_scale=scale, y_scale, x1_offset=None, x2_offset=offset, y_offset=None, x2_table=None, dtype, transpose_x1=False, transpose_x2=False, group_size)`。所有输入含 None placeholder，让 V4→V3 TBE 融合正确把 `x2_scale` 映射到 V3 的 `scale` 输入（见附录 A.2.2 索引映射）。
+2. **dummy bias zeros[N] workaround**（行 100-107）：bias=None 时塞 `ge.Const([0.0]*N, dtype=1)`。CANN V4 `InferNDimWithBias` 不支持 bias=nullptr（会从 x1 的 M 维推断 bias shape 并与 N 比较，报 "dimensions a(M) and b(N) must be same"）。dummy 值 0 不影响 matmul 结果。
+3. **group_sizes 48-bit 编码**（行 78-94）：`group_size = (group_m << 32) + (group_n << 16) + group_k`，校验三元素 ∈ [0, 65535]。`[1, 1, g]` → K 轴分组 g。
+4. **删 a8w4/mxfp4 分支**：为去 torch_npu 依赖，删了 `float4_e2m1fn_x2`/`float8_e8m0fnu` 等 torch 无等价物的 dtype 常量分支（`x1_dtype`/`x2_dtype`/`*_scale_dtype` 的 Bitcast 路径保留但 converter 不主动用）。恢复 a8w4 需重新引入 torch_npu 依赖或建立 dtype 常量映射（见 `quant_matmul.py` 文件头注释）。
+5. **transpose_x1/x2 硬编码 False**（行 121-122）：meta 取 `N = x2.size(-1)`，故 x2 必须 swap.py 预转置到 `[k//2, n]` 使 `size(-1) = n = out_features`。
 
-权重侧 per-group scale 在 k 求和之内，故 kernel 须在 cube 累加前把 int4 权重按组反量化。推荐流水（供实现方参考）：
+### CANN V4 限制与 workaround 清单
+
+| 限制 | workaround | 位置 |
+|------|-----------|------|
+| `InferNDimWithBias` 不支持 bias=nullptr | 塞 dummy zeros[N]（值 0 不影响结果） | `_quant_matmul_converter.py` 的 dummy bias workaround |
+| V4→V3 融合需 full IR 才正确映射 x2_scale | 用 `ge.QuantBatchMatmulV4` full IR（所有输入含 None placeholder） | `_quant_matmul_converter.py` 的 V4 full IR 构造 |
+| meta 取 `N = x2.size(-1)`，忽略 transpose_x2 | swap.py 物化后预转置 weight_q/weight_scale 到 `[k//2, n]`/`[k//g, n]` | `swap.py` 的预转置 |
+| 无 torch_npu 则无 schema/fake-meta | `_library.py` 自提供（`_HAS_TORCH_NPU=False` 路径）+ CPU PoC impl | `quant_matmul.py` 的 fake-meta + CPU impl |
+
+### 历史档案：方案 A 自研 kernel 规格（已弃用，保留供参考）
+
+> 以下为方案 A `cann_lm::quant_matmul_s8s4` 自研 kernel 的 I/O 约束与流水参考，**已弃用**（代码已切回 `npu::npu_quant_matmul`），仅作历史决策档案保留。若未来 CANN V4 整数 int8/int4 路径再遇瓶颈，可参考此规格重启自研。
+
+**方案 A 与路径 C' 的关键差异**：
+
+| 维度 | 方案 A（自研，已弃用） | 路径 C'（当前采用） |
+|---|---|---|
+| 算子 | `cann_lm::quant_matmul_s8s4` | `npu::npu_quant_matmul` |
+| GE op | 自研 GE 算子 | `ge.QuantBatchMatmulV4`（CANN 原生） |
+| weight 朝向 | 自然 `[n, k//2]`，不预转置 | 预转置 `[k//2, n]` |
+| `transpose_x2` | True（kernel 内转置） | False（swap 已预转置） |
+| `group_size` attr | 单 int | `group_sizes=[1,1,g]` 三元组 |
+| bias | 真正可选（无 dummy） | None 时 GE converter 塞 dummy zeros[N] |
+| scale 反量化 | fp32 `q*scale`（绕开 V4 uint64） | 走 CANN V4→V3 融合（依赖预编译 kernel） |
+
+**方案 A kernel 内部流水参考**（自研时供实现方参考）：
+
+权重侧 per-group scale 在 k 求和之内，故 kernel 须在 cube 累加前把 int4 权重按组反量化：
 
 1. L1/L0B load 时 int4→int8 unpack，按组取 `x2_scale` 广播；
 2. cube 做 **int8×int8 → int32** 累加（命中 W8A8 已验证的 int8 cube 路径，规避 FP19/uint64）；
@@ -522,23 +609,25 @@ y[b,m,n] = Σ_k ( x1_q[b,m,k] · x1_scale[b,m] ) · ( x2_q[n,k] · x2_scale[n, k
 
 | 文件路径 | 注册算子 | 状态 |
 |---------|---------|------|
-| `examples/reg_register.h` | `QuantMatmulS8S4` + `QuantBatchMatmulV4` + `DynamicQuant` | ✅ |
-| `examples/export_and_load_epair/reg_register.h` | 同上 | ✅ |
-| `examples/export_llm_model/om_npu_verify/reg_register.h` | 同上 | ✅ |
+| `examples/test_converter/export_llm_model/reg_register.h` | 全量（含 `QuantMatmulS8S4` 方案 A 遗留 + `QuantBatchMatmulV3` + `QuantBatchMatmulV4` + `DynamicQuant` + `Bitcast` + 80+ 其他） | ✅ |
+| `examples/test_converter/export_and_load_epair/reg_register.h` | 合并 + IR 校准版（831 行，73 个有 IR 定义的算子 + 8 个无 IR 自研算子含 `QuantMatmulS8S4`） | ✅ |
+| `examples/test_compiler/export_llm_model/om_npu_verify/reg_register.h` | 同上合并版 | ✅ |
 
-> **路径勘误**：早期文档反复写 `examples/export_llm_model/reg_register.h`（不存在），实际应为 `examples/export_llm_model/om_npu_verify/reg_register.h`。文档同时遗漏顶层 `examples/reg_register.h`（第三个文件，也已注册新算子）。
+> **路径勘误**：早期文档写 `examples/reg_register.h` / `examples/export_llm_model/reg_register.h`（均不存在），实际在 `examples/test_converter/` 下。`export_llm_model/reg_register.h` 是全量主文件（含所有 `REG_OP`）；`export_and_load_epair/` 与 `om_npu_verify/` 是合并 + IR 校准版（831 行，以 `om_npu_verify` 版为基底合并）。
+
+> **方案 A 遗留**：`QuantMatmulS8S4` 在三文件中**仍注册**（方案 A 自研算子，代码已切回 `npu::npu_quant_matmul` 不再使用）。注释标注为"8 个无 IR 的自研算子"之一。当前代码链路实际只用 `QuantBatchMatmulV4` + `DynamicQuant` + `Bitcast`（V4 converter 的 dtype Bitcast 路径）。清理 `QuantMatmulS8S4` 注册是低风险纯删除，但会破坏旧 epair（含 `cann_lm::quant_matmul_s8s4` 节点）的加载，故保留。
 
 ### GE converter 与权重落盘
 
-- **GE converter**：`cann_lm/converter/export/_quant_matmul_s8s4_converter.py` 把 `cann_lm::quant_matmul_s8s4` 映射到方案 A 自研 GE 算子。
-- **权重落盘（无需改 pack）**：`epair_utils.pack_weights` 是**通用**的——序列化 state_dict 里任意 tensor（int8 weight_q + fp32 scale 自动进 bin，bf16→int16 view 已处理）。`weight_info.json` 按 name 记 offset/size。**量化权重无需改打包逻辑**。
-- **C++ ge_graph_builder**：`PreparePlaceholders` 通用喂权重常量到任意算子输入（`ReadTensorData`→Const 节点）→ `quant_matmul_s8s4` 的 `x2`/`x2_scale` 自动喂入。`ge_weight_loader` 支持 int8/uint8/fp32 等 dtype（`ElementSizeForPt2Dtype` / `Pt2DtypeFromGeString`）。
+- **GE converter**：`cann_lm/converter/export/_quant_matmul_converter.py`（无 `_s8s4` 后缀）把 `npu::npu_quant_matmul` 映射到 `ge.QuantBatchMatmulV4`（V4 full IR + dummy bias，详见 [路径 C' GE converter 关键技术](#ge-converter-关键技术_quant_matmul_converterpy)）。
+- **权重落盘（无需改 pack）**：`epair_utils.pack_weights` 是**通用**的——序列化 state_dict 里任意 tensor（int8 weight_q + fp32 scale 自动进 bin，bf16→int16 view 已处理，weight_scale fp32→int64 经 `transdata_scale` 转换见 [weight_scale 落盘格式](#weight_scale-落盘格式fp32uint64-位模式转换)）。`weight_info.json` 按 name 记 offset/size。**量化权重无需改打包逻辑**（weight_scale 的 fp32→int64 转换在 `_pack_weights_to_dir` 识别 name 含 `weight_scale` 时调 `transdata_scale`）。
+- **C++ ge_graph_builder**：`PreparePlaceholders` 通用喂权重常量到任意算子输入（`ReadTensorData`→Const 节点）→ `npu_quant_matmul` 的 `x2`/`scale`/`bias` 自动喂入。`ge_weight_loader` 支持 int8/uint8/fp32/int64 等 dtype（`ElementSizeForPt2Dtype` / `Pt2DtypeFromGeString`）。
 
 ### 最终产物（epair 格式）
 
-- `prefill_ep_json_with_ascend_ir.json` / `decode_ep_json_with_ascend_ir.json`：含 `cann_lm::quant_matmul_s8s4` 节点 + `npu::npu_dynamic_quant` 节点，`QuantLinear` 在 `nn_module_stack` 元信息里。
-- `weights_*.bin`：int4 nibble-packed int8 + fp32 scale 的二进制权重。
-- `model_config.json`：含 `quant_info` 字段（`scheme`/`group_size`/`act_quant`/`scope`/`n_quantized`/`n_skipped_no_dopt_key`/`dopt_path`/`weight_int4_encoding`/`op`/`dopt_bit`/`dopt_unsigned_quant`/`offset_supported`，由 `swap_to_quant_linear_from_dopt` 返回）。
+- `prefill_ep_json_with_ascend_ir.json` / `decode_ep_json_with_ascend_ir.json`：含 `npu::npu_quant_matmul` 节点 + `npu::npu_dynamic_quant` 节点，`QuantLinear` 在 `nn_module_stack` 元信息里。weight_scale 的 `tensor_values` dtype 后处理改标 `DT_INT64`（`inline_weight_scale_dtype`）。
+- `weights_*.bin`：int4 nibble-packed int8 + fp32 scale 的二进制权重（weight_scale 落盘为 int64 位模式 bytes）。
+- `model_config.json`：含 `quant_info` 字段（`scheme`/`group_size`/`bit`/`blocksize`/`per_channel`/`weight_algo`/`act_quant`/`scope`/`n_quantized`/`n_skipped_no_dopt_key`/`dopt_path`/`weight_int4_encoding`/`op`/`dopt_unsigned_quant`/`offset_supported`，由 `swap_from_dopt`/`_swap_linear_from_sd` 返回）。
 - `weight_info.json`：权重 offset/size 索引。
 - host-embeddings 模式额外：`embed_tokens_q.bin` int8 + `embed_tokens_scale.bin` fp32，host 查表。
 
@@ -546,11 +635,13 @@ y[b,m,n] = Σ_k ( x1_q[b,m,k] · x1_scale[b,m] ) · ( x2_q[n,k] · x2_scale[n, k
 
 ---
 
-## weight_scale 落盘格式：fp32→uint64 位模式转换（方案 A vs B）
+## weight_scale 落盘格式：fp32→uint64 位模式转换
 
 > 将 `QuantLinear.weight_scale`（GPTQ 产出的 per-group fp32 scale）按位掩码 `& 0x00000000FFFFE000` 转 uint64 位模式落盘。截断尾数低 13 位（精度 23→10 位）+ 截断高 32 位（值只用低 32 位）。集成位置：`materialize.transdata_scale` / `restore_scale` + `epair_utils.inline_weight_scale_dtype` + saver `_pack_weights_to_dir`。
 >
-> 最后更新：2026-08-24
+> 最后更新：2026-08-25
+>
+> **注意**：本节的"方案 A/B"是 **weight_scale 落盘格式的两种集成方案**（方案 A 改 QuantLinear buffer / 方案 B 仅落盘转换），与[算子选型](#路径-c--npu_quant_matmul--v4-算子规格与实现状态)的"方案 A 自研 quant_matmul_s8s4"是不同概念维度。方案 B（仅落盘）当前采用。
 
 ### 背景：位掩码 `0x00000000FFFFE000` 的含义
 
@@ -642,7 +733,7 @@ inline_weight_scale_dtype(prefill_ep_json)  # ← 新增
 
 ### 方案对比
 
-| 维度 | 方案 A（改 quant_linear） | 方案 B（仅落盘）✅ |
+| 维度 | 方案 A（改 quant_linear）❌未采用 | 方案 B（仅落盘）✅ 当前采用 |
 |------|---------------------------|-------------------|
 | **QuantLinear buffer** | int64 | **fp32**（计算路径不变） |
 | **forward** | `restore_scale`→fp32→op | **直接用 fp32**→op |
@@ -712,13 +803,16 @@ int64 bytes = uint64 bytes (8 字节小端序, 位模式相同)
 
 ## 已知问题与遗留
 
-1. **unsigned int4 不支持**：`swap_to_quant_linear_from_dopt`（`swap.py:191-195`）读 dopt 产物的 `unsigned_quant`，校验必须 = 0（symmetric signed `[-8, 7]`）。非 0（unsigned int4 `[0, 15]`）触及 CANN int4 signed/unsigned 编码约定，当前直接 `ValueError` 拒绝。dopt 默认 `Quant_act_weight_eco` 的 `unsigned_quant=False`，故主路径不触发。
-2. **非对称 offset 不支持**：`swap_to_quant_linear_from_dopt`（`swap.py:196-201`）读 dopt 产物的 `offset`，校验必须全 0（symmetric）。非零 offset（asymmetric）`NotImplementedError`——方案 A `quant_matmul_s8s4` 只支持 symmetric offset=0。dopt `weight_q_params_adapter_into_dopt` 把 offset 置零（`offset=torch.zeros_like(...)`），故主路径不触发。dopt `QuantizerFuncIntOffset` 反量化 `w_fp=(q-offset)*scale`；若未来支持非对称，需对齐 op 的 offset 语义 + 按 group `repeat_interleave` 扩维。
-3. **CPU-only 适配**：converter 侧 GPTQ 跑不了（需 NPU/GPU + 校准）。**`--quant-path` 已作兜底**：离线机跑 dopt GPTQ 产出（`quant_output/model.safetensors` 或 `trained_quant_weight.pth`），converter 加载它只做物化 + swap + 导出（不跑 GPTQ）。dopt `opt_main` 在本机 NPU 上跑 GPTQ 曾静默卡住（converter 一键式接入待解，见 [一键式量化方案选型](#一键式量化方案选型)）。
-4. **一键式量化（方案 C）已实现**：converter `--quant-method gptq`（`auto_quant.py`：`generate_dopt_config` + `run_auto_quant` spawn dopt subprocess + swap）。w4a16/实测待做，详见 [一键式量化方案选型](#一键式量化方案选型)。
-5. **dopt 函数超规**：`swap.py swap_to_quant_linear_from_dopt` 函数超 50 行，`materialize.py materialize_int4_with_scale` 6 参数（超 5 参数原则）。两者建议按单一职责拆分 + `Int4Spec` dataclass 收敛，当前未拆。
+1. **unsigned int4 不支持**：`_swap_linear_from_sd`（`swap.py` 的 unsigned_quant 校验）读 dopt 产物的 `unsigned_quant`，校验必须 = 0（symmetric signed `[-8, 7]`）。非 0（unsigned int4 `[0, 15]`）触及 CANN int4 signed/unsigned 编码约定，当前直接 `ValueError` 拒绝。dopt 默认 `Quant_act_weight_eco` 的 `unsigned_quant=False`，故主路径不触发。
+2. **非对称 offset 不支持**：`_swap_linear_from_sd`（`swap.py` 的 offset 校验）读 dopt 产物的 `offset`，校验必须全 0（symmetric）。非零 offset（asymmetric）`NotImplementedError`——`npu::npu_quant_matmul` 当前校验 symmetric offset=0（op schema 有 `offset` 输入但 converter 不主动用）。dopt `weight_q_params_adapter_into_dopt` 把 offset 置零（`offset=torch.zeros_like(...)`），故主路径不触发。dopt `QuantizerFuncIntOffset` 反量化 `w_fp=(q-offset)*scale`；若未来支持非对称，需对齐 V4 的 `x2_offset` 语义 + 按 group `repeat_interleave` 扩维 + GE converter 把 offset 喂入 `x2_offset` 输入。
+3. **CPU-only 适配**：converter 侧 GPTQ 跑不了（需 NPU/GPU + 校准）。**两条兜底**：① `--quant-path` 消费离线 dopt 产物；② `--quant-method gptq` 经 `auto_quant.run_auto_quant` 检测 NPU/GPU → spawn `dopt_wrapper.py` subprocess（NPU env）跑 GPTQ（纯 CPU 报错并提示用 `--quant-path`）。
+4. **一键式量化（方案 C）已实现**：converter `--quant-method gptq`（`auto_quant.py` + `dopt_wrapper.py`：检测设备 → spawn subprocess → 临时盘 → `swap_from_dopt`）。w4a8 ✅；w4a16 ❌ 不支持（`dopt_wrapper.parse_args` 的 `--quant-bits` choices=`["w4a8"]`）；临时盘清理 + 实测验证待做，详见 [一键式量化方案选型](#一键式量化方案选型)。
+5. **dopt 函数超规**：`swap.py _swap_linear_from_sd` 函数体超 50 行（承担遍历+读 scale+读 meta+校验+materialize+预转置+实例化+替换+计数+构造 dict），`materialize.py materialize_int4_per_group_symmetric` 6 参数（超 5 参数原则）。两者建议按单一职责拆分 + `Int4Spec` dataclass 收敛，当前未拆。
 6. **dopt gemma4 多模态约束**：dopt GPTQ 主循环按文本 `ForCausalLM` 结构访问 `model.model.layers`；`model_define` 会从多模态模型抽取并重挂语言模型。`QGemma4ScaledEmbedding` 已通过 `visible_type_dict` 的原始类名分支接入。
-7. **dopt_lm 拼写错误**：目录名 `ptq_algo_heissen` 与类名 `WeightQuantHeissen` 中的 `heissen` 是 `Hessian` 的系统性拼写错误（遍布目录、类、属性 `heissen_matrix`、局部变量、甚至版权头）。因 dopt_lm 不被主仓 import（独立 CLI 运行，产物按文件路径加载），重命名 `heissen→hessian` 不影响 converter 消费链路——只需同步 dopt_lm 内部 import 与 `train.py` 的 import 即可，是低风险纯内部重构。当前未改。
+7. ~~**dopt_lm 拼写错误**~~ **已修复**：源码已用正确拼写 `ptq_algo_hessian` / `WeightQuantHessian`（`dopt_lm/opt_funcs/weight_quant_ptq/ptq_algo_hessian/`）。仅 `dopt_lm/weight_quant_ptq/ptq_algo_heissen/__pycache__/` 遗留旧编译产物（heissen 拼写），可删。
+8. **materialize.py docstring 过时**：文件头 docstring（15-25 行）仍写 "int4 signed values stored 1/byte = unpack" + "本模块为 unpack+signed 占位实现，先跑通 Python 流程，CANN 对齐后续"，但实际 `pack_int4` 已实现 nibble-pack、`materialize_int4_per_group_symmetric` 支持 `packed=True`，早已非占位实现。docstring 待更新。
+9. **reg_register.h 仍注册 QuantMatmulS8S4（方案 A 遗留）**：三文件 `reg_register.h` 仍注册 `QuantMatmulS8S4`（方案 A 自研算子，代码已切回 `npu::npu_quant_matmul` 不再使用），注释标注为"8 个无 IR 的自研算子"之一。清理是低风险纯删除，但会破坏旧 epair（含 `cann_lm::quant_matmul_s8s4` 节点）的加载，故保留。
+10. **_quant_matmul_converter.py 删 a8w4/mxfp4 分支**：为去 torch_npu 依赖，删了 `float4_e2m1fn_x2`/`float8_e8m0fnu` 等 torch 无等价物的 dtype 常量分支（`x1_dtype`/`x2_dtype`/`*_scale_dtype` 的 Bitcast 路径保留但 converter 不主动用）。恢复 a8w4 需重新引入 torch_npu 依赖或建立 dtype 常量映射（见 `quant_matmul.py` 文件头注释）。
 
 ---
 
@@ -940,7 +1034,7 @@ V3 支持 perchannel 量化。proto 里明确列了两种含 perchannel 的量�
 - `pertensor-perchannel`：x1=pertensor（或 null），x2=perchannel
 - `pertoken-perchannel`：x1=pertoken，x2=perchannel
 
-**perchannel 时 scale 的形状**（`quant_batch_matmul_v3_proto.h:59-62`）：
+**perchannel 时 scale 的形状**（`quant_batch_matmul_v3_proto.h:59-62`，外部依赖 CANN 9.2.0）：
 ```
 When the quant mode of x2 is perchannel or pertensor, the shape is 1D (t,),
 with t equal to 1 or n, where n is the same as that of x2.
@@ -948,7 +1042,7 @@ with t equal to 1 or n, where n is the same as that of x2.
 - `t = n`：真正的 perchannel（每通道一个 scale）
 - `t = 1`：实际是 pertensor
 
-**与 V4 的关系**：V4 的 A8W8GB 判定（`quant_batch_matmul_v4_to_v3_fusion_pass.cpp:127-128`）要求 scale 维数与数据相同，这**排除了 perchannel**——因为 perchannel 时 scale 是 1D，而 x2 是 2D/3D，维数不等。所以 A8W8 的 perchannel/pertensor 场景下，V4 会被转成 V3 来执行。
+**与 V4 的关系**：V4 的 A8W8GB 判定（`quant_batch_matmul_v4_to_v3_fusion_pass.cpp:127-128`，外部依赖 CANN 9.2.0）要求 scale 维数与数据相同，这**排除了 perchannel**——因为 perchannel 时 scale 是 1D，而 x2 是 2D/3D，维数不等。所以 A8W8 的 perchannel/pertensor 场景下，V4 会被转成 V3 来执行。
 
 | A8W8 量化模式 | scale 形状 | V4 处理方式 |
 |---|---|---|
@@ -1020,7 +1114,7 @@ pergroup 是通过**两个东西组合判定**的：scale 张量的**形状** + 
 
 #### 判定依据 1：pertoken_scale 的形状
 
-对比 x1（激活）侧四种模式的 pertoken_scale 形状（`quant_batch_matmul_v3_proto.h:77-83`）：
+对比 x1（激活）侧四种模式的 pertoken_scale 形状（`quant_batch_matmul_v3_proto.h:77-83`，外部依赖 CANN 9.2.0）：
 
 | 模式 | pertoken_scale 形状 | 关键特征 |
 |---|---|---|
@@ -1038,7 +1132,7 @@ perblock :  (batch, ceil(m/128), ceil(k/128))   ← m 也除了 128
 
 #### 判定依据 2：group_size 属性
 
-`group_size` 是一个 48 位编码的 int 属性（`quant_batch_matmul_v3_proto.h:93-105`）：
+`group_size` 是一个 48 位编码的 int 属性（`quant_batch_matmul_v3_proto.h:93-105`，外部依赖 CANN 9.2.0）：
 
 ```
 bits  0-15  → group_size_k   （沿 K 轴分组大小）
@@ -1131,7 +1225,7 @@ V3 和 V4 的支持表中，x1 和 x2 的 dtype 必须**成对相同**：
 |------|---------|
 | [cli_design.md](../cli/cli_design.md) | CLI 入口 `--quant-path` / `--quant-method` / `--quant-bits` 参数 / `convert()` 程序化入口 |
 | [export_design.md](../export/export_design.md) | epair 产物布局 / host_weights 机制 / C++ `GeWeightLoader` / GE 算子注册两层 |
-| [embedding_quant_design.md](./embedding_quant_design.md) | embed_tokens 的 W8 host gather 量化子主题（`swap_embeddings_from_dopt` + `materialize_int8_per_channel`） |
+| [embedding_quant_design.md](./embedding_quant_design.md) | embed_tokens 的 W8 host gather 量化子主题（`swap_embeddings_from_dopt` + `materialize_int8_per_channel_symmetric`） |
 | [dopt_design.md](./dopt_design.md) | dopt_lm vendored GPTQ 框架（文件树 / 入口 / GPTQ 调用链 / 可设置参数清单 / 历史调试档案） |
 | [converter_design.md](../converter_design.md) | 跨模块调用链总览 / 模型差异总览 |
 | [reference_qwen3_5_export.md](../reference_qwen3_5_export.md) | qwen3.5 导出专题（参考） |

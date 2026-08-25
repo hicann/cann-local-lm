@@ -10,7 +10,7 @@ from pathlib import Path
 import torch
 
 from cann_lm.converter.loader import ModelArtifact
-from cann_lm.converter.export.epair_utils import consolidated_weights_save, inline_fused_attn_seq_constants
+from cann_lm.converter.export.epair_utils import consolidated_weights_save, inline_fused_attn_seq_constants, inline_weight_scale_dtype
 
 # 额外分解的 aten 算子白名单：torchair 无内置 GE 映射或仅占位 NotImplementedError，分解成有映射的
 # 基元算子（Exp/Log/Add/Select 等）。save_epair / save_epair_prefill_decode 共用，两函数白名单集合
@@ -270,6 +270,11 @@ def save_epair_prefill_decode(
     # 证实退化是 arch22 kernel 对 [actual:s2Size] 不 honor mask 的硬限制, 非 mask 问题.
     inline_fused_attn_seq_constants(
         output_dir / "prefill_ep_json_with_ascend_ir.json", seq_len)
+    # weight_scale 落盘格式: QuantLinear buffer 存 fp32 (计算用), saver 打包时转 int64
+    # (位模式 + & 0x00000000FFFFE000 掩码). 同步改 ep_json dtype 为 DT_INT64,
+    # 否则 C++ 按 DT_FLOAT 读 int64 bytes 会 WEIGHT_SIZE_MISMATCH.
+    inline_weight_scale_dtype(
+        output_dir / "prefill_ep_json_with_ascend_ir.json")
 
     # Write decode ep_json only (save_weights=False, weights already packed above)
     consolidated_weights_save(
@@ -282,6 +287,8 @@ def save_epair_prefill_decode(
     # 见 docs/cann_lm_converter/ops_replacement.md "FIA 回退" 节根因分析.
     inline_fused_attn_seq_constants(
         output_dir / "decode_ep_json_with_ascend_ir.json", 1, kvlen_value=kv_cache_max_len)
+    inline_weight_scale_dtype(
+        output_dir / "decode_ep_json_with_ascend_ir.json")
 
     copy_tokenizer_files(artifact.tokenizer_files, output_dir)
     save_model_config(artifact, output_dir, use_embeddings=use_embeddings,

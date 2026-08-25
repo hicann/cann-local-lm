@@ -1,10 +1,6 @@
-"""一键式 GPTQ 量化: converter spawn dopt subprocess 跑 GPTQ + swap.
+"""一键式 GPTQ 量化: converter spawn dopt subprocess 跑 GPTQ,主进程后做 swap.
 
-运行时检测系统 NPU/GPU:
-- 有 NPU/GPU → 方案 C (subprocess 调 dopt CLI, DEVICE 自动 npu/cuda)
-- 无 (纯 CPU) → 报错 (提示 --quant-path 消费已量化的 dopt 产物)
-
-见 docs/cann_lm_converter/quant/dopt_design.md.
+见 docs/cann_lm_converter/quant/quant_design.md "方案 C 设计".
 """
 
 import json
@@ -16,80 +12,82 @@ from pathlib import Path
 import torch
 
 
-def generate_dopt_config(artifact, quant_bits: str) -> str:
-    """遍历 artifact.model 生成 dopt_config (layer_strategy), 返回临时文件路径.
+_LINEAR_STRATEGY = "Quant_act_weight_eco"
+_LM_HEAD_STRATEGY = "Quant_lm_head"
+_EMBED_STRATEGY = "Quant_Embed_MinMax"  # dopt 53ad5ec 删了 Quant_Gemma4_Embed, gemma4 embed 也用此
 
-    Linear (非 embed/lm_head) → Quant_act_weight_eco (w4a8) / w4a16 待实现
-    Embedding → Quant_Embed_MinMax
-    lm_head (Linear) → Quant_lm_head
-    """
-    if quant_bits == "w4a16":
-        raise NotImplementedError("--quant-bits w4a16 待实现 (无 preset W4A16 Linear strategy)")
-    linear_strategy = "Quant_act_weight_eco"  # w4a8
+
+def _build_layer_strategy(model, model_type: str) -> dict:
+    """遍历 model.named_modules 赋量化策略 (Linear→Quant_act_weight_eco, lm_head→Quant_lm_head,
+    Embedding→Quant_Embed_MinMax). cann_lm 与 transformers 模型层名一致,通用.
+    注: dopt 53ad5ec 删了 Quant_Gemma4_Embed, gemma4 embed 也用 Quant_Embed_MinMax."""
     layer_strategy = {}
-    for name, m in artifact.model.named_modules():
+    for name, m in model.named_modules():
         if isinstance(m, torch.nn.Linear):
             if "lm_head" in name:
-                strategy = "Quant_lm_head"
+                strategy = _LM_HEAD_STRATEGY
             elif "embed_tokens" in name:
                 continue
             else:
-                strategy = linear_strategy
+                strategy = _LINEAR_STRATEGY
             layer_strategy[name] = {"type": str(type(m)), "quant_strategy": strategy}
         elif isinstance(m, torch.nn.Embedding):
-            layer_strategy[name] = {"type": str(type(m)), "quant_strategy": "Quant_Embed_MinMax"}
+            strategy = _EMBED_STRATEGY
+            layer_strategy[name] = {"type": str(type(m)), "quant_strategy": strategy}
+    return layer_strategy
+
+
+def generate_dopt_config(artifact, quant_bits: str) -> str:
+    """场景 1 离线辅助: 遍历 cann_lm artifact.model 生成 dopt_config,返回临时文件路径.
+    仅供场景 1 用户手动跑 dopt GPTQ 前用 (examples/run_pd4_cases.sh:gen_dopt_config 依赖).
+    """
+    layer_strategy = _build_layer_strategy(artifact.model, artifact.model_type)
     fd, cfg_path = tempfile.mkstemp(prefix="dopt_config_", suffix=".json")
-    with open(cfg_path, "w") as f:
+    with os.fdopen(fd, "w") as f:
         json.dump({"layer_strategy": layer_strategy}, f, indent=2)
     print(f"      Generated dopt_config: {cfg_path} ({len(layer_strategy)} layers)")
     return cfg_path
 
 
-def _swap_from_dopt_output(artifact, dopt_out: str) -> dict | None:
-    """从 dopt 产物 swap QuantLinear + embed 自动检测."""
-    from cann_lm.converter.quant import (
-        swap_to_quant_linear_from_dopt, swap_embeddings_from_dopt, load_dopt_state_dict,
-    )
-    info = swap_to_quant_linear_from_dopt(artifact.model, dopt_out)
-    artifact.quant_info = info
-    print(f"      Quantized {info['n_quantized']} linears (group_size={info['group_size']})")
-    sd = load_dopt_state_dict(dopt_out)
-    embed_quant = swap_embeddings_from_dopt(sd, artifact.model)
-    if embed_quant:
-        print(f"      Embedding int8 (auto-detected): {list(embed_quant)}")
-    return embed_quant
-
-
-def _run_dopt_subprocess(hf_path: str, quant_bits: str, artifact, device: str) -> dict | None:
-    """方案 C: spawn dopt subprocess (NPU/GPU GPTQ) → 临时盘 → swap."""
+def _run_dopt_subprocess(hf_path: str, quant_bits: str, device: str) -> str:
+    """方案 C: spawn dopt_wrapper.py subprocess (NPU/GPU GPTQ) → 返回产物目录路径."""
     quant_dir = Path(__file__).resolve().parent
-    cfg_path = generate_dopt_config(artifact, quant_bits)
+    wrapper_path = quant_dir / "dopt_wrapper.py"
     dopt_python = os.environ.get("DOPT_PYTHON", "/opt/buildtools/Python-3.11.4/bin/python3")
     tmp_out = tempfile.mkdtemp(prefix="dopt_gptq_")
     cmd = [
-        dopt_python, "-m", "dopt_lm.opt_main",
-        "--model-path", hf_path, "--dopt-config", cfg_path,
+        dopt_python, str(wrapper_path),
+        "--model-path", hf_path,
         "--optimize-config", str(quant_dir / "config.yaml"),
-        "--output-dir", tmp_out, "--hf_type_save",
+        "--output-dir", tmp_out,
+        "--hf-type-save",
+        "--quant-bits", quant_bits,
     ]
     env = os.environ.copy()
     env["PYTHONPATH"] = f"{quant_dir}:{env.get('PYTHONPATH', '')}"
-    env["DEVICE"] = device  # npu / cuda (dopt 用)
+    env.setdefault("DEVICE", device)
     ld = env.get("LD_LIBRARY_PATH", "")
     env["LD_LIBRARY_PATH"] = ":".join(p for p in ld.split(":") if "stubs" not in p)
-    print(f"      dopt subprocess ({device} GPTQ): out={tmp_out}")
+    print(f"      dopt subprocess (DEVICE={env.get('DEVICE')} GPTQ): out={tmp_out}")
     result = subprocess.run(cmd, cwd=str(quant_dir), env=env)
     if result.returncode != 0:
-        raise RuntimeError(f"dopt GPTQ subprocess failed (exit {result.returncode}), 临时产物: {tmp_out}")
-    return _swap_from_dopt_output(artifact, tmp_out)
+        raise RuntimeError(
+            f"dopt GPTQ subprocess failed (exit {result.returncode}), 临时产物: {tmp_out}"
+        )
+    return tmp_out
 
 
 def _detect_device_type() -> str | None:
-    """检测系统计算设备类型: 'npu' / 'cuda' / None (纯 CPU). spawn 系统 Python, 去 stubs env."""
+    """检测系统计算设备类型: 'npu' / 'cuda' / None. 优先读父进程 DEVICE,未设才 spawn 检测."""
+    env_dev = os.environ.get("DEVICE")
+    if env_dev in ("npu", "cuda"):
+        return env_dev
     dopt_python = os.environ.get("DOPT_PYTHON", "/opt/buildtools/Python-3.11.4/bin/python3")
     env = os.environ.copy()
     ld = env.get("LD_LIBRARY_PATH", "")
     env["LD_LIBRARY_PATH"] = ":".join(p for p in ld.split(":") if "stubs" not in p)
+    # 关 SLOG 日志到 stdout, 防止 torch_npu import 时 CANN 日志污染 print(dev) 的 stdout 解析
+    env["ASCEND_SLOG_PRINT_TO_STDOUT"] = "0"
     try:
         result = subprocess.run(
             [dopt_python, "-c",
@@ -101,20 +99,23 @@ def _detect_device_type() -> str | None:
             capture_output=True, text=True, timeout=15, env=env,
         )
         out = result.stdout.strip()
-        if out == "npu": return "npu"
-        if out == "cuda": return "cuda"
+        if out == "npu":
+            return "npu"
+        if out == "cuda":
+            return "cuda"
         return None
     except Exception:
         return None
 
 
-def run_auto_quant(hf_path: str, quant_bits: str, artifact) -> dict | None:
-    """一键式 GPTQ: 检测 NPU/GPU → 方案 C (subprocess) / 纯 CPU 报错."""
+def run_auto_quant(hf_path: str, quant_bits: str) -> str:
+    """一键式 GPTQ: 检测 NPU/GPU → 方案 C (subprocess) / 纯 CPU 报错. 返回 dopt_out_dir 路径."""
     dev = _detect_device_type()
-    if dev:
-        print(f"      [方案 C] subprocess 调 dopt (系统 {dev})")
-        return _run_dopt_subprocess(hf_path, quant_bits, artifact, dev)
-    raise RuntimeError(
-        "--quant-method gptq 需 NPU 或 GPU (GPTQ 需计算设备), 当前环境无 NPU/GPU. "
-        "纯 CPU 请用 --quant-path <dopt产物> 消费已量化的 dopt 产物."
-    )
+    if not dev:
+        raise RuntimeError(
+            "--quant-method gptq 需 NPU 或 GPU (GPTQ 需计算设备), 当前环境无 NPU/GPU. "
+            "纯 CPU 请用 --quant-path <dopt产物> 消费已量化的 dopt 产物, "
+            "或 source scripts/set_env.sh npu 显式设置 DEVICE=npu."
+        )
+    print(f"      [方案 C] spawn dopt subprocess (device={dev})")
+    return _run_dopt_subprocess(hf_path, quant_bits, dev)

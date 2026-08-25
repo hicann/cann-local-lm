@@ -15,8 +15,13 @@
 """npu::npu_scatter_nd_update - KV cache scatter-write (schema + meta + CPU eager kernel).
 
 注册到 npu 命名空间 (torch.ops.npu.npu_scatter_nd_update), 替代 aten.index_copy / aten.index_put
-的 InplaceUpdate + Transpose 方案. GE 转换器 -> ge.ScatterUpdate (1 个算子, 无 Transpose).
+的 InplaceUpdate + Transpose 方案. GE 转换器 -> ge.ScatterNdUpdate (in-place 版 1 个算子, 无 Transpose; out-of-place 版多 1 个 ge.TensorMove).
 与图灵参考实现 (cann-recipes-infer) 对齐: torch_npu.npu_scatter_nd_update_(cache, slot_mapping, updates).
+
+已落地 gemma4: modeling_gemma4.py 的 scatter_kv_to_cache helper 构造 [b*n*seq,3] 多维
+indices (b,n,kv_pos) + [b*n*seq,d] updates, 调本算子写入 BNSD cache, 等价 index_copy(2,...).
+GE converter 由 cann_lm 自带 (converter/export/_scatter_nd_update_converter.py, 覆盖 torchair),
+直接产出 ge.ScatterNdUpdate (标准多维 scatter 语义, 与 CPU else 分支一致).
 
 用法: scatter KV cache (按 slot_mapping 把 updates 写入 cache 的指定位置).
   cache:     [b, n, kv_max, d]  (pre-allocated buffer)

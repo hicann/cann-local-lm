@@ -27,14 +27,37 @@ unpack+signed 占位实现，先跑通 Python 流程，CANN 对齐后续。
 import torch
 
 
+_SCALE_MASK = 0x00000000FFFFE000  # 截断尾数低 13 位 (精度 23→10 位) + 截断高 32 位
+
+
+def transdata_scale(scale_fp32: torch.Tensor) -> torch.Tensor:
+    """float32 scales → uint64 位模式 + 掩码 (存储格式转换).
+
+    float32 位模式 → int32 → int64 → & 0x00000000FFFFE000.
+    截断尾数低 13 位 (精度 23→10 位), 保留符号+指数+尾数高 10 位.
+    反向用 restore_scale 还原 (尾数低 13 位为 0, 合法 fp32 但精度降低).
+
+    torch 无 uint64, 用 int64 (位模式相同, 位操作结果相同, 仅符号位解释不同).
+    """
+    bits = scale_fp32.contiguous().view(torch.int32).to(torch.int64)
+    return bits & _SCALE_MASK
+
+
+def restore_scale(scale_packed: torch.Tensor) -> torch.Tensor:
+    """uint64 (位模式 + 掩码) → float32 (还原, 尾数低 13 位为 0).
+
+    int64 → int32 (高 32 位为 0) → fp32 (位模式 reinterpret).
+    """
+    return scale_packed.to(torch.int32).view(torch.float32)
+
+
 def pack_int4(q: torch.Tensor) -> torch.Tensor:
     """Nibble-pack signed int4 values (stored as int8) into [n, k//2] int8.
 
     Input: ``q`` int8 ``[..., k]`` holding signed int4 values in [-8, 7].
     Output: int8 ``[..., k//2]`` — byte at index i holds int4 for k=2i (low
     nibble) and k=2i+1 (high nibble), two's-complement 4-bit (``value & 0xF``).
-    Matches the unpack in ``fused_ops/quant_matmul_s8s4._quant_matmul_s8s4_cpu``
-    and the op ``x2`` input layout (方案 A).
+    Matches the ``npu::npu_quant_matmul`` x2 input layout (nibble-packed int4).
     """
     if q.shape[-1] % 2 != 0:
         raise ValueError(f"last dim {q.shape[-1]} must be even for int4 nibble-pack")
@@ -44,7 +67,7 @@ def pack_int4(q: torch.Tensor) -> torch.Tensor:
     return ((nib_odd << 4) | nib_even).to(torch.int8)
 
 
-def materialize_int4_with_scale(
+def materialize_int4_per_group_symmetric(
     weight: torch.Tensor,
     scale: torch.Tensor,
     group_size: int,
@@ -52,7 +75,7 @@ def materialize_int4_with_scale(
     nbits: int = 4,
     packed: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Materialize using a PRECOMPUTED per-group scale (e.g., from dopt GPTQ).
+    """线性对称量化: q = clamp(round(w/s), ±qmax), 反量化 w ≈ q * s (offset=0).
 
     Args:
         weight: ``[out, in]`` (fp16/fp32, GPTQ-corrected).
@@ -60,8 +83,11 @@ def materialize_int4_with_scale(
             the dopt ``quant_op.weight_quantizer.s`` reshaped from its flattened
             ``[out * in//group]`` form back to 2D.
         group_size: K-axis group size (must match the scale's grouping).
-        packed: True -> return nibble-packed int8 ``[out, in//2]`` for 方案 A
-            ``quant_matmul_s8s4`` x2; False (default) -> unpack ``[out, in]``.
+        signed: True -> signed int4 ``[-8, 7]``; False -> unsigned ``[0, 15]``.
+            两者反量化都是 q*s (对称, offset=0), unsigned 只平移整数范围不引入零点.
+        nbits: 4 (int4) default.
+        packed: True -> return nibble-packed int8 ``[out, in//2]`` for
+            ``npu::npu_quant_matmul`` x2; False (default) -> unpack ``[out, in]``.
 
     Returns:
         (weight_q: int8 ``[out, in]`` (or ``[out, in//2]`` packed), scale: fp32 ``[out, in//group]``).
@@ -86,7 +112,7 @@ def materialize_int4_with_scale(
     return (pack_int4(q) if packed else q), scale.float()
 
 
-def materialize_int8_per_channel(
+def materialize_int8_per_channel_symmetric(
     weight: torch.Tensor,
     scale: torch.Tensor,
     signed: bool = True,

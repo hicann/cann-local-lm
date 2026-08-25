@@ -35,11 +35,11 @@
 
 ### 示例（`examples/export_llm_model/`）
 
-| 文件 | 职责 |
-|------|------|
-| `main.cpp` | C++ 加载 epair + 编译 OM 的示例 main |
-| `reg_register.h` | GE 图编译期算子注册（`REG_OP`） |
-| `om_npu_verify/` | OM 编译 + NPU 推理验证工具集 |
+| 文件　　　　　　 | 职责　　　　　　　　　　　　　　　　 |
+| ------------------| --------------------------------------|
+| `main.cpp`　　　 | C++ 加载 epair + 编译 OM 的示例 main |
+| `reg_register.h` | GE 图编译期算子注册（`REG_OP`）　　　|
+| `om_npu_verify/` | OM 编译 + NPU 推理验证工具集　　　　 |
 
 ## 关键函数 / 类
 

@@ -75,7 +75,9 @@ class Gemma4ExportWrapper(ExportWrapper):
             per_layer_token_identity,
         )
         if output_pos is not None:
-            logits = logits[:, output_pos, :]
+            # index_select 替代 advanced indexing (logits[:, output_pos, :] -> ge.IndexByTensor,
+            # 未在 support_ops.md 列出); index_select(1, idx) -> ge.GatherV2 (support_ops.md).
+            logits = logits.index_select(1, output_pos.to(torch.int64))
         return logits, *past_kv_flat
 
     def _drive_layers(
@@ -174,29 +176,40 @@ class Gemma4ExportWrapper(ExportWrapper):
 
     def _build_mask_full(self, seq_len: int, kv_max: int, dtype: torch.dtype,
                          new_kv_cache_pos: torch.Tensor) -> torch.Tensor:
-        """causal-over-buffer: k<=q → 0, else MIN。q 位 = new_kv_cache_pos。"""
-        min_val = torch.finfo(dtype).min
-        q = new_kv_cache_pos.to(dtype=dtype).unsqueeze(1)        # [seq, 1]
-        k = torch.arange(kv_max, dtype=dtype).unsqueeze(0)       # [1, kv_max]
-        mask = torch.where(k <= q, torch.tensor(0.0, dtype=dtype), min_val)
-        return mask.unsqueeze(0).unsqueeze(0).expand(self.batch, 1, seq_len, kv_max)
+        """bool 方阵 [b,1,kv_max,kv_max], 绝对位 causal。False=attend, True=mask out。
+
+        前 seq_len 行: query@绝对位 new_kv_cache_pos[i] attend kv[0:abs+1]
+        后 (kv_max-seq_len) 行: padding 全 True (mask out, 无 query, kernel 用
+        actual_seq_qlen=seq_len 只取前 seq_len 行)。
+        dtype 参数保留兼容 (调用方仍传), 内部用 bool: 图内 _pad_mask_to_kv_square
+        对 bool 方阵走 q_len>=kv_len 直通分支 (return mask.bool(), bool→bool 不变),
+        跳过 float→bool 转换信息损失。
+        """
+        mask = torch.ones(self.batch, 1, kv_max, kv_max, dtype=torch.bool)
+        q_abs = new_kv_cache_pos.unsqueeze(1)        # [seq, 1] 绝对位
+        k = torch.arange(kv_max).unsqueeze(0)          # [1, kv_max]
+        attend = k <= q_abs                              # [seq, kv_max] True=attend
+        mask[:, :, :seq_len, :] = ~attend                # False=attend, True=mask out
+        return mask
 
     def _build_mask_sliding(self, seq_len: int, kv_max: int, dtype: torch.dtype,
                             new_kv_cache_pos: torch.Tensor) -> torch.Tensor:
-        """causal + sliding window: k<=q AND q-k<=W-1 → 0, else MIN。
+        """bool 方阵 [b,1,kv_max,kv_max], 绝对位 causal + sliding window。
 
+        前 seq_len 行: query@绝对位 attend kv[max(0, abs-w+1):abs+1] (窗口内+causal)
+        后 (kv_max-seq_len) 行: padding 全 True。
         kv_len <= sliding_window 时 causal 已隐含在窗口内, 退化为 mask_full。
         """
         w = self._sliding_window
         if not w or w <= 0 or kv_max <= w:
             return self._build_mask_full(seq_len, kv_max, dtype, new_kv_cache_pos)
-        min_val = torch.finfo(dtype).min
-        q = new_kv_cache_pos.to(dtype=dtype).unsqueeze(1)
-        k = torch.arange(kv_max, dtype=dtype).unsqueeze(0)
-        diff = q - k
+        mask = torch.ones(self.batch, 1, kv_max, kv_max, dtype=torch.bool)
+        q_abs = new_kv_cache_pos.unsqueeze(1)
+        k = torch.arange(kv_max).unsqueeze(0)
+        diff = q_abs - k
         attend = (diff >= 0) & (diff <= w - 1)
-        mask = torch.where(attend, torch.tensor(0.0, dtype=dtype), min_val)
-        return mask.unsqueeze(0).unsqueeze(0).expand(self.batch, 1, seq_len, kv_max)
+        mask[:, :, :seq_len, :] = ~attend
+        return mask
 
     # ──────────────────────────────────────────────────────────────
     # get_sample_inputs (override): 2 mask + per_layer_token_identity

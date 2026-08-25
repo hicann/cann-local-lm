@@ -10,13 +10,12 @@ from pathlib import Path
 import torch
 
 from cann_lm.converter.loader import ModelArtifact
-from cann_lm.converter.export.epair_utils import consolidated_weights_save
+from cann_lm.converter.export.epair_utils import consolidated_weights_save, inline_fused_attn_seq_constants, inline_weight_scale_dtype
 
 # 额外分解的 aten 算子白名单：torchair 无内置 GE 映射或仅占位 NotImplementedError，分解成有映射的
 # 基元算子（Exp/Log/Add/Select 等）。save_epair / save_epair_prefill_decode 共用，两函数白名单集合
 # 保持一致（曾因 prefill-decode 漏 update 这组致 qwen3.5 softplus 未分解 → GE 转换撞占位 NotImplementedError）。
 _EXTRA_DECOMPOSITION_OPS: frozenset = frozenset({
-    torch.ops.aten.softplus.default,
     torch.ops.aten.eye.default,
     torch.ops.aten.type_as.default,
     torch.ops.aten.index_copy.default,
@@ -92,8 +91,10 @@ def save_epair(
         batch=1,
     ).eval()
 
-    # quant_embeddings 自动从 embed_quant 推断 (embed_quant 非空 = dopt 产物含 embed scale)
-    quant_embeddings = embed_quant is not None
+    # quant_embeddings 自动从 embed_quant 推断 (非空 dict = dopt 产物含 embed scale)。
+    # 用 bool() 而非 `is not None`: dopt 未量化 embed 时 swap 返回空 dict {},
+    # 此时应 fallback 到 float embed_tokens (非量化路径), 不能误判为 True 致 KeyError。
+    quant_embeddings = bool(embed_quant)
     if quant_embeddings:
         wrapper.set_quant_embeddings(embed_quant)
 
@@ -198,8 +199,10 @@ def save_epair_prefill_decode(
         batch=1,
     ).eval()
 
-    # quant_embeddings 自动从 embed_quant 推断 (embed_quant 非空 = dopt 产物含 embed scale)
-    quant_embeddings = embed_quant is not None
+    # quant_embeddings 自动从 embed_quant 推断 (非空 dict = dopt 产物含 embed scale)。
+    # 用 bool() 而非 `is not None`: dopt 未量化 embed 时 swap 返回空 dict {},
+    # 此时应 fallback 到 float embed_tokens (非量化路径), 不能误判为 True 致 KeyError。
+    quant_embeddings = bool(embed_quant)
     if quant_embeddings:
         wrapper.set_quant_embeddings(embed_quant)
 
@@ -254,6 +257,24 @@ def save_epair_prefill_decode(
         ep_json_filename="prefill_ep_json_with_ascend_ir.json",
         host_side_weights=host_side_weights,
     )
+    # Inline actual_seq_qlen/kvlen as ge.Const — per-graph const, no
+    # tilingDepend/PartitionedCall. Avoids the shared-weights_0.bin name collision.
+    # qlen=seq_len, kvlen=seq_len (prefill 无 past, kv=seq_len 正确).
+    # 注: 多 chunk prefill (prompt > seq_len) 需 kvlen 随 chunk 动态 (start_pos+seq_len),
+    # 静态 ge.Const 无法表达 — 当前 kvlen=seq_len 仅单 chunk 正确, 多 chunk 是预存遗留
+    # (modeling fused_attention_forward 设 actual_kv_len=q_len 非 new_kv_cache_pos.max()+1).
+    # kvlen=kv_max 对 prefill (q_len>1) 不可用 (FIA [seq_len,kv_max] 大矩阵+大量 mask 致退化),
+    # 与 decode (q_len=1, kv_max 可用) 不同. 见 ops_replacement.md.
+    # 实证 (fia_static_kvmax §14.2/14.6 + 2026-08-24 bool 方阵 mask 重测):
+    # bool 方阵 mask (直接给 FIA, 跳过 float→bool 转换) + kvlen=kv_max 仍退化 (全 pad 0),
+    # 证实退化是 arch22 kernel 对 [actual:s2Size] 不 honor mask 的硬限制, 非 mask 问题.
+    inline_fused_attn_seq_constants(
+        output_dir / "prefill_ep_json_with_ascend_ir.json", seq_len)
+    # weight_scale 落盘格式: QuantLinear buffer 存 fp32 (计算用), saver 打包时转 int64
+    # (位模式 + & 0x00000000FFFFE000 掩码). 同步改 ep_json dtype 为 DT_INT64,
+    # 否则 C++ 按 DT_FLOAT 读 int64 bytes 会 WEIGHT_SIZE_MISMATCH.
+    inline_weight_scale_dtype(
+        output_dir / "prefill_ep_json_with_ascend_ir.json")
 
     # Write decode ep_json only (save_weights=False, weights already packed above)
     consolidated_weights_save(
@@ -261,6 +282,13 @@ def save_epair_prefill_decode(
         save_weights=False,
         ep_json_filename="decode_ep_json_with_ascend_ir.json",
     )
+    # decode: qlen=1 (query 长度, 固定), kvlen=kv_cache_max_len (让 FIA kernel 读全 buffer,
+    # 实际 attend 范围由显式 atten_mask 决定). kvlen=1 会让 kernel 静态截断到 1 个 kv 丢上下文.
+    # 见 docs/cann_lm_converter/ops_replacement.md "FIA 回退" 节根因分析.
+    inline_fused_attn_seq_constants(
+        output_dir / "decode_ep_json_with_ascend_ir.json", 1, kvlen_value=kv_cache_max_len)
+    inline_weight_scale_dtype(
+        output_dir / "decode_ep_json_with_ascend_ir.json")
 
     copy_tokenizer_files(artifact.tokenizer_files, output_dir)
     save_model_config(artifact, output_dir, use_embeddings=use_embeddings,

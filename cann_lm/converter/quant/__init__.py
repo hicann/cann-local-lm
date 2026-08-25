@@ -14,12 +14,15 @@
 
 """Quantization entrypoints for the converter (W4A8 s8s4 / W4A16).
 
-- materialize_int4_with_scale: fp16 weight -> (int4-as-int8, scale), 用 dopt GPTQ scale
-- materialize_int8_per_channel: embed int8 per-channel (host gather)
-- QuantLinear: export-path Linear whose forward calls cann_lm::quant_matmul_s8s4
+- materialize_int4_per_group_symmetric: fp16 weight -> (int4-as-int8, scale), 线性对称 (offset=0), 用 dopt GPTQ scale
+- materialize_int8_per_channel_symmetric: embed int8 per-channel (host gather)
+- QuantLinear: export-path Linear whose forward calls npu::npu_quant_matmul
   (W4A8 also uses npu_dynamic_quant for act quant)
 - swap_to_quant_linear_from_dopt: port dopt GPTQ output (GPTQ weight + group_scale)
-  -> materialize int4 -> swap QuantLinear (the converter --quant-path path)
+  -> materialize int4 -> swap QuantLinear (legacy, scenes 1 offline use; internally
+  load_dopt_state_dict + _swap_linear_from_sd)
+- swap_from_dopt: one-shot load sd + Linear swap + embed 抽取 (主进程场景 1/2 用,
+  避免 swap_to_quant_linear_from_dopt + swap_embeddings_from_dopt 二次 load IO)
 - swap_embeddings_from_dopt: port dopt embed int8+scale for host gather
 - load_dopt_state_dict: load dopt GPTQ output (safetensors/.pth/dir)
 
@@ -28,19 +31,21 @@ converter loads it via --quant-path, materializes, swaps, exports. See
 docs/cann_lm_converter/quant_design.md.
 """
 
-from .materialize import materialize_int4_with_scale, materialize_int8_per_channel
+from .materialize import materialize_int4_per_group_symmetric, materialize_int8_per_channel_symmetric
 from .quant_linear import QuantLinear
 from .swap import (
     load_dopt_state_dict,
     swap_to_quant_linear_from_dopt,
+    swap_from_dopt,
     swap_embeddings_from_dopt,
 )
 
 __all__ = [
-    "materialize_int4_with_scale",
-    "materialize_int8_per_channel",
+    "materialize_int4_per_group_symmetric",
+    "materialize_int8_per_channel_symmetric",
     "QuantLinear",
     "swap_to_quant_linear_from_dopt",
+    "swap_from_dopt",
     "swap_embeddings_from_dopt",
     "load_dopt_state_dict",
 ]

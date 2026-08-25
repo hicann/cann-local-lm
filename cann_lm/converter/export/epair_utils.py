@@ -236,6 +236,8 @@ def _pack_weights_to_dir(contents, output_dir: Path, max_file_size: int) -> dict
 
     Streaming write — never accumulates more than one tensor in memory.
     """
+    from cann_lm.converter.quant.materialize import transdata_scale
+
     raw_sd = contents.ep.state_dict() if callable(contents.ep.state_dict) else contents.ep.state_dict
     state_dict = dict(raw_sd)
 
@@ -272,6 +274,11 @@ def _pack_weights_to_dir(contents, output_dir: Path, max_file_size: int) -> dict
         raw = tensor.detach().cpu().contiguous()
         if raw.dtype == torch.bfloat16:
             raw = raw.view(torch.int16)
+        elif "weight_scale" in name and raw.dtype == torch.float32:
+            # 仅落盘时转 int64 (位模式 + & 0x00000000FFFFE000 掩码, 截断尾数低 13 位).
+            # QuantLinear buffer 仍存 fp32 (计算用), ep_json dtype 由 inline_weight_scale_dtype
+            # 后处理改标 DT_INT64, 保证 C++ 按 int64 读 (= uint64 位模式).
+            raw = transdata_scale(raw)  # fp32 → int64
         data = raw.numpy().tobytes()
         del raw
 
@@ -367,3 +374,90 @@ def _pack_host_side_weights_to_dir(
     print(f"Packed {len(host_side_weights)} host-side weight(s) into "
           f"{current_file_idx + 1} file(s) ({total_written / 1024:.0f} KB)")
     return index
+
+
+def inline_fused_attn_seq_constants(ep_json_path, qlen_value: int, kvlen_value: int | None = None) -> int:
+    """Inline ``FusedInferAttentionScore`` actual_seq_qlen/kvlen as ``ge.Const`` in ep_json.
+
+    prefill-decode 共享 ``weights_0.bin``: decode 的 actual_seq lifted 常量会按同名复用 prefill
+    的值 (seq_len) 而非自己的, 且 Data 引用输入被 GE 标为 tilingDepend -> PartitionedCall
+    (动态子图). 把 actual_seq_qlen/kvlen 内联成真正的 ``ge.Const`` 既修正逐图取值, 又让算子
+    保持静态 (无 PartitionedCall).
+
+    - ``qlen_value``: actual_seq_qlen = query 长度 (prefill=seq_len, decode=1).
+    - ``kvlen_value``: actual_seq_kvlen = kv 有效长度. 默认 None -> 用 qlen_value (prefill
+      无 past, kvlen=qlen=seq_len 正确). **decode 须显式传 kv_cache_max_len**: decode 的 valid
+      kv = past_len+1 (随步动态, 静态 ge.Const 无法表达); 用 kv_max 让 kernel 读全 buffer,
+      实际 attend 范围由显式 atten_mask 决定. (kvlen=1 + mask 仍会被静态 Const 截断到 1 个 kv
+      丢上下文, 详见 docs/.../ops_replacement.md "FIA 回退" 节根因分析.)
+    """
+    import base64
+    import struct
+
+    if kvlen_value is None:
+        kvlen_value = qlen_value
+
+    dim = ["1"]
+
+    def _make_const(name: str, value: int) -> dict:
+        data = base64.b64encode(struct.pack("<q", int(value))).decode()
+        readable = base64.b64encode(f"[{int(value)}]".encode()).decode()
+        return {
+            "name": name,
+            "type": "Const",
+            "attr": {
+                "value": {"t": {"desc": {"dtype": "DT_INT64", "shape": {"dim": dim}, "layout": "ND"},
+                                  "data": data}},
+                "_readable_value": {"s": readable},
+            },
+            "outputDesc": [{"dtype": "DT_INT64", "shape": {"dim": dim}, "layout": "ND"}],
+        }
+
+    with open(ep_json_path) as f:
+        doc = json.load(f)
+    nodes = doc["graph_module"]["graph"]["nodes"]
+    inlined = 0
+    for n in nodes:
+        ops = (n.get("ascend_ir") or {}).get("ops") or []
+        for op in ops:
+            if op.get("type") != "FusedInferAttentionScore":
+                continue
+            ins = op.get("input")
+            if not isinstance(ins, list) or len(ins) < 7 or not ins[5]:
+                continue  # qlen (ins[5]) 必须有; kvlen (ins[6]) 可空 (kvlen=None 新方案: op 读全 buffer, 由 atten_mask 控制有效区段)
+            qlen_c = _make_const(f"InlineSeqQLen{inlined}", qlen_value)
+            ops.append(qlen_c)
+            ins[5] = f"{qlen_c['name']}:0"
+            if ins[6]:  # kvlen 存在 (旧 kvlen=常量方案) 才内联; None/空 (新方案) 跳过
+                kvlen_c = _make_const(f"InlineSeqKvlen{inlined}", kvlen_value)
+                ops.append(kvlen_c)
+                ins[6] = f"{kvlen_c['name']}:0"
+            inlined += 1
+    with open(ep_json_path, "w") as f:
+        json.dump(doc, f)
+    return inlined
+
+
+def inline_weight_scale_dtype(ep_json_path) -> int:
+    """把 weight_scale 的 tensor_values dtype 从 float32(7) 改标 int64(5) (落盘格式).
+
+    QuantLinear buffer 存 fp32 (计算用, forward 直接传 npu_quant_matmul), 但 saver
+    ``_pack_weights_to_dir`` 打包时调 transdata_scale 转 int64 (位模式 + 掩码).
+    需同步改 ep_json 的 tensor_values dtype 为 DT_INT64 (pt2 kDtypeLong=5), 否则
+    C++ 按 DT_FLOAT 读 int64 bytes 会 WEIGHT_SIZE_MISMATCH (4B/元素 vs 实际 8B).
+
+    Returns: 改标的 weight_scale 数量.
+    """
+    with open(ep_json_path) as f:
+        doc = json.load(f)
+    tv = doc.get("graph_module", {}).get("graph", {}).get("tensor_values", {})
+    inlined = 0
+    for name, meta in tv.items():
+        if "weight_scale" not in name:
+            continue
+        if isinstance(meta, dict) and meta.get("dtype") == 7:  # 7=float32 (kDtypeFloat)
+            meta["dtype"] = 5  # 5=int64 (kDtypeLong)
+            inlined += 1
+    with open(ep_json_path, "w") as f:
+        json.dump(doc, f)
+    return inlined

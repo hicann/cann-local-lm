@@ -23,18 +23,18 @@
 
 ## 命令行参数速查
 
-| 参数　　　　　　　　 | 默认　　　| 说明　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　 |
-| ----------------------| -----------| --------------------------------------------------------------------|
-| `--hf-path`　　　　　| (必填)　　| HF 模型本地目录　　　　　　　　　　　　　　　　　　　　　　　　　　|
-| `--output-dir`　　　 | (必填)　　| epair 输出目录　　　　　　　　　　　　　　　　　　　　　　　　　　 |
-| `--dtype`　　　　　　| `float16` | `float32` / `float16` / `bfloat16`　　　　　　　　　　　　　　　　 |
-| `--mode`　　　　　　 | `prefill-decode`　| `single` / `prefill-decode`　　　　　　　　　　　　　|
-| `--seq-len`　　　　　| 128　　　 | single=图 seq_len / prefill-decode=prefill 图 seq_len (decode=1)　|
-| `--use-embeddings`　 | True　　 | 纯 embeddings（默认）; --no-use-embeddings 走图内查表　|
-| `--kv-cache-max-len` | 2048　　　| KV buffer 第一维　　　　　　　　　　　　　　　　　　　　　　　　　 |
-| `--quant-path`　　　 | —　　　　 | dopt GPTQ 产物路径（量化接入，详见 [INDEX.md](../quant/INDEX.md)） |
-| `--quant-method`　 | `gptq`　 | 量化算法（当前仅 gptq；自动 spawn dopt，场景 2，待实现；与 --quant-path 互斥）　|
-| `--quant-bits`　　 | `w4a8`　 | 格式/位宽（w4a8/w4a16，默认 w4a8；--quant-method 时生效）　|
+| 参数　　　　　　　　 | 默认　　　　　　 | 说明　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　 |
+| ----------------------| ------------------| --------------------------------------------------------------------------------|
+| `--hf-path`　　　　　| (必填)　　　　　 | HF 模型本地目录　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　|
+| `--output-dir`　　　 | (必填)　　　　　 | epair 输出目录　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　 |
+| `--dtype`　　　　　　| `float16`　　　　| `float32` / `float16` / `bfloat16`　　　　　　　　　　　　　　　　　　　　　　 |
+| `--mode`　　　　　　 | `prefill-decode` | `single` / `prefill-decode`　　　　　　　　　　　　　　　　　　　　　　　　　　|
+| `--seq-len`　　　　　| 128　　　　　　　| single=图 seq_len / prefill-decode=prefill 图 seq_len (decode=1)　　　　　　　 |
+| `--use-embeddings`　 | True　　　　　　 | 纯 embeddings（默认）; --no-use-embeddings 走图内查表　　　　　　　　　　　　　|
+| `--kv-cache-max-len` | 2048　　　　　　 | KV buffer 第一维　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　 |
+| `--quant-path`　　　 | —　　　　　　　　| dopt GPTQ 产物路径（量化接入，详见 [INDEX.md](../quant/INDEX.md)）　　　　　　 |
+| `--quant-method`　　 | `gptq`　　　　　 | 量化算法（当前仅 gptq；自动 spawn dopt，场景 2，待实现；与 --quant-path 互斥） |
+| `--quant-bits`　　　 | `w4a8`　　　　　 | 格式/位宽（w4a8，默认 w4a8；--quant-method 时生效）　　　　　　　　　　　　　　|
 
 > 完整参数说明见 [cli_design.md](./cli_design.md) "命令行参数"。
 

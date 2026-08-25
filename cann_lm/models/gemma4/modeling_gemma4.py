@@ -35,6 +35,41 @@ def rotate_half(x: torch.Tensor) -> torch.Tensor:
     return torch.cat((-x2, x1), dim=-1)
 
 
+def scatter_kv_to_cache(
+    cache: torch.Tensor,
+    kv_pos: torch.Tensor,
+    kv_new: torch.Tensor,
+) -> torch.Tensor:
+    """Scatter new KV into BNSD cache via npu_scatter_nd_update (out-of-place, 标准多维坐标).
+
+    cache [b,n,kv_max,d], kv_pos [seq] (dim2 写入位置), kv_new [b,n,seq,d].
+    构造 [b*n*seq,3] indices (b,n,kv_pos) + [b*n*seq,d] updates, 命中 ge.ScatterNdUpdate
+    标准语义, 等价 index_copy(2, kv_pos, kv_new). CPU (else 分支逐点写) 与 GE
+    (ge.ScatterNdUpdate) 语义一致, 不依赖 1D=dim2 私有约定.
+
+    用 out-of-place 版 (无 _): in-place schema 有 alias annotation (Tensor(a!)),
+    torch.export functionalization 不支持; out-of-place (-> Tensor out) 无 alias.
+
+    indices 构造避免 Range(arange)+BroadcastTo(expand), 改用 support_ops.md 算子:
+      n_grid: Const [n, kv_max] (python list 预计算, n/kv_max 静态 → Const, 无 Range)
+      col_n:  n_grid[:, :seq].reshape(-1) (StridedSliceD 动态 slice seq, 无 expand;
+              col_n 需 n_idx 每个重复 seq 次, seq 动态, concat 无法替代, 故用 slice)
+      col_pos: cat([kv_pos]*n) (ConcatV2D, n 静态 tile, 无 expand)
+      col_b:  col_n * 0 (Mul, b=1 全 0; gemma4 batch=1, b>1 需扩展 b 网格)
+    """
+    b, n, kv_max, d = cache.shape
+    seq = kv_pos.shape[0]
+    n_grid = torch.tensor(
+        [[i] * kv_max for i in range(n)], device=cache.device, dtype=torch.int64
+    )
+    col_n = n_grid[:, :seq].reshape(-1)
+    col_pos = torch.cat([kv_pos] * n, dim=0)
+    col_b = col_n * 0
+    indices = torch.cat([col_b.view(1, -1), col_n.view(1, -1), col_pos.view(1, -1)], dim=0).transpose(0, 1).reshape(-1, 3)
+    updates = kv_new.reshape(-1, d)
+    return torch.ops.npu.npu_scatter_nd_update(cache, indices, updates)
+
+
 def apply_rotary_pos_emb(
     q: torch.Tensor,
     k: torch.Tensor,
@@ -46,7 +81,7 @@ def apply_rotary_pos_emb(
 
     - sliding (全旋, head_dim == cos.shape[-1]): npu_rotary_mul 单 tensor, q/k 各调一次.
     - full (proportional partial, rotary_dim == cos.shape[-1] < head_dim): cat 出 q_rot/k_rot
-      (前 pair_dim + 中 half_dim:half_dim+pair_dim), npu_apply_rotary_pos_emb 配对 (layout=BSND),
+      (前 pair_dim + 中 half_dim:half_dim+pair_dim), npu_rotary_mul q/k 各调一次,
       拆装插回原位 (中间和后面保持原值).
     """
     cos = cos.unsqueeze(2)  # [b,s,1,d] -> broadcast to heads (BSND: [b,s,N,d])
@@ -88,7 +123,8 @@ def _rope_full_pair(
     half_dim = q.shape[-1] // 2
     q_rot = torch.cat([q[..., :pair_dim], q[..., half_dim:half_dim + pair_dim]], dim=-1)
     k_rot = torch.cat([k[..., :pair_dim], k[..., half_dim:half_dim + pair_dim]], dim=-1)
-    q_rot, k_rot = torch.ops.npu.npu_apply_rotary_pos_emb(q_rot, k_rot, cos, sin, layout="BSND")
+    q_rot = torch.ops.npu.npu_rotary_mul(q_rot, cos, sin, rotary_mode="half")
+    k_rot = torch.ops.npu.npu_rotary_mul(k_rot, cos, sin, rotary_mode="half")
     q_out = torch.cat(
         [q_rot[..., :pair_dim], q[..., pair_dim:half_dim],
          q_rot[..., pair_dim:], q[..., half_dim + pair_dim:]], dim=-1,
@@ -212,19 +248,19 @@ def fused_attention_forward(
     # - scatter-write 模式 (OM export): new_kv_cache_pos 不为 None, 用 max+1 (写入位置+1, 不含 buffer 未用部分)
     # - torch.cat 模式 (model.generate eager): new_kv_cache_pos=None, key.shape[2]=past+q_len (实际有效)
     if new_kv_cache_pos is not None:
-        actual_kv_len = new_kv_cache_pos.max() + 1
+        actual_kv_len = torch.tensor(q_len, dtype=torch.int64, device=query.device)
     else:
         actual_kv_len = torch.tensor(key.shape[2], dtype=torch.int64, device=query.device)
     actual_seq_qlen = torch.tensor([q_len], dtype=torch.int64, device=query.device)
-    actual_seq_kvlen = actual_kv_len.reshape(1).to(torch.int64)
+    actual_seq_kvlen = None  # sparse_mode=0 + kvlen=None: 纯靠 bool mask 控制有效区段
     # atten_mask: sparse_mode=3/4 要求 atten_mask 非空 (bool [*, kv_len, kv_len] 方阵).
     # cann_lm float mask [*, q_len, kv_len] (0.0=attend k<=q, min=mask out k>q) -> bool 转换 +
     # pad q 维到 kv_len (融合算子用 actual_seq_qlen 切片前 q_len 行). 试不取反 (False=attend).
     atten_mask_bool = _pad_mask_to_kv_square(attention_mask, key.shape[2]) if attention_mask is not None else None
     if module.is_sliding:
-        sparse_mode, pre_tokens = 4, module.sliding_window
+        sparse_mode, pre_tokens = 0, module.sliding_window  # 0=NO_MASK: 无强制 band, 纯靠 bool mask (移除 band 冲突)
     else:
-        sparse_mode = 3
+        sparse_mode = 0
         pre_tokens = torch.iinfo(torch.int32).max
     attn_output, _ = torch.ops.npu.npu_fused_infer_attention_score_v2(
         query, key, value,
@@ -369,8 +405,11 @@ class Gemma4TextRotaryEmbedding(nn.Module):
         # Gather over 预缓存常量表 (cos_cached[position_ids])。无 inv_freq/cos/sin/pow/neg 动态算子。
         cos_cached = getattr(self, f"cos_cached_{layer_type}")  # [max_seq, dim] 常量
         sin_cached = getattr(self, f"sin_cached_{layer_type}")
-        cos = cos_cached[position_ids]   # -> [batch, seq, dim]
-        sin = sin_cached[position_ids]
+        # index_select 替代 advanced indexing (cos_cached[position_ids] -> ge.Index, 未在
+        # support_ops.md 列出); index_select(0, idx) -> ge.GatherV2 (support_ops.md GatherV2).
+        pos_flat = position_ids.reshape(-1)
+        cos = cos_cached.index_select(0, pos_flat).reshape(*position_ids.shape, -1)
+        sin = sin_cached.index_select(0, pos_flat).reshape(*position_ids.shape, -1)
         return cos.to(dtype=x.dtype), sin.to(dtype=x.dtype)
 
 
@@ -486,8 +525,8 @@ class Gemma4TextAttention(nn.Module):
         query_states = self.q_norm(query_states)
 
         # --- KV projection (or reuse shared) + RoPE ---
-        # 与图灵参考实现一致: 非 kv_shared 用配对 RoPE (sliding: npu_rotary_mul 各调;
-        # full: npu_apply_rotary_pos_emb 配对 + cat/拆装). kv_shared 路径 q 单独 RoPE
+        # 与图灵参考实现一致: 非 kv_shared 用配对 RoPE (sliding/full: npu_rotary_mul q/k 各调
+        # + cat/拆装). kv_shared 路径 q 单独 RoPE
         # (k 从 shared 来已 RoPE), 用 single 版 (npu_rotary_mul + cat/拆装 模拟 partial).
         if self.is_kv_shared_layer and shared_kv_states is not None:
             kv_key = self.layer_type
@@ -518,13 +557,14 @@ class Gemma4TextAttention(nn.Module):
             cache_entry = past_key_values[self.layer_idx]
             if cache_entry is not None and new_kv_cache_pos is not None:
                 cache_k, cache_v = cache_entry
-                # Scatter-write: write new KV at specified positions (non-in-place)
-                # 注: npu_scatter_nd_update 的 indices scatter dim 0, gemma4 cache [b,n,kv_max,d]
-                # (BNSD) 要 reshape (transpose n/kv_max, 不连续, 开销大于 index_copy).
-                # 故 gemma4 保留 index_copy (InplaceUpdate+Transpose). npu_scatter_nd_update 的
-                # schema+converter 保留供 qwen3.5 (cache layout 不同) 或后续 PagedAttention 用.
-                cache_k = cache_k.index_copy(2, new_kv_cache_pos, key_states)
-                cache_v = cache_v.index_copy(2, new_kv_cache_pos, value_states)
+                # Scatter-write new KV into BNSD cache via npu_scatter_nd_update (标准多维坐标).
+                # ge.ScatterNdUpdate 按多维坐标 scatter: scatter_kv_to_cache 构造 [b*n*seq,3]
+                # indices (b,n,kv_pos) + [b*n*seq,d] updates, 等价 index_copy(2,pos,kv_new).
+                # CPU (else 分支) 与 GE (ge.ScatterNdUpdate) 语义一致, 不依赖 1D=dim2 约定.
+                # cann_lm 自带 converter (converter/export/_scatter_nd_update_converter.py)
+                # 覆盖 torchair, 直接产出 ge.ScatterNdUpdate (不绕 InplaceUpdate+Transpose).
+                cache_k = scatter_kv_to_cache(cache_k, new_kv_cache_pos, key_states)
+                cache_v = scatter_kv_to_cache(cache_v, new_kv_cache_pos, value_states)
                 past_key_values[self.layer_idx] = (cache_k, cache_v)
                 # Use entire buffer for attention
                 key_states = cache_k

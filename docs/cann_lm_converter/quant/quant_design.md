@@ -18,6 +18,7 @@
 - [dopt_lm 子包详解](./dopt_design.md)（已抽取到独立文档）
 - [方案 A — 自研 quant_matmul_s8s4 算子规格与实现状态](#方案-a--自研-quant_matmul_s8s4-算子规格与实现状态)
 - [C++ 注册与产物](#c-注册与产物)
+- [weight_scale 落盘格式：fp32→uint64 位模式转换（方案 A vs B）](#weight_scale-落盘格式fp32uint64-位模式转换方案-a-vs-b)
 - [已知问题与遗留](#已知问题与遗留)
 - [附录 A — CANN QuantBatchMatmulV3 / V4 op_graph 源码分析（历史档案）](#附录-a--cann-quantbatchmatmulv3--v4-op_graph-源码分析历史档案)
 - [附录 B — 历史调试与路径选型档案](./dopt_design.md)（已抽取到 dopt_design.md "附录"）
@@ -542,6 +543,170 @@ y[b,m,n] = Σ_k ( x1_q[b,m,k] · x1_scale[b,m] ) · ( x2_q[n,k] · x2_scale[n, k
 - host-embeddings 模式额外：`embed_tokens_q.bin` int8 + `embed_tokens_scale.bin` fp32，host 查表。
 
 后续编译成 OM 是下游 `epair → OM` 编译器的事，不在 quant/ 范围。
+
+---
+
+## weight_scale 落盘格式：fp32→uint64 位模式转换（方案 A vs B）
+
+> 将 `QuantLinear.weight_scale`（GPTQ 产出的 per-group fp32 scale）按位掩码 `& 0x00000000FFFFE000` 转 uint64 位模式落盘。截断尾数低 13 位（精度 23→10 位）+ 截断高 32 位（值只用低 32 位）。集成位置：`materialize.transdata_scale` / `restore_scale` + `epair_utils.inline_weight_scale_dtype` + saver `_pack_weights_to_dir`。
+>
+> 最后更新：2026-08-24
+
+### 背景：位掩码 `0x00000000FFFFE000` 的含义
+
+```
+掩码 0x00000000FFFFE000 (64 位)
+     └──────┬──────┘└──────┬──────┘
+       高 32 位=0      低 32 位=0xFFFFE000
+                    └──┬──┘└──┬──┘
+                     全 1    bit12-0=0
+                   (bit31-13 保留)
+```
+
+| 位段 | 掩码位 | 结果 | float32 含义 |
+|------|--------|------|-------------|
+| bit 63-32 | 全 0 | 清零 | （值只用低 32 位，等效 uint32 范围） |
+| bit 31 | 1 | 保留 | 符号位 |
+| bit 30-23 | 全 1 | 保留 | 指数（8 位） |
+| bit 22-13 | 全 1 | 保留 | 尾数高 10 位 |
+| bit 12-0 | 全 0 | 清零 | **尾数低 13 位**（精度 23→10 位） |
+
+→ 保留符号 + 指数 + 尾数高 10 位，截断尾数低 13 位。反量化还原后仍是合法 fp32，但精度降低（~7 位→~3 位十进制）。
+
+### 两种集成方案
+
+#### 方案 A：改 QuantLinear（buffer 存 int64）
+
+`QuantLinear.weight_scale` buffer 直接存 int64，forward 时 `restore_scale`（int64→int32→fp32 位还原）再传 `npu_quant_matmul`。
+
+```python
+# materialize.py
+def transdata_scale(scale_fp32):  # fp32 位模式 → int64 + 掩码
+    bits = scale_fp32.contiguous().view(torch.int32).to(torch.int64)
+    return bits & 0x00000000FFFFE000
+
+def restore_scale(scale_packed):  # int64 → fp32 (尾数低 13 位为 0)
+    return scale_packed.to(torch.int32).view(torch.float32)
+```
+
+```python
+# quant_linear.py (方案 A)
+self.register_buffer("weight_scale", weight_scale.to(torch.int64))  # int64
+def forward(self, x):
+    weight_scale_fp32 = restore_scale(self.weight_scale)  # int64 → fp32
+    out = torch.ops.npu.npu_quant_matmul(x_q, self.weight_q, weight_scale_fp32, ...)
+```
+
+- **swap.py**：物化后调 `transdata_scale` 把 fp32→int64，存入 QuantLinear buffer。
+- **torch.export trace**：`restore_scale` 生成 Cast(int64→int32) + view(int32→fp32) 图节点。
+- **ep_json dtype**：`DT_INT64`（torch buffer 是 int64，torch.export 自动推断）。
+- **saver**：直接打包 int64 tensor 的 bytes（无需特殊处理）。
+- **C++**：按 ep_json 的 `DT_INT64` 读（`DecodeBytesAs<int64_t>`），等效 uint64。
+
+#### 方案 B：仅落盘转换（buffer 保持 fp32，saver 打包时转 int64）✅ 当前采用
+
+`QuantLinear.weight_scale` buffer 保持 fp32（计算路径不变，forward 直接传 `npu_quant_matmul`，无 Cast 图节点）。仅 saver 打包时识别 weight_scale 调 `transdata_scale` 转 int64；ep_json 后处理把 dtype 从 `DT_FLOAT` 改标 `DT_INT64`。
+
+```python
+# quant_linear.py (方案 B) — 不改
+self.register_buffer("weight_scale", weight_scale.to(torch.float32))  # fp32
+def forward(self, x):
+    out = torch.ops.npu.npu_quant_matmul(x_q, self.weight_q, self.weight_scale, ...)
+```
+
+```python
+# epair_utils.py: _pack_weights_to_dir — 识别 weight_scale 转 int64
+for name in names:
+    raw = state_dict[name].detach().cpu().contiguous()
+    if raw.dtype == torch.bfloat16:
+        raw = raw.view(torch.int16)
+    elif "weight_scale" in name and raw.dtype == torch.float32:
+        raw = transdata_scale(raw)  # fp32 → int64 (位模式 + 掩码, 落盘格式)
+    data = raw.numpy().tobytes()
+```
+
+```python
+# epair_utils.py: inline_weight_scale_dtype — ep_json 后处理改 dtype
+def inline_weight_scale_dtype(ep_json_path):
+    tv = doc["graph_module"]["graph"]["tensor_values"]
+    for name, meta in tv.items():
+        if "weight_scale" in name and meta.get("dtype") == 7:  # float32
+            meta["dtype"] = 5  # int64 (kDtypeLong)
+```
+
+```python
+# saver.py: save_epair_prefill_decode — 调后处理
+inline_fused_attn_seq_constants(prefill_ep_json, seq_len)
+inline_weight_scale_dtype(prefill_ep_json)  # ← 新增
+```
+
+### 方案对比
+
+| 维度 | 方案 A（改 quant_linear） | 方案 B（仅落盘）✅ |
+|------|---------------------------|-------------------|
+| **QuantLinear buffer** | int64 | **fp32**（计算路径不变） |
+| **forward** | `restore_scale`→fp32→op | **直接用 fp32**→op |
+| **Cast 图节点（weight_scale 相关）** | 277 个（restore_scale） | **0 个** |
+| **torch.export 图复杂度** | 多 Cast+view 节点 | 简洁（无额外节点） |
+| **saver 打包** | 直存 int64 bytes | 识别 weight_scale 转 int64 |
+| **ep_json dtype** | `DT_INT64`（torch buffer 推断） | `DT_INT64`（后处理改标） |
+| **C++ 读取** | 按 `DT_INT64`（`DecodeBytesAs<int64_t>`） | 同左（等效 uint64） |
+| **weights_0.bin 大小** | 1484.6 MB | 1484.6 MB（相同，int64 bytes） |
+| **改动文件** | quant_linear.py + swap.py + materialize.py | materialize.py + epair_utils.py + saver.py（quant_linear/swap 不改） |
+
+→ **方案 B 更优**：QuantLinear 不改（forward 路径不变，图简洁），仅落盘层做转换 + ep_json 后处理同步 dtype。计算与存储分离。
+
+### 三层分离（方案 B）
+
+```
+计算层 (QuantLinear)       存储层 (saver)              标注层 (ep_json)
+─────────────────         ─────────────              ──────────────
+weight_scale: fp32    ──→ transdata_scale         ──→ dtype=DT_INT64
+(forward 直接用)         (fp32→int64+掩码, 落盘)     (inline_weight_scale_dtype
+                              ↓                       后处理改标)
+                         weights_0.bin
+                         (int64 bytes = uint64)
+                              ↓
+                         C++ ReadTensorData
+                         (按 ep_json DT_INT64 读,
+                          DecodeBytesAs<int64_t>,
+                          等效 uint64 位模式)
+```
+
+### C++ 读取保证链
+
+```
+ep_json tensor_values: weight_scale dtype = "DT_INT64" (kDtypeLong=5)
+    ↓ C++ Pt2DtypeFromGeString("DT_INT64") → pt2::kDtypeLong
+    ↓ ElementSizeForPt2Dtype(kDtypeLong) → sizeof(int64_t) = 8 bytes/元素
+    ↓ DecodeBytesAs<int64_t>(bytes, size) → 按 int64 解码
+int64 bytes = uint64 bytes (8 字节小端序, 位模式相同)
+    ↓ C++ 可 reinterpret_cast<uint64_t*> 解释
+等效按 uint64 读 ✓
+```
+
+**torch 无 uint64 dtype**，用 int64 存储（位模式相同，位操作 `&` 结果一致）。`BuildTensorHolder` 还校验 `Product(dims) * element_size == byte_size`（`WEIGHT_SIZE_MISMATCH` 兮底），dtype 标错会直接报错。
+
+### 验证结果（case6 gemma4 quant-method gptq, 2026-08-24）
+
+| 检查项 | 结果 |
+|--------|------|
+| weight_q dtype | int8 × 277 层 ✓ |
+| weight_scale dtype（ep_json） | int64 × 277 层 ✓（后处理改标成功） |
+| size 匹配（ep_json dtype×shape = weight_info.json size） | ✓ 554 个 buffer 全匹配 |
+| Cast 算子涉及 weight_scale | 0 个 ✓（方案 B 无 restore_scale） |
+| weights_0.bin | 1484.6 MB（scale fp32→int64 翻倍：+71.2 MB） |
+| 导出 | ✓ Done |
+
+### 改动文件清单（方案 B）
+
+| 文件 | 改动 |
+|------|------|
+| `materialize.py` | 加 `transdata_scale`（fp32→int64+掩码）+ `restore_scale`（int64→fp32，方案 A 遗留，方案 B 不调但保留） |
+| `epair_utils.py` | `_pack_weights_to_dir` 识别 weight_scale 调 `transdata_scale` 转 int64 + 加 `inline_weight_scale_dtype` 后处理函数 |
+| `saver.py` | `save_epair_prefill_decode` 调 `inline_weight_scale_dtype`（prefill + decode） |
+| `quant_linear.py` | **不改**（weight_scale 保持 fp32） |
+| `swap.py` | **不改**（物化后不调 transdata_scale） |
 
 ---
 

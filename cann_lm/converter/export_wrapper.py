@@ -45,7 +45,7 @@ class ExportWrapper(nn.Module):
 
         key = state_dict FQN (如 'model.model.embed_tokens.weight')；value =
         (int8_weight [vocab, hidden], scale [vocab])，来自 dopt Quant_Embed_MinMax
-        产物经 materialize_int8_per_channel。get_sample_inputs(quant_embeddings=True)
+        产物经 materialize_int8_per_channel_symmetric。get_sample_inputs(quant_embeddings=True)
         用它 gather int8+scale 喂图；图入口 dequant 回 float (见 forward)。
         """
         self._quant_embeddings = dict(quant)
@@ -88,7 +88,7 @@ class ExportWrapper(nn.Module):
             delta_states,
         )
         if output_pos is not None:
-            logits = logits[:, output_pos, :]
+            logits = logits.index_select(1, output_pos.to(torch.int64))
         return logits, *past_kv_flat, *delta_out_flat
 
     def _drive_layers(

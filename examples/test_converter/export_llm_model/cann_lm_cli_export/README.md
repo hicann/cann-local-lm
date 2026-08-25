@@ -199,7 +199,7 @@ qwen3.5 的 OM 编译历经多轮修复,Conv2D infershape **已解决**;ChunkGat
 
 ## 测试方案（覆盖全部 CLI 场景）
 
-`cann_lm_converter.py` 当前全参数：`--hf-path`/`--output-dir`(必填) + `--dtype`(float32/float16/bfloat16) + `--device`(cpu) + `--max-file-size` + `--kv-cache-max-len` + `--seq-len` + `--use-embeddings`(`BooleanOptionalAction`，自动派生 `--no-use-embeddings`) + `--mode`(single/prefill-decode) + `--num-layers` + 量化互斥组 `--quant-path`/`--quant-method gptq` + `--quant-bits`(w4a8/w4a16)。
+`cann_lm_converter.py` 当前全参数：`--hf-path`/`--output-dir`(必填) + `--dtype`(float32/float16/bfloat16) + `--device`(cpu) + `--max-file-size` + `--kv-cache-max-len` + `--seq-len` + `--use-embeddings`(`BooleanOptionalAction`，自动派生 `--no-use-embeddings`) + `--mode`(single/prefill-decode) + `--num-layers` + 量化互斥组 `--quant-path`/`--quant-method gptq` + `--quant-bits`(w4a8)。
 
 下面两个方案均覆盖**全部参数取值**，按需选用（`--hf-path`/`--output-dir` 省略，三模型路径见 `run.sh`）。
 
@@ -247,7 +247,6 @@ qwen3.5 的 OM 编译历经多轮修复,Conv2D infershape **已解决**;ChunkGat
 |---|---|---|---|---|
 | D1 | gemma4 | `--quant-path <dopt产物>` | 场景1 消费 dopt（W4A8+自动 embed） | **需 dopt GPTQ 产物** |
 | D2 | gemma4 | `--quant-method gptq` | 场景2 spawn dopt | **需 NPU，待实现** |
-| D3 | gemma4 | `--quant-method gptq --quant-bits w4a16` | w4a16 位宽 | 需 NPU |
 | D4 | — | `--quant-path X --quant-method gptq` | 互斥组报错 | argparse 拒绝（期望失败） |
 
 **E. 错误/边界（期望失败，fail-fast）**
@@ -277,7 +276,6 @@ qwen3.5 的 OM 编译历经多轮修复,Conv2D infershape **已解决**;ChunkGat
 | N3 | gemma4 | `--mode single --no-use-embeddings` | use-emb False（PLE 图内查表，最难路径） |
 | N4 | qwen3 | `--mode single --kv-cache-max-len 512 --seq-len 256 --max-file-size 1048576` | **堆叠**：kv-len + seq-len + max-file 三边界 |
 | N5 | gemma4 | `--quant-path <dopt产物>` | 场景1 量化（需 dopt） |
-| N6 | gemma4 | `--quant-method gptq --quant-bits w4a16` | 场景2 + w4a16（需 NPU，待实现） |
 | N7 | — | error suite：`--num-layers 999` / `--num-layers 0` / `--quant-path X --quant-method gptq` / `--dtype int8` | 4 个 fail-fast（含互斥） |
 
 **可跑**：N1-N5 + N7 = 6（N6 待 NPU/实现）。

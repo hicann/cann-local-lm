@@ -173,15 +173,16 @@ line 488 的 `residual + hidden_states` 与 line 491 的 `pre_feedforward_layern
 
 ### 2.6 KV Cache 写入 → `npu_scatter_nd_update_`
 
-**当前实现**（`Gemma4TextAttention.forward`，modeling_gemma4.py:391-392）：
+**已落地实现**（`Gemma4TextAttention.forward` + `scatter_kv_to_cache` helper，modeling_gemma4.py）：
 ```python
-cache_k = cache_k.index_copy(2, new_kv_cache_pos, key_states)
-cache_v = cache_v.index_copy(2, new_kv_cache_pos, value_states)
+cache_k = scatter_kv_to_cache(cache_k, new_kv_cache_pos, key_states)
+cache_v = scatter_kv_to_cache(cache_v, new_kv_cache_pos, value_states)
 ```
+`scatter_kv_to_cache` 构造 `[b*n*seq, 3]` 多维坐标 indices (b,n,kv_pos) + `[b*n*seq, d]` updates，命中 `ge.ScatterNdUpdate` 标准多维 scatter 语义（等价 `index_copy(2, kv_pos, kv_new)`，CPU 验证 diff=0）。
 
 | 算子 | 适用性 | 说明 |
 |------|--------|------|
-| `torch_npu.npu_scatter_nd_update_` | ✅ 可直接替换 | 与参考实现 `_update_cache` 一致，按 slot_mapping in-place 写入。本仓 `converter/export/ge_converter.py:234` 也已为 `aten::index_copy` 注册了 GE `InplaceUpdate+Transpose` 转换器，IR 导出路径已通 |
+| `torch_npu.npu_scatter_nd_update_` | ✅ 已落地 | cann_lm 自带 converter (`converter/export/_scatter_nd_update_converter.py`) 覆盖 torchair，直接产出 `ge.ScatterNdUpdate`（不绕 `aten.index_copy` 的 `InplaceUpdate+Transpose`）。gemma4 经 `scatter_kv_to_cache` 构造多维 indices 适配标准语义。CPU else 分支与 GE `ge.ScatterNdUpdate` 语义一致，export trace 命中 `npu_scatter_nd_update_` |
 
 ### 2.7 MoE 算子（不适用）
 
@@ -205,7 +206,7 @@ MC2 dispatch-combine）。
 | P1 | `npu_fast_gelu` | `nn.GELU(tanh)` / `F.gelu(tanh)` | 每层 MLP + per_layer_input 各一次 |
 | P1 | `npu_add_rms_norm` | residual add + 下一 norm | 需轻微重构 forward 拓扑，每层 2 处 |
 | P2 | `npu_rotary_mul` + `npu_apply_rotary_pos_emb`（已落地） | `apply_rotary_pos_emb` 配对 + cat/拆装 | sliding: `npu_rotary_mul` 单 tensor；full: `npu_apply_rotary_pos_emb` 配对（`layout='BSND'`）；kv_shared: `apply_rotary_pos_emb_single`（`npu_rotary_mul` + cat/拆装 模拟 partial） |
-| P2 | `npu_scatter_nd_update_` | `index_copy` KV cache 写入 | 每层 2 处（k/v），IR 路径已通 |
+| P2 | `npu_scatter_nd_update_`（已落地） | `index_copy` KV cache 写入 | 每层 2 处（k/v）；gemma4 已改用 `scatter_kv_to_cache`（多维 indices）+ cann_lm 自带 `ge.ScatterNdUpdate` converter |
 
 > 注：本仓当前为纯 PyTorch 参考实现，引入 `torch_npu` 需遵循 AGENTS.md 的 stub 约定
 > （converter 侧 torchair 编译 + lib 层打桩），NPU 实机验证走系统 Python 的 torch_npu。

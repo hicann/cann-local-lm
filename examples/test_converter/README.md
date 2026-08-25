@@ -24,17 +24,17 @@ OM 运行/出字 (系统 Python + torch_npu + acl + NPU)
 
 ## 用例分组
 
-| 组 | 目录 | 覆盖阶段 | 说明 |
-|---|---|---|---|
-| **基础 e2e** | [`export_and_load_epair/`](export_and_load_epair/) | ①②③ 导出+C++加载 | 最小回归（SimpleNetwork 单 op）；自带 `run.sh`（含环境检查）+ README |
-| **LLM 主流程** | [`export_llm_model/`](export_llm_model/) | 全链路 | 三模型（gemma4/qwen3/qwen3.5）端到端 |
-| ├ CLI 导出测试 | `export_llm_model/cann_lm_cli_export/` | ①② | `run.sh` + `verify.py` + README（含测试方案） |
-| ├ OM 编译+出字 | `export_llm_model/om_npu_verify/` | ③④ | `run_*_gen.py`/`run_*_om.py` + `check_env.sh` + README |
-| ├ CPU 调试验证 | `export_llm_model/llm_engine_on_cpu/` | ①③(ep回环) | `debug_*/verify_*.py`（ep 回环、vs HF、chunk）+ skills |
-| └ OM 编译器+算子注册 | `export_llm_model/{main.cpp, reg_register.h, CMakeLists.txt, build/}` | ③ | `main.cpp`=EpairModelLoader→OM；`reg_register.h`=IR 校准 81 ops（master，om_npu_verify/export_and_load_epair 软链引用） |
-| **量化** | [`export_quant_matmul_single_op/`](export_quant_matmul_single_op/) | ①③ | W4A8 单算子 OM 编译；`verify_quant_matmul_v4_w8a8.py`=W8A8 NPU eager |
-| **RoPE** | [`rope_apply_rotary_pos_emb/`](rope_apply_rotary_pos_emb/) | ③ | `verify_rope.py`：ApplyRotaryPosEmb 数值/IR 验证（demo） |
-| **eager 参考** | [`run_gemma4_npu/`](run_gemma4_npu/) | ④(eager) | torch_npu 直跑 gemma4 出字（不经 OM/epair，基线对照）+ HF 对比 |
+| 组　　　　　　　　　 | 目录　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　| 覆盖阶段　　　　 | 说明　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　|
+| ----------------------| -----------------------------------------------------------------------| ------------------| -------------------------------------------------------------------------------------------------------------------------|
+| **基础 e2e**　　　　 | [`export_and_load_epair/`](export_and_load_epair/)　　　　　　　　　　| ①②③ 导出+C++加载 | 最小回归（SimpleNetwork 单 op）；自带 `run.sh`（含环境检查）+ README　　　　　　　　　　　　　　　　　　　　　　　　　　|
+| **LLM 主流程**　　　 | [`export_llm_model/`](export_llm_model/)　　　　　　　　　　　　　　　| 全链路　　　　　 | 三模型（gemma4/qwen3/qwen3.5）端到端　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　|
+| ├ CLI 导出测试　　　 | `export_llm_model/cann_lm_cli_export/`　　　　　　　　　　　　　　　　| ①②　　　　　　　 | `run.sh` + `verify.py` + README（含测试方案）　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　 |
+| ├ OM 编译+出字　　　 | `export_llm_model/om_npu_verify/`　　　　　　　　　　　　　　　　　　 | ③④　　　　　　　 | `run_*_gen.py`/`run_*_om.py` + `check_env.sh` + README　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　|
+| ├ CPU 调试验证　　　 | `export_llm_model/llm_engine_on_cpu/`　　　　　　　　　　　　　　　　 | ①③(ep回环)　　　 | `debug_*/verify_*.py`（ep 回环、vs HF、chunk）+ skills　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　|
+| └ OM 编译器+算子注册 | `export_llm_model/{main.cpp, reg_register.h, CMakeLists.txt, build/}` | ③　　　　　　　　| `main.cpp`=EpairModelLoader→OM；`reg_register.h`=IR 校准 81 ops（master，om_npu_verify/export_and_load_epair 软链引用） |
+| **量化**　　　　　　 | [`export_quant_matmul_single_op/`](export_quant_matmul_single_op/)　　| ①③　　　　　　　 | W4A8 单算子 OM 编译；`verify_quant_matmul_v4_w8a8.py`=W8A8 NPU eager　　　　　　　　　　　　　　　　　　　　　　　　　　|
+| **RoPE**　　　　　　 | [`rope_apply_rotary_pos_emb/`](rope_apply_rotary_pos_emb/)　　　　　　| ③　　　　　　　　| `verify_rope.py`：ApplyRotaryPosEmb 数值/IR 验证（demo）　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　|
+| **eager 参考**　　　 | [`run_gemma4_npu/`](run_gemma4_npu/)　　　　　　　　　　　　　　　　　| ④(eager)　　　　 | torch_npu 直跑 gemma4 出字（不经 OM/epair，基线对照）+ HF 对比　　　　　　　　　　　　　　　　　　　　　　　　　　　　　|
 
 ## 端到端流程（从 CLI 到验证 PASS）
 

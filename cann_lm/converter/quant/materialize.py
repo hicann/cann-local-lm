@@ -27,27 +27,20 @@ unpack+signed 占位实现，先跑通 Python 流程，CANN 对齐后续。
 import torch
 
 
-_SCALE_MASK = 0x00000000FFFFE000  # 截断尾数低 13 位 (精度 23→10 位) + 截断高 32 位
+_SCALE_MASK = 0x00000000FFFFE000  # 截断尾数低 13 位 + 高 32 位清零 (详见 quant_design.md)
 
 
 def transdata_scale(scale_fp32: torch.Tensor) -> torch.Tensor:
-    """float32 scales → uint64 位模式 + 掩码 (存储格式转换).
+    """fp32 → int64 位模式 + & _SCALE_MASK (截断尾数低 13 位, 存储格式).
 
-    float32 位模式 → int32 → int64 → & 0x00000000FFFFE000.
-    截断尾数低 13 位 (精度 23→10 位), 保留符号+指数+尾数高 10 位.
-    反向用 restore_scale 还原 (尾数低 13 位为 0, 合法 fp32 但精度降低).
-
-    torch 无 uint64, 用 int64 (位模式相同, 位操作结果相同, 仅符号位解释不同).
+    torch 无 uint64, 用 int64 (位模式相同). 反向用 restore_scale 还原.
     """
     bits = scale_fp32.contiguous().view(torch.int32).to(torch.int64)
     return bits & _SCALE_MASK
 
 
 def restore_scale(scale_packed: torch.Tensor) -> torch.Tensor:
-    """uint64 (位模式 + 掩码) → float32 (还原, 尾数低 13 位为 0).
-
-    int64 → int32 (高 32 位为 0) → fp32 (位模式 reinterpret).
-    """
+    """int64 (位模式 + 掩码) → fp32 (尾数低 13 位为 0, 精度降低)."""
     return scale_packed.to(torch.int32).view(torch.float32)
 
 

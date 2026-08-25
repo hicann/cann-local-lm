@@ -275,10 +275,7 @@ def _pack_weights_to_dir(contents, output_dir: Path, max_file_size: int) -> dict
         if raw.dtype == torch.bfloat16:
             raw = raw.view(torch.int16)
         elif "weight_scale" in name and raw.dtype == torch.float32:
-            # 仅落盘时转 int64 (位模式 + & 0x00000000FFFFE000 掩码, 截断尾数低 13 位).
-            # QuantLinear buffer 仍存 fp32 (计算用), ep_json dtype 由 inline_weight_scale_dtype
-            # 后处理改标 DT_INT64, 保证 C++ 按 int64 读 (= uint64 位模式).
-            raw = transdata_scale(raw)  # fp32 → int64
+            raw = transdata_scale(raw)  # fp32→int64; ep_json dtype 由 inline_weight_scale_dtype 改标 DT_INT64
         data = raw.numpy().tobytes()
         del raw
 
@@ -439,14 +436,9 @@ def inline_fused_attn_seq_constants(ep_json_path, qlen_value: int, kvlen_value: 
 
 
 def inline_weight_scale_dtype(ep_json_path) -> int:
-    """把 weight_scale 的 tensor_values dtype 从 float32(7) 改标 int64(5) (落盘格式).
+    """weight_scale tensor_values dtype float32(7)→int64(5).
 
-    QuantLinear buffer 存 fp32 (计算用, forward 直接传 npu_quant_matmul), 但 saver
-    ``_pack_weights_to_dir`` 打包时调 transdata_scale 转 int64 (位模式 + 掩码).
-    需同步改 ep_json 的 tensor_values dtype 为 DT_INT64 (pt2 kDtypeLong=5), 否则
-    C++ 按 DT_FLOAT 读 int64 bytes 会 WEIGHT_SIZE_MISMATCH (4B/元素 vs 实际 8B).
-
-    Returns: 改标的 weight_scale 数量.
+    saver 打包 int64 bytes, 必须同步改 ep_json dtype, 否则 C++ 按 DT_FLOAT 读会 WEIGHT_SIZE_MISMATCH.
     """
     with open(ep_json_path) as f:
         doc = json.load(f)

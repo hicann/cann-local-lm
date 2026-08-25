@@ -66,10 +66,7 @@ class QuantLinear(nn.Module):
         self.group_size = group_size
         self.act_quant = act_quant
         self.register_buffer("weight_q", weight_q.to(torch.int8))       # [k//2, n] nibble-packed (pre-transposed)
-        # weight_scale: fp32 [k//g, n] (计算用, 直接传 npu_quant_matmul).
-        # 仅落盘时由 saver 转 int64 (位模式 + & 0x00000000FFFFE000 掩码, 存储格式);
-        # 见 saver._pack_weights_to_dir + epair_utils.inline_weight_scale_dtype.
-        self.register_buffer("weight_scale", weight_scale.to(torch.float32))  # [k//g, n] (pre-transposed)
+        self.register_buffer("weight_scale", weight_scale.to(torch.float32))  # [k//g, n]; 落盘转 int64 见 quant_design.md
         if bias is not None:
             self.register_buffer("bias", bias.to(weight_scale.dtype))
         else:

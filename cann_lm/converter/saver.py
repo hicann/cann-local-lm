@@ -270,9 +270,7 @@ def save_epair_prefill_decode(
     # 证实退化是 arch22 kernel 对 [actual:s2Size] 不 honor mask 的硬限制, 非 mask 问题.
     inline_fused_attn_seq_constants(
         output_dir / "prefill_ep_json_with_ascend_ir.json", seq_len)
-    # weight_scale 落盘格式: QuantLinear buffer 存 fp32 (计算用), saver 打包时转 int64
-    # (位模式 + & 0x00000000FFFFE000 掩码). 同步改 ep_json dtype 为 DT_INT64,
-    # 否则 C++ 按 DT_FLOAT 读 int64 bytes 会 WEIGHT_SIZE_MISMATCH.
+    # 同步改 ep_json dtype 为 DT_INT64, 否则 C++ 按 DT_FLOAT 读 int64 bytes 会 WEIGHT_SIZE_MISMATCH
     inline_weight_scale_dtype(
         output_dir / "prefill_ep_json_with_ascend_ir.json")
 

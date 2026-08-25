@@ -324,10 +324,7 @@ def _swap_linear_from_sd(
             w_gptq, scale2d, group_size, signed=True, nbits=bit, packed=True
         )
         weight_q = weight_q.transpose(-1, -2).contiguous()          # [n, k//2] -> [k//2, n]
-        weight_scale = weight_scale.transpose(-1, -2).contiguous()   # [n, k//g] -> [k//g, n] fp32
-        # weight_scale 保持 fp32 (计算用, QuantLinear.forward 直接传 npu_quant_matmul).
-        # 仅落盘时由 saver 转 int64 (位模式 + 掩码), 见 epair_utils.inline_weight_scale_dtype
-        # + saver._pack_weights_to_dir 识别 weight_scale 调 transdata_scale.
+        weight_scale = weight_scale.transpose(-1, -2).contiguous()   # [n, k//g] -> [k//g, n]
         ql = QuantLinear(
             weight_q, weight_scale, group_size, bias=m.bias, act_quant=act_quant,
         )

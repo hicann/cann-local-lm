@@ -706,7 +706,7 @@ weights_1.bin: [tensor_2: 6000B]                   → 6000B (单独文件，超
 
 ## C++ 加载侧
 
-导出产物由 C++ `EpairModelLoader` 加载。**加载器库源码**位于 `cann_lm/converter/export/csrc/`（`backend/epair_model_loader.cc` / `ge_graph_builder.cc` / `ge_weight_loader.cc` / `epair_model_parser.cc`，构建产物 `libtorch_delegate_backend.so`）；**示例 main + 算子注册**位于 `examples/export_llm_model/`（`main.cpp` + `reg_register.h`）。
+导出产物由 C++ `EpairModelLoader` 加载。**加载器库源码**位于 `cann_lm/converter/export/csrc/`（`backend/epair_model_loader.cc` / `ge_graph_builder.cc` / `ge_weight_loader.cc` / `epair_model_parser.cc`，构建产物 `libtorch_delegate_backend.so`）；**示例 main + 算子注册**位于 `examples/test_converter/export_llm_model/`（`main.cpp` + `reg_register.h`）。
 
 ### EpairModelLoader API (2 路径)
 
@@ -830,10 +830,10 @@ for (const auto &node : parser.Nodes()) {
 GE 算子注册分两层，互补：
 
 1. **Python 侧 `converter/export/ge_converter.py`** — `register_ge_converters()` 把 `torch.ops` 节点映射到 GE 算子，在 `export_to_epair` 前调用（save_epair 步骤 1）。覆盖：
-   - `cann_lm.*` 自定义算子：`add_rms_norm`/`rms_norm`/`rotary_mul`/`rope_in_place`/`quant_matmul_s8s4`/`fused_infer_attention_score`/`beam_search`（算子定义在 `cann_lm/models/fused_ops/`，GE 映射实现见 `compositte_op.md`）
+   - `cann_lm.*` 自定义算子：`add_rms_norm`/`rms_norm`/`rotary_mul`/`rope_in_place`/`quant_matmul_s8s4`/`fused_infer_attention_score`/`beam_search`（算子定义在 `cann_lm/models/fused_ops/`，GE 映射实现见 [`fused_ops.md`](../../cann_lm_models/fused_ops/fused_ops.md) §3）
    - 部分 `aten.*` 算子：`softplus`/`eye`/`type_as`/`index_copy`/`index_put`（torch.export 残留的 aten 节点，torchair 无内置映射时补）
 
-2. **C++ 侧 `examples/export_llm_model/reg_register.h`** — 注册 GE 图编译期需要的算子实现（aclgrphBuildModel 前），不同模型需要的算子集不同：
+2. **C++ 侧 `examples/test_converter/export_llm_model/reg_register.h`** — 注册 GE 图编译期需要的算子实现（aclgrphBuildModel 前），不同模型需要的算子集不同：
 
 | 算子类别 | 示例算子 | 用于 |
 |---------|---------|------|
@@ -928,7 +928,7 @@ td::EpairModelLoader decode_loader("decode_ep_json_with_ascend_ir.json",
 
 - `aten.index_copy.default` GE converter 缺失已解决：在 `converter/export/ge_converter.py` 用 `ge.InplaceUpdate` + `ge.TransposeD` 实现了 converter。converter CLI 导出 gemma4 prefill/decode + C++ `main.cpp` 加载编译 OM 全链路跑通（prefill 6079 节点 / decode 6044 节点 / `prefill.om` + `decode.om` 各 9.4GB）。
 
-- **纯 embeddings（`--use-embeddings`）全链路已通**：converter CLI 导出 + C++ `main.cpp` OM 编译跑通——qwen3-0.6B（`qwen3_pure_emb.om` 374MB，weights ≈ OM）+ gemma4-E2B（5B 参数 35 层含 PLE，`gemma4_e2b_pure.om` 4.57GB，ep_json 19MB / weights 4.56GB ≈ OM / host_weights 5.5GB 查表权重给 host）。`saver.detach_externalized_lookups()` 在导出前 del 外置查表子模块 → torch.export 不 lift → `weights_*.bin` 不含冗余查表权重（≈ OM，无 5.5GB 冗余）。数值验证由 OM runner（`examples/export_llm_model/om_npu_verify/run_*_om.py`，OM vs eager/HF，ep 回环的超集）承接——原 `verify_qwen3_epair.py`/`verify_gemma4_epair.py`（`ep.module()` vs wrapper 的 ep 回环）已重构进 OM runner。gemma4 经 `run_gemma4_om.py` 验证（OM vs eager maxdiff<1.0 MATCH）+ `run_gemma4_gen.py` 文本生成通过；qwen3.5 经 `run_qwen3_5_om.py`（OM vs EP/HF MATCH）。**注**：qwen3（base）`run_qwen3_om.py` 暴露 OM 数值异常（OM vs eager maxdiff≈20，cann_lm eager≈HF 正确、OM 输出错误），疑在其动态 RoPE（Pow/Cos/Sin，gemma4 用预缓存表不触发），OM 计算侧待排查。
+- **纯 embeddings（`--use-embeddings`）全链路已通**：converter CLI 导出 + C++ `main.cpp` OM 编译跑通——qwen3-0.6B（`qwen3_pure_emb.om` 374MB，weights ≈ OM）+ gemma4-E2B（5B 参数 35 层含 PLE，`gemma4_e2b_pure.om` 4.57GB，ep_json 19MB / weights 4.56GB ≈ OM / host_weights 5.5GB 查表权重给 host）。`saver.detach_externalized_lookups()` 在导出前 del 外置查表子模块 → torch.export 不 lift → `weights_*.bin` 不含冗余查表权重（≈ OM，无 5.5GB 冗余）。数值验证由 OM runner（`examples/test_converter/export_llm_model/om_npu_verify/run_*_om.py`，OM vs eager/HF，ep 回环的超集）承接——原 `verify_qwen3_epair.py`/`verify_gemma4_epair.py`（`ep.module()` vs wrapper 的 ep 回环）已重构进 OM runner。gemma4 经 `run_gemma4_om.py` 验证（OM vs eager maxdiff<1.0 MATCH）+ `run_gemma4_gen.py` 文本生成通过；qwen3.5 经 `run_qwen3_5_om.py`（OM vs EP/HF MATCH）。**注**：qwen3（base）`run_qwen3_om.py` 暴露 OM 数值异常（OM vs eager maxdiff≈20，cann_lm eager≈HF 正确、OM 输出错误），疑在其动态 RoPE（Pow/Cos/Sin，gemma4 用预缓存表不触发），OM 计算侧待排查。
 
 ### 逐图常量内联：actual_seq_qlen/kvlen → `ge.Const`（消除共享冲突 + PartitionedCall）
 
@@ -949,7 +949,7 @@ prefill-decode 共享 `weights_0.bin` 带来一个隐患：modeling 里 `torch.t
 >
 > q_len = `query.shape[2]`：prefill = `seq_len`（参数），decode = 1（`save_epair_prefill_decode` 固定 `seq_len=1`）。内联后旧的 `lifted_tensor` / `Reshape` 引用变 dead，C++ 加载侧忽略。
 >
-> 相关：[`ops_replacement.md`](../ops_replacement.md) §7（关 InplaceAddRmsNorm 融合）同属"让 OM 终态对齐 support_ops.md"的编译期调整，但本节是 saver/epair 格式层的逐图常量内联（导出期），二者互补。
+> 相关：[`ops_replacement.md`](../ops_replacement.md) §7（关 InplaceAddRmsNorm 融合）同属"让 OM 终态对齐 [`fused_ops.md`](../cann_lm_models/fused_ops/fused_ops.md) §1 算子总表"的编译期调整，但本节是 saver/epair 格式层的逐图常量内联（导出期），二者互补。
 
 ## 新增模型接入指南
 
@@ -1010,7 +1010,7 @@ REGISTRY["{model_name}"] = ModelEntry(
 
 ### 步骤 5：补充 GE 算子
 
-在 `examples/export_llm_model/reg_register.h` 中注册模型需要的 GE 算子。运行 C++ 二进制时根据报错逐个补充。
+在 `examples/test_converter/export_llm_model/reg_register.h` 中注册模型需要的 GE 算子。运行 C++ 二进制时根据报错逐个补充。
 
 ### 步骤 6：验证
 
@@ -1037,7 +1037,7 @@ python cann_lm/converter/cann_lm_converter.py \
 
 ### gemma4 export decode bug 修复 (2026-07-25)
 
-`examples/export_llm_model/llm_engine_on_cpu/debug_gemma4/compare_hf_vs_ep.py` 之前 EP（wrapper scatter 模式）decode 退化重复（"my name is my name is" / "人工智能人工智能"），而 CLM（cat 模式 `model.generate`）== HF。根因 + 修复：
+`examples/test_converter/export_llm_model/llm_engine_on_cpu/debug_gemma4/compare_hf_vs_ep.py` 之前 EP（wrapper scatter 模式）decode 退化重复（"my name is my name is" / "人工智能人工智能"），而 CLM（cat 模式 `model.generate`）== HF。根因 + 修复：
 
 1. **`_prepare_causal_mask` 4D sliding window decode bug**（根因，`modeling_gemma4.py`）：4D mask 路径对 sliding_attention 层套 window 时用 `q_range=arange(q_len)` 算 q 位置。decode 时 `q_len=1` → `arange(1)=[0]`，但 decode token 在序列中真实位置是 6（非 0），window 算出"只 k_pos=0 可见"，屏蔽所有其他 K → sliding 层只看第一个 prefill token → 退化。修复：`_prepare_causal_mask` 加 `new_kv_cache_pos` 参数，4D sliding 用 `new_kv_cache_pos`（q 在 buffer 的真实写入位置，与 k_pos 同基准）算 window，decode 时正确。两处调用（text_model forward 内）传 `new_kv_cache_pos`。
 2. **`Gemma4ExportWrapper._drive_layers` `shared_kv_states` 持久化**（`models/gemma4/export_wrapper.py`）：wrapper 丢弃 model 返回的 `shared_kv_states`（每次 forward 新建空 dict），而 `model.generate`（`modeling_gemma4.py` line 800）正确跨步持久。修复：wrapper 存 `self._shared_kv_states`，跨 prefill/decode 调用持久（对齐 generate）。非退化根因（store 层 decode 覆盖 shared dict），但更稳健。

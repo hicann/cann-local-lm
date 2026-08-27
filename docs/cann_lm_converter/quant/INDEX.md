@@ -23,8 +23,9 @@
 | `auto_quant.py` | 一键式量化（方案 C）：`run_auto_quant` / `generate_dopt_config` / `_run_dopt_subprocess` / `_detect_device_type` |
 | `dopt_wrapper.py` | dopt subprocess 主体：`main` / `_build_layer_strategy` / `parse_args` |
 | `config.yaml` | dopt GPTQ 校准训练配置（`--optimize-config`） |
-| `calibration.json` | GPTQ 校准语料（557KB） |
-| `dopt_config.json` | dopt 层策略配置（场景 1 `--dopt-config`；场景 2 由 wrapper 自动生成；converter 侧 `_read_quant_param_map` 也读） |
+| `calibrate_sets/` | GPTQ 校准语料（jsonl，由 `download_dataset.py` 下载生成，可替换/多选） |
+| `download_dataset.py` | 校准数据集下载脚本（ultrachat_200k/fineweb_edu/toolbench/bfclv4/c4/coig_cqia/mc4） |
+| `dopt_config.json` | dopt 层策略配置（由 `_build_layer_strategy` 自动生成到产物目录；converter 侧 `_read_quant_param_map` 从产物目录读） |
 
 ### dopt_lm 子包（vendored GPTQ 框架）
 
@@ -70,9 +71,10 @@
 
 | 参数 | 作用 |
 |------|------|
-| `--quant-path <dopt产物目录>` | 场景 1：加载 dopt GPTQ 产物，物化 int4 + swap QuantLinear（CPU-only 兜底） |
-| `--quant-method` | `gptq` | 场景 2：自动 spawn dopt subprocess 跑 GPTQ（已实现，需 NPU/GPU；与 --quant-path 互斥） |
+| `--quant-path <dopt产物目录>` | 场景 1：加载 dopt GPTQ 产物，物化 int4 + swap QuantLinear（兜底） |
+| `--quant-method` | `gptq` | 场景 2：自动 spawn dopt subprocess 跑 GPTQ（已实现，NPU/GPU/CPU；与 --quant-path 互斥） |
 | `--quant-bits` | `w4a8` | 格式/位宽（w4a8，默认 w4a8；--quant-method 时生效；w4a16 不支持） |
+| `--quant-device` | `npu`\|`cuda`\|`cpu` | 场景 2 subprocess 设备（默认检测，无加速器回落 cpu；cpu 仅小模型适用） |
 
 > CLI 用法见 [INDEX.md](../cli/INDEX.md) / [cli_design.md](../cli/cli_design.md)。
 

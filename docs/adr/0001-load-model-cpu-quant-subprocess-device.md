@@ -18,7 +18,7 @@ converter 全流程三阶段，各阶段计算域需求不同：
 
 1. **cann_lm 融合算子只在 CPU 实现**：`cann_lm/models/fused_ops/` 的算子（`npu_quant_matmul` / `npu_dynamic_quant` / `fused_infer_attention_score` 等）由 `_library.py` 提供 schema + fake-meta + CPU PoC impl，**不支持真 NPU 执行**（只支持 torch.export trace）。故 `load_model` 加载的 cann_lm 模型无法在 NPU 上 forward。
 2. **converter venv 是 CPU-only**：`torch 2.9.0+cpu` + `torchair`（源码编译 `NO_ASCEND_SDK=1`）+ lib stubs（`libtorch_npu.so` 等打桩，给 torchair GE 引擎提供 C 符号，避免真 NPU `aclrtSetDevice→107001`）。**不装 torch_npu python 包**。
-3. **GPTQ 需真算子 eager**：dopt_lm 用 `transformers.AutoModelForCausalLM` + 真 torch_npu/torch.cuda 算子 eager 跑 GPTQ（Hessian 需 batch forward 累积，Cholesky 需 GPU/NPU 算力）。CPU 跑不了（7B 模型 Hessian 数 GB，CPU 算不动；且 dopt 依赖真算子）。
+3. **GPTQ 需真算子 eager**：dopt_lm 用 `transformers.AutoModelForCausalLM` + 真 torch_npu/torch.cuda 算子 eager 跑 GPTQ（Hessian 需 batch forward 累积，Cholesky 需算力）。dopt_lm `SUPPORTED_DEVICE_TYPES = {"cpu","cuda","npu"}` **含 CPU**（CPU 走 `dispatch_dtype=float32`），但 7B+ 模型 Hessian 数 GB，CPU 极慢（仅小模型/调试适用）。
 4. **环境冲突无解**：若 converter 主进程装真 torch_npu，会撞 `_LazyTorchair` 代理覆盖源码 torchair（`torch_npu/dynamo/__init__.py` 无条件装 `sys.modules['torchair']=_LazyTorchair()`，劫持到 bundled wrapper，wrapper 的 `fx2ge_converter.parse_input` 有 AssertionError 在 `input_ids` placeholder 上失败）+ torch_npu 版本依赖（`npu_chunk_gated_delta_rule` schema 仅 ≥2.7.1.post8）+ `_get_deterministic_level` API 缺失。详见 cli_design.md "converter 与 torch_npu 的关系"。
 
 ## 决策 (Decision)
@@ -26,7 +26,7 @@ converter 全流程三阶段，各阶段计算域需求不同：
 **主进程（load_model + swap + export）写死 CPU venv；quant 子程序（`--quant-method gptq`）用系统 Python + 真计算设备（NPU/GPU），通过 subprocess 隔离。**
 
 - `load_model(hf_path, dtype, device="cpu")` 写死 `device="cpu"`，不暴露 `--device` CLI 参数。
-- `--quant-device` 仅控制 dopt subprocess 设备（`npu`/`cuda`），通过 `os.environ["DEVICE"]` 传递给 subprocess；`None` 则 `_detect_device_type` spawn 检测或继承父进程 `DEVICE`。
+- `--quant-device` 仅控制 dopt subprocess 设备（`npu`/`cuda`/`cpu`），通过 `os.environ["DEVICE"]` 传递给 subprocess；`None` 则 `_detect_device_type` spawn 检测或继承父进程 `DEVICE`，无 NPU/GPU 时回落 `cpu`（dopt_lm 支持 CPU float32，7B+ 极慢）。
 - subprocess 用独立 Python（`DOPT_PYTHON`，默认系统 `/opt/buildtools/Python-3.11.4/bin/python3`）+ 真 torch_npu/torch.cuda + NPU/GPU env（`LD_LIBRARY_PATH` 去 stubs）。
 
 理由：导出只需 fake-meta trace（`_library.py` 自提供，不需 torch_npu）；GPTQ 需真算子 eager（必须计算设备）。两者计算域不同，且环境冲突（torch_npu 装了会破坏 GE 转换）无解，故用 subprocess 隔离两套环境。
@@ -44,7 +44,7 @@ converter 全流程三阶段，各阶段计算域需求不同：
 - **引入的约束**：
   - `load_model` 永远 CPU（cann_lm 融合算子只在 CPU 实现，不计划移植到 NPU）
   - `--quant-device` 只影响 subprocess，不影响主进程
-  - 纯 CPU 环境（无 NPU/GPU）只能用 `--quant-path`（`--quant-method gptq` 会报错并提示用 `--quant-path`）
+  - 纯 CPU 环境（无 NPU/GPU）`--quant-method gptq` 回落 `cpu`（dopt_lm 支持，7B+ 极慢）；或用 `--quant-path` 消费离线产物
   - cann_lm 模型层名必须与 transformers 层名一致（dopt 量化的 HF 模型层名要能 port 到 cann_lm 模型，靠命名一致）
 
 ## 替代方案 (Alternatives)
@@ -63,10 +63,13 @@ converter venv 装真 torch_npu（如 2.9.0.post6）+ 重命名 `torch_npu/dynam
 
 dopt 在 CPU 上跑 GPTQ（Hessian + Cholesky 全 CPU）。
 
-否决理由：
-1. 7B+ 模型 Hessian 矩阵数 GB，CPU 算不动（耗时不可接受）
-2. dopt_lm 依赖真算子 eager（transformers + torch_npu/torch.cuda），CPU 无真算子
-3. GPTQ 校准需 batch forward 累积激活，CPU 吞吐不足
+> **状态变更（2026-08-26）**：dopt_lm 已支持 CPU（`SUPPORTED_DEVICE_TYPES` 含 `cpu`，`train.py`/`modelutils.py` 有 CPU 分支 `dispatch_dtype=float32`）。`--quant-device cpu` 或无加速器自动回落已**落地**（`auto_quant._detect_device_type` 不再对纯 CPU 报错）。故本方案从"否决"转为"**已支持，性能受限**"。
+
+性能受限（仍建议 NPU/GPU 或 `--quant-path` 兜底）：
+1. 7B+ 模型 Hessian 矩阵数 GB，CPU 极慢（耗时不可接受，仅小模型/调试适用）
+2. GPTQ 校准需 batch forward 累积激活，CPU 吞吐不足
+
+> 注：CPU GPTQ 仍走 **subprocess 隔离**（`DEVICE=cpu` 传给 subprocess，系统 Python + CPU torch），不违背本 ADR 主决策（load_model 写死 CPU + subprocess 隔离两套环境）。
 
 ### 替代方案 C: 内存桥接（进程内，不 spawn subprocess）
 

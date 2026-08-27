@@ -76,7 +76,7 @@ host 查表+gather:
 
 ## dopt 产物现状(已验证)
 
-`cann_lm/converter/quant/quant_output/model.safetensors`(qwen3-0.6B 的 dopt 产物):
+`<dopt 产物目录>/model.safetensors`(qwen3-0.6B 的 dopt 产物, `--output-dir` 指定):
 
 ```
 model.embed_tokens.quant_op.weight_quantizer.bit:            [] int64 = 8
@@ -186,8 +186,8 @@ host: int8_emb = gather(int8_weight, input_ids)         # [b,s,hidden]
 
 1. **物化精确性**:`materialize_int8_per_channel_symmetric(w, s)` → `int8*scale` vs dopt fakequant `w`,maxdiff=0(已初步验证)
 2. **host gather + dequant 回环**:`get_sample_inputs(quant_embeddings=True)` → `ep.module()` 输出 vs float embeddings 输出,maxdiff 应=0(dopt fakequant 精确)
-3. **端到端 OM 验证 vs HF**:扩展 `examples/export_llm_model/om_npu_verify/run_qwen3_om.py` 支持 embed 量化样本(host 用 int8+scale gather 喂图),OM-Q vs wrapper(in-graph float) vs HF。原 `verify_qwen3_epair.py` 已重构进 OM runner
-4. **C++ OM 编译**:quant-embeddings epair → `examples/export_llm_model/build/export_llm_model` → .om(图入口 dequant 用 aten cast+mul,应可编译)
+3. **端到端 OM 验证 vs HF**:扩展 `examples/test_converter/export_llm_model/om_npu_verify/run_qwen3_om.py` 支持 embed 量化样本(host 用 int8+scale gather 喂图),OM-Q vs wrapper(in-graph float) vs HF。原 `verify_qwen3_epair.py` 已重构进 OM runner
+4. **C++ OM 编译**:quant-embeddings epair → `examples/test_converter/export_llm_model/build/export_llm_model` → .om(图入口 dequant 用 aten cast+mul,应可编译)
 
 ---
 

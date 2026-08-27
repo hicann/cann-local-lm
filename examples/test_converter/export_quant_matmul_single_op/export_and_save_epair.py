@@ -55,4 +55,4 @@ for i, inp in enumerate(sample_inputs):
 print(f"\nepair saved to: {output_dir}")
 print(f"  ep_json_with_ascend_ir.json  (contains 1 QuantBatchMatmulV4 node)")
 print(f"  weight_info.json + weights_0.bin  (weight_q int8 + weight_scale fp32 as Const)")
-print(f"\nNext: OM-compile on NPU via examples/export_and_load_epair/build/export_and_load_example")
+print(f"\nNext: OM-compile on NPU via examples/test_converter/export_and_load_epair/build/export_and_load_example")

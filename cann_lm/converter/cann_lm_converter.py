@@ -3,7 +3,7 @@
 
 Model type is auto-detected from config.json; no --model-type needed.
 load_model 写死 CPU (融合算子 cann_lm/models/fused_ops/ 只在 CPU 实现), 不接受 --device.
-NPU 跑 GPTQ 用 --quant-method gptq + --quant-device npu (subprocess 隔离).
+NPU 跑 GPTQ 用 --quant-method gptq + --quant-device npu (subprocess 隔离); cpu 亦可 (小模型).
 
 Usage:
   cann-lm-converter \          # 装包后 (console_scripts); 或 python -m cann_lm.converter.cann_lm_converter
@@ -52,12 +52,13 @@ def convert(
     quant_path: str | None = None,
     quant_method: str | None = None,  # 量化算法, 当前仅支持 "gptq" (自动 spawn dopt); 与 quant_path 互斥
     quant_bits: str = "w4a8",  # 格式/位宽 (w4a8); 仅 quant_method 时生效
-    quant_device: str | None = None,  # 量化 subprocess 设备 ('npu'/'cuda'), 跳过环境检测; None 则继承父进程 DEVICE 或检测
+    quant_device: str | None = None,  # 量化 subprocess 设备 ('npu'/'cuda'/'cpu'), 跳过环境检测; None 则继承父进程 DEVICE 或检测
 ) -> None:
     """程序化入口：HF 模型 → epair
 
     load_model 写死 CPU (cann_lm 自定义融合算子 cann_lm/models/fused_ops/ 只在 CPU 实现),
-    不接受 --device 参数. NPU 跑 GPTQ 通过 --quant-method gptq + subprocess 隔离.
+    不接受 --device 参数. GPTQ 跑在 NPU/GPU/CPU subprocess (dopt_lm 支持 CPU float32),
+    通过 --quant-method gptq + subprocess 隔离, 由 --quant-device 选设备.
 
     Args:
         mode: "single" — one shape-specialized graph (seq_len 由参数指定);
@@ -69,10 +70,12 @@ def convert(
             自动推断 group_size, swap QuantLinear (W4A8), 自动检测 embed 量化.
             精细调整 (层策略/group_size/算法参数) 由 dopt 分步完成 (见 dopt_design.md). 与 quant_method 互斥.
         quant_method: 量化算法 (当前仅支持 "gptq"). 场景 2: converter 自动 spawn dopt subprocess
-            跑 GPTQ (需 NPU 环境, 待实现, 见 quant_design.md "一键式量化方案选型"). 与 quant_path 互斥.
+            跑 GPTQ (NPU/GPU/CPU 环境; CPU 仅小模型适用, 见 quant_design.md "一键式量化方案选型").
+            与 quant_path 互斥.
         quant_bits: 格式/位宽 (w4a8, 默认 w4a8). 仅 quant_method 时生效, 传给 dopt_config 的 strategy.
-        quant_device: 量化 subprocess 设备 ('npu'/'cuda'), 跳过环境检测. None 则继承父进程 DEVICE
-            环境变量 (set_env.sh npu 模式 export) 或 spawn 检测. 与 set_env.sh 等价 (后设覆盖先设).
+        quant_device: 量化 subprocess 设备 ('npu'/'cuda'/'cpu'), 跳过环境检测. None 则继承父进程
+            DEVICE 环境变量 (set_env.sh npu 模式 export) 或 spawn 检测 (无 NPU/GPU 时回落 cpu).
+            与 set_env.sh 等价 (后设覆盖先设). cpu 仅小模型/调试适用 (7B+ Hessian 极慢).
     """
     # CLI --quant-device 显式指定: 写到 os.environ["DEVICE"] (主进程), subprocess 经 env=os.environ.copy()
     # 自动继承, _detect_device_type 优先读它跳过 spawn 检测. 与 set_env.sh npu 模式等价.
@@ -85,7 +88,7 @@ def convert(
     dopt_out_is_temp = False  # True = converter 生成的临时盘 (场景 2),swap 后清理; False = 用户路径 (场景 1)
     if quant_method == "gptq":
         from cann_lm.converter.quant.auto_quant import run_auto_quant
-        print(f"[1/3] Quant: --quant-method gptq (bits={quant_bits}), spawn dopt subprocess (NPU GPTQ)")
+        print(f"[1/3] Quant: --quant-method gptq (bits={quant_bits}), spawn dopt subprocess (GPTQ)")
         dopt_out_path = run_auto_quant(hf_path, quant_bits)
         dopt_out_is_temp = True
         print(f"      dopt GPTQ done: {dopt_out_path}")
@@ -214,12 +217,13 @@ def parse_args() -> argparse.Namespace:
                                   "与 --quant-method 互斥.")
     quant_group.add_argument("--quant-method", default=None, choices=["gptq"],
                              help="量化算法 (当前仅支持 gptq). 场景 2: converter 自动 spawn dopt subprocess 跑 GPTQ "
-                                  "(需 NPU 环境, 待实现). 与 --quant-path 互斥.")
+                                  "(NPU/GPU/CPU 环境, CPU 仅小模型适用). 与 --quant-path 互斥.")
     parser.add_argument("--quant-bits", default="w4a8", choices=["w4a8"],
                         help="格式/位宽 (w4a8, 默认 w4a8). 仅 --quant-method 时生效, 传给 dopt_config 的 strategy.")
-    parser.add_argument("--quant-device", default=None, choices=["npu", "cuda"],
-                        help="量化 subprocess 设备 (npu/cuda), 跳过环境检测. 默认 None 继承父进程 DEVICE "
-                             "(set_env.sh npu 模式 export) 或 spawn 检测. 与 source scripts/set_env.sh npu 等价.")
+    parser.add_argument("--quant-device", default=None, choices=["npu", "cuda", "cpu"],
+                        help="量化 subprocess 设备 (npu/cuda/cpu), 跳过环境检测. 默认 None 继承父进程 DEVICE "
+                             "(set_env.sh npu 模式 export) 或 spawn 检测 (无 NPU/GPU 时回落 cpu). "
+                             "cpu 仅小模型/调试适用 (dopt_lm 支持 CPU float32, 7B+ 极慢). 与 set_env.sh 等价.")
     return parser.parse_args()
 
 

@@ -2,16 +2,17 @@
 #
 # run_pd6_cases.sh — 6 用例: qwen3.5 / gemma4 × {无量化, 场景1 --quant-path, 场景2 --quant-method gptq}
 #
-# 当前进展 (2026-08-19):
-#   case_1  qwen3.5 无量化       ✓ 跑通 (weights 1571.9 MB, host_weights 508.6 MB)
-#   case_2  gemma4  无量化       ✓ 跑通
-#   case_3  qwen3.5 场景1        ✗ dopt 不支持 qwen3.5 混合架构 (linear_attn 无 self_attn → AttributeError)
-#   case_4  gemma4  场景1        ✓ 跑通 (quant_info 8 字段全一致, n_quantized=277, weights 1377.3 MB)
-#   case_5  qwen3.5 场景2        ✗ 同 case_3 (dopt 不支持 linear_attn)
-#   case_6  gemma4  场景2        ✓ 跑通 (quant_info 与 case_4 一致)
-#   gemma4 场景1 vs 场景2 对比:  quant_info + host_weights 完全一致; weights_0.bin md5 不同 (NPU 前向非确定性,
-#                                非 dopt_config 差异 — dopt_config 279 层完全一致)
-#   待解决: case_3/5 需改 dopt ptq_loop.py:163 (layer.self_attn 硬编码 → 兼容 linear_attn)
+# 当前进展 (2026-08-26 复跑 case 3-6, 全通过):
+#   case_1  qwen3.5 无量化       ✓ 跑通 (weights 1571.9 MB, host_weights 508.6 MB) [2026-08-19 记录, 本轮未复跑]
+#   case_2  gemma4  无量化       ✓ 跑通 [2026-08-19 记录, 本轮未复跑]
+#   case_3  qwen3.5 场景1        ✓ 跑通 (n_quantized=187, weights 491.4 MB, host_weights 255.3 MB)
+#   case_4  gemma4  场景1        ✓ 跑通 (n_quantized=277, weights 1484.6 MB, host_weights 2753.6 MB)
+#   case_5  qwen3.5 场景2        ✓ 跑通 (与 case_3 一致: n_quantized=187, weights 491.4 MB, host_weights 255.3 MB)
+#   case_6  gemma4  场景2        ✓ 跑通 (与 case_4 一致: n_quantized=277, weights 1484.6 MB, host_weights 2753.6 MB)
+#   注: case_3/5 此前 (2026-08-19) 因 dopt 不支持 qwen3.5 混合架构 (linear_attn 无 self_attn) 失败,
+#       现 dopt 已支持 qwen3.5, 两场景均跑通 (场景1 --quant-path 与 场景2 --quant-method gptq 产物一致).
+#   gemma4 场景1 vs 场景2 对比: quant_info + host_weights 大小完全一致; weights_0.bin 大小一致 (1484.6 MB),
+#                               md5 可能不同 (NPU 前向非确定性, 非 dopt_config 差异 — dopt_config 279 层完全一致)
 #
 # 三套环境 (互不叠加):
 #   converter env  CPU venv + torchair stubs (torch_npu 不装, 走 stub 路径)  → ① 导出 epair
@@ -84,7 +85,7 @@ setup_dopt_env() {
 # ─── 临时改 config.yaml 加速 (ptq_samples=16); 备份 + trap 还原 ───
 _quick_config() {
   cp "$QD/config.yaml" "$QD/config.yaml.bak"
-  printf 'dataset:\n  train_files:\n    - "calibration.json"\n  ptq_samples: 16\ncutoff_len: 64\nextra_training_config:\n  fp16: true\ncutoff_len: 64\n' > "$QD/config.yaml"
+  printf 'dataset:\n  train_files:\n    - "calibrate_sets/calibrate_fineweb_edu.jsonl"\n  ptq_samples: 5\ncutoff_len: 64\nextra_training_config:\n  fp16: true\n' > "$QD/config.yaml"
 }
 _restore_config() { mv "$QD/config.yaml.bak" "$QD/config.yaml" 2>/dev/null || true; }
 
@@ -136,7 +137,7 @@ PYEOF
 run_dopt() {
   local HF="$1" CFG="$2" OPTCFG="$3" OUT="$4"
   rm -rf "$OUT"; mkdir -p "$OUT"
-  echo "### dopt GPTQ -> $(basename "$OUT")  $(date +%T)  (cwd=quant/ 找 calibration.json)"
+  echo "### dopt GPTQ -> $(basename "$OUT")  $(date +%T)  (cwd=quant/ 找 calibrate_sets/)"
   ( cd "$QD" && timeout 1200 "$DOPT_PY" -m dopt_lm.opt_main \
       --model-path "$HF" --dopt-config "$CFG" --optimize-config "$OPTCFG" \
       --output-dir "$OUT" --hf_type_save ) 2>&1 | grep -v "Permission\|UserWarning\|warnings.warn" | tail -15

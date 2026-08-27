@@ -28,7 +28,8 @@ Convention (W4A8 s8s4 对称, offset=0):
     预转置使 ``size(-1) = n`` (out_features); ``transpose_x2=False``。
   - activation: ``npu_dynamic_quant`` → int8 x1 + per-token fp32 x1_scale。
   - bias optional ``[n]`` in output dtype (None when source Linear has no bias;
-    no dummy-zeros workaround — the op's bias is genuinely optional).
+    the GE converter ``_quant_matmul_converter.py`` injects a dummy zeros[N]
+    bias when bias=None — CANN V4 InferNDimWithBias rejects bias=nullptr).
 """
 
 import torch
@@ -77,7 +78,7 @@ class QuantLinear(nn.Module):
         out = torch.ops.npu.npu_quant_matmul(
             x_q, self.weight_q, self.weight_scale,
             pertoken_scale=x_scale,               # per-token act scale from npu_dynamic_quant
-            bias=self.bias,                       # None when source Linear has no bias (no dummy workaround)
+            bias=self.bias,                       # None when source Linear has no bias; GE converter 侧塞 dummy zeros[N]
             group_sizes=[1, 1, self.group_size],  # V4 3-element [m,n,k]; K-group at index [2]
             output_dtype=_OUT_DTYPE_CODE.get(x.dtype, 5),
             transpose_x1=False,

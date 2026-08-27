@@ -85,7 +85,7 @@ export PYTHONPATH=/home/developer/Ascend/cann-9.2.0/python.site-packages:/mnt/wo
 | `cann_lm/models/qwen3_5/modeling_qwen3_5.py` | qwen3.5 模型 forward | 同上 |
 | `cann_lm/converter/export/ge_converter.py` | torchair GE converter | 加 `@register_fx_node_ge_converter(torch.ops.npu.xxx.default)` + 调 `ge.Xxx(...)` |
 | `cann_lm/converter/saver.py` | epair 落盘 + config | 改 `whitelist_decompositions` / `EpairConfig` |
-| `examples/export_llm_model/om_npu_verify/reg_register.h` | C++ REG_OP 注册 | 加 `REG_OP(Xxx).INPUT(...).ATTR(...).OP_END_FACTORY_REG(Xxx)` |
+| `examples/test_converter/export_llm_model/om_npu_verify/reg_register.h` | C++ REG_OP 注册 | 加 `REG_OP(Xxx).INPUT(...).ATTR(...).OP_END_FACTORY_REG(Xxx)` |
 
 #### 关键规则
 
@@ -144,7 +144,7 @@ print('output shape:', out.shape)
 #### single 模式（快速验证，seq_len=8）
 
 ```bash
-cd examples/export_llm_model/cann_lm_cli_export
+cd examples/test_converter/export_llm_model/cann_lm_cli_export
 $VENV/bin/python3 $PROJECT_ROOT/cann_lm/converter/cann_lm_converter.py \
     --hf-path /mnt/workspace/data/models/gemma-4-E2B-it \
     --output-dir epair_gemma4_test \
@@ -156,7 +156,7 @@ $VENV/bin/python3 $PROJECT_ROOT/cann_lm/converter/cann_lm_converter.py \
 #### prefill-decode 模式（完整 35 层，出字验证）
 
 ```bash
-cd examples/export_llm_model/om_npu_verify
+cd examples/test_converter/export_llm_model/om_npu_verify
 $VENV/bin/python3 $PROJECT_ROOT/cann_lm/converter/cann_lm_converter.py \
     --hf-path /mnt/workspace/data/models/gemma-4-E2B-it \
     --output-dir epair_gemma4_pd \
@@ -217,7 +217,7 @@ for t,c in ops.most_common():
 #### 4.1 构建 C++ 编译器（一次性，改 reg_register.h 后重编）
 
 ```bash
-cd examples/export_llm_model/om_npu_verify
+cd examples/test_converter/export_llm_model/om_npu_verify
 export TORCH_PKG_DIR=$VENV/lib/python3.11/site-packages/torch
 cmake -S .. -B ../build -DCANN_ROOT="$ASCEND_HOME_PATH" -DTORCH_PKG_DIR="$TORCH_PKG_DIR"
 cmake --build ../build -j4
@@ -278,19 +278,20 @@ for t,c in types.most_common():
 
 ---
 
-### 阶段 5：eager wrapper NPU 出字验证
+### 阶段 5：eager wrapper NPU 数值验证
 
-> 确认 fused 算子逻辑正确（NPU eager），不经过 OM 编译。用 wrapper（scatter-write buffer）跑 prefill + decode。
+> 确认 fused 算子逻辑正确（NPU eager），不经过 OM 编译。用 wrapper（scatter-write buffer）跑 eager 单次 forward，与 OM logits 对比（原 eager 出字脚本 `run_gemma4_eager_gen.py` 已移除，eager 验证改为单 forward 数值对比）。
 
 ```bash
-/opt/buildtools/Python-3.11.4/bin/python3 examples/export_llm_model/om_npu_verify/run_gemma4_eager_gen.py "Hello, my name is"
+QWEN3_OM=/path/to/qwen3.om GEMMA4_OM=/path/to/gemma4.om \
+/opt/buildtools/Python-3.11.4/bin/python3 examples/test_converter/export_llm_model/om_npu_verify/run_gemma4_om.py
 ```
 
-> `run_gemma4_eager_gen.py`：用 `wrapper.get_sample_inputs` + `_build_mask` 构造输入，`wrapper(*sample_npu)` 跑 eager forward（NPU），prefill + decode loop 出字。
+> `run_gemma4_om.py`：用 `wrapper.get_sample_inputs` + `_build_mask` 构造输入，`wrapper(*sample_npu)` 跑 eager forward（NPU），再用同一份 CPU sample 跑 OM（acl），对比 OM logits vs eager logits。
 
 **PASS 条件**：
-- 输出合理文本（如 `"Hello! It's nice to meet you. What is your name? 😊"`）
-- 不重复 `<turn|>` / `<pad>`
+- `OM vs eager logits maxdiff < 1.0` → `MATCH (OM 运行机制正确)`
+- eager top5 token 合理（非全 `<pad>`）
 
 **常见失败**：
 | 输出 | 原因 | 修复 |
@@ -322,7 +323,7 @@ if _os.environ.get("FUSED_DEBUG") and self.layer_idx == 0:
 ### 阶段 6：OM 出字验证
 
 ```bash
-/opt/buildtools/Python-3.11.4/bin/python3 examples/export_llm_model/om_npu_verify/run_gemma4_gen.py "Hello, my name is"
+/opt/buildtools/Python-3.11.4/bin/python3 examples/test_converter/export_llm_model/om_npu_verify/run_gemma4_gen.py "Hello, my name is"
 ```
 
 > `run_gemma4_gen.py`：用 `acl.mdl.execute` 跑 prefill OM + decode OM，prefill + decode loop 出字。
@@ -347,8 +348,8 @@ if _os.environ.get("FUSED_DEBUG") and self.layer_idx == 0:
 | 4 | epair 导出 | `cann_lm_converter.py --num-layers 5` | `Done. Output: epair_xxx` |
 | 5 | IR 含新算子 | python3 统计 ascend_ir ops | 新算子 >0，旧算子 =0 |
 | 6 | OM 编译 | `../build/export_llm_model ...` | `BuildModel succeeded` + `.om` 生成 |
-| 7 | eager 出字 | `run_gemma4_eager_gen.py "prompt"` | 输出合理文本 |
-| 8 | OM 出字 | `run_gemma4_gen.py "prompt"` | 输出与 eager 一致 |
+| 7 | eager 数值对比 | `run_gemma4_om.py` | `OM vs eager maxdiff < 1.0 MATCH` |
+| 8 | OM 出字 | `run_gemma4_gen.py "prompt"` | 输出合理文本 |
 
 > 阶段 1-3 用 converter venv（CPU + stubs）；阶段 4 用真 CANN（NPU）；阶段 5-6 用系统 Python（torch_npu + acl）。
 
@@ -433,13 +434,13 @@ register_fx_node_ge_converter(torch.ops.npu.npu_fused_infer_attention_score_v2.d
 | epair 落盘 | `cann_lm/converter/saver.py` | `whitelist_decompositions` / `EpairConfig` |
 | epair 序列化 | `cann_lm/converter/export/epair_utils.py` | `consolidated_weights_save` |
 | 导出 CLI | `cann_lm/converter/cann_lm_converter.py` | `--hf-path --mode --use-embeddings --num-layers` |
-| C++ REG_OP | `examples/export_llm_model/om_npu_verify/reg_register.h` | 算子注册到 GE OperatorFactory |
-| C++ OM 编译器 | `examples/export_llm_model/main.cpp` + `CMakeLists.txt` | `EpairModelLoader` + `aclgrphBuildModel` |
-| eager 出字 | `examples/export_llm_model/om_npu_verify/run_gemma4_eager_gen.py` | wrapper eager NPU 出字 |
-| OM 出字 | `examples/export_llm_model/om_npu_verify/run_gemma4_gen.py` | `acl.mdl.execute` prefill+decode OM 出字 |
+| C++ REG_OP | `examples/test_converter/export_llm_model/om_npu_verify/reg_register.h` | 算子注册到 GE OperatorFactory |
+| C++ OM 编译器 | `examples/test_converter/export_llm_model/main.cpp` + `CMakeLists.txt` | `EpairModelLoader` + `aclgrphBuildModel` |
+| eager 数值对比 | `examples/test_converter/export_llm_model/om_npu_verify/run_gemma4_om.py` | eager NPU 单次 forward（wrapper）作 OM logits 参考基准（maxdiff）；原 `run_gemma4_eager_gen.py`（eager 出字）已移除，未合并 |
+| OM 出字 | `examples/test_converter/export_llm_model/om_npu_verify/run_gemma4_gen.py` | `acl.mdl.execute` prefill+decode OM 出字 |
 | OM dump | `atc --mode=1 --om=xxx.om --json=xxx.json` | OM 算子清单 |
 | IR 统计 | python3 解析 `ep_json_with_ascend_ir.json` | epair IR 算子清单 |
-| 设计文档 | `cann_lm/models/fused_ops/compositte_op.md` | 融合算子落地状态 + 遗留问题 |
+| 设计文档 | `docs/cann_lm_models/fused_ops/fused_ops.md` | 融合算子落地状态 + 遗留问题（原 compositte_op，现合并入 fused_ops.md §4/§5） |
 
 ---
 

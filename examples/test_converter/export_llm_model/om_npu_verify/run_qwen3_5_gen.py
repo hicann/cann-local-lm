@@ -7,7 +7,7 @@ decode OM (seq=1) 逐 token 生成, KV + delta 累积传递.
   source /home/developer/Ascend/cann/set_env.sh
   export PYTHONPATH=/mnt/workspace/project/CANN-LM_5883:${PYTHONPATH:-}
   export TORCH_DEVICE_BACKEND_AUTOLOAD=0
-  cd examples/export_llm_model/om_npu_verify
+  cd examples/test_converter/export_llm_model/om_npu_verify
   /opt/buildtools/Python-3.11.4/bin/python3 run_qwen3_5_gen.py "Hello, my name is"
 """
 import os, sys, dataclasses, json

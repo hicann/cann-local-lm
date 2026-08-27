@@ -47,7 +47,7 @@ def convert(
     quant_path: str | None = None,  # 场景 1: dopt GPTQ 产物; 与 quant_method 互斥
     quant_method: str | None = None,  # 场景 2: "gptq" 自动 spawn dopt; 与 quant_path 互斥
     quant_bits: str = "w4a8",  # 格式/位宽; 仅 quant_method 时生效
-    quant_device: str | None = None,  # subprocess 设备 'npu'/'cuda'; None 继承父进程 DEVICE 或检测
+    quant_device: str | None = None,  # subprocess 设备 'npu'/'cuda'/'cpu'; None 继承父进程 DEVICE 或检测 (无加速器回落 cpu)
 ) -> None:
     """程序化入口：HF 模型 → epair
 
@@ -148,11 +148,11 @@ def parse_args():
     quant_group.add_argument("--quant-path", default=None,
                              help="dopt GPTQ 产物路径 (场景 1). 与 --quant-method 互斥")
     quant_group.add_argument("--quant-method", default=None, choices=["gptq"],
-                             help="量化算法 (场景 2, 自动 spawn dopt). 与 --quant-path 互斥")
+                             help="量化算法 (场景 2, 自动 spawn dopt, NPU/GPU/CPU). 与 --quant-path 互斥")
     parser.add_argument("--quant-bits", default="w4a8", choices=["w4a8"],
                         help="格式/位宽. 仅 --quant-method 时生效")
-    parser.add_argument("--quant-device", default=None, choices=["npu", "cuda"],
-                        help="量化 subprocess 设备. None 继承父进程 DEVICE 或检测")
+    parser.add_argument("--quant-device", default=None, choices=["npu", "cuda", "cpu"],
+                        help="量化 subprocess 设备. None 继承父进程 DEVICE 或检测 (无加速器回落 cpu)")
     return parser.parse_args()
 ```
 
@@ -170,11 +170,11 @@ def parse_args():
 | `--quant-path`　　　 | `None`　　　　　 | dopt GPTQ 产物路径（场景 1，自动推断 group_size/embed；与 `--quant-method gptq` 互斥）　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　 |
 | `--quant-method`　 | `gptq`　 | 量化算法（当前仅 gptq；自动 spawn dopt subprocess 跑 GPTQ，场景 2；与 `--quant-path` 互斥）　|
 | `--quant-bits`　　 | `w4a8`　 | 格式/位宽（w4a8，默认 w4a8；`--quant-method` 时生效）　|
-| `--quant-device`　 | `None`　 | 量化 subprocess 设备 `npu`/`cuda`（跳过环境检测）；`None` 继承父进程 `DEVICE` 或 spawn 检测 |
+| `--quant-device`　 | `None`　 | 量化 subprocess 设备 `npu`/`cuda`/`cpu`（跳过环境检测）；`None` 继承父进程 `DEVICE` 或 spawn 检测（无加速器回落 `cpu`，仅小模型适用） |
 
-> **load_model 写死 CPU**（融合算子只在 CPU 实现），故**不暴露 `--device` CLI 参数**。NPU 跑 GPTQ 通过 `--quant-method gptq` + subprocess 隔离（`--quant-device` 仅控制 subprocess 设备）。
+> **load_model 写死 CPU**（融合算子只在 CPU 实现），故**不暴露 `--device` CLI 参数**。GPTQ 跑在 NPU/GPU/CPU subprocess（dopt_lm 支持 CPU float32），通过 `--quant-method gptq` + subprocess 隔离（`--quant-device` 仅控制 subprocess 设备）。
 
-> **量化两流程**：`--quant-path <dopt产物>`（场景 1，手动先跑 dopt GPTQ 产出 `quant_output/`，converter 消费）或 `--quant-method gptq`（场景 2，converter 自动 spawn dopt subprocess 在 NPU 跑 GPTQ → swap → export，一键式）。互斥。精细调整走 dopt 分步（[dopt_design.md](../quant/dopt_design.md)）。详见 [quant_design.md](../quant/quant_design.md)。
+> **量化两流程**：`--quant-path <dopt产物>`（场景 1，手动先跑 dopt GPTQ 产物到 `--output-dir` 目录，converter 消费）或 `--quant-method gptq`（场景 2，converter 自动 spawn dopt subprocess 在 NPU/GPU/CPU 跑 GPTQ → swap → export，一键式）。互斥。精细调整走 dopt 分步（[dopt_design.md](../quant/dopt_design.md)）。详见 [quant_design.md](../quant/quant_design.md)。
 
 ## 完整调用链
 
@@ -361,12 +361,12 @@ converter 全流程三阶段：**加载**（torch CPU）→ **量化**（GPTQ �
 
 ### 环境矩阵
 
-| 阶段 | NPU（Ascend910 + CANN + torch_npu） | GPU（CUDA + torch） | 纯 CPU |
-|------|------|------|------|
-| 加载 `load_model` | ✅ torch CPU | ✅ | ✅ |
-| swap（`--quant-path` 消费 dopt 产物） | ✅ CPU | ✅ | ✅ |
-| GPTQ（`--quant-method gptq`） | ✅ 方案 C subprocess | ⚠️ dopt `DEVICE=cuda` 适配待验证 | ❌ 需计算设备 |
-| 导出 epair（torch.export + export_to_epair） | ✅ stubs torchair | ✅ stubs torchair（CPU） | ✅ stubs torchair |
+| 阶段　　　　　　　　　　　　　　　　　　　　 | NPU（Ascend910 + CANN + torch_npu） | GPU（CUDA + torch）　　　　　　 | 纯 CPU　　　　　　　　　　　　　　　　　　　　　　 |
+| ----------------------------------------------| -------------------------------------| ---------------------------------| ----------------------------------------------------|
+| 加载 `load_model`　　　　　　　　　　　　　　| ✅ torch CPU　　　　　　　　　　　　 | ✅　　　　　　　　　　　　　　　 | ✅　　　　　　　　　　　　　　　　　　　　　　　　　|
+| swap（`--quant-path` 消费 dopt 产物）　　　　| ✅ CPU　　　　　　　　　　　　　　　 | ✅　　　　　　　　　　　　　　　 | ✅　　　　　　　　　　　　　　　　　　　　　　　　　|
+| GPTQ（`--quant-method gptq`）　　　　　　　　| ✅ 方案 C subprocess　　　　　　　　 | ⚠️ dopt `DEVICE=cuda` 适配待验证 | ✅ 回落 `cpu`（dopt_lm 支持 CPU float32，7B+ 极慢） |
+| 导出 epair（torch.export + export_to_epair） | ✅ stubs torchair　　　　　　　　　　| ✅ stubs torchair（CPU）　　　　 | ✅ stubs torchair　　　　　　　　　　　　　　　　　 |
 
 ### 当前各环境可用性
 
@@ -381,28 +381,28 @@ converter 全流程三阶段：**加载**（torch CPU）→ **量化**（GPTQ �
 
 **纯 CPU**：
 - `--quant-path` ✅（swap + export stubs）
-- `--quant-method gptq` ❌（GPTQ 需 NPU/GPU，纯 CPU 跑不了）
+- `--quant-method gptq` ✅（**回落 `cpu`**，dopt_lm `SUPPORTED_DEVICE_TYPES` 含 `cpu`，走 `dispatch_dtype=float32`）。**代价**：7B+ Hessian 极慢，仅小模型/调试适用；生产建议 NPU/GPU 或 `--quant-path`
 - 导出 ✅（stubs torchair）
 
 ### 还缺什么
 
 **通用（`auto_quant.py`）**：
-1. ✅ **DEVICE 检测**：`_detect_device_type` 自动检测 NPU→`npu` / GPU→`cuda` / 纯 CPU→报错
-2. ✅ **纯 CPU 报错**：无 NPU/GPU → 提示用 `--quant-path`
+1. ✅ **DEVICE 检测**：`_detect_device_type` 自动检测 NPU→`npu` / GPU→`cuda` / 无加速器→**回落 `cpu`**（不再报错；dopt_lm 支持 CPU float32）
+2. ✅ **CPU 回落**：无 NPU/GPU → `--quant-device cpu` 或自动回落，warn 7B+ 极慢
 
 **NPU**：方案 C 已可用（subprocess + stubs export），无缺失（方案 A 已放弃，torchair 带 CANN SDK 不完整）
 
 **GPU**：
 1. ⏳ **dopt GPU 适配验证**：dopt 的 `if DEVICE==npu` 分支（NPU 特定：Hessian 搬 CPU cholesky）。GPU（`DEVICE=cuda`）走非 npu 分支，验证 dopt GPU 跑 GPTQ
 
-**纯 CPU**：✅ `--quant-method gptq` 报错检测已实现
+**纯 CPU**：✅ `--quant-method gptq` 回落 `cpu` 已实现（warn 慢）
 
 ### 优先级
 
 | 缺什么 | 优先级 | 状态 |
 |--------|--------|------|
-| 纯 CPU `--quant-method gptq` 报错检测 | 高（防误用） | ✅ 完成 |
-| auto_quant DEVICE 检测（NPU/GPU/CPU） | 高（三环境通用） | ✅ 完成 |
+| auto_quant DEVICE 检测（NPU/GPU/CPU 回落） | 高（三环境通用） | ✅ 完成 |
+| CPU GPTQ 回落 + warn | 高（CPU 可用） | ✅ 完成 |
 | GPU dopt 适配验证 | 中（GPU 支持） | ⏳ 待做 |
 
 ## converter 与 torch_npu 的关系（设计决策：不依赖真实 torch_npu）

@@ -13,14 +13,14 @@
   source /home/developer/Ascend/cann/set_env.sh
   export PYTHONPATH=/home/developer/Ascend/cann-9.2.0/python.site-packages:/mnt/workspace/project/CANN-LM_5883:${PYTHONPATH:-}
   export TORCH_DEVICE_BACKEND_AUTOLOAD=0
-  cd examples/export_llm_model/om_npu_verify
+  cd examples/test_converter/export_llm_model/om_npu_verify
   /opt/buildtools/Python-3.11.4/bin/python3 run_qwen3_5_om_emb.py
 """
 import os, sys
 import torch
 
 OM = os.environ.get("QWEN35_OM",
-    "/mnt/workspace/project/CANN-LM_5883/examples/export_llm_model/om_npu_verify/qwen3_5_emb.om")
+    "/mnt/workspace/project/CANN-LM_5883/examples/test_converter/export_llm_model/om_npu_verify/qwen3_5_emb.om")
 HF = "/mnt/workspace/data/models/Qwen3.5-0.8B"
 SEQ = 8; KV_MAX = 2048; DEV = 0
 sys.path.insert(0, "/mnt/workspace/project/CANN-LM_5883")

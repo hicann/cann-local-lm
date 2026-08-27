@@ -20,7 +20,7 @@
 验证 wrapper 的单步 forward 输出与原始模型一致：
 
 ```bash
-cd examples/export_llm_model
+cd examples/test_converter/export_llm_model
 python verify_wrapper.py
 ```
 

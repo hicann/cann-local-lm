@@ -218,7 +218,7 @@ export PYTHONPATH=/home/developer/Ascend/cann-9.2.0/python.site-packages:/mnt/wo
 验证 OM 运行机制正确性:用 `Gemma4ExportWrapper.get_sample_inputs` 构造 77 输入(mask_full/mask_sliding/position_ids/70kv/new_kv_cache_pos/embeddings/output_pos/per_layer_token_identity),展平后 `acl.mdl.execute`,读 logits,对比 eager wrapper(NPU)输出。
 
 ```bash
-cd examples/export_llm_model/om_npu_verify
+cd examples/test_converter/export_llm_model/om_npu_verify
 /opt/buildtools/Python-3.11.4/bin/python3 run_gemma4_om.py
 ```
 
@@ -231,7 +231,7 @@ cd examples/export_llm_model/om_npu_verify
 完整生成 pipeline:prefill OM(seq=128)处理 prompt → logits + 70 kv;decode OM(seq=1)逐 token 生成。支持超长 prompt 分 chunk prefill。
 
 ```bash
-cd examples/export_llm_model/om_npu_verify
+cd examples/test_converter/export_llm_model/om_npu_verify
 /opt/buildtools/Python-3.11.4/bin/python3 run_gemma4_gen.py "Hello, my name is"
 /opt/buildtools/Python-3.11.4/bin/python3 run_gemma4_gen.py "Please explain the theory of relativity in detail."
 ```

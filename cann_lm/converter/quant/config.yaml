@@ -1,8 +1,9 @@
 dataset:
+  # 校准集: calibrate_sets/ 下 jsonl (由 download_dataset.py 下载生成, 可替换/多选)
   train_files:
-    - "calibration.json"
+    - "calibrate_sets/calibrate_c4.jsonl"
   ptq_samples: 1024
 cutoff_len: 512
 
 extra_training_config:
-  fp16: true   # GPTQ 跑 fp16 + 存盘 fp16,避免 dopt 默认 fp32 导致产物翻倍
+  fp16: true   # GPTQ 跑 fp16 + 存盘 fp16,避免 dopt 默认 fp32 导致产物翻倍 (CPU dispatch 自动回落 float32)

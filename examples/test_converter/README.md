@@ -51,7 +51,7 @@ VENV=/mnt/workspace/torch-delegate-harmony/.venv
 
 $VENV/bin/python3 cann_lm/converter/cann_lm_converter.py \
   --hf-path /mnt/workspace/data/models/gemma-4-E2B-it \
-  --output-dir examples/export_llm_model/om_npu_verify/epair_gemma4_pd \
+  --output-dir examples/test_converter/export_llm_model/om_npu_verify/epair_gemma4_pd \
   --dtype bfloat16 --mode prefill-decode --seq-len 128   # --use-embeddings 默认 True
 ```
 - **PASS**：`Done. Output: epair_gemma4_pd` + 产物含 `prefill_ep_json_with_ascend_ir.json` + `decode_ep_json_with_ascend_ir.json` + `weight_info.json` + `weights_0.bin` + `host_weights_*.bin`。
@@ -60,7 +60,7 @@ $VENV/bin/python3 cann_lm/converter/cann_lm_converter.py \
 ### ② 产物校验 + IR 算子统计
 ```bash
 # 结构校验
-$VENV/bin/python3 examples/export_llm_model/cann_lm_cli_export/verify.py gemma4
+$VENV/bin/python3 examples/test_converter/export_llm_model/cann_lm_cli_export/verify.py gemma4
 # IR 算子清单（确认 FusedInferAttentionScore/RotaryMul 等出现）
 python3 -c "import json; ..."   # 见 flow doc 阶段3 one-liner
 ```
@@ -73,7 +73,7 @@ export LD_LIBRARY_PATH=${ASCEND_HOME_PATH}/lib64:${LD_LIBRARY_PATH:-}
 export SOC_VERSION=Ascend910_9362                 # 算子对该 Soc 存在；错误 Soc → 算子缺失失败
 export GE_FUSION_SWITCH_FILE=/tmp/fusion_autoub_off.cfg   # 关 AUB
 # echo '{"Switch":{"UBFusion":{"AutomaticUbFusion":"off"}}}' > /tmp/fusion_autoub_off.cfg  # 一次性建
-cd examples/export_llm_model
+cd examples/test_converter/export_llm_model
 TORCH_PKG_DIR=/mnt/workspace/torch-delegate-harmony/.venv/lib/python3.11/site-packages/torch
 cmake -S . -B build -DCANN_ROOT=$ASCEND_HOME_PATH -DTORCH_PKG_DIR=$TORCH_PKG_DIR   # 一次性
 cmake --build build -j4
@@ -90,7 +90,7 @@ ln -sf prefill_linux_aarch64.om prefill.om   # 在 /tmp/opencode/gemma4_pd/
 ```bash
 source /home/developer/Ascend/cann/set_env.sh
 export PYTHONPATH=/home/developer/Ascend/cann-9.2.0/python/site-packages:/mnt/workspace/project/CANN-LM_5883:${PYTHONPATH:-}
-cd examples/export_llm_model/om_npu_verify
+cd examples/test_converter/export_llm_model/om_npu_verify
 
 # 出字（prefill OM + decode OM）
 /opt/buildtools/Python-3.11.4/bin/python3 run_gemma4_gen.py "Hello, my name is"

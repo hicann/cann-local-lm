@@ -139,7 +139,7 @@ qwen3_5 的 4D 透传是为导出新增的（gemma4 / qwen3 原生就有），�
 
 ## 4. 线性注意力导出（核心问题）
 
-qwen3.5 有 18 层线性注意力（GatedDeltaNet），这是导出问题的集中点。`GatedDeltaNet.forward`（`modeling_qwen3_5.py`，外部依赖 transformers 源码）的 prefill 路径调 `torch_chunk_gated_delta_rule`（~78 行 Python for 循环），decode 路径调 `torch_recurrent_gated_delta_rule`（逐 token for 循环）。
+qwen3.5 有 18 层线性注意力（GatedDeltaNet），这是导出问题的集中点。`GatedDeltaNet.forward`（`modeling_qwen3_5.py`，外部依赖 transformers 源码）的 prefill 路径调 `torch_chunk_gated_delta_rule`（Python for 循环实现），decode 路径调 `torch_recurrent_gated_delta_rule`（逐 token for 循环）。
 
 ### 4.1 原始 segfault（纯 torch for 循环）
 
@@ -333,7 +333,7 @@ qwen3.5 是混合架构（6 full + 18 linear）：
 
 ### 绕过（临时）
 
-> 注：原 `examples/export_llm_model/om_npu_verify/export_llm_model_epair.py`（含 `_build_simple_sample_inputs` 的 `past=None` 绕过）已废弃移除，导出统一走 CLI `cann_lm_converter.py`（`--mode single` 单图）。该绕过 util 不再保留；scatter 改造完成后 CLI 即可导出覆盖 prefill+decode 的两图。
+> 注：原 `examples/test_converter/export_llm_model/om_npu_verify/export_llm_model_epair.py`（含 `_build_simple_sample_inputs` 的 `past=None` 绕过）已废弃移除，导出统一走 CLI `cann_lm_converter.py`（`--mode single` 单图）。该绕过 util 不再保留；scatter 改造完成后 CLI 即可导出覆盖 prefill+decode 的两图。
 
 ---
 
@@ -687,7 +687,7 @@ b = stateShape[0];      // batch 数从 state shape 取
 ### 8.9 复现
 
 ```bash
-cd examples/export_llm_model/om_npu_verify
+cd examples/test_converter/export_llm_model/om_npu_verify
 source /home/developer/Ascend/cann/set_env.sh
 export PYTHONPATH=/mnt/workspace/project/CANN-LM_5883:/home/developer/Ascend/cann-9.2.0/python.site-packages:${PYTHONPATH:-}
 export TORCH_DEVICE_BACKEND_AUTOLOAD=0
@@ -737,7 +737,7 @@ export TORCH_DELEGATE_HOME=/mnt/workspace/torch-delegate-harmony
 export PYTHONPATH=/mnt/workspace/project/CANN-LM_5883:${PYTHONPATH:-}
 export TORCH_DEVICE_BACKEND_AUTOLOAD=0
 export TORCH_DELEGATE_ENABLE_FALLBACK_CODEGEN=0
-cd examples/export_llm_model/om_npu_verify
+cd examples/test_converter/export_llm_model/om_npu_verify
 /mnt/workspace/torch-delegate-harmony/.venv/bin/python3 /mnt/workspace/project/CANN-LM_5883/cann_lm/converter/cann_lm_converter.py \
   --hf-path /mnt/workspace/data/models/Qwen3.5-0.8B \
   --output-dir epair_qwen3_5_emb \
@@ -928,6 +928,6 @@ if batch_size > 1:
 ## 文档关联
 
 - [`converter_design.md`](./converter_design.md) — converter 全流程设计（本文档抽取自其中 qwen3.5 相关片段）
-- [`compositte_op.md`](../cann_lm_models/fused_ops/compositte_op.md) — 融合算子汇总与 GE 映射分析（含 qwen3.5 线性注意力算子的 P0/P1 落地排序）
-- [`examples/export_llm_model/llm_engine_on_cpu/debug_qwen3_5/README.md`](../../examples/export_llm_model/llm_engine_on_cpu/debug_qwen3_5/README.md) — qwen3.5 调试与验证脚本集
-- [`examples/export_llm_model/om_npu_verify/README.md`](../../examples/export_llm_model/om_npu_verify/README.md) — gemma4 epair→OM 编译验证（qwen3.5 OM 编译复用此 C++ 框架）
+- [`fused_ops.md`](../cann_lm_models/fused_ops/fused_ops.md) — 融合算子参考（合并自 support_ops + compositte_op：算子总表/定义溯源/GE 映射/逐模型 modeling 替换 + OM 验证，含 qwen3.5 线性注意力算子 P0 落地）
+- [`examples/test_converter/export_llm_model/llm_engine_on_cpu/debug_qwen3_5/README.md`](../../examples/test_converter/export_llm_model/llm_engine_on_cpu/debug_qwen3_5/README.md) — qwen3.5 调试与验证脚本集
+- [`examples/test_converter/export_llm_model/om_npu_verify/README.md`](../../examples/test_converter/export_llm_model/om_npu_verify/README.md) — gemma4 epair→OM 编译验证（qwen3.5 OM 编译复用此 C++ 框架）

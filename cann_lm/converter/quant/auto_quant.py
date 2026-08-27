@@ -50,7 +50,7 @@ def generate_dopt_config(artifact, quant_bits: str) -> str:
 
 
 def _run_dopt_subprocess(hf_path: str, quant_bits: str, device: str) -> str:
-    """方案 C: spawn dopt_wrapper.py subprocess (NPU/GPU GPTQ) → 返回产物目录路径."""
+    """方案 C: spawn dopt_wrapper.py subprocess (NPU/GPU/CPU GPTQ) → 返回产物目录路径."""
     quant_dir = Path(__file__).resolve().parent
     wrapper_path = quant_dir / "dopt_wrapper.py"
     dopt_python = os.environ.get("DOPT_PYTHON", "/opt/buildtools/Python-3.11.4/bin/python3")
@@ -77,10 +77,14 @@ def _run_dopt_subprocess(hf_path: str, quant_bits: str, device: str) -> str:
     return tmp_out
 
 
-def _detect_device_type() -> str | None:
-    """检测系统计算设备类型: 'npu' / 'cuda' / None. 优先读父进程 DEVICE,未设才 spawn 检测."""
+def _detect_device_type() -> str:
+    """检测系统计算设备类型: 'npu' / 'cuda' / 'cpu'.
+
+    优先读父进程 DEVICE (含 'cpu'),未设才 spawn 检测;无 NPU/GPU 时回落 'cpu'
+    (dopt_lm SUPPORTED_DEVICE_TYPES 含 'cpu', CPU 跑 GPTQ 慢但可跑).
+    """
     env_dev = os.environ.get("DEVICE")
-    if env_dev in ("npu", "cuda"):
+    if env_dev in ("npu", "cuda", "cpu"):
         return env_dev
     dopt_python = os.environ.get("DOPT_PYTHON", "/opt/buildtools/Python-3.11.4/bin/python3")
     env = os.environ.copy()
@@ -103,19 +107,20 @@ def _detect_device_type() -> str | None:
             return "npu"
         if out == "cuda":
             return "cuda"
-        return None
+        return "cpu"
     except Exception:
-        return None
+        return "cpu"
 
 
 def run_auto_quant(hf_path: str, quant_bits: str) -> str:
-    """一键式 GPTQ: 检测 NPU/GPU → 方案 C (subprocess) / 纯 CPU 报错. 返回 dopt_out_dir 路径."""
+    """一键式 GPTQ: 检测 NPU/GPU/CPU → 方案 C (subprocess). 返回 dopt_out_dir 路径.
+
+    CPU 回落不报错 (dopt_lm 支持 CPU, dispatch_dtype=float32); 但 7B+ Hessian 极慢,
+    仅小模型/调试适用, 生产建议 NPU/GPU 或 --quant-path 消费离线产物.
+    """
     dev = _detect_device_type()
-    if not dev:
-        raise RuntimeError(
-            "--quant-method gptq 需 NPU 或 GPU (GPTQ 需计算设备), 当前环境无 NPU/GPU. "
-            "纯 CPU 请用 --quant-path <dopt产物> 消费已量化的 dopt 产物, "
-            "或 source scripts/set_env.sh npu 显式设置 DEVICE=npu."
-        )
+    if dev == "cpu":
+        print("      [warn] CPU GPTQ: dopt_lm 支持 CPU (float32) 但 7B+ Hessian 极慢, "
+              "建议 NPU/GPU 或 --quant-path 消费离线产物")
     print(f"      [方案 C] spawn dopt subprocess (device={dev})")
     return _run_dopt_subprocess(hf_path, quant_bits, dev)

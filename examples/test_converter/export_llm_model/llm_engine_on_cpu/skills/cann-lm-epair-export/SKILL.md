@@ -79,7 +79,7 @@ cann_lm/
 | `fused_infer_attention_score` | ✗ (fake) | `ge.FusedInferAttentionScore` | 融合注意力 |
 | `beam_search` | ✗ (fake) | `custom_op("BeamSearch")` | 束搜索 |
 
-> 前 3 个有 CPU eager kernel（可 eager 跑 + 导出）；后 4 个仅 fake/meta（export-only, 真实计算靠 GE converter 映射到 NPU 算子）。详见 `fused_ops/compositte_op.md`。
+> 前 3 个有 CPU eager kernel（可 eager 跑 + 导出）；后 4 个仅 fake/meta（export-only, 真实计算靠 GE converter 映射到 NPU 算子）。详见 `docs/cann_lm_models/fused_ops/fused_ops.md`。
 
 ## 环境准备 (CPU-only, 无 NPU)
 

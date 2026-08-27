@@ -275,7 +275,7 @@ def _pack_weights_to_dir(contents, output_dir: Path, max_file_size: int) -> dict
         if raw.dtype == torch.bfloat16:
             raw = raw.view(torch.int16)
         elif "weight_scale" in name and raw.dtype == torch.float32:
-            raw = transdata_scale(raw)  # fp32→int64; ep_json dtype 由 inline_weight_scale_dtype 改标 DT_INT64
+            raw = transdata_scale(raw)  # fp32->int64; ep_json dtype relabeled to DT_INT64 by inline_weight_scale_dtype
         data = raw.numpy().tobytes()
         del raw
 
@@ -374,19 +374,14 @@ def _pack_host_side_weights_to_dir(
 
 
 def inline_fused_attn_seq_constants(ep_json_path, qlen_value: int, kvlen_value: int | None = None) -> int:
-    """Inline ``FusedInferAttentionScore`` actual_seq_qlen/kvlen as ``ge.Const`` in ep_json.
+    """Inline FusedInferAttentionScore actual_seq_qlen/kvlen as ge.Const in ep_json.
 
-    prefill-decode 共享 ``weights_0.bin``: decode 的 actual_seq lifted 常量会按同名复用 prefill
-    的值 (seq_len) 而非自己的, 且 Data 引用输入被 GE 标为 tilingDepend -> PartitionedCall
-    (动态子图). 把 actual_seq_qlen/kvlen 内联成真正的 ``ge.Const`` 既修正逐图取值, 又让算子
-    保持静态 (无 PartitionedCall).
+    prefill-decode shares weights_0.bin: lifted actual_seq constants would be reused by name
+    across graphs and marked tilingDepend -> PartitionedCall. Inlining as ge.Const fixes
+    per-graph values and keeps the op static.
 
-    - ``qlen_value``: actual_seq_qlen = query 长度 (prefill=seq_len, decode=1).
-    - ``kvlen_value``: actual_seq_kvlen = kv 有效长度. 默认 None -> 用 qlen_value (prefill
-      无 past, kvlen=qlen=seq_len 正确). **decode 须显式传 kv_cache_max_len**: decode 的 valid
-      kv = past_len+1 (随步动态, 静态 ge.Const 无法表达); 用 kv_max 让 kernel 读全 buffer,
-      实际 attend 范围由显式 atten_mask 决定. (kvlen=1 + mask 仍会被静态 Const 截断到 1 个 kv
-      丢上下文, 详见 docs/.../ops_replacement.md "FIA 回退" 节根因分析.)
+    decode must pass kvlen=kv_cache_max_len (valid kv = past_len+1, dynamic; let the kernel
+    read the full buffer, atten_mask decides the attend range). See ops_replacement.md "FIA fallback".
     """
     import base64
     import struct
@@ -421,11 +416,11 @@ def inline_fused_attn_seq_constants(ep_json_path, qlen_value: int, kvlen_value: 
                 continue
             ins = op.get("input")
             if not isinstance(ins, list) or len(ins) < 7 or not ins[5]:
-                continue  # qlen (ins[5]) 必须有; kvlen (ins[6]) 可空 (kvlen=None 新方案: op 读全 buffer, 由 atten_mask 控制有效区段)
+                continue  # qlen (ins[5]) must exist; kvlen (ins[6]) may be empty (kvlen=None new scheme: op reads full buffer, atten_mask controls the valid range)
             qlen_c = _make_const(f"InlineSeqQLen{inlined}", qlen_value)
             ops.append(qlen_c)
             ins[5] = f"{qlen_c['name']}:0"
-            if ins[6]:  # kvlen 存在 (旧 kvlen=常量方案) 才内联; None/空 (新方案) 跳过
+            if ins[6]:  # inline kvlen only if present (old kvlen=const scheme); None/empty (new scheme) -> skip
                 kvlen_c = _make_const(f"InlineSeqKvlen{inlined}", kvlen_value)
                 ops.append(kvlen_c)
                 ins[6] = f"{kvlen_c['name']}:0"
@@ -436,9 +431,10 @@ def inline_fused_attn_seq_constants(ep_json_path, qlen_value: int, kvlen_value: 
 
 
 def inline_weight_scale_dtype(ep_json_path) -> int:
-    """weight_scale tensor_values dtype float32(7)→int64(5).
+    """weight_scale tensor_values dtype float32(7) -> int64(5).
 
-    saver 打包 int64 bytes, 必须同步改 ep_json dtype, 否则 C++ 按 DT_FLOAT 读会 WEIGHT_SIZE_MISMATCH.
+    saver packs int64 bytes; the ep_json dtype must be synced, else C++ reads as DT_FLOAT
+    and hits WEIGHT_SIZE_MISMATCH.
     """
     with open(ep_json_path) as f:
         doc = json.load(f)

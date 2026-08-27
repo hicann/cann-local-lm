@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""CANN-LM Converter — 将 HuggingFace 模型转换为 epair 格式.
+"""CANN-LM Converter — convert a HuggingFace model to epair format.
 
 Model type is auto-detected from config.json; no --model-type needed.
-load_model 写死 CPU (融合算子 cann_lm/models/fused_ops/ 只在 CPU 实现), 不接受 --device.
-NPU 跑 GPTQ 用 --quant-method gptq + --quant-device npu (subprocess 隔离); cpu 亦可 (小模型).
+load_model is hardwired to CPU (cann_lm/models/fused_ops/ only has CPU impls), no --device.
+GPTQ runs via --quant-method gptq + --quant-device npu (subprocess isolation); cpu also works (small models).
 
 Usage:
-  cann-lm-converter \          # 装包后 (console_scripts); 或 python -m cann_lm.converter.cann_lm_converter
+  cann-lm-converter \          # after install (console_scripts); or python -m cann_lm.converter.cann_lm_converter
       --hf-path /path/to/gemma-4-e2b-it \
       --output-dir /path/to/output \
       --dtype float16 \
@@ -46,46 +46,27 @@ def convert(
     max_file_size: int = _DEFAULT_MAX_FILE_SIZE,
     kv_cache_max_len: int = 2048,
     seq_len: int = 128,
-    use_embeddings: bool = True,   # 默认纯 embeddings (图外查表); False 走图内查表
+    use_embeddings: bool = True,   # default: pure embeddings (out-of-graph lookup); False = in-graph lookup
     mode: str = "prefill-decode",
     num_layers: int | None = None,
     quant_path: str | None = None,
-    quant_method: str | None = None,  # 量化算法, 当前仅支持 "gptq" (自动 spawn dopt); 与 quant_path 互斥
-    quant_bits: str = "w4a8",  # 格式/位宽 (w4a8); 仅 quant_method 时生效
-    quant_device: str | None = None,  # 量化 subprocess 设备 ('npu'/'cuda'/'cpu'), 跳过环境检测; None 则继承父进程 DEVICE 或检测
+    quant_method: str | None = None,  # quant algo, currently only "gptq" (auto-spawns dopt); mutually exclusive with quant_path
+    quant_bits: str = "w4a8",  # format/bit-width (w4a8); only effective with quant_method
+    quant_device: str | None = None,  # quant subprocess device ('npu'/'cuda'/'cpu'), skips env detection; None = inherit parent DEVICE or detect
 ) -> None:
-    """程序化入口：HF 模型 → epair
+    """Programmatic entry: HF model -> epair.
 
-    load_model 写死 CPU (cann_lm 自定义融合算子 cann_lm/models/fused_ops/ 只在 CPU 实现),
-    不接受 --device 参数. GPTQ 跑在 NPU/GPU/CPU subprocess (dopt_lm 支持 CPU float32),
-    通过 --quant-method gptq + subprocess 隔离, 由 --quant-device 选设备.
-
-    Args:
-        mode: "single" — one shape-specialized graph (seq_len 由参数指定);
-              "prefill-decode" — prefill (seq_len 由参数指定) + decode (seq_len=1)
-              two graphs, shared weights, for actual inference.
-        seq_len: shape-specialized seq_len for torch.export. single 模式 = 图 seq_len;
-              prefill-decode 模式 = prefill 图 seq_len (decode 固定 1, 不参数化).
-        quant_path: dopt GPTQ 产物路径 (safetensors/.pth/dir). 场景 1: converter 加载 dopt 产物,
-            自动推断 group_size, swap QuantLinear (W4A8), 自动检测 embed 量化.
-            精细调整 (层策略/group_size/算法参数) 由 dopt 分步完成 (见 dopt_design.md). 与 quant_method 互斥.
-        quant_method: 量化算法 (当前仅支持 "gptq"). 场景 2: converter 自动 spawn dopt subprocess
-            跑 GPTQ (NPU/GPU/CPU 环境; CPU 仅小模型适用, 见 quant_design.md "一键式量化方案选型").
-            与 quant_path 互斥.
-        quant_bits: 格式/位宽 (w4a8, 默认 w4a8). 仅 quant_method 时生效, 传给 dopt_config 的 strategy.
-        quant_device: 量化 subprocess 设备 ('npu'/'cuda'/'cpu'), 跳过环境检测. None 则继承父进程
-            DEVICE 环境变量 (set_env.sh npu 模式 export) 或 spawn 检测 (无 NPU/GPU 时回落 cpu).
-            与 set_env.sh 等价 (后设覆盖先设). cpu 仅小模型/调试适用 (7B+ Hessian 极慢).
+    load_model is hardwired to CPU (fused_ops only has CPU impls). GPTQ runs in an
+    NPU/GPU/CPU subprocess (--quant-method gptq + --quant-device); --quant-path consumes
+    offline dopt output. See quant_design.md for the scene 1/2 split.
     """
-    # CLI --quant-device 显式指定: 写到 os.environ["DEVICE"] (主进程), subprocess 经 env=os.environ.copy()
-    # 自动继承, _detect_device_type 优先读它跳过 spawn 检测. 与 set_env.sh npu 模式等价.
+    # --quant-device: write to os.environ["DEVICE"] so the subprocess inherits it (skips spawn-detect).
     if quant_device:
         os.environ["DEVICE"] = quant_device
-    # 场景 2 (--quant-method gptq): 先 spawn dopt subprocess 跑 GPTQ,主进程不预 load cann_lm 模型,
-    # 避免主进程 cann_lm 模型与 subprocess transformers 模型同时持有 (2x 内存峰值).
-    # 场景 1 (--quant-path): dopt 已离线跑完,直接消费产物,无 subprocess.
+    # Scene 2 (--quant-method gptq): spawn dopt subprocess first; don't pre-load cann_lm to avoid 2x peak
+    # memory (cann_lm model + subprocess's transformers model). Scene 1 (--quant-path): consume offline output.
     dopt_out_path = None
-    dopt_out_is_temp = False  # True = converter 生成的临时盘 (场景 2),swap 后清理; False = 用户路径 (场景 1)
+    dopt_out_is_temp = False  # True = converter temp dir (scene 2), cleaned after swap; False = user path (scene 1)
     if quant_method == "gptq":
         from cann_lm.converter.quant.auto_quant import run_auto_quant
         print(f"[1/3] Quant: --quant-method gptq (bits={quant_bits}), spawn dopt subprocess (GPTQ)")
@@ -100,9 +81,7 @@ def convert(
     else:
         print(f"[1/3] Loading model from {hf_path}")
 
-    # load_model: 场景 2 时在 run_auto_quant 之后 (subprocess 已退出,主进程才 load cann_lm);
-    # 场景 1 / 无量化时在前. 三场景都需 cann_lm 模型实例 (swap 与 export 都依赖)
-    # load_model 写死 CPU (融合算子 cann_lm/models/fused_ops/ 只在 CPU 实现)
+    # load_model (scene 2: after subprocess exits; scene 1/no-quant: first). Hardwired to CPU.
     artifact = load_model(hf_path, dtype=dtype, device="cpu")
     print(f"      Model: {type(artifact.model).__name__}")
     print(f"      Parameters: {sum(p.numel() for p in artifact.model.parameters()):,}")
@@ -121,8 +100,7 @@ def convert(
         text_model.layers = text_model.layers[:num_layers]
         print(f"      Truncated to first {num_layers}/{total} layers (config.num_hidden_layers unchanged)")
 
-    # swap: 场景 1 (--quant-path) + 场景 2 (--quant-method gptq) 共用统一路径,在 load_model 之后.
-    # dopt_out_path 来源不同: 场景 1 = 用户给的 quant_path, 场景 2 = run_auto_quant 返回的临时盘.
+    # swap (scene 1: quant_path; scene 2: run_auto_quant's temp dir) — after load_model.
     embed_quant = None
     if dopt_out_path:
         from cann_lm.converter.quant import swap_from_dopt
@@ -132,8 +110,7 @@ def convert(
         print(f"      Quantized {info['n_quantized']} linears (skipped {info['n_skipped_no_dopt_key']}, group_size={info['group_size']})")
         if embed_quant:
             print(f"      Embedding int8 (auto-detected from dopt): {list(embed_quant)}")
-        # swap 全部成功,临时盘产物已消费成 QuantLinear + embed int8/scale (内存副本),磁盘可清理
-        # 失败时 (swap 抛异常) 跳过此分支,临时盘自动保留供调试
+        # On swap success, temp output is consumed into QuantLinear + embed int8/scale (in-memory); clean disk. On failure (swap raises), keep temp for debugging.
         if dopt_out_is_temp:
             import shutil
             shutil.rmtree(dopt_out_path, ignore_errors=True)
@@ -198,9 +175,9 @@ def parse_args() -> argparse.Namespace:
                         help="KV cache max length (default: 2048)")
     parser.add_argument("--seq-len", type=int, default=128,
                         help="Shape-specialized seq_len for torch.export (default: 128). "
-                             "single 模式 = 图 seq_len; prefill-decode 模式 = prefill 图 seq_len (decode 固定 1)")
+                             "single mode = graph seq_len; prefill-decode mode = prefill graph seq_len (decode fixed at 1)")
     parser.add_argument("--use-embeddings", action=argparse.BooleanOptionalAction, default=True,
-                        help="Use external embeddings (no embed_tokens in graph). 默认 True; --no-use-embeddings 走图内查表")
+                        help="Use external embeddings (no embed_tokens in graph). Default True; --no-use-embeddings uses in-graph lookup")
     parser.add_argument("--mode", default="prefill-decode", choices=["single", "prefill-decode"],
                         help="Export mode: prefill-decode (two graphs: prefill+decode, shared weights, default) "
                              "or single (one graph, seq_len=--seq-len, for quick verify)")
@@ -208,22 +185,23 @@ def parse_args() -> argparse.Namespace:
                         help="Only export first N layers (slice/debug). None = all layers. "
                              "Truncates model.model.layers in place, config.num_hidden_layers unchanged "
                              "(PLE/delta_cache/layer_types stay full)")
-    # 量化: --quant-path (消费 dopt 产物) 与 --quant-method (自动 spawn dopt) 互斥
+    # Quant: --quant-path (consume dopt output) and --quant-method (auto-spawn dopt) are mutually exclusive.
     quant_group = parser.add_mutually_exclusive_group()
     quant_group.add_argument("--quant-path", default=None,
-                             help="dopt GPTQ 产物路径 (safetensors/.pth/dir). 场景 1: converter 加载 dopt 产物, "
-                                  "自动推断 group_size, swap QuantLinear (W4A8), 自动检测 embed 量化. "
-                                  "精细调整 (层策略/group_size/算法参数) 由 dopt 分步完成 (见 dopt_design.md). "
-                                  "与 --quant-method 互斥.")
+                             help="dopt GPTQ output path (safetensors/.pth/dir). Scene 1: converter loads the dopt "
+                                  "output, auto-infers group_size, swaps QuantLinear (W4A8), auto-detects embed quant. "
+                                  "Fine-tuning (layer strategy/group_size/algo params) is done dopt-side, step by step "
+                                  "(see dopt_design.md). Mutually exclusive with --quant-method.")
     quant_group.add_argument("--quant-method", default=None, choices=["gptq"],
-                             help="量化算法 (当前仅支持 gptq). 场景 2: converter 自动 spawn dopt subprocess 跑 GPTQ "
-                                  "(NPU/GPU/CPU 环境, CPU 仅小模型适用). 与 --quant-path 互斥.")
+                             help="Quant algo (currently only gptq). Scene 2: converter auto-spawns a dopt subprocess to "
+                                  "run GPTQ (NPU/GPU/CPU env; CPU only for small models). Mutually exclusive with --quant-path.")
     parser.add_argument("--quant-bits", default="w4a8", choices=["w4a8"],
-                        help="格式/位宽 (w4a8, 默认 w4a8). 仅 --quant-method 时生效, 传给 dopt_config 的 strategy.")
+                        help="Format/bit-width (w4a8, default w4a8). Only effective with --quant-method; passed to dopt_config's strategy.")
     parser.add_argument("--quant-device", default=None, choices=["npu", "cuda", "cpu"],
-                        help="量化 subprocess 设备 (npu/cuda/cpu), 跳过环境检测. 默认 None 继承父进程 DEVICE "
-                             "(set_env.sh npu 模式 export) 或 spawn 检测 (无 NPU/GPU 时回落 cpu). "
-                             "cpu 仅小模型/调试适用 (dopt_lm 支持 CPU float32, 7B+ 极慢). 与 set_env.sh 等价.")
+                        help="Quant subprocess device (npu/cuda/cpu), skips env detection. Default None inherits the "
+                             "parent DEVICE (set_env.sh npu mode export) or spawn-detects (falls back to cpu when no "
+                             "NPU/GPU). cpu only for small models / debugging (dopt_lm supports CPU float32, 7B+ is "
+                             "very slow). Equivalent to set_env.sh.")
     return parser.parse_args()
 
 

@@ -14,24 +14,10 @@
 
 """npu::npu_scatter_nd_update(_) GE converter -> ge.ScatterNdUpdate.
 
-cann_lm 自带 converter, 直接映射到 ge.ScatterNdUpdate (标准多维坐标 scatter 语义),
-不绕 aten.index_copy 的 InplaceUpdate+Transpose 路径, 使 IR 阶段即出现 ScatterNdUpdate
-算子. out-of-place 版加 ge.TensorMove (避免 in-place 精度问题), in-place 版加
-dont_prune_me (防图剪枝).
-
-**语义约定**: ge.ScatterNdUpdate 按标准多维坐标 scatter (indices 每行是一个完整坐标,
-定位 cache 前若干维). 调用方 (如 gemma4) 需构造 [num, ndim] 多维 indices, 而非 1D 单维
-索引. 这与 cann_lm CPU impl 的 indices.dim()==1 else 分支 (逐坐标点写) 一致,
-CPU eager 与 GE 导出语义对齐.
-
-覆盖 torchair custom/npu_scatter_nd_update.py: 逻辑一致 (均产出 ge.ScatterNdUpdate),
-cann_lm 显式持有此映射 (与 _quant_matmul_converter/_chunk_gated_delta_rule_converter
-一致的覆盖模式), 确保 converter venv (torch_npu absent) 下行为可控、不依赖 torchair
-注册顺序.
-
-注册由 ge_converter.py:register_ge_converters 调
-register_fx_node_ge_converter(torch.ops.npu.npu_scatter_nd_update.default)(convert_scatter_nd_update)
-register_fx_node_ge_converter(torch.ops.npu.npu_scatter_nd_update_.default)(convert_scatter_nd_update_)
+Maps directly to ge.ScatterNdUpdate (standard multi-dim coordinate scatter), bypassing
+the aten.index_copy InplaceUpdate+Transpose path. out-of-place adds ge.TensorMove (in-place
+precision); in-place adds dont_prune_me (prevent graph pruning). Overrides torchair's
+custom/npu_scatter_nd_update.py so behavior is controlled in the torch_npu-absent converter venv.
 """
 from typing import Any
 

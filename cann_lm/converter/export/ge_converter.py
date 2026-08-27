@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""TorchAir converters for the three demo custom ops."""
+"""Register cann_lm GE converters (torch.export -> epair IR)."""
 
 from __future__ import annotations
 
@@ -25,105 +25,48 @@ from cann_lm.models.fused_ops import ops as _backend_ops  # Registers cann_lm op
 
 def register_ge_converters() -> None:
     from torchair import register_fx_node_ge_converter
-    # 先 import torchair custom/ (注册 torchair 的 npu converter, 含 raise 的 npu_chunk_gated_delta_rule
-    # + import torch_npu 的 quantmatmul). 后续 cann_lm converter 覆盖之.
+    # Import torchair custom/ first (registers torchair's npu converters); cann_lm converters below override them.
     from torchair._ge_concrete_graph.ge_converter import custom  # noqa: F401
     from torchair._ge_concrete_graph import ge_apis as ge
     from torchair.ge import custom_op
 
-    # Monkey-patch is_cann_compat to bypass the stub GE's check_cann_compat which
-    # rejects ops not in the stub's registered set (DynamicQuant, Bitcast, etc.).
-    # This lets torchair's own converters (e.g. custom/npu_dynamic_quant.py which
-    # uses ge.DynamicQuant with full IR) work on the CPU/stubs env. Without this,
-    # ge.DynamicQuant -> check_cann_compat -> "OperatorFactory find optype DynamicQuant
-    # failed" -> export fails. With this, the ep_json gets the full IR (IrDef) for
-    # DynamicQuant -> the TBE compiler (aclgrphBuildModel) can select the kernel.
+    # Monkey-patch is_cann_compat: the stub GE rejects ops not in its registered set (DynamicQuant,
+    # Bitcast). Bypassing lets torchair's own converters emit full IR on the CPU/stubs env (else
+    # "OperatorFactory find optype DynamicQuant failed" -> export fails).
     import torchair._ge_concrete_graph.compat_ir as _compat_ir
     _compat_ir.is_cann_compat = lambda *a, **k: ""
 
-    # quant_matmul: 注册到 npu (覆盖 torchair quantmatmul.py 的 import torch_npu converter,
-    # 用简化版 _quant_matmul_converter 不依赖 torch_npu)
     from ._quant_matmul_converter import convert_quant_matmul
     register_fx_node_ge_converter(torch.ops.npu.npu_quant_matmul.default)(convert_quant_matmul)
 
-    # npu_dynamic_quant: torchair ships its own converter (custom/npu_dynamic_quant.py,
-    # pertoken -> ge.DynamicQuant / else ge.DynamicQuantV2). It auto-registers when
-    # torchair custom/ is imported above. With the is_cann_compat monkey-patch,
-    # ge.DynamicQuant passes the check on the stub env -> full IR in ep_json ->
-    # TBE compiler can select the kernel. Do NOT register a duplicate here.
-
-    # softplus: torchair 占位 NotImplementedError; cann_lm 自注册 → ge.SoftplusV2 (support_ops.md).
-    # 需 reg_register.h 注册 SoftplusV2 (否则 GetGEGraph heap 损坏 — 未注册 op 类型致 C++ 未定义行为).
-    # beta/threshold 显式 float() (aten Scalar 是 int, ge .f 字段是 float).
+    # softplus: torchair placeholder -> ge.SoftplusV2. reg_register.h must register SoftplusV2
+    # (else GetGEGraph heap corruption). beta/threshold float() (aten Scalar is int, ge .f is float).
     @register_fx_node_ge_converter(torch.ops.aten.softplus.default)
     def _convert_softplus(self: Any, beta: Any = 1, threshold: Any = 20, *, meta_outputs: Any = None) -> Any:
         del meta_outputs
         return ge.SoftplusV2(self, beta=float(beta), threshold=float(threshold))
 
-    # l2norm: cann_lm 自定义 op → ge.L2Normalize (support_ops.md fuse_op l2norm).
-    # 替代纯 torch x*rsqrt(mean(x²)*Dk+eps) 分解 (36 Rsqrt+Mul+Mean → 18 L2Normalize).
-    # 需 reg_register.h 注册 L2Normalize.
+    # l2norm -> ge.L2Normalize. reg_register.h must register L2Normalize.
     @register_fx_node_ge_converter(torch.ops.cann_lm.l2norm.default)
     def _convert_l2norm(x: Any, dim: int = -1, eps: float = 1e-6, *, meta_outputs: Any = None) -> Any:
         del meta_outputs
         return ge.L2Normalize(x, axis=[dim], eps=float(eps))
 
-    # @register_fx_node_ge_converter(torch.ops.aten.eye.default)
-    # def _convert_eye(n: Any, m: Any = None, *, dtype: Any = None, device: Any = None,
-    #                  pin_memory: bool = False, meta_outputs: Any = None) -> Any:
-    #     del device, pin_memory, meta_outputs
-    #     import torch as _torch
-    #     rows = int(n)
-    #     cols = int(m) if m is not None else rows
-    #     dt = _torch.float32 if dtype is None else dtype
-    #     eye_tensor = _torch.eye(rows, cols, dtype=dt)
-    #     return ge.Const(eye_tensor)
-
-    # npu_chunk_gated_delta_rule: qwen3.5 linear-attn 融合算子, torchair auto_generated 未生成
-    # (其 npu_chunk_gated_delta_rule converter 直接 raise RuntimeError). 实现抽到单独模块.
     from ._chunk_gated_delta_rule_converter import convert_chunk_gated_delta_rule
     register_fx_node_ge_converter(torch.ops.npu.npu_chunk_gated_delta_rule.default)(convert_chunk_gated_delta_rule)
 
-    # aten.conv1d: 无 decomposition, 必须自定义 converter (手动填 outputDesc 避开 GE infershape 空 desc;
-    # 走 whitelist 分解会 infershape 失败). 实现抽到 _conv1d_converter.py (单独模块).
     from ._conv1d_converter import convert_conv1d
     register_fx_node_ge_converter(torch.ops.aten.conv1d.default)(convert_conv1d)
 
-    # @register_fx_node_ge_converter(torch.ops.aten.type_as.default)
-
-    # @register_fx_node_ge_converter(torch.ops.aten.type_as.default)
-    # def _convert_type_as(x: Any, dtype_or_tensor: Any, *, meta_outputs: Any = None) -> Any:
-    #     del meta_outputs
-    #     import torch as _torch
-    #     if isinstance(dtype_or_tensor, _torch.Tensor):
-    #         dt = dtype_or_tensor.dtype
-    #     else:
-    #         dt = dtype_or_tensor
-    #     _GE_DTYPE_MAP = {
-    #         _torch.float16: 1, _torch.float32: 0, _torch.bfloat16: 27,
-    #         _torch.int64: 9, _torch.int32: 3, _torch.bool: 12,
-    #     }
-    #     return ge.Cast(x, dst_type=_GE_DTYPE_MAP.get(dt, 0))
-
-    # aten.index_copy: KV cache scatter-write. 无 decomposition (whitelist 空操作), torchair 占位
-    # NotImplementedError. 实现抽到 _index_copy_converter.py (InplaceUpdate + Transpose).
     from ._index_copy_converter import convert_index_copy
     register_fx_node_ge_converter(torch.ops.aten.index_copy.default)(convert_index_copy)
 
-    # npu_scatter_nd_update(_): KV cache scatter-write (替代 aten.index_copy). cann_lm 约定
-    # 1D indices = dim2 (BNSD cache). 覆盖 torchair custom/npu_scatter_nd_update.py 的
-    # ge.ScatterNdUpdate (标准多维坐标语义, 与 dim2 约定不等价). 复用 _index_copy_converter.
     from ._scatter_nd_update_converter import convert_scatter_nd_update, convert_scatter_nd_update_
     register_fx_node_ge_converter(torch.ops.npu.npu_scatter_nd_update.default)(convert_scatter_nd_update)
     register_fx_node_ge_converter(torch.ops.npu.npu_scatter_nd_update_.default)(convert_scatter_nd_update_)
 
-    # aten.index_put: qwen3.5 past_key_values.update 用 index_put (indices list). 无 decomposition,
-    # torchair 占位 NotImplementedError. 实现抽到 _index_put_converter.py (找非 None dim + InplaceUpdate+Transpose).
     from ._index_put_converter import convert_index_put
     register_fx_node_ge_converter(torch.ops.aten.index_put.default)(convert_index_put)
 
-    # npu_fused_infer_attention_score_v2: gemma4 attention 融合算子. cann_lm 自注册 npu 命名空间
-    # (见 fused_ops/fused_infer_attention_score.py); torchair 的 converter 在 air 命名空间 (不适用).
-    # 实现抽到 _fused_infer_attention_score_v2_converter.py (调 ge.FusedInferAttentionScore).
     from ._fused_infer_attention_score_v2_converter import convert_fused_infer_attention_score_v2
     register_fx_node_ge_converter(torch.ops.npu.npu_fused_infer_attention_score_v2.default)(convert_fused_infer_attention_score_v2)

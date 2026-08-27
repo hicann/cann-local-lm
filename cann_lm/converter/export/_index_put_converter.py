@@ -12,16 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""aten.index_put GE converter (从 ge_converter.py 抽出).
+"""aten.index_put GE converter — find the non-None dim, reuse InplaceUpdate + Transpose (same as index_copy).
 
-qwen3.5 的 ``past_key_values.update`` 用 index_put (不是 index_copy). indices 是 list of
-(tensor | None), 找非 None 的 dim + index, 复用 ``InplaceUpdate + Transpose`` (与 index_copy 同).
-
-**必须自定义 converter**: aten.index_put 无 torch decomposition, torchair 自带 converter 仅占位
-``NotImplementedError``. 不支持 accumulate=True / all-None indices (raise NotImplementedError).
-
-注册由 ``ge_converter.py:register_ge_converters`` 调
-``register_fx_node_ge_converter(torch.ops.aten.index_put.default)(convert_index_put)``.
+torchair's converter is a placeholder (NotImplementedError). Does not support accumulate=True / all-None indices.
+Registered by ge_converter.register_ge_converters.
 """
 from typing import Any
 
@@ -34,7 +28,7 @@ def convert_index_put(
     accumulate: bool = False,
     meta_outputs: Any = None,
 ) -> Any:
-    """aten.index_put -> InplaceUpdate + Transpose (找非 None dim, 同 index_copy)."""
+    """aten.index_put -> InplaceUpdate + Transpose (find the non-None dim, same as index_copy)."""
     del meta_outputs
     from torchair._ge_concrete_graph import ge_apis as ge
     from torchair.ge._ge_graph import DataType

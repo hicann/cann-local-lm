@@ -12,9 +12,8 @@ import torch
 from cann_lm.converter.loader import ModelArtifact
 from cann_lm.converter.export.epair_utils import consolidated_weights_save, inline_fused_attn_seq_constants, inline_weight_scale_dtype
 
-# 额外分解的 aten 算子白名单：torchair 无内置 GE 映射或仅占位 NotImplementedError，分解成有映射的
-# 基元算子（Exp/Log/Add/Select 等）。save_epair / save_epair_prefill_decode 共用，两函数白名单集合
-# 保持一致（曾因 prefill-decode 漏 update 这组致 qwen3.5 softplus 未分解 → GE 转换撞占位 NotImplementedError）。
+# Extra aten decomposition whitelist (torchair has no/placeholder GE mapping). Keep in sync across
+# save_epair / save_epair_prefill_decode (a miss leaves ops undecomposed -> placeholder NotImplementedError).
 _EXTRA_DECOMPOSITION_OPS: frozenset = frozenset({
     torch.ops.aten.eye.default,
     torch.ops.aten.type_as.default,
@@ -24,13 +23,7 @@ _EXTRA_DECOMPOSITION_OPS: frozenset = frozenset({
 
 
 def _extract_host_side_weights(wrapper, use_embeddings: bool) -> list[tuple[str, torch.Tensor]]:
-    """Collect embedding-lookup weights to additionally pack as host-side extras.
-
-    torch.export 会 lift 全部参数 (含未用的 embed_tokens), pack_weights 也照常打包到
-    weights_*.bin / weight_info.json; 但 host 推理做查表时, 把查表权重额外打包到独立的
-    host_weights_info.json + host_weights_*.bin, 便于 host 按名定位、并携带 dtype/shape。
-    故这里不做 dedup (即使权重已在图中, 也额外打一份)。仅 use_embeddings=True 时触发。
-    """
+    """Additionally pack embedding-lookup weights as host-side extras (no dedup; use_embeddings only)."""
     if not use_embeddings:
         return []
     candidate_names = wrapper.host_side_weight_names()
@@ -39,11 +32,7 @@ def _extract_host_side_weights(wrapper, use_embeddings: bool) -> list[tuple[str,
 
 
 def _assert_externalized_not_lifted(ep, names: list[str]) -> None:
-    """断言 detach 生效: 外置查表权重不应出现在 ep.graph_signature 的 lifted 集合里。
-
-    若仍被 lift, 说明 detach 失败 (模型 forward 在纯 embeddings 路径访问了它们, 或 detach 未执行),
-    此时 weights_*.bin 会携带冗余查表权重、C++ 建图会为它们建 Data 节点 → 与 OM 不一致。
-    """
+    """Assert detach worked: externalized lookup weights must not be lifted (else weights_*.bin carries redundant lookup weights, C++ builds Data nodes -> != OM)."""
     lifted: set[str] = set()
     gs = ep.graph_signature
     for mapping in (gs.inputs_to_parameters, gs.inputs_to_buffers, gs.inputs_to_lifted_tensor_constants):
@@ -52,9 +41,10 @@ def _assert_externalized_not_lifted(ep, names: list[str]) -> None:
     leaked = [n for n in names if n in lifted]
     if leaked:
         raise RuntimeError(
-            f"detach_externalized_lookups 失效: {leaked} 仍被 lift。"
-            "纯 embeddings 路径的 forward 不应访问这些查表子模块 (embed_tokens 应被 inputs_embeds "
-            "跳过, gemma4 embed_tokens_per_layer 应被实例方法替换跳过)。请检查模型 forward 或 wrapper。"
+            f"detach_externalized_lookups ineffective: {leaked} still lifted. "
+            "The pure-embeddings forward must not touch these lookup submodules (embed_tokens should be "
+            "skipped via inputs_embeds, gemma4 embed_tokens_per_layer via instance-method replacement). "
+            "Check the model forward or wrapper."
         )
 
 
@@ -79,7 +69,6 @@ def save_epair(
 
     register_ge_converters()
 
-    # 从注册表获取 wrapper 子类，构造统一 I/O wrapper
     if artifact.wrapper_cls is None:
         raise ValueError(
             f"Model '{artifact.model_type}' has no ExportWrapper subclass registered. "
@@ -91,19 +80,15 @@ def save_epair(
         batch=1,
     ).eval()
 
-    # quant_embeddings 自动从 embed_quant 推断 (非空 dict = dopt 产物含 embed scale)。
-    # 用 bool() 而非 `is not None`: dopt 未量化 embed 时 swap 返回空 dict {},
-    # 此时应 fallback 到 float embed_tokens (非量化路径), 不能误判为 True 致 KeyError。
+    # bool() not `is not None`: dopt's no-embed-quant swap returns {} and must fall back to float embed_tokens (else KeyError).
     quant_embeddings = bool(embed_quant)
     if quant_embeddings:
         wrapper.set_quant_embeddings(embed_quant)
 
-    # 构造示例输入 (统一 I/O 契约) — quant-embeddings 用 int8+scale gather, 否则用 embed_tokens 算 sample
     sample_inputs = wrapper.get_sample_inputs(
         seq_len=seq_len, use_embeddings=use_embeddings, quant_embeddings=quant_embeddings
     )
 
-    # 抽取 host 查表权重: quant-embeddings 用 int8+scale (从 embed_quant); 否则 float embed_tokens
     if quant_embeddings:
         host_side_weights = [
             (fqn + "_q", int8) for fqn, (int8, _) in embed_quant.items()
@@ -113,30 +98,22 @@ def save_epair(
     else:
         host_side_weights = _extract_host_side_weights(wrapper, use_embeddings)
 
-    # 纯 embeddings: detach 外置查表子模块, 使 torch.export 不 lift 它们 → weights_*.bin 不含
-    # 冗余查表权重 (GE 编译本就剪掉), weights_*.bin ≈ OM。依赖 forward 不访问它们
-    # (embed_tokens 被 inputs_embeds 跳过, gemma4 embed_tokens_per_layer 被实例方法替换跳过)。
+    # Pure-embeddings: detach lookup submodules so torch.export doesn't lift them (weights_*.bin ≈ OM; relies on forward not touching them).
     if use_embeddings:
         wrapper.detach_externalized_lookups()
 
     ep = torch.export.export(wrapper, sample_inputs, strict=False)
 
-    # 断言 detach 生效: 外置查表权重不应被 lift (否则 forward 在纯 embeddings 路径访问了它们 → detach 失效)。
     if use_embeddings:
         _assert_externalized_not_lifted(ep, wrapper.host_side_weight_names())
 
-    # 用默认 whitelist (linear/matmul/layer_norm/softmax 等分解), conv1d 走自定义 converter
     config = EpairConfig()
     config.whitelist_decompositions.update(_EXTRA_DECOMPOSITION_OPS)
     epair = torch_delegate.export_to_epair(ep, config)
 
-    # C++ 侧已兜底处理：
-    # - _assert_tensor_metadata 节点：PlanNodes 顶部 IsAssertTensorMetadataNode 跳过
-    # - as_none 的 constant_input：PreparePlaceholders 里 NodeInputKind::None → continue 跳过
-    # 无需 Python 侧 strip ep_json。
+    # C++ skips _assert_tensor_metadata nodes and as_none constant_inputs; no Python-side ep_json strip needed.
 
-    # 释放原始模型内存 (大模型 OOM 防护)
-    # epair.ep 持有 ExportedProgram 的独立引用, 删除 model/wrapper/ep 不影响 epair
+    # Release model memory (OOM guard); epair.ep holds an independent ExportedProgram ref.
     del ep, wrapper
     del artifact.model
     import gc; gc.collect()
@@ -167,7 +144,7 @@ def save_epair_prefill_decode(
     """Prefill/decode split export: emit two graphs (prefill + decode) + shared weights.
 
     Output layout (under output_dir):
-    - ``prefill_ep_json_with_ascend_ir.json`` — prefill graph (seq_len 由参数指定)
+    - ``prefill_ep_json_with_ascend_ir.json`` — prefill graph (seq_len from the arg)
     - ``decode_ep_json_with_ascend_ir.json`` — decode graph (seq_len=1, reusable)
     - ``weight_info.json`` + ``weights_*.bin`` — shared weights (packed once)
     - ``model_config.json`` + tokenizer files
@@ -199,14 +176,11 @@ def save_epair_prefill_decode(
         batch=1,
     ).eval()
 
-    # quant_embeddings 自动从 embed_quant 推断 (非空 dict = dopt 产物含 embed scale)。
-    # 用 bool() 而非 `is not None`: dopt 未量化 embed 时 swap 返回空 dict {},
-    # 此时应 fallback 到 float embed_tokens (非量化路径), 不能误判为 True 致 KeyError。
+    # bool() not `is not None`: dopt's no-embed-quant swap returns {} and must fall back to float embed_tokens (else KeyError).
     quant_embeddings = bool(embed_quant)
     if quant_embeddings:
         wrapper.set_quant_embeddings(embed_quant)
 
-    # 先算 sample (quant-embeddings 用 int8+scale gather; 否则用 embed_tokens 算), 必须在 detach 前
     prefill_sample = wrapper.get_sample_inputs(
         seq_len=seq_len, use_embeddings=use_embeddings, quant_embeddings=quant_embeddings
     )
@@ -214,7 +188,6 @@ def save_epair_prefill_decode(
         seq_len=1, use_embeddings=use_embeddings, quant_embeddings=quant_embeddings
     )
 
-    # 抽取 host 查表权重: quant-embeddings 用 int8+scale (从 embed_quant); 否则 float embed_tokens
     if quant_embeddings:
         host_side_weights = [
             (fqn + "_q", int8) for fqn, (int8, _) in embed_quant.items()
@@ -224,15 +197,13 @@ def save_epair_prefill_decode(
     else:
         host_side_weights = _extract_host_side_weights(wrapper, use_embeddings)
 
-    # 纯 embeddings: detach 外置查表子模块 → torch.export 不 lift → weights_*.bin 不含冗余查表权重。
+    # Pure-embeddings: detach lookup submodules so torch.export doesn't lift them (weights_*.bin ≈ OM).
     if use_embeddings:
         wrapper.detach_externalized_lookups()
 
-    # Export prefill_ep (seq_len 由参数指定, shape-specialized)
     prefill_ep = torch.export.export(wrapper, prefill_sample, strict=False)
     if use_embeddings:
         _assert_externalized_not_lifted(prefill_ep, wrapper.host_side_weight_names())
-    # 用默认 whitelist (linear/matmul/layer_norm/softmax 等分解), conv1d 走自定义 converter
     if whitelist_decompositions is None:
         whitelist_decompositions = set(EpairConfig().whitelist_decompositions)
     whitelist_decompositions.update(_EXTRA_DECOMPOSITION_OPS)
@@ -240,16 +211,14 @@ def save_epair_prefill_decode(
     prefill_epair = torch_delegate.export_to_epair(prefill_ep, config)
     del prefill_ep
 
-    # Export decode_ep (seq_len=1, reused for all decode steps)
     decode_ep = torch.export.export(wrapper, decode_sample, strict=False)
     decode_epair = torch_delegate.export_to_epair(decode_ep, config)
 
-    # Release model memory (OOM guard); epair.ep holds independent ExportedProgram ref
+    # Release model memory (OOM guard); epair.ep holds an independent ExportedProgram ref.
     del decode_ep, wrapper
     del artifact.model
     import gc; gc.collect()
 
-    # Write weights + prefill ep_json (save_weights=True, only once) + host-side extras
     consolidated_weights_save(
         prefill_epair, output_dir,
         save_weights=save_weights,
@@ -257,32 +226,19 @@ def save_epair_prefill_decode(
         ep_json_filename="prefill_ep_json_with_ascend_ir.json",
         host_side_weights=host_side_weights,
     )
-    # Inline actual_seq_qlen/kvlen as ge.Const — per-graph const, no
-    # tilingDepend/PartitionedCall. Avoids the shared-weights_0.bin name collision.
-    # qlen=seq_len, kvlen=seq_len (prefill 无 past, kv=seq_len 正确).
-    # 注: 多 chunk prefill (prompt > seq_len) 需 kvlen 随 chunk 动态 (start_pos+seq_len),
-    # 静态 ge.Const 无法表达 — 当前 kvlen=seq_len 仅单 chunk 正确, 多 chunk 是预存遗留
-    # (modeling fused_attention_forward 设 actual_kv_len=q_len 非 new_kv_cache_pos.max()+1).
-    # kvlen=kv_max 对 prefill (q_len>1) 不可用 (FIA [seq_len,kv_max] 大矩阵+大量 mask 致退化),
-    # 与 decode (q_len=1, kv_max 可用) 不同. 见 ops_replacement.md.
-    # 实证 (fia_static_kvmax §14.2/14.6 + 2026-08-24 bool 方阵 mask 重测):
-    # bool 方阵 mask (直接给 FIA, 跳过 float→bool 转换) + kvlen=kv_max 仍退化 (全 pad 0),
-    # 证实退化是 arch22 kernel 对 [actual:s2Size] 不 honor mask 的硬限制, 非 mask 问题.
+    # qlen=kvlen=seq_len (prefill, no past); multi-chunk + kvlen=kv_max caveats — see ops_replacement.md "FIA fallback".
     inline_fused_attn_seq_constants(
         output_dir / "prefill_ep_json_with_ascend_ir.json", seq_len)
-    # 同步改 ep_json dtype 为 DT_INT64, 否则 C++ 按 DT_FLOAT 读 int64 bytes 会 WEIGHT_SIZE_MISMATCH
+    # Sync dtype to DT_INT64, else C++ reads int64 bytes as DT_FLOAT -> WEIGHT_SIZE_MISMATCH.
     inline_weight_scale_dtype(
         output_dir / "prefill_ep_json_with_ascend_ir.json")
 
-    # Write decode ep_json only (save_weights=False, weights already packed above)
     consolidated_weights_save(
         decode_epair, output_dir,
         save_weights=False,
         ep_json_filename="decode_ep_json_with_ascend_ir.json",
     )
-    # decode: qlen=1 (query 长度, 固定), kvlen=kv_cache_max_len (让 FIA kernel 读全 buffer,
-    # 实际 attend 范围由显式 atten_mask 决定). kvlen=1 会让 kernel 静态截断到 1 个 kv 丢上下文.
-    # 见 docs/cann_lm_converter/ops_replacement.md "FIA 回退" 节根因分析.
+    # decode: qlen=1, kvlen=kv_cache_max_len (kernel reads full buffer; atten_mask decides attend range; kvlen=1 truncates context). See ops_replacement.md "FIA fallback".
     inline_fused_attn_seq_constants(
         output_dir / "decode_ep_json_with_ascend_ir.json", 1, kvlen_value=kv_cache_max_len)
     inline_weight_scale_dtype(

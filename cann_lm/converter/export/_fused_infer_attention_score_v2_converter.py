@@ -12,18 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""npu::npu_fused_infer_attention_score_v2 GE converter (从 ge_converter.py 抽出).
+"""npu::npu_fused_infer_attention_score_v2 GE converter -> ge.FusedInferAttentionScore.
 
-gemma4 attention 融合算子. cann_lm 自注册到 npu 命名空间 (见
-``fused_ops/fused_infer_attention_score.py``); torchair 的 fused_infer_attention_score_v2 converter
-在 air 命名空间 (不适用), 故 cann_lm 自己注册 npu 命名空间 converter.
-
-调 ``ge.FusedInferAttentionScore`` (GE IR), 参数映射: num_query_heads->num_heads,
-softmax_scale->scale, actual_seq_qlen->actual_seq_lengths, return_softmax_lse->softmax_lse_flag.
-简化: 只传 gemma4 用的参数, quant/antiquant/rope/shared_prefix 等不传 (None).
-
-注册由 ``ge_converter.py:register_ge_converters`` 调
-``register_fx_node_ge_converter(torch.ops.npu.npu_fused_infer_attention_score_v2.default)(convert_fused_infer_attention_score_v2)``.
+cann_lm self-registers in the npu namespace (torchair's is in the air namespace, not
+applicable). Simplified: only the params gemma4 uses are passed; quant/antiquant/rope/
+shared_prefix etc. are None. Registered by ge_converter.register_ge_converters.
 """
 from typing import Any
 
@@ -49,11 +42,11 @@ def convert_fused_infer_attention_score_v2(
     return_softmax_lse: bool = False,
     meta_outputs: Any = None,
 ) -> Any:
-    """npu_fused_infer_attention_score_v2 -> ge.FusedInferAttentionScore (只传 gemma4 用的参数)."""
+    """npu_fused_infer_attention_score_v2 -> ge.FusedInferAttentionScore (only pass the params gemma4 uses)."""
     from torchair._ge_concrete_graph import ge_apis as ge
 
-    # actual_seq_qlen/kvlen 如果是常量 tensor, 转成 ge.Const 节点
-    # (GE IsNeedMarkDynamicTilingDepend: const 输入不标记为 tilingDepend → 避免 PartitionedCall)
+    # If actual_seq_qlen/kvlen are constant tensors, convert to ge.Const nodes
+    # (GE IsNeedMarkDynamicTilingDepend: const inputs are not marked tilingDepend -> avoids PartitionedCall)
     def _to_const_if_possible(x):
         if x is None:
             return None

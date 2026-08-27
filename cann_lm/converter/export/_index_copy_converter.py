@@ -12,16 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""aten.index_copy GE converter (从 ge_converter.py 抽出).
+"""aten.index_copy GE converter — KV cache scatter-write via InplaceUpdate + Transpose.
 
-KV cache scatter-write (qwen3.5/gemma4/qwen3 的 ``cache.index_copy(2, new_kv_cache_pos, key_states)``).
-
-**必须自定义 converter**: aten.index_copy 无 torch decomposition (whitelist 条目对它空操作),
-torchair 自带 converter 仅占位 ``NotImplementedError``. 本 converter 用 ``InplaceUpdate + Transpose``
-实现 scatter-write (InplaceUpdate 只支持 dim=0, 故 transpose 把 ``dim`` 移到 axis 0, 写完再转回).
-
-注册由 ``ge_converter.py:register_ge_converters`` 调
-``register_fx_node_ge_converter(torch.ops.aten.index_copy.default)(convert_index_copy)``.
+torchair's converter is a placeholder (NotImplementedError); InplaceUpdate only supports
+dim=0, so transpose ``dim`` to axis 0, write, then transpose back. Registered by ge_converter.register_ge_converters.
 """
 from typing import Any
 
@@ -33,7 +27,7 @@ def convert_index_copy(
     source: Any,
     meta_outputs: Any = None,
 ) -> Any:
-    """aten.index_copy -> InplaceUpdate + Transpose (dim!=0 时转置 dim 到 axis 0)."""
+    """aten.index_copy -> InplaceUpdate + Transpose (transpose dim to axis 0 when dim!=0)."""
     del meta_outputs
     from torchair._ge_concrete_graph import ge_apis as ge
     from torchair.ge._ge_graph import DataType

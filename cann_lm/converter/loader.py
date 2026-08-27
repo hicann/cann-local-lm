@@ -22,8 +22,8 @@ class ModelArtifact:
     hf_config: dict
     tokenizer_files: list[Path]
     model_type: str
-    wrapper_cls: type  # ExportWrapper 子类 (从 ModelEntry 透传)
-    quant_info: dict | None = None  # 量化元信息 (scheme/group_size/scope/...), None=未量化
+    wrapper_cls: type  # ExportWrapper subclass (passed through from ModelEntry)
+    quant_info: dict | None = None  # quant metadata (scheme/group_size/scope/...), None=unquantized
 
 
 def load_model(
@@ -32,26 +32,18 @@ def load_model(
     dtype: torch.dtype = torch.float16,
     device: str = "cpu",
 ) -> ModelArtifact:
-    # 1. 读取原始 config.json
     config_json_path = os.path.join(hf_path, "config.json")
     with open(config_json_path) as f:
         hf_config = json.load(f)
 
-    # 2. 自动探测模型类型 (从 config.json 的 model_type)
     entry = detect_model_type(hf_config)
-
-    # 3. 构造自定义 config
     config = build_config(hf_config, entry)
 
-    # 4. 实例化模型
     model = entry.model_cls(config)
     model = model.to(dtype=dtype).to(device=device)
     model.eval()
-
-    # 5. 加载权重
     model = entry.load_weights_fn(model, hf_path, device=device, dtype=dtype)
 
-    # 6. 收集 tokenizer 文件
     tokenizer_files = collect_tokenizer_files(hf_path)
 
     return ModelArtifact(
@@ -96,7 +88,7 @@ _OPTIONAL_TOKENIZER_PATTERNS = [
 def collect_tokenizer_files(hf_path: str) -> list[Path]:
     files = []
     patterns = _TOKENIZER_PATTERNS
-    # 无 tokenizer.json 时补充旧格式文件
+    # fall back to legacy tokenizer files when tokenizer.json is absent
     if not (Path(hf_path) / "tokenizer.json").exists():
         patterns = patterns + _OPTIONAL_TOKENIZER_PATTERNS
     for p in patterns:

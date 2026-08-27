@@ -22,7 +22,7 @@ _TORCHAIR_STUBS="/mnt/workspace/torchair/build/stubs"
 export LD_LIBRARY_PATH="${_PYTHON_LIB_DIR}:${ASCEND_HOME_PATH}/lib64:${_TORCHAIR_STUBS}:${LD_LIBRARY_PATH:-}"
 export PYTHONUNBUFFERED=1
 PYTHON="/mnt/workspace/torchair_lazy_venv/bin/python3"
-cd /mnt/workspace/project/CANN-LM_5883/examples/export_llm_model/llm_engine_on_cpu/debug_gemma4
+cd /mnt/workspace/project/CANN-LM_5883/examples/test_converter/export_llm_model/llm_engine_on_cpu/debug_gemma4
 ```
 
 ## 验证脚本索引

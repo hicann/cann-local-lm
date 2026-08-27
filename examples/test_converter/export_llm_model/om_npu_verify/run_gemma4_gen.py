@@ -9,7 +9,7 @@ decode OM (seq=1) 逐 token 生成。
 用法:
   source /home/developer/Ascend/cann/set_env.sh
   export PYTHONPATH=/home/developer/Ascend/cann-9.2.0/python/site-packages:/mnt/workspace/project/CANN-LM_5883:${PYTHONPATH:-}
-  cd examples/export_llm_model/om_npu_verify
+  cd examples/test_converter/export_llm_model/om_npu_verify
   /opt/buildtools/Python-3.11.4/bin/python3 run_gemma4_gen.py "The capital of China is"
 
 OM 产物路径 (prefill.om + decode.om) 在本脚本 PREFILL_OM / DECODE_OM 常量里配置。

@@ -4,7 +4,7 @@
 >
 > 量化策略:dopt `Quant_Embed_MinMax`(weight 8-bit per-channel min_max,sym signed),走 **dopt 实际数据**(非 converter 自算)。
 >
-> 最后更新: 2026-08-07
+> 状态: 当前采用（函数名已对齐 materialize_int8_per_channel_symmetric） | 最后核对: 2026-08-25
 
 ## 目录
 
@@ -42,7 +42,7 @@ dopt 产物: embed_tokens.weight [vocab, hidden] (fakequant float = int8_q * sca
            + s [vocab] (per-vocab scale, sym, offset=0)
            + bit=8, offset=0 (全 0)
 
-materialize_int8_per_channel:
+materialize_int8_per_channel_symmetric:
   q_signed = round(weight / s[:,None]).clamp(-128, 127).to(int8)   # [vocab, hidden] int8
   scale    = s                                                      # [vocab] fp32
   (精确重建: weight 本就是 q*s, round(weight/s)=q, maxdiff=0)
@@ -76,7 +76,7 @@ host 查表+gather:
 
 ## dopt 产物现状(已验证)
 
-`cann_lm/converter/quant/quant_output/model.safetensors`(qwen3-0.6B 的 dopt 产物):
+`<dopt 产物目录>/model.safetensors`(qwen3-0.6B 的 dopt 产物, `--output-dir` 指定):
 
 ```
 model.embed_tokens.quant_op.weight_quantizer.bit:            [] int64 = 8
@@ -90,7 +90,7 @@ embed_tokens_per_layer.*:                                     0 keys (qwen3 无 
 
 实测:
 - `bit=8, unsigned_quant=0, offset=0`(sym signed)
-- `materialize_int8_per_channel`: `q=round(w/s).clamp(-128,127)`,`q*s vs weight` **maxdiff=0.0000**(精确重建,因 w 本就是 fakequant = q*s)
+- `materialize_int8_per_channel_symmetric`: `q=round(w/s).clamp(-128,127)`,`q*s vs weight` **maxdiff=0.0000**(精确重建,因 w 本就是 fakequant = q*s)
 - dopt `do_opt.py` 通过 `visible_type_dict` 按原始精确类型/类名自动选择 wrapper：`nn.Embedding → QEmbedding`，`Gemma4TextScaledWordEmbedding → QGemma4ScaledEmbedding`
 
 ---
@@ -100,7 +100,7 @@ embed_tokens_per_layer.*:                                     0 keys (qwen3 无 
 ### 1. `cann_lm/converter/quant/materialize.py` — 新增
 
 ```python
-def materialize_int8_per_channel(weight_fp: torch.Tensor,
+def materialize_int8_per_channel_symmetric(weight_fp: torch.Tensor,
                                  scale_per_channel: torch.Tensor
                                  ) -> tuple[torch.Tensor, torch.Tensor]:
     """[vocab, hidden] fp + [vocab] scale → (int8_signed [vocab,hidden], scale [vocab])。
@@ -114,7 +114,7 @@ def materialize_int8_per_channel(weight_fp: torch.Tensor,
 
 - **新增 `swap_embeddings_from_dopt(model, sd) -> dict`**:
   - 遍历 `nn.Embedding`(embed_tokens + gemma4 `embed_tokens_per_layer` 子类),读 `{name}.weight` + `{name}.quant_op.weight_quantizer.s`
-  - 调 `materialize_int8_per_channel` → 返回 `{name: (int8, scale)}` dict
+  - 调 `materialize_int8_per_channel_symmetric` → 返回 `{name: (int8, scale)}` dict
   - **不 swap 成图模块**(embedding 外置给 host,非图内 matmul)——区别于 Linear→QuantLinear
 - `swap_to_quant_linear_from_dopt`:
   - `DEFAULT_SKIP` 移除 `lm_head`(→ swap QuantLinear W4A8,同其他 Linear)
@@ -184,10 +184,10 @@ host: int8_emb = gather(int8_weight, input_ids)         # [b,s,hidden]
 
 ## 验证方案(qwen3,dopt 产物已就绪)
 
-1. **物化精确性**:`materialize_int8_per_channel(w, s)` → `int8*scale` vs dopt fakequant `w`,maxdiff=0(已初步验证)
+1. **物化精确性**:`materialize_int8_per_channel_symmetric(w, s)` → `int8*scale` vs dopt fakequant `w`,maxdiff=0(已初步验证)
 2. **host gather + dequant 回环**:`get_sample_inputs(quant_embeddings=True)` → `ep.module()` 输出 vs float embeddings 输出,maxdiff 应=0(dopt fakequant 精确)
-3. **端到端 OM 验证 vs HF**:扩展 `examples/export_llm_model/om_npu_verify/run_qwen3_om.py` 支持 embed 量化样本(host 用 int8+scale gather 喂图),OM-Q vs wrapper(in-graph float) vs HF。原 `verify_qwen3_epair.py` 已重构进 OM runner
-4. **C++ OM 编译**:quant-embeddings epair → `examples/export_llm_model/build/export_llm_model` → .om(图入口 dequant 用 aten cast+mul,应可编译)
+3. **端到端 OM 验证 vs HF**:扩展 `examples/test_converter/export_llm_model/om_npu_verify/run_qwen3_om.py` 支持 embed 量化样本(host 用 int8+scale gather 喂图),OM-Q vs wrapper(in-graph float) vs HF。原 `verify_qwen3_epair.py` 已重构进 OM runner
+4. **C++ OM 编译**:quant-embeddings epair → `examples/test_converter/export_llm_model/build/export_llm_model` → .om(图入口 dequant 用 aten cast+mul,应可编译)
 
 ---
 
@@ -205,7 +205,7 @@ gemma4 dopt 产物**不含** embed_tokens/embed_tokens_per_layer scale → 需�
 
 1. **lm_head dopt 策略对齐**:dopt 产物 lm_head 已有 `quant_op`(11 keys,含 `input_quantizer` bit/max/min/offset)。本设计定 lm_head → QuantLinear W4A8(`act_quant=True`,dopt 用 `Quant_act_weight_eco`)。**需核实** dopt 跑 lm_head 用的是 `Quant_act_weight_eco`(W4A8)还是 `Quant_lm_head`(W4+int16);若后者,`act_quant` 须对应调整。
 2. **tied 模型**(qwen3-0.6B `tie_word_embeddings=True`):`embed_tokens.weight == lm_head.weight` → embed 量化(int8 per-vocab for host lookup)+ lm_head 量化(int4 W4A8 for graph matmul)是**同一权重的两种量化表示**,各自独立,可行(host 用 int8+scale 查表,图内 lm_head 用 int4+group_scale matmul)。
-3. **dopt embed offset=0 vs quant.py zero=128**:实测 dopt embed 是 `offset=0` signed(非 `quant.py` GPTQ 量子的 `zero=128` unsigned)。`materialize_int8_per_channel` 用 signed `round(w/s).clamp(-128,127)` 已对齐(精确重建)。CANN/GE 侧 int8 signed 存储匹配(aten cast int8→float)。
+3. **dopt embed offset=0 vs quant.py zero=128**:实测 dopt embed 是 `offset=0` signed(非 `quant.py` GPTQ 量子的 `zero=128` unsigned)。`materialize_int8_per_channel_symmetric` 用 signed `round(w/s).clamp(-128,127)` 已对齐(精确重建)。CANN/GE 侧 int8 signed 存储匹配(aten cast int8→float)。
 4. **精度回归**:int8 量化误差(dopt fakequant 已含 round/clamp 误差,但 `q*s` 精确重建 dopt 产物,故 host gather + dequant = dopt fakequant 值,与"float embeddings"差异 = dopt 量化误差本身)。需 vs 原始 float embeddings(未量化)做端到端 logits 回归,确认 int8 量化误差可接受。
 5. **host_weights 存 int8+scale 的机制**:swap 返回 dict 直存(已定)。需确认 `_extract_host_side_weights` / `host_side_weight_names` 在 quant-embeddings 模式下从 swap dict 取而非 wrapper.state_dict(因 detach 后 float embed_tokens 已删,且本设计用 int8+scale 不用 float)。
 
@@ -213,7 +213,7 @@ gemma4 dopt 产物**不含** embed_tokens/embed_tokens_per_layer scale → 需�
 
 ## 与现有设计的关系
 
-- 扩展 [quant_design.md](./quant_design.md):把 embed_tokens(+ embed_tokens_per_layer)纳入量化范围,新增 `materialize_int8_per_channel` + `swap_embeddings_from_dopt`;lm_head 从"排除"改"QuantLinear W4A8"
+- 扩展 [quant_design.md](./quant_design.md):把 embed_tokens(+ embed_tokens_per_layer)纳入量化范围,新增 `materialize_int8_per_channel_symmetric` + `swap_embeddings_from_dopt`;lm_head 从"排除"改"QuantLinear W4A8"
 - 扩展 [converter_design.md](../converter_design.md) 模式 B(纯 embeddings):host_weights 从 float → int8+scale;wrapper forward/get_sample_inputs/_drive_layers 加 quant-embeddings 模式
 - 复用 [reference_pipeline_walkthrough.md](../reference_pipeline_walkthrough.md) 的导出+OM 流程;图入口仅多 dequant(cast+mul)节点
 - 不改 modeling(`modeling_gemma4.py` 等):forward 收 float `inputs_embeds`,无感

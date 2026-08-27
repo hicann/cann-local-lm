@@ -3,7 +3,7 @@
 # run.sh — 单算子 QuantBatchMatmulV4 W4A8 OM 编译测试
 #
 # 流程: Python 导出 (CPU stub) → C++ EpairModelLoader + aclgrphBuildModel (NPU) → .om
-# 复用 examples/export_and_load_epair 的 main.cpp + reg_register.h (已注册 QuantBatchMatmulV4)
+# 复用 examples/test_converter/export_and_load_epair 的 main.cpp + reg_register.h (已注册 QuantBatchMatmulV4)
 #
 # 前置: source /home/developer/Ascend/cann/set_env.sh
 # 用法:  bash run.sh
@@ -17,7 +17,7 @@ TORCHAIR_FULL="${TORCHAIR_FULL:-/mnt/workspace/torchair}"
 PYTHON="${TORCH_DELEGATE_HOME}/.venv/bin/python3"
 EPAIR_DIR="${ROOT_DIR}/epair_model"
 # 复用 export_and_load_epair 的 C++ 二进制 (main.cpp + reg_register.h 含 QuantBatchMatmulV4)
-LOAD_EXAMPLE_DIR="${PROJECT_ROOT}/examples/export_and_load_epair"
+LOAD_EXAMPLE_DIR="${PROJECT_ROOT}/examples/test_converter/export_and_load_epair"
 LOAD_BINARY="${LOAD_EXAMPLE_DIR}/build/export_and_load_example"
 CSRC_DIR="${PROJECT_ROOT}/cann_lm/converter/export/csrc"
 BACKEND_LIB="${CSRC_DIR}/build/libtorch_delegate_backend.so"

@@ -1,8 +1,8 @@
 // =============================================================================
 // reg_register.h — 合并 + IR 校准版
 // 来源:
-//   - examples/export_and_load_epair/reg_register.h         (46 ops)
-//   - examples/export_llm_model/om_npu_verify/reg_register.h (81 ops, 严格超集)
+//   - examples/test_converter/export_and_load_epair/reg_register.h         (46 ops)
+//   - examples/test_converter/export_llm_model/om_npu_verify/reg_register.h (81 ops, 严格超集)
 // 步骤 1 (合并): 以 om_npu_verify 版为基底 (81 ops + 注释), 对两版冲突算子取宽松版.
 // 步骤 2 (IR 校准): 以 ops_IR(Ascend 950)/ops/*.md 的 ```c REG_OP 定义为标准, 校准全部
 //   73 个有 IR 定义的算子 (dtype/inputs/outputs/attrs 对齐官方 IR); 8 个无 IR 的自研算子

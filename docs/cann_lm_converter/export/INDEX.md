@@ -33,7 +33,7 @@
 | `backend/ge_weight_loader.h/.cc` | `GeWeightLoader`：解析 `weight_info.json`、懒加载 bin |
 | `backend/epair_model_parser.h/.cc` | `EpairModelParser`：解析 `ep_json_with_ascend_ir.json` |
 
-### 示例（`examples/export_llm_model/`）
+### 示例（`examples/test_converter/export_llm_model/`）
 
 | 文件　　　　　　 | 职责　　　　　　　　　　　　　　　　 |
 | ------------------| --------------------------------------|

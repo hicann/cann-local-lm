@@ -1,8 +1,9 @@
 dataset:
+  # calibration set: jsonl under calibrate_sets/ (downloaded by download_dataset.py, swappable/multi-select)
   train_files:
-    - "calibration.json"
+    - "calibrate_sets/calibrate_c4.jsonl"
   ptq_samples: 1024
 cutoff_len: 512
 
 extra_training_config:
-  fp16: true   # GPTQ 跑 fp16 + 存盘 fp16,避免 dopt 默认 fp32 导致产物翻倍
+  fp16: true   # GPTQ runs/saves fp16 to avoid dopt's default fp32 doubling output size (CPU dispatch auto-falls-back to float32)

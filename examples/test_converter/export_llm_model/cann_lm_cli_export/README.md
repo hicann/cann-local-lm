@@ -123,21 +123,21 @@ epair_<model>/
 
 ## C++ OM 编译 (`main.cpp`)
 
-用 `examples/export_llm_model/main.cpp` 加载 epair → 构建 GE Graph → 编译 OM(`aclgrphBuildModel`)。本机 NPU Ascend910_9362,soc_version 用 `SOC_VERSION` 环境变量(默认 `Ascend910_9362`)。
+用 `examples/test_converter/export_llm_model/main.cpp` 加载 epair → 构建 GE Graph → 编译 OM(`aclgrphBuildModel`)。本机 NPU Ascend910_9362,soc_version 用 `SOC_VERSION` 环境变量(默认 `Ascend910_9362`)。
 
 ### 编译 + 运行
 
 ```bash
 source /home/developer/Ascend/cann/set_env.sh
 TORCH_PKG_DIR=$(/mnt/workspace/torch-delegate-harmony/.venv/bin/python3 -c 'import torch,os;print(os.path.dirname(torch.__file__))')
-cmake -S examples/export_llm_model -B examples/export_llm_model/build \
+cmake -S examples/test_converter/export_llm_model -B examples/test_converter/export_llm_model/build \
   -DCANN_ROOT=$ASCEND_HOME_PATH -DTORCH_PKG_DIR=$TORCH_PKG_DIR
-cmake --build examples/export_llm_model/build -j$(nproc)
+cmake --build examples/test_converter/export_llm_model/build -j$(nproc)
 
 export LD_LIBRARY_PATH="${TORCH_PKG_DIR}/lib:${TORCH_PKG_DIR}/../torch.libs:/mnt/workspace/torchair/build/stubs:${ASCEND_HOME_PATH}/lib64:${ASCEND_HOME_PATH}/aarch64-linux/devlib:cann_lm/converter/export/csrc/build/stub_lib:${LD_LIBRARY_PATH:-}"
-./examples/export_llm_model/build/export_llm_model \
-  "$(pwd)/examples/export_llm_model/cann_lm_cli_export/epair_qwen3/ep_json_with_ascend_ir.json" \
-  "$(pwd)/examples/export_llm_model/cann_lm_cli_export/epair_qwen3/weight_info.json" \
+./examples/test_converter/export_llm_model/build/export_llm_model \
+  "$(pwd)/examples/test_converter/export_llm_model/cann_lm_cli_export/epair_qwen3/ep_json_with_ascend_ir.json" \
+  "$(pwd)/examples/test_converter/export_llm_model/cann_lm_cli_export/epair_qwen3/weight_info.json" \
   qwen3_n5
 ```
 
@@ -182,8 +182,8 @@ qwen3.5 的 OM 编译历经多轮修复,Conv2D infershape **已解决**;ChunkGat
 
 ### main.cpp / reg_register.h / ge_converter.py / C++ backend 改动
 
-- **`main.cpp`**:soc_version 改用 `std::getenv("SOC_VERSION")`(默认 `Ascend910_9362`,本机芯片;`Ascend910A` 导致 TensorMove/TransposeD 找不到 engine)。`main.cpp` + `CMakeLists.txt` 已上移到 `examples/export_llm_model/`（doc 对齐）。
-- **`reg_register.h`** 已 **IR 校准**：以 `ops_IR(Ascend 950)/ops/*.md` 的 `REG_OP` 为标准，73 个有 IR 的算子全对齐官方 IR（dtype/inputs/outputs/attrs），8 个无 IR 的自研算子（`QuantMatmulS8S4`/`RotaryMul`/`ChunkGatedDeltaRule`/`ConcatD`/`SoftmaxV3`/`SliceD`/`TransposeD`/`TensorMove`）保留原定义。master 在 `examples/export_llm_model/reg_register.h`（84 ops，2026-08-16 补 `Greater`/`Log1p`/`SelectV2`），`om_npu_verify/reg_register.h` 与 `export_and_load_epair/reg_register.h` 为其软链（单一源）。本机 `DT_BFLOAT16`/`DT_FLOAT32` 经别名可编译，按 IR 原文保留。
+- **`main.cpp`**:soc_version 改用 `std::getenv("SOC_VERSION")`(默认 `Ascend910_9362`,本机芯片;`Ascend910A` 导致 TensorMove/TransposeD 找不到 engine)。`main.cpp` + `CMakeLists.txt` 已上移到 `examples/test_converter/export_llm_model/`（doc 对齐）。
+- **`reg_register.h`** 已 **IR 校准**：以 `ops_IR(Ascend 950)/ops/*.md` 的 `REG_OP` 为标准，73 个有 IR 的算子全对齐官方 IR（dtype/inputs/outputs/attrs），8 个无 IR 的自研算子（`QuantMatmulS8S4`/`RotaryMul`/`ChunkGatedDeltaRule`/`ConcatD`/`SoftmaxV3`/`SliceD`/`TransposeD`/`TensorMove`）保留原定义。master 在 `examples/test_converter/export_llm_model/reg_register.h`（84 ops，2026-08-16 补 `Greater`/`Log1p`/`SelectV2`），`om_npu_verify/reg_register.h` 与 `export_and_load_epair/reg_register.h` 为其软链（单一源）。本机 `DT_BFLOAT16`/`DT_FLOAT32` 经别名可编译，按 IR 原文保留。
   - 历史补算子（现已含在校准版）：gemma4 `AddRmsNorm`+`RotaryMul`；qwen3.5 `ChunkGatedDeltaRule`+`Shape`/`Expand`/`Gather`/`Minimum`/`Pack`/`ScatterElements`/`SplitV`+`Conv2D`/`Squeeze`；`Unsqueeze` 用 `TensorType::ALL()`；2026-08-16 补 qwen3.5 softplus 分解路径的 `Greater`/`Log1p`/`SelectV2`（CANN 官方 IR）。
 - **`ge_converter.py`** 补 GE 映射:
   - `cann_lm::chunk_gated_delta_rule` → 手动定义 `ge.ChunkGatedDeltaRule`(torchair auto_generated 未生成此算子),填 output desc shape/dtype(从 meta_outputs)

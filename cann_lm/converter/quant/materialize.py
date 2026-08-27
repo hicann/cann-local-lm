@@ -12,42 +12,31 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Weight int4 materialization (W4A8 s4, symmetric, per-group, unpack placeholder).
+"""Weight int4 materialization (W4A8 s4, symmetric, per-group).
 
-Converts a fp16/bf16 nn.Linear weight [out, in] into a quantized int8 payload
-(int4 signed values stored 1/byte = unpack) + per-group fp32 scale along `in`
-(K dim). offset = 0 (symmetric).
-
-遗留: int4 编码 (signed [-8,7] vs unsigned [0,15])、packed (2/byte) vs unpack
-(1/byte)、scale 形状是 CANN QuantBatchMatmulV4 约定缺口（见
-docs/cann_lm_converter/quant_design.md "int4 物化的 CANN 约定"）。本模块为
-unpack+signed 占位实现，先跑通 Python 流程，CANN 对齐后续。
+Converts a fp16/bf16/fp32 nn.Linear weight [out, in] into a nibble-packed int4
+payload (stored as int8 [out, in//2], low nibble = even k index, two's-complement
+4-bit signed [-8, 7]) + per-group fp32 scale [out, in//group] (K-axis), offset=0
+(symmetric). Output layout matches the ``npu::npu_quant_matmul`` x2 input.
 """
 
 import torch
 
 
-_SCALE_MASK = 0x00000000FFFFE000  # 截断尾数低 13 位 (精度 23→10 位) + 截断高 32 位
+_SCALE_MASK = 0x00000000FFFFE000  # bitmask: clear high 32 bits + truncate mantissa low 13 bits (storage fmt, see quant_design.md)
 
 
 def transdata_scale(scale_fp32: torch.Tensor) -> torch.Tensor:
-    """float32 scales → uint64 位模式 + 掩码 (存储格式转换).
+    """fp32 -> int64 bit-pattern & _SCALE_MASK (truncates mantissa low 13 bits, storage format).
 
-    float32 位模式 → int32 → int64 → & 0x00000000FFFFE000.
-    截断尾数低 13 位 (精度 23→10 位), 保留符号+指数+尾数高 10 位.
-    反向用 restore_scale 还原 (尾数低 13 位为 0, 合法 fp32 但精度降低).
-
-    torch 无 uint64, 用 int64 (位模式相同, 位操作结果相同, 仅符号位解释不同).
+    torch has no uint64; int64 holds the same bit pattern. Inverse: restore_scale.
     """
     bits = scale_fp32.contiguous().view(torch.int32).to(torch.int64)
     return bits & _SCALE_MASK
 
 
 def restore_scale(scale_packed: torch.Tensor) -> torch.Tensor:
-    """uint64 (位模式 + 掩码) → float32 (还原, 尾数低 13 位为 0).
-
-    int64 → int32 (高 32 位为 0) → fp32 (位模式 reinterpret).
-    """
+    """int64 (bit-pattern + mask) -> fp32 (mantissa low 13 bits zeroed, reduced precision)."""
     return scale_packed.to(torch.int32).view(torch.float32)
 
 
@@ -75,7 +64,7 @@ def materialize_int4_per_group_symmetric(
     nbits: int = 4,
     packed: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """线性对称量化: q = clamp(round(w/s), ±qmax), 反量化 w ≈ q * s (offset=0).
+    """Linear symmetric quant: q = clamp(round(w/s), ±qmax); dequant w ≈ q*s (offset=0).
 
     Args:
         weight: ``[out, in]`` (fp16/fp32, GPTQ-corrected).
@@ -84,7 +73,8 @@ def materialize_int4_per_group_symmetric(
             ``[out * in//group]`` form back to 2D.
         group_size: K-axis group size (must match the scale's grouping).
         signed: True -> signed int4 ``[-8, 7]``; False -> unsigned ``[0, 15]``.
-            两者反量化都是 q*s (对称, offset=0), unsigned 只平移整数范围不引入零点.
+            Both dequant as q*s (symmetric, offset=0); unsigned only shifts the
+            int range, introducing no zero-point.
         nbits: 4 (int4) default.
         packed: True -> return nibble-packed int8 ``[out, in//2]`` for
             ``npu::npu_quant_matmul`` x2; False (default) -> unpack ``[out, in]``.

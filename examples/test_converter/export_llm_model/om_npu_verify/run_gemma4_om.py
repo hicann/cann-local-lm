@@ -7,7 +7,7 @@
 import os, sys, json, dataclasses
 import torch
 
-OM = os.environ.get("GEMMA4_OM", "/mnt/workspace/project/CANN-LM_5883/examples/export_llm_model/om_npu_verify/gemma4_noaub.om")
+OM = os.environ.get("GEMMA4_OM", "/mnt/workspace/project/CANN-LM_5883/examples/test_converter/export_llm_model/om_npu_verify/gemma4_noaub.om")
 E2B = "/mnt/workspace/data/models/gemma-4-E2B-it"
 SEQ = 8; KV_MAX = 2048; DEV = 0
 sys.path.insert(0, "/mnt/workspace/project/CANN-LM_5883")

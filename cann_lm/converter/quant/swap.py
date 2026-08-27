@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Swap nn.Linear modules for QuantLinear (导出前算子 IR 替换)."""
+"""Swap nn.Linear modules for QuantLinear (pre-export op IR replacement)."""
 
 import json
 import os
@@ -27,27 +27,22 @@ from .materialize import (
 )
 from .quant_linear import QuantLinear
 
-# names containing any of these substrings are NOT quantized by the Linear swap.
-# embed_tokens / embed_tokens_per_layer are nn.Embedding (not nn.Linear) — never
-# reached by the Linear swap anyway; they're consumed by swap_embeddings_from_dopt
-# (W8 host gather, requires the converter --quant-embeddings flag).
-# lm_head: NOT skipped — it's a big NPU-side Linear, quantized to W4 (QuantLinear).
-# For host-embed + NPU-lm_head deployment (tie_word_embeddings must be untied:
-# embed on host, lm_head on NPU — different compute domains, can't share weight).
+# Linear swap skips names matching these substrings. embed_tokens* are nn.Embedding
+# (consumed by swap_embeddings_from_dopt for W8 host gather). lm_head is NOT skipped
+# -> quantized to W4; host-embed + NPU-lm_head forces tie_word_embeddings untie.
 DEFAULT_SKIP = ("embed_tokens", "embed_tokens_per_layer")
 
 
 def swap_embeddings_from_dopt(
     sd: dict, model: nn.Module
 ) -> dict[str, tuple[torch.Tensor, torch.Tensor]]:
-    """Port dopt Quant_Embed_MinMax embed int8+per-channel scale for host lookup.
+    """Port dopt Quant_Embed_MinMax embed (int8 + per-channel scale) for host lookup.
 
-    遍历 model 的 nn.Embedding (embed_tokens + gemma4 embed_tokens_per_layer 子类),
-    从 dopt sd 读 {name}.weight (fakequant) + {name}.quant_op.weight_quantizer.s
-    (per-channel [vocab]), materialize_int8_per_channel_symmetric → (int8 [vocab,hidden], scale [vocab])。
-    返回 {wrapper_fqn: (int8, scale)} (wrapper.model = ForCausalLM → 'model.' 前缀)。
-    **不** swap 成图模块 — embedding 外置给 host gather (区别于 Linear→QuantLinear)。
-    跳过 sd 里无 scale 的 (如 gemma4 embed_tokens_per_layer 未量化时)。
+    Reads {name}.weight (fakequant) + {name}.quant_op.weight_quantizer.s per
+    nn.Embedding, materializes to (int8 [vocab,hidden], scale [vocab]). NOT swapped
+    into a graph module — embeddings are externalized for host gather (unlike
+    Linear->QuantLinear). Skips entries without a scale (e.g. unquantized
+    gemma4 embed_tokens_per_layer). Returns {wrapper_fqn: (int8, scale)}.
     """
     out: dict[str, tuple[torch.Tensor, torch.Tensor]] = {}
     for name, m in model.named_modules():
@@ -98,9 +93,9 @@ def load_dopt_state_dict(dopt_path: str | Path) -> dict:
         # .pth (torch.save state_dict)
         sd = torch.load(str(p), map_location="cpu")
     # Normalize FQN: transformers' Qwen3_5ForCausalLM.save_pretrained wraps the text
-    # llm state_dict into VLM structure (model.language_model.*) when saving; gemma4's
-    # save_pretrained saves as-is (model.*). Strip language_model. prefix so the dopt
-    # sd is text-only (model.*) for both — cann_lm (text-only model.*) then matches.
+    # llm state_dict into VLM structure (model.language_model.*) when saving; gemma4
+    # saves as-is (model.*). Strip language_model. so the dopt sd is text-only (model.*)
+    # for both, matching cann_lm's text-only model.* layout.
     if any(k.startswith("model.language_model.") for k in sd):
         sd = {
             ("model." + k[len("model.language_model."):])
@@ -136,11 +131,11 @@ def _read_dopt_quant_meta(
     return bit, uq, offset
 
 
-# dopt 策略默认参数 (与 dopt_lm/quantizer/strategy.py 的 strategy_dict weight 字段对齐).
-# converter venv 不装 dopt_lm 不能 import,硬编码;新增带 weight 量化的策略时需同步更新此处.
-# 注意: 只含策略配置 (group_size/bit/blocksize/per_channel/weight_algo);
-#       unsigned_quant/offset 是 GPTQ 运行时状态 (dopt 写到 safetensors buffer),不在 config.
-# dopt 53ad5ec 把 group_size 从 256 改成 128 (Quant_act_weight_eco + Quant_lm_head), 此处同步.
+# dopt strategy defaults (aligned with dopt_lm/quantizer/strategy.py strategy_dict weight fields).
+# converter venv doesn't install dopt_lm, so hardcoded; update here when adding a weight-quant strategy.
+# Only strategy config (group_size/bit/blocksize/per_channel/weight_algo) — unsigned_quant/offset
+# are GPTQ runtime state (dopt writes them to safetensors buffers, not in config).
+# dopt 53ad5ec changed group_size 256 -> 128 (Quant_act_weight_eco + Quant_lm_head); synced here.
 _STRATEGY_DEFAULT_PARAMS: dict[str, dict] = {
     "Quant_act_weight_eco": {
         "group_size": 128, "bit": 4, "blocksize": 128,
@@ -154,16 +149,15 @@ _STRATEGY_DEFAULT_PARAMS: dict[str, dict] = {
 
 
 def _read_quant_param_map(dopt_path: str | Path | None) -> dict[str, dict]:
-    """从 dopt 产物目录的 dopt_config.json 解析 {层名: weight 侧量化参数 dict}.
+    """Parse {layer_name: weight-side quant params} from dopt_config.json in the dopt output dir.
 
-    解析逻辑 (与 dopt strategy.get_optimize_cfg 对齐):
-    1. quant_strategy 后缀 (如 "Quant_act_weight_eco;128") 覆盖 group_size
-    2. _STRATEGY_DEFAULT_PARAMS 提供默认值 (group_size/bit/blocksize/per_channel/weight_algo)
+    Parsing (aligned with dopt strategy.get_optimize_cfg):
+    1. quant_strategy suffix (e.g. "Quant_act_weight_eco;128") overrides group_size
+    2. _STRATEGY_DEFAULT_PARAMS provides defaults (group_size/bit/blocksize/per_channel/weight_algo)
 
-    Returns:
-        {name: {group_size, bit, blocksize, per_channel, weight_algo}};
-        无 dopt_config.json / 层未配置 / 策略无默认参数 → 不在该 dict
-        (调用方 fallback 到 _infer_group_size + _read_dopt_quant_meta 从 safetensors 反推/读 buffer)
+    Returns {name: {group_size, bit, blocksize, per_channel, weight_algo}};
+    absent dopt_config.json / unconfigured layer / strategy without defaults -> not in dict
+    (caller falls back to _infer_group_size + _read_dopt_quant_meta from safetensors buffers).
     """
     if dopt_path is None:
         return {}
@@ -179,7 +173,7 @@ def _read_quant_param_map(dopt_path: str | Path | None) -> dict[str, dict]:
     out: dict[str, dict] = {}
     for name, layer in layer_strategy.items():
         strategy = layer.get("quant_strategy", "")
-        # 后缀解析 (如 "Quant_act_weight_eco;128" → strategy="Quant_act_weight_eco", gs=128)
+        # suffix parse (e.g. "Quant_act_weight_eco;128" -> strategy="Quant_act_weight_eco", gs=128)
         gs_override = None
         if ";" in strategy:
             strategy, gs_str = strategy.split(";", 1)
@@ -189,8 +183,8 @@ def _read_quant_param_map(dopt_path: str | Path | None) -> dict[str, dict]:
                 continue
         defaults = _STRATEGY_DEFAULT_PARAMS.get(strategy)
         if defaults is None:
-            continue  # 策略无默认参数 (如 Quant_Embed_MinMax 是 embedding,不在此处)
-        params = dict(defaults)  # 浅拷贝默认值
+            continue  # strategy has no weight defaults (e.g. Quant_Embed_MinMax is embedding-side)
+        params = dict(defaults)
         if gs_override is not None:
             params["group_size"] = gs_override
         out[name] = params
@@ -200,16 +194,11 @@ def _read_quant_param_map(dopt_path: str | Path | None) -> dict[str, dict]:
 def _infer_group_size(
     s_flat: torch.Tensor, out_f: int, in_f: int, name: str
 ) -> tuple[int, int]:
-    """从 dopt scale s_flat (扁平 [out*groups]) 推断 (group_size, groups).
+    """Infer (group_size, groups) from the flattened dopt scale s_flat [out*groups].
 
-    支持模式:
-      - pergroup (numel = out * in/group, group_size = 推断值)
-      - perchannel (numel = out, group_size = in_f, groups = 1)
-
-    拒绝:
-      - pertensor (numel == 1)
-      - s.ndim != 1 或 numel 不是 out_f 整数倍 (非 perchannel/pergroup 形状)
-      - in_f 不整除 group_size (奇怪 dopt 策略)
+    Supports pergroup (numel = out * in/group) and perchannel (numel = out,
+    group_size = in_f, groups = 1). Rejects pertensor (numel == 1), non-1D shapes,
+    numel not divisible by out_f, and in_f not divisible by the inferred group_size.
     """
     if s_flat.numel() == 1:
         raise ValueError(
@@ -241,21 +230,20 @@ def _swap_linear_from_sd(
     act_quant: bool = True,
     param_map: dict[str, dict] | None = None,
 ) -> dict:
-    """Port a dopt GPTQ sd -> materialize int4 -> swap QuantLinear (核心逻辑).
+    """Port a loaded dopt GPTQ sd -> materialize int4 -> swap QuantLinear in place.
 
-    接收已加载的 sd (load_dopt_state_dict 返回),避免重复 IO. 遍历 nn.Linear (name 不含 skip):
-    读 GPTQ-corrected fp weight + flattened group_scale, materialize int4 (nibble-packed),
-    替换为 QuantLinear. lm_head 不在 skip → 也被量化.
+    Takes an already-loaded sd (from load_dopt_state_dict) to avoid re-reading.
+    lm_head is not in ``skip`` -> also quantized.
 
-    量化参数来源 (优先级):
-    1. param_map[name] (从 dopt_config.json 解析,方案 C:策略名后缀 + _STRATEGY_DEFAULT_PARAMS)
-       提供 group_size/bit/blocksize/per_channel/weight_algo
+    Quant params source (priority):
+    1. param_map[name] (parsed from dopt_config.json: strategy suffix + _STRATEGY_DEFAULT_PARAMS)
+       -> group_size/bit/blocksize/per_channel/weight_algo
     2. fallback:
-       - group_size: _infer_group_size (从 s numel 反推,带 4 个断言)
-       - bit/unsigned_quant/offset: _read_dopt_quant_meta (从 safetensors buffer 读,
-         这三个是 GPTQ 运行时状态,dopt_config.json 不存)
+       - group_size: _infer_group_size (from s numel)
+       - bit/unsigned_quant/offset: _read_dopt_quant_meta (from safetensors buffers;
+         these are GPTQ runtime state, not stored in dopt_config.json)
 
-    Returns quant-info dict (scheme/group_size/bit/...for model_config.json).
+    Returns a quant-info dict (scheme/group_size/bit/... for model_config.json).
     """
     n_q = 0
     n_skip = 0
@@ -278,7 +266,7 @@ def _swap_linear_from_sd(
         out_f, in_f = w_gptq.shape
         params = param_map.get(name)
         if params is not None and "group_size" in params:
-            # 方案 C: 从 dopt_config.json 拿 group_size/bit/blocksize/per_channel/weight_algo
+            # from dopt_config.json: group_size/bit/blocksize/per_channel/weight_algo
             group_size = params["group_size"]
             if in_f % group_size != 0:
                 raise ValueError(
@@ -290,19 +278,19 @@ def _swap_linear_from_sd(
                 raise ValueError(
                     f"{name}: scale numel ({s_flat.numel()}) != out_f * groups "
                     f"({out_f} * {groups} = {out_f * groups}); dopt_config group_size={group_size} "
-                    f"与 s 形状不一致"
+                    f"inconsistent with s shape"
                 )
             bit_cfg = params.get("bit")
             blocksize = params.get("blocksize")
             per_channel = params.get("per_channel")
             weight_algo = params.get("weight_algo")
         else:
-            # fallback: 从 s numel 反推 group_size (老产物无 dopt_config.json 或层未配置)
+            # fallback: infer group_size from s numel (older output without dopt_config.json, or unconfigured layer)
             group_size, groups = _infer_group_size(s_flat, out_f, in_f, name)
-            bit_cfg = None  # bit 也 fallback 到 safetensors buffer
+            bit_cfg = None  # bit also falls back to safetensors buffer
         scale2d = s_flat.reshape(out_f, groups)
-        # bit/unsigned_quant/offset 仍从 safetensors buffer 读 (GPTQ 运行时状态,不在 config)
-        # 若 config 给了 bit 则优先用 config 的 (策略配置),否则用 safetensors buffer
+        # bit/unsigned_quant/offset still read from safetensors buffers (GPTQ runtime state, not in config)
+        # config bit takes priority if present, else the safetensors buffer
         bit_sd, uq, offset = _read_dopt_quant_meta(sd, name, out_f, in_f, group_size)
         bit = bit_cfg if bit_cfg is not None else bit_sd
         if uq != 0.0:
@@ -316,18 +304,13 @@ def _swap_linear_from_sd(
                 "npu::npu_quant_matmul (symmetric offset=0 only). Re-run dopt with a "
                 "symmetric strategy."
             )
-        # nibble-packed int4 int8: materialize -> [n, k//2], then pre-transpose to
-        # [k//2, n] (npu::npu_quant_matmul meta takes N = x2.size(-1) and ignores
-        # transpose_x2; GE converter _quant_matmul_converter hardcodes transpose_x2=False,
-        # so x2 must be [k//2, n] for size(-1) = n = out_features). scale同理 [n,k//g] -> [k//g,n].
+        # Pre-transpose weight_q [n,k//2]->[k//2,n] and scale [n,k//g]->[k//g,n]: npu::npu_quant_matmul
+        # meta takes N = x2.size(-1); _quant_matmul_converter hardcodes transpose_x2=False.
         weight_q, weight_scale = materialize_int4_per_group_symmetric(
             w_gptq, scale2d, group_size, signed=True, nbits=bit, packed=True
         )
-        weight_q = weight_q.transpose(-1, -2).contiguous()          # [n, k//2] -> [k//2, n]
-        weight_scale = weight_scale.transpose(-1, -2).contiguous()   # [n, k//g] -> [k//g, n] fp32
-        # weight_scale 保持 fp32 (计算用, QuantLinear.forward 直接传 npu_quant_matmul).
-        # 仅落盘时由 saver 转 int64 (位模式 + 掩码), 见 epair_utils.inline_weight_scale_dtype
-        # + saver._pack_weights_to_dir 识别 weight_scale 调 transdata_scale.
+        weight_q = weight_q.transpose(-1, -2).contiguous()
+        weight_scale = weight_scale.transpose(-1, -2).contiguous()
         ql = QuantLinear(
             weight_q, weight_scale, group_size, bias=m.bias, act_quant=act_quant,
         )
@@ -359,11 +342,10 @@ def swap_to_quant_linear_from_dopt(
     skip: tuple[str, ...] = DEFAULT_SKIP,
     act_quant: bool = True,
 ) -> dict:
-    """Port a dopt GPTQ output -> materialize int4 -> swap QuantLinear (流程 C+D).
-
-    向后兼容薄 wrapper: load_dopt_state_dict + _read_group_size_map + 调 _swap_linear_from_sd.
-    仅供场景 1 离线用户或单独 Linear swap 用;主进程场景 1/2 用 swap_from_dopt
-    (一次 load sd 同时做 Linear swap + embed 抽取).
+    """Backward-compatible thin wrapper: load_dopt_state_dict + _read_quant_param_map
+    + _swap_linear_from_sd. Use for offline scene-1 / standalone Linear swap; the
+    main process (scenes 1/2) uses swap_from_dopt (one sd load for both Linear swap
+    + embed extraction).
     """
     sd = load_dopt_state_dict(dopt_path)
     param_map = _read_quant_param_map(dopt_path)
@@ -380,16 +362,17 @@ def swap_from_dopt(
     skip: tuple[str, ...] = DEFAULT_SKIP,
     act_quant: bool = True,
 ) -> tuple[dict, dict[str, tuple[torch.Tensor, torch.Tensor]]]:
-    """组合: 一次 load dopt sd → Linear swap + Embedding 抽取.
+    """One dopt sd load -> Linear swap + Embedding extraction.
 
-    主进程场景 1 (--quant-path) + 场景 2 (--quant-method gptq) 共用此函数, 避免
-    swap_to_quant_linear_from_dopt 内部 load + swap_embeddings_from_dopt 外部 load
-    的二次 IO (7B safetensors 二次 load 几秒浪费).
+    Shared by the main process for scene 1 (--quant-path) and scene 2
+    (--quant-method gptq); avoids the double load IO of
+    swap_to_quant_linear_from_dopt's internal load + swap_embeddings_from_dopt's
+    external load.
 
     Returns:
         (quant_info, embed_quant):
-            quant_info: 写入 model_config.json 的 quant_info 字段
-            embed_quant: {wrapper_fqn: (int8, scale)} 给 saver host 查表 (可能为空 dict)
+            quant_info: quant_info field for model_config.json
+            embed_quant: {wrapper_fqn: (int8, scale)} for saver host lookup (may be empty)
     """
     sd = load_dopt_state_dict(dopt_path)
     param_map = _read_quant_param_map(dopt_path)

@@ -1,6 +1,6 @@
-"""一键式 GPTQ 量化: converter spawn dopt subprocess 跑 GPTQ,主进程后做 swap.
+"""One-shot GPTQ: converter spawns a dopt subprocess to run GPTQ, then swaps in the main process.
 
-见 docs/cann_lm_converter/quant/quant_design.md "方案 C 设计".
+See docs/cann_lm_converter/quant/quant_design.md (one-shot quant plan selection).
 """
 
 import json
@@ -14,13 +14,16 @@ import torch
 
 _LINEAR_STRATEGY = "Quant_act_weight_eco"
 _LM_HEAD_STRATEGY = "Quant_lm_head"
-_EMBED_STRATEGY = "Quant_Embed_MinMax"  # dopt 53ad5ec 删了 Quant_Gemma4_Embed, gemma4 embed 也用此
+_EMBED_STRATEGY = "Quant_Embed_MinMax" 
 
 
 def _build_layer_strategy(model, model_type: str) -> dict:
-    """遍历 model.named_modules 赋量化策略 (Linear→Quant_act_weight_eco, lm_head→Quant_lm_head,
-    Embedding→Quant_Embed_MinMax). cann_lm 与 transformers 模型层名一致,通用.
-    注: dopt 53ad5ec 删了 Quant_Gemma4_Embed, gemma4 embed 也用 Quant_Embed_MinMax."""
+    """Assign quant strategies by module type (Linear->Quant_act_weight_eco,
+    lm_head->Quant_lm_head, Embedding->Quant_Embed_MinMax). cann_lm and
+    transformers share layer names, so this is model-agnostic.
+
+    Note: dopt 53ad5ec removed Quant_Gemma4_Embed; gemma4 embed uses Quant_Embed_MinMax too.
+    """
     layer_strategy = {}
     for name, m in model.named_modules():
         if isinstance(m, torch.nn.Linear):
@@ -38,8 +41,9 @@ def _build_layer_strategy(model, model_type: str) -> dict:
 
 
 def generate_dopt_config(artifact, quant_bits: str) -> str:
-    """场景 1 离线辅助: 遍历 cann_lm artifact.model 生成 dopt_config,返回临时文件路径.
-    仅供场景 1 用户手动跑 dopt GPTQ 前用 (examples/run_pd4_cases.sh:gen_dopt_config 依赖).
+    """Scene-1 offline helper: walk cann_lm artifact.model to generate a dopt_config,
+    return the temp file path. Used before manually running dopt GPTQ
+    (examples/run_pd4_cases.sh:gen_dopt_config depends on it).
     """
     layer_strategy = _build_layer_strategy(artifact.model, artifact.model_type)
     fd, cfg_path = tempfile.mkstemp(prefix="dopt_config_", suffix=".json")
@@ -50,7 +54,6 @@ def generate_dopt_config(artifact, quant_bits: str) -> str:
 
 
 def _run_dopt_subprocess(hf_path: str, quant_bits: str, device: str) -> str:
-    """方案 C: spawn dopt_wrapper.py subprocess (NPU/GPU GPTQ) → 返回产物目录路径."""
     quant_dir = Path(__file__).resolve().parent
     wrapper_path = quant_dir / "dopt_wrapper.py"
     dopt_python = os.environ.get("DOPT_PYTHON", "/opt/buildtools/Python-3.11.4/bin/python3")
@@ -72,21 +75,26 @@ def _run_dopt_subprocess(hf_path: str, quant_bits: str, device: str) -> str:
     result = subprocess.run(cmd, cwd=str(quant_dir), env=env)
     if result.returncode != 0:
         raise RuntimeError(
-            f"dopt GPTQ subprocess failed (exit {result.returncode}), 临时产物: {tmp_out}"
+            f"dopt GPTQ subprocess failed (exit {result.returncode}), temp output: {tmp_out}"
         )
     return tmp_out
 
 
-def _detect_device_type() -> str | None:
-    """检测系统计算设备类型: 'npu' / 'cuda' / None. 优先读父进程 DEVICE,未设才 spawn 检测."""
+def _detect_device_type() -> str:
+    """Detect the compute device type: 'npu' / 'cuda' / 'cpu'.
+
+    Reads the parent process DEVICE first (incl. 'cpu'); if unset, spawns a
+    detection probe. Falls back to 'cpu' when no NPU/GPU is present (dopt_lm
+    SUPPORTED_DEVICE_TYPES includes 'cpu'; CPU GPTQ works but is slow).
+    """
     env_dev = os.environ.get("DEVICE")
-    if env_dev in ("npu", "cuda"):
+    if env_dev in ("npu", "cuda", "cpu"):
         return env_dev
     dopt_python = os.environ.get("DOPT_PYTHON", "/opt/buildtools/Python-3.11.4/bin/python3")
     env = os.environ.copy()
     ld = env.get("LD_LIBRARY_PATH", "")
     env["LD_LIBRARY_PATH"] = ":".join(p for p in ld.split(":") if "stubs" not in p)
-    # 关 SLOG 日志到 stdout, 防止 torch_npu import 时 CANN 日志污染 print(dev) 的 stdout 解析
+    # silence SLOG to stdout: torch_npu import otherwise spams CANN logs and corrupts the print(dev) stdout parse
     env["ASCEND_SLOG_PRINT_TO_STDOUT"] = "0"
     try:
         result = subprocess.run(
@@ -103,19 +111,21 @@ def _detect_device_type() -> str | None:
             return "npu"
         if out == "cuda":
             return "cuda"
-        return None
+        return "cpu"
     except Exception:
-        return None
+        return "cpu"
 
 
 def run_auto_quant(hf_path: str, quant_bits: str) -> str:
-    """一键式 GPTQ: 检测 NPU/GPU → 方案 C (subprocess) / 纯 CPU 报错. 返回 dopt_out_dir 路径."""
+    """One-shot GPTQ: detect NPU/GPU/CPU -> plan C (subprocess). Return the dopt_out_dir path.
+
+    CPU fallback does not raise (dopt_lm supports CPU, dispatch_dtype=float32);
+    but 7B+ Hessian is very slow, only suitable for small models / debugging.
+    Production should use NPU/GPU or --quant-path to consume offline output.
+    """
     dev = _detect_device_type()
-    if not dev:
-        raise RuntimeError(
-            "--quant-method gptq 需 NPU 或 GPU (GPTQ 需计算设备), 当前环境无 NPU/GPU. "
-            "纯 CPU 请用 --quant-path <dopt产物> 消费已量化的 dopt 产物, "
-            "或 source scripts/set_env.sh npu 显式设置 DEVICE=npu."
-        )
-    print(f"      [方案 C] spawn dopt subprocess (device={dev})")
+    if dev == "cpu":
+        print("      [warn] CPU GPTQ: dopt_lm supports CPU (float32) but 7B+ Hessian is very slow; "
+              "prefer NPU/GPU or --quant-path to consume offline output")
+    print(f"   spawn dopt subprocess (device={dev})")
     return _run_dopt_subprocess(hf_path, quant_bits, dev)

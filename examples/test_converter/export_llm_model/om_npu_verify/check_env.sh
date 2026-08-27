@@ -14,7 +14,7 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/../../../.." && pwd)"          # CANN-LM_5883 (om_npu_verify 上 4 级)
-EXPORT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"                # examples/export_llm_model
+EXPORT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"                # examples/test_converter/export_llm_model
 
 # 可被环境变量覆盖
 VENV="${VENV:-/mnt/workspace/torch-delegate-harmony/.venv}"

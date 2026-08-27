@@ -47,7 +47,7 @@ cann_lm/converter/saver.py  save_epair / save_epair_prefill_decode
         └── consolidated_weights_save()           weights_*.bin + host_weights_*.bin + ep_json
                 │
                 ▼
-examples/export_llm_model/main.cpp
+examples/test_converter/export_llm_model/main.cpp
         │
         ├── EpairModelLoader(ep_json, weight_info.json) → GetGEGraph
         ├── aclgrphBuildModel(graph)
@@ -164,7 +164,7 @@ prefill-decode 模式:步骤 3 算 prefill_sample + decode_sample → 步骤 5 d
 
 ---
 
-## Phase 6: C++ OM 编译 `examples/export_llm_model/main.cpp`
+## Phase 6: C++ OM 编译 `examples/test_converter/export_llm_model/main.cpp`
 
 ```cpp
 td::EpairModelLoader loader(model_json_path, weights_index_path);   // 构造
@@ -204,7 +204,7 @@ export TORCH_DEVICE_BACKEND_AUTOLOAD=0
 export TORCH_DELEGATE_ENABLE_FALLBACK_CODEGEN=0
 
 VENV=/mnt/workspace/torch-delegate-harmony/.venv/bin/python
-BIN=/mnt/workspace/project/CANN-LM_5883/examples/export_llm_model/build/export_llm_model
+BIN=/mnt/workspace/project/CANN-LM_5883/examples/test_converter/export_llm_model/build/export_llm_model
 HF=/mnt/workspace/data/models/gemma-4-E2B-it
 OUT=/tmp/opencode/gemma4_out
 

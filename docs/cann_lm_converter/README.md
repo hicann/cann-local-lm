@@ -30,7 +30,7 @@ docs/cann_lm_converter/
 ├── reference_litert_lm_export.md          ← LiteRT-LM 外部参考
 ├── reference_npu_tuned_export_qwen3.md    ← npu_tuned_export 参考
 ├── reference_npu_op_elimination.md        ← NPU 算子消除技能
-├── ops_replacement.md                    ← gemma4 OM 算子等价替换（对齐 support_ops.md）
+├── ops_replacement.md                    ← gemma4 OM 算子等价替换（对齐 [fused_ops.md](../cann_lm_models/fused_ops/fused_ops.md) §1 算子总表）
 └── fia_static_kvmax_investigation.md     ← FIA 静态 kv_max 可行性调查与执行计划
 ```
 
@@ -58,7 +58,7 @@ docs/cann_lm_converter/
 | [reference_litert_lm_export.md](./reference_litert_lm_export.md) | LiteRT-LM + litert-torch 外部参考（prefill/decode 两签名 / KV cache pytree / wrapper 统一 I/O） |
 | [reference_npu_tuned_export_qwen3.md](./reference_npu_tuned_export_qwen3.md) | npu_tuned_export qwen3 fork 改造参考（预分配 KV buffer + scatter-write + 预缓存 RoPE + host 4D mask） |
 | [reference_npu_op_elimination.md](./reference_npu_op_elimination.md) | NPU 算子消除技能（host 预构 mask / repeat_kv concat / RoPE 预缓存 Gather） |
-| [ops_replacement.md](./ops_replacement.md) | gemma4 OM 算子等价替换（index_copy→npu_scatter_nd_update / stack→cat+transpose / arange→Const / expand→StridedSliceD+ConcatV2D / index→index_select / 关 InplaceAddRmsNorm 融合，对齐 support_ops.md） |
+| [ops_replacement.md](./ops_replacement.md) | gemma4 OM 算子等价替换（index_copy→npu_scatter_nd_update / stack→cat+transpose / arange→Const / expand→StridedSliceD+ConcatV2D / index→index_select / 关 InplaceAddRmsNorm 融合，对齐 [fused_ops.md](../cann_lm_models/fused_ops/fused_ops.md) §1 算子总表） |
 | [fia_static_kvmax_investigation.md](./fia_static_kvmax_investigation.md) | FIA 静态 kv_max 可行性调查与执行计划（actual_seq_kvlen 语义考证 / 退化根因 / 多 chunk mask分析 / 旋钮空间 A-E / Phase 0-5 双 variant baseline + 单旋钮扫 + 组合 + 多 chunk 终判） |
 
 ## 快速开始

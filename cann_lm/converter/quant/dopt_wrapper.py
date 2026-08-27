@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
-"""dopt subprocess wrapper: 生成 dopt_config + 跑 GPTQ.
+"""dopt subprocess wrapper: generate dopt_config + run GPTQ.
 
-被 auto_quant._run_dopt_subprocess 通过 `python <path>/dopt_wrapper.py ...` 调用,
-subprocess 用系统 Python (有 torch_npu + transformers + NPU env), 不走 cann_lm 的 venv.
-
-设计动机见 docs/cann_lm_converter/quant/quant_design.md "为什么需要 _dopt_wrapper_main".
+Invoked by auto_quant._run_dopt_subprocess via ``python <path>/dopt_wrapper.py ...``;
+the subprocess uses system Python (torch_npu + transformers + NPU env), not the
+cann_lm converter venv. Design rationale: see docs/cann_lm_converter/quant/quant_design.md.
 """
 
 import argparse
@@ -22,7 +21,7 @@ if str(_PROJECT_ROOT) not in sys.path:
 
 _LINEAR_STRATEGY = "Quant_act_weight_eco"
 _LM_HEAD_STRATEGY = "Quant_lm_head"
-_EMBED_STRATEGY = "Quant_Embed_MinMax"  # dopt 53ad5ec 删了 Quant_Gemma4_Embed, gemma4 embed 也用此
+_EMBED_STRATEGY = "Quant_Embed_MinMax"
 
 
 def _read_model_type(model_path: str) -> str:
@@ -74,6 +73,7 @@ def main() -> None:
         json.dump({"layer_strategy": layer_strategy}, f, indent=2)
     print(f"[wrapper] generated dopt_config: {dopt_config_path} ({len(layer_strategy)} layers)", flush=True)
 
+    # free before GPTQ: weight_quant_pipline reloads the model from model_path internally (avoids 2x peak memory)
     del model
     gc.collect()
 

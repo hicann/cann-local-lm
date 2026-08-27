@@ -14,19 +14,20 @@
 
 """Quantization entrypoints for the converter (W4A8 s8s4 / W4A16).
 
-- materialize_int4_per_group_symmetric: fp16 weight -> (int4-as-int8, scale), 线性对称 (offset=0), 用 dopt GPTQ scale
+- materialize_int4_per_group_symmetric: fp weight -> (nibble-packed int4-as-int8, scale),
+  linear symmetric (offset=0), uses dopt GPTQ scale
 - materialize_int8_per_channel_symmetric: embed int8 per-channel (host gather)
 - QuantLinear: export-path Linear whose forward calls npu::npu_quant_matmul
   (W4A8 also uses npu_dynamic_quant for act quant)
 - swap_to_quant_linear_from_dopt: port dopt GPTQ output (GPTQ weight + group_scale)
-  -> materialize int4 -> swap QuantLinear (legacy, scenes 1 offline use; internally
+  -> materialize int4 -> swap QuantLinear (legacy, scene-1 offline; internally
   load_dopt_state_dict + _swap_linear_from_sd)
-- swap_from_dopt: one-shot load sd + Linear swap + embed 抽取 (主进程场景 1/2 用,
-  避免 swap_to_quant_linear_from_dopt + swap_embeddings_from_dopt 二次 load IO)
+- swap_from_dopt: one-shot load sd + Linear swap + embed extraction (main process,
+  scenes 1/2)
 - swap_embeddings_from_dopt: port dopt embed int8+scale for host gather
 - load_dopt_state_dict: load dopt GPTQ output (safetensors/.pth/dir)
 
-GPTQ (dopt_lm) runs offline on NPU/GPU and produces the dopt output; the
+GPTQ (dopt_lm) runs offline on NPU/GPU/CPU and produces the dopt output; the
 converter loads it via --quant-path, materializes, swaps, exports. See
 docs/cann_lm_converter/quant_design.md.
 """

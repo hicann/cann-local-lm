@@ -808,7 +808,7 @@ int64 bytes = uint64 bytes (8 字节小端序, 位模式相同)
 5. **dopt 函数超规**：`swap.py _swap_linear_from_sd` 函数体超 50 行（承担遍历+读 scale+读 meta+校验+materialize+预转置+实例化+替换+计数+构造 dict），`materialize.py materialize_int4_per_group_symmetric` 6 参数（超 5 参数原则）。两者建议按单一职责拆分 + `Int4Spec` dataclass 收敛，当前未拆。
 6. **dopt gemma4 多模态约束**：dopt GPTQ 主循环按文本 `ForCausalLM` 结构访问 `model.model.layers`；`model_define` 会从多模态模型抽取并重挂语言模型。`QGemma4ScaledEmbedding` 已通过 `visible_type_dict` 的原始类名分支接入。
 7. ~~**dopt_lm 拼写错误**~~ **已修复**：源码已用正确拼写 `ptq_algo_hessian` / `WeightQuantHessian`（`dopt_lm/opt_funcs/weight_quant_ptq/ptq_algo_hessian/`）。仅 `dopt_lm/weight_quant_ptq/ptq_algo_heissen/__pycache__/` 遗留旧编译产物（heissen 拼写），可删。
-8. **materialize.py docstring 过时**：文件头 docstring 仍写 "int4 signed values stored 1/byte = unpack" + "本模块为 unpack+signed 占位实现，先跑通 Python 流程，CANN 对齐后续"，但实际 `pack_int4` 已实现 nibble-pack、`materialize_int4_per_group_symmetric` 支持 `packed=True`，早已非占位实现。docstring 待更新。
+8. ~~**materialize.py docstring 过时**~~ **已修复**：文件头 docstring 原写 "unpack placeholder/占位实现/先跑通 Python 流程"，已重写为简洁 API 契约（nibble-packed int4 + per-group scale + offset=0，匹配 `npu::npu_quant_matmul` x2 layout）。
 9. **reg_register.h 仍注册 QuantMatmulS8S4（方案 A 遗留）**：三文件 `reg_register.h` 仍注册 `QuantMatmulS8S4`（方案 A 自研算子，代码已切回 `npu::npu_quant_matmul` 不再使用），注释标注为"8 个无 IR 的自研算子"之一。清理是低风险纯删除，但会破坏旧 epair（含 `cann_lm::quant_matmul_s8s4` 节点）的加载，故保留。
 10. **_quant_matmul_converter.py 删 a8w4/mxfp4 分支**：为去 torch_npu 依赖，删了 `float4_e2m1fn_x2`/`float8_e8m0fnu` 等 torch 无等价物的 dtype 常量分支（`x1_dtype`/`x2_dtype`/`*_scale_dtype` 的 Bitcast 路径保留但 converter 不主动用）。恢复 a8w4 需重新引入 torch_npu 依赖或建立 dtype 常量映射（见 `quant_matmul.py` 文件头注释）。
 

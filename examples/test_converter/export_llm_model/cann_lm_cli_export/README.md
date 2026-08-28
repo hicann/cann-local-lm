@@ -121,21 +121,18 @@ epair_<model>/
 5. 至少一个 tokenizer 文件
 6. 目录总大小 > 0
 
-## C++ OM 编译 (`main.cpp`)
+## C++ OM 编译 (`cann_lm_compile`)
 
-用 `examples/test_converter/export_llm_model/main.cpp` 加载 epair → 构建 GE Graph → 编译 OM(`aclgrphBuildModel`)。本机 NPU Ascend910_9362,soc_version 用 `SOC_VERSION` 环境变量(默认 `Ascend910_9362`)。
+用 `cann_lm/converter/export/csrc/tools/compile_main.cc` 加载 epair → 构建 GE Graph → 编译 OM(`aclgrphBuildModel`)。本机 NPU Ascend910_9362,soc_version 用 `SOC_VERSION` 环境变量(默认 `Ascend910_9362`)。
 
 ### 编译 + 运行
 
 ```bash
-source /home/developer/Ascend/cann/set_env.sh
-TORCH_PKG_DIR=$(/mnt/workspace/torch-delegate-harmony/.venv/bin/python3 -c 'import torch,os;print(os.path.dirname(torch.__file__))')
-cmake -S examples/test_converter/export_llm_model -B examples/test_converter/export_llm_model/build \
-  -DCANN_ROOT=$ASCEND_HOME_PATH -DTORCH_PKG_DIR=$TORCH_PKG_DIR
-cmake --build examples/test_converter/export_llm_model/build -j$(nproc)
+source scripts/set_env_compile.sh
+bash scripts/cann_lm_compile/build_cpp.sh          # 产 build/cann_lm_compile
 
-export LD_LIBRARY_PATH="${TORCH_PKG_DIR}/lib:${TORCH_PKG_DIR}/../torch.libs:/mnt/workspace/torchair/build/stubs:${ASCEND_HOME_PATH}/lib64:${ASCEND_HOME_PATH}/aarch64-linux/devlib:cann_lm/converter/export/csrc/build/stub_lib:${LD_LIBRARY_PATH:-}"
-./examples/test_converter/export_llm_model/build/export_llm_model \
+export LD_LIBRARY_PATH="${TORCH_DELEGATE_HOME}/.venv/lib/python3.11/site-packages/torch/lib:${TORCH_DELEGATE_HOME}/.venv/lib/python3.11/site-packages/torch.libs:/mnt/workspace/torchair/build/stubs:${ASCEND_HOME_PATH}/lib64:${ASCEND_HOME_PATH}/aarch64-linux/devlib:build/stub_lib:${LD_LIBRARY_PATH:-}"
+./build/cann_lm_compile \
   "$(pwd)/examples/test_converter/export_llm_model/cann_lm_cli_export/epair_qwen3/ep_json_with_ascend_ir.json" \
   "$(pwd)/examples/test_converter/export_llm_model/cann_lm_cli_export/epair_qwen3/weight_info.json" \
   qwen3_n5

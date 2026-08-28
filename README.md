@@ -20,7 +20,7 @@ CANN-LM_5883/
 │   └── models/               # 模型定义 (gemma4/qwen3/qwen3_5 + fused_ops 算子)
 ├── docs/                     # 设计文档 (cli/export/quant 三模块)
 ├── examples/                 # 端到端用例 (OM 编译 + NPU 出字验证)
-├── scripts/                  # 辅助脚本 (set_env.sh 统一环境)
+├── scripts/                  # 辅助脚本 (set_env_<env>.sh 各 env 直 source)
 ├── tests/                    # 单元测试
 ├── ci/                       # CI/CD
 └── cmake/                    # CMake 公共模块
@@ -35,8 +35,8 @@ CANN-LM_5883/
 | **cann_lm/models/**　　　　　| 三个模型定义 + 自定义算子　| `gemma4/`(Gemma4ForCausalLM + export_wrapper) / `qwen3/` / `qwen3_5/` / `fused_ops/`(cann_lm:: + npu:: 算子 schema+fake-meta)　　　　　　　　　　　　　　　　　　　　　|
 | **docs/cann_lm_converter/**　| converter 设计文档　　　　 | `cli/cli_design.md` / `export/export_design.md` / `quant/quant_design.md` / `converter_design.md`(总览)　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　|
 | **examples/test_converter/** | 端到端测试用例　　　　　　 | `export_llm_model/`(C++ OM 编译 + om_npu_verify 出字验证) / `cann_lm_cli_export/run_pd6_cases.sh`(6 用例)　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　|
-| **scripts/**　　　　　　　　 | 辅助脚本　　　　　　　　　 | `set_env.sh`(统一环境:converter/npu/om) / `build_wheel.sh`(打包)　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　 |
-| **tests/**　　　　　　　　　 | 单元测试　　　　　　　　　 | `build_and_test.sh` / `c++/`(C++ ASAN 测试)　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　|
+| **scripts/**　　　　　　　　 | 辅助脚本　　　　　　　　　 | `set_env_{export,compile,generate,npu}.sh`(各 env 直 source) / `_env_common.sh`(公共) / `cann_lm_compile/build_cpp.sh`(② C++ 统一构建) / `cann_lm_{converter,engine}/build_wheel.sh`(① whl 打包)　 |
+| **tests/**　　　　　　　　　 | 单元测试　　　　　　　　　 | `c++/`(C++ 测试; 跑: `bash scripts/cann_lm_compile/build_cpp.sh --asan && ctest --test-dir build`)　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　 |
 | **ci/**　　　　　　　　　　　| CI/CD　　　　　　　　　　　| 流水线定义、构建脚本、镜像配置　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　 |
 | **cmake/**　　　　　　　　　 | CMake 共享　　　　　　　　 | `DELEGATE_COMMON_FLAGS`(编译/链接选项统一管理)　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　 |
 
@@ -45,9 +45,9 @@ CANN-LM_5883/
 三套独立环境，互不叠加：
 
 ```bash
-source scripts/set_env.sh converter   # ① 导出 epair (CPU venv + torchair stubs)
-source scripts/set_env.sh npu         # ② GPTQ 量化 / NPU 出字 (系统 Python + torch_npu)
-source scripts/set_env.sh om          # ③ OM 编译 (C++ 二进制 + SOC + fusion switch)
+source scripts/set_env_export.sh   # ① 导出 epair (CPU venv + torchair stubs)
+source scripts/set_env_npu.sh         # ② GPTQ 量化 / NPU 出字 (系统 Python + torch_npu)
+source scripts/set_env_compile.sh          # ③ OM 编译 (C++ 二进制 + SOC + fusion switch)
 ```
 
 ## 快速开始
@@ -55,7 +55,7 @@ source scripts/set_env.sh om          # ③ OM 编译 (C++ 二进制 + SOC + fus
 ### 1. 导出 epair（无量化）
 
 ```bash
-source scripts/set_env.sh converter
+source scripts/set_env_export.sh
 python cann_lm/converter/cann_lm_converter.py \
     --hf-path /path/to/qwen3-0.6B \
     --output-dir /path/to/output \
@@ -65,7 +65,7 @@ python cann_lm/converter/cann_lm_converter.py \
 ### 2. 量化导出（一键式 GPTQ）
 
 ```bash
-source scripts/set_env.sh converter
+source scripts/set_env_export.sh
 DEVICE=npu python cann_lm/converter/cann_lm_converter.py \
     --hf-path /path/to/model \
     --output-dir /path/to/output \
@@ -76,7 +76,7 @@ DEVICE=npu python cann_lm/converter/cann_lm_converter.py \
 ### 3. 消费 dopt 产物（离线量化）
 
 ```bash
-source scripts/set_env.sh converter
+source scripts/set_env_export.sh
 python cann_lm/converter/cann_lm_converter.py \
     --hf-path /path/to/model \
     --output-dir /path/to/output \
@@ -87,12 +87,12 @@ python cann_lm/converter/cann_lm_converter.py \
 
 ```bash
 # OM 编译 (③ 环境)
-source scripts/set_env.sh om
-./examples/test_converter/export_llm_model/build/export_llm_model \
+source scripts/set_env_compile.sh
+./examples/test_converter/export_llm_model/build/cann_lm_compile \
     output/prefill_ep_json_with_ascend_ir.json output/weight_info.json output/prefill
 
 # NPU 出字 (② 环境)
-source scripts/set_env.sh npu
+source scripts/set_env_npu.sh
 python examples/test_converter/export_llm_model/om_npu_verify/run_qwen3_5_gen_emb.py "Hello, my name is"
 ```
 

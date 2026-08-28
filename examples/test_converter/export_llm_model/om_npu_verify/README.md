@@ -15,11 +15,10 @@ om_npu_verify/                  # main.cpp + CMakeLists + reg_register.h 已上�
 ├── epair_gemma4_pd/             # prefill+decode 两图产物 (出字用)
 └── epair_qwen3_5_emb/          # qwen3.5 embeddings 入图产物
 
-(上级 export_llm_model/)
-├── main.cpp                     # C++ OM 编译器 (EpairModelLoader→GE Graph→aclgrphBuildModel→.om)
-├── reg_register.h               # CANN 算子注册宏 (IR 校准版, main.cpp include)
-├── CMakeLists.txt               # 构建 export_llm_model (链 ge_compiler/ge_runner/acl_rt + torch_delegate_backend)
-└── build/export_llm_model       # 编译好的可执行 (aarch64)
+(OM 编译工具在 csrc, 非 example)
+- `cann_lm/converter/export/csrc/tools/compile_main.cc`  # C++ OM 编译器 (EpairModelLoader→GE Graph→aclgrphBuildModel→.om)
+- `cann_lm/converter/export/csrc/inc/external/reg_register.h`  # CANN 算子注册宏 (IR 校准版 81 ops)
+- `build/cann_lm_compile`  # 编译好的可执行 (aarch64, 由 build_cpp.sh 产)
 ```
 > 导出 epair 用 CLI `cann_lm/converter/cann_lm_converter.py`(唯一入口);批量导出三模型见 `../cann_lm_cli_export/run.sh`。
 
@@ -40,11 +39,10 @@ VENV=/mnt/workspace/torch-delegate-harmony/.venv
 
 ## 使用流程
 
-### 1. 构建 C++ 编译器(一次性; main.cpp+CMakeLists 已上移到上级 `export_llm_model/`)
+### 1. 构建 C++ 编译器(一次性; 工具已并入 csrc)
 ```bash
-export TORCH_PKG_DIR=/mnt/workspace/torch-delegate-harmony/.venv/lib/python3.11/site-packages/torch
-cmake -S .. -B ../build -DCANN_ROOT="$ASCEND_HOME_PATH" -DTORCH_PKG_DIR="$TORCH_PKG_DIR"
-cmake --build ../build -j4
+source scripts/set_env_compile.sh
+bash scripts/cann_lm_compile/build_cpp.sh   # 产 build/cann_lm_compile
 ```
 
 ### 2. 导出 epair(用 CLI `cann_lm_converter.py`, 唯一导出入口)
@@ -70,7 +68,7 @@ EOF
 ```bash
 # 每次编译都带 GE_FUSION_SWITCH_FILE 关 AUB:
 export GE_FUSION_SWITCH_FILE=/tmp/fusion_autoub_off.cfg
-../build/export_llm_model epair_gemma4/ep_json_with_ascend_ir.json \
+../build/cann_lm_compile epair_gemma4/ep_json_with_ascend_ir.json \
   epair_gemma4/weight_info.json gemma4_noaub
 # → gemma4_noaub.om (3 阶段: Load epair → Extract GE Graph → Compile)
 ```
@@ -103,7 +101,7 @@ main.cpp 已加 env 注入(改完需 `cmake --build ../build` 重编一次 main.
 ```bash
 # cfg 内容: {"Switch":{"UBFusion":{"AutomaticUbFusion":"off"}}}
 export GE_FUSION_SWITCH_FILE=/tmp/fusion_autoub_off.cfg   # 见上 "3. 编译" 的建 cfg 步骤
-../build/export_llm_model epair_gemma4/ep_json_with_ascend_ir.json epair_gemma4/weight_info.json gemma4_noaub
+../build/cann_lm_compile epair_gemma4/ep_json_with_ascend_ir.json epair_gemma4/weight_info.json gemma4_noaub
 ```
 - 一键全关(blunt,会把图重构成 PartitionedCall 子图,**不推荐**):`{"Switch":{"GraphFusion":{"ALL":"off"},"UBFusion":{"ALL":"off"}}}`。
 - `ge.bufferOptimize=off_optimize` **实测会让编译失败**(status 50331649),勿用。

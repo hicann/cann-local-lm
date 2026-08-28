@@ -177,7 +177,7 @@ mask = (k > cached_len).view(1,1,1,kv_max).expand(batch,1,1,kv_max)  # [b,1,1,kv
 ### 前置不变量(每轮保持)
 - gemma4 FIA 已在 export 激活(`prefill.om` 35 个 FIA),改 modeling 直接影响 export。
 - 始终显式 `export SOC_VERSION=...`(`examples/test_converter/export_llm_model/main.cpp` 的 SOC_VERSION 默认值与注释不符)。
-- fusion cfg 不动(关 AUB + AddRmsNorm,`scripts/set_env.sh` 的 fusion cfg 段,跨 SoC 复用)。
+- fusion cfg 不动(关 AUB + AddRmsNorm,`scripts/set_env_compile.sh` 的 fusion cfg 段,跨 SoC 复用)。
 - 三套 env 互不叠加:`converter`(导出)/`om`(编译)/`npu`(出字)。
 
 ### Phase 0 — 双 variant baseline(910 + 950 各测)
@@ -190,15 +190,15 @@ mask = (k > cached_len).view(1,1,1,kv_max).expand(batch,1,1,kv_max)  # [b,1,1,kv
 **执行**(每 variant 每 SoC 一轮):
 ```bash
 # 导出
-source scripts/set_env.sh converter
+source scripts/set_env_export.sh
 bash examples/test_converter/export_llm_model/cann_lm_cli_export/run_pd6_cases.sh 2   # case_2 = gemma4 prefill-decode
 
 # OM 编译(910)
-source scripts/set_env.sh om && export SOC_VERSION=Ascend910_9362
+source scripts/set_env_compile.sh && export SOC_VERSION=Ascend910_9362
 # (main.cpp: EpairModelLoader → aclgrphBuildModel → prefill.om)
 
 # NPU 出字(单 chunk,prompt ≤ PREFILL_SEQ=128)
-source scripts/set_env.sh npu
+source scripts/set_env_npu.sh
 python3 examples/test_converter/export_llm_model/om_npu_verify/run_gemma4_gen.py
 
 # 950 同上,SOC_VERSION=Ascend950DT
@@ -283,7 +283,7 @@ Phase 0 (variant A + B × 910 + 950)
 | FIA GE converter | `cann_lm/converter/export/_fused_infer_attention_score_v2_converter.py` 的 GE converter |
 | OM 编译入口(SOC_VERSION env) | `examples/test_converter/export_llm_model/main.cpp` 的 SOC_VERSION 设置 |
 | OM 编译入口(GE_FUSION_SWITCH_FILE) | `examples/test_converter/export_llm_model/main.cpp` 的 GE_FUSION_SWITCH_FILE 设置 |
-| fusion cfg 内容 | `scripts/set_env.sh` 的 fusion cfg 段 |
+| fusion cfg 内容 | `scripts/set_env_compile.sh` 的 fusion cfg 段 |
 | CLI 批量导出(case_2=gemma4) | `examples/test_converter/export_llm_model/cann_lm_cli_export/run_pd6_cases.sh` |
 | prefill NPU 验证(gemma4) | `examples/test_converter/export_llm_model/om_npu_verify/run_gemma4_gen.py` |
 | prefill NPU 验证(qwen3.5) | `examples/test_converter/export_llm_model/om_npu_verify/run_qwen3_5_gen.py` |

@@ -13,7 +13,7 @@ export_and_load_epair/
 ├── compare_single_op_vs_delegate.py # [用例3] ep 回环 (ep.module() 跑) + C++ load 验证
 ├── main.cpp                         # C++ epair→GE Graph→ONNX dump→(可选)OM 编译 (EpairModelLoader)
 ├── CMakeLists.txt                    # 构建 export_and_load_example (链 ge_compiler/ge_runner/acl_rt + torch_delegate_backend)
-├── reg_register.h                    # → 软链 ../export_llm_model/reg_register.h (IR 校准版 81 ops, 单一源)
+├── reg_register.h                    # 已移至 csrc/inc/external/reg_register.h (经 torch_delegate_backend PUBLIC include 可达; 本目录不再有此文件)
 ├── run.sh                            # 一键脚本: 环境检查 + 后端构建 + 导出 + C++ 编译 + C++ 加载 (simple|addrmsnorm)
 ├── epair_model/                      # SimpleNetwork 导出产物 (ep_json + weight_info + weights_*.bin)
 ├── epair_model.pt2 / input_0.bin    # Python 回环 / C++ 验证输入
@@ -69,7 +69,7 @@ CANN(`ASCEND_HOME_PATH`) / NPU(`npu-smi`) / cmake / venv python / torch / torcha
 
 - 跑用例1/2 前只需 `source /home/developer/Ascend/cann/set_env.sh`，其余 env（venv/stubs/PYTHONPATH）由 `run.sh` 注入。
 - 跑用例3/4（不经过 run.sh）需手动 source 上面用例3 的 stubs env 块。
-- backend lib 缺失时 `run.sh` 自动触发 `cann_lm/converter/export/csrc/build_csrc.sh` 构建。
+- backend lib 缺失时 `run.sh` 自动触发 `scripts/cann_lm_compile/build_cpp.sh --target torch_delegate_backend` 构建（.so 落 `build/`）。
 
 ## SKIP_OM_BUILD / OM 编译
 
@@ -89,7 +89,7 @@ SKIP_OM_BUILD=0 bash run.sh simple   # 编出 simple.om
 
 ## reg_register.h
 
-本目录 `reg_register.h` 是指向 `../export_llm_model/reg_register.h`（IR 校准版 81 ops，单一源）的软链。改算子注册请改那个 master 文件，所有用例同步生效。
+`reg_register.h`（IR 校准版 81 ops）已并入 `cann_lm/converter/export/csrc/inc/external/reg_register.h`（与 `cann_lm_compile` 工具同源）。本例 `main.cpp` 的 `#include "reg_register.h"` 经 `torch_delegate_backend` 的 PUBLIC include（`inc/external`）解析，无需本地副本/软链。改算子注册请改 csrc 那个 master 文件。
 
 ## 末尾 abort 说明
 

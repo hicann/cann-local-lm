@@ -88,7 +88,7 @@
 | OM 终态 | `InplaceAddRmsNorm` 35 | `InplaceAddRmsNorm` 0（RmsNorm 207→242, Add 71→106） |
 | fused_ops.md | ❌ InplaceAddRmsNorm 未列 | ✅ fuse_op `Rmsnorm` + single_op `Add` |
 
-- **文件**：`scripts/set_env.sh` om 分支 fusion cfg
+- **文件**：`scripts/set_env_compile.sh` fusion cfg
 - **配置**：
   ```json
   {"Switch":{"UBFusion":{"AutomaticUbFusion":"off"},
@@ -161,7 +161,7 @@ gemma4 OM 终态非框架算子**全部命中 fused_ops.md 定义**，只剩 `Mu
 | `cann_lm/models/fused_ops/scatter_nd_update.py` | docstring 更新（gemma4 已落地） |
 | `docs/cann_lm_models/fused_ops/fused_ops.md` | §3 torchair converter 映射 + 备注（原 support_ops §4）|
 | `docs/cann_lm_models/fused_ops/fused_ops.md` | §4.2.6 / §5.3 P2 标记已落地（原 compositte_op §2.6）|
-| `scripts/set_env.sh` | om fusion cfg 关 AddRmsNorm/InplaceAddRmsNorm 融合 |
+| `scripts/set_env_compile.sh` | fusion cfg 关 AddRmsNorm/InplaceAddRmsNorm 融合 |
 
 ---
 

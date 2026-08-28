@@ -204,7 +204,7 @@ export TORCH_DEVICE_BACKEND_AUTOLOAD=0
 export TORCH_DELEGATE_ENABLE_FALLBACK_CODEGEN=0
 
 VENV=/mnt/workspace/torch-delegate-harmony/.venv/bin/python
-BIN=/mnt/workspace/project/CANN-LM_5883/examples/test_converter/export_llm_model/build/export_llm_model
+BIN=/mnt/workspace/project/CANN-LM_5883/examples/test_converter/export_llm_model/build/cann_lm_compile
 HF=/mnt/workspace/data/models/gemma-4-E2B-it
 OUT=/tmp/opencode/gemma4_out
 

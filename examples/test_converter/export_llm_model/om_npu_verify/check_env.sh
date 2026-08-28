@@ -3,7 +3,7 @@
 #
 # 覆盖三套子流程所需环境：
 #   1. 导出 epair        — converter venv (CPU + torchair stubs)
-#   2. OM 编译           — 真 CANN (CPU 侧, 不需 NPU) + cmake + ../build/export_llm_model
+#   2. OM 编译           — 真 CANN (CPU 侧, 不需 NPU) + cmake + build/cann_lm_compile
 #   3. OM 运行/出字       — 系统 Python + torch_npu + acl + NPU
 #
 # 用法（先 source CANN 环境）:
@@ -23,8 +23,8 @@ TORCH_DELEGATE_HOME="${TORCH_DELEGATE_HOME:-/mnt/workspace/torch-delegate-harmon
 SYS_PY="${SYS_PY:-/opt/buildtools/Python-3.11.4/bin/python3}"
 CANN_PY="${CANN_PY:-${ASCEND_HOME_PATH:-/home/developer/Ascend/cann-9.2.0}/python/site-packages}"
 CSRC="${PROJECT_ROOT}/cann_lm/converter/export/csrc"
-BACKEND_LIB="${CSRC}/build/libtorch_delegate_backend.so"
-BUILD_BIN="${EXPORT_DIR}/build/export_llm_model"
+BACKEND_LIB="${PROJECT_ROOT}/build/libtorch_delegate_backend.so"
+BUILD_BIN="${PROJECT_ROOT}/build/cann_lm_compile"
 STUBS="${TORCHAIR_FULL}/build/stubs"
 HF_GEMMA4="${HF_GEMMA4:-/mnt/workspace/data/models/gemma-4-E2B-it}"
 HF_QWEN3="${HF_QWEN3:-/mnt/workspace/data/models/qwen3-0.6B}"
@@ -68,10 +68,10 @@ PY
 # ───────────── Flow 2: OM 编译 (真 CANN + cmake + C++ binary) ─────────────
 hdr "Flow 2: OM 编译 (真 CANN, CPU 侧, 不需 NPU; 需算子在 CANN 对 Soc 存在)"
 command -v cmake &>/dev/null && ok "cmake $(cmake --version | head -1 | awk '{print $3}')" || ng "cmake 未找到"
-[[ -f "${BACKEND_LIB}" ]] && ok "backend lib: ${BACKEND_LIB##*/}" || ng "backend lib 缺失 (cd ${CSRC} && bash build_csrc.sh)"
+[[ -f "${BACKEND_LIB}" ]] && ok "backend lib: ${BACKEND_LIB##*/}" || ng "backend lib 缺失 (bash scripts/cann_lm_compile/build_cpp.sh --target torch_delegate_backend)"
 _vtorch="$("${VENV}/bin/python3" -c 'import torch,os;print(os.path.dirname(torch.__file__))' 2>/dev/null)"
 [[ -n "${_vtorch}" ]] && ok "TORCH_PKG_DIR=${_vtorch}" || ng "无法从 venv 取 torch 路径"
-if [[ -x "${BUILD_BIN}" ]]; then ok "C++ binary: ${BUILD_BIN}"; else wn "C++ binary 未构建 (cmake -S ${EXPORT_DIR} -B ${BUILD_BIN%/*}/ && cmake --build)"; fi
+if [[ -x "${BUILD_BIN}" ]]; then ok "C++ binary: ${BUILD_BIN}"; else wn "C++ binary 未构建 (bash scripts/cann_lm_compile/build_cpp.sh)"; fi
 if [[ -n "${SOC_VERSION:-}" ]]; then ok "SOC_VERSION=${SOC_VERSION}"; else wn "SOC_VERSION 未设 (默认 Ascend910_9362; 错误 Soc → 算子缺失失败)"; fi
 [[ -f /tmp/fusion_autoub_off.cfg ]] && ok "AUB off cfg: /tmp/fusion_autoub_off.cfg" || wn "fusion_autoub_off.cfg 缺失 (OM 编译需关 AUB)"
 echo "  epair 产物 (OM 编译输入):"

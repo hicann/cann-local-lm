@@ -292,7 +292,7 @@ output_dir/
 
 ## 环境变量
 
-> **快捷方式**:`scripts/set_env.sh` 封装了三套独立环境,按场景 source(`converter` / `npu` / `om`)。路径默认值可由环境变量覆盖(`TORCH_DELEGATE_HOME` / `TORCHAIR_ROOT` / `DOPT_PYTHON` / `PROJECT_ROOT` / `CANN_SET_ENV` / `SOC_VERSION` / `GE_FUSION_SWITCH_FILE`)。下面表格列变量与默认值。
+> **各 env 直接 source 具名脚本**：`scripts/set_env_<env>.sh`（export/compile/generate/npu 四套，互不叠加；公共部分 `_env_common.sh`）。路径默认值可由环境变量覆盖(`TORCH_DELEGATE_HOME` / `TORCHAIR_ROOT` / `DOPT_PYTHON` / `PROJECT_ROOT` / `CANN_SET_ENV` / `SOC_VERSION` / `GE_FUSION_SWITCH_FILE`)。下面表格列变量与默认值。
 
 | 变量 | 说明 | 默认值 |
 |------|------|--------|
@@ -341,7 +341,7 @@ python3 examples/test_converter/export_llm_model/om_npu_verify/run_qwen3_om.py  
 python3 examples/test_converter/export_llm_model/om_npu_verify/run_qwen3_5_om.py  # qwen3.5: OM vs EP/HF
 
 # C++ OM 编译: 纯 embeddings epair → .om
-./examples/test_converter/export_llm_model/build/export_llm_model \
+./examples/test_converter/export_llm_model/build/cann_lm_compile \
     output/ep_json_with_ascend_ir.json output/weight_info.json output
 
 # prefill/decode 分离 (推理用, prefill+decode 两图 + 共享权重; 默认模式)

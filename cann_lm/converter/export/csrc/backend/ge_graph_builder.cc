@@ -1540,7 +1540,7 @@ bool PlanConverterNoOpNode(GraphBuildContext &ctx, const ParsedNode &node, const
   return true;
 }
 
-bool PlanFallbackNode(GraphBuildContext &ctx, const ParsedNode &node, const GraphPlanningDeps &deps,
+[[maybe_unused]] bool PlanFallbackNode(GraphBuildContext &ctx, const ParsedNode &node, const GraphPlanningDeps &deps,
                       ValidationResult &result) {
   const std::string context = NodeDebugContext(node);
   if (node.outputs.empty()) {

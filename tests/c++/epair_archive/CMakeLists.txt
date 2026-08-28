@@ -16,17 +16,17 @@ set(TORCH_DELEGATE_HOME "${PROJECT_ROOT}/../../torch-delegate-harmony")
 set(FIXTURES_DIR "${CMAKE_CURRENT_BINARY_DIR}/fixtures")
 set(CANN_PATH "$ENV{ASCEND_HOME_PATH}")
 if(NOT CANN_PATH)
-    set(CANN_PATH "/home/developer/Ascend/cann-9.1.0")
+    message(FATAL_ERROR "ASCEND_HOME_PATH not set. Source CANN env first (source scripts/set_env_compile.sh).")
 endif()
 
-# ── CANN ──
-list(APPEND CMAKE_MODULE_PATH "${TORCH_DELEGATE_HOME}/cmake/modules")
+# ── CANN ── (sibling cmake/modules 在前保持既有搜索序; 本仓 cmake/modules 补 DelegateCommonFlags)
+list(APPEND CMAKE_MODULE_PATH "${TORCH_DELEGATE_HOME}/cmake/modules" "${PROJECT_ROOT}/cmake/modules")
 include(TorchDelegateCannCommon)
+include(DelegateCommonFlags)
 torch_delegate_cann_include_search_paths(CANN_INCLUDE_DIRS)
 torch_delegate_cann_library_search_paths(CANN_LIB_DIRS)
 
 # ── deps ──
-find_package(Torch REQUIRED)
 find_package(nlohmann_json REQUIRED)
 find_package(GTest REQUIRED)
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
@@ -43,20 +43,26 @@ if(NOT ge_runner_v2_FOUND)
     add_library(ge_runner_v2 INTERFACE IMPORTED)
 endif()
 
-# ── import torch_delegate_backend ──
-set(TD_BACKEND_LIB "${CSRC_DIR}/build/libtorch_delegate_backend.so")
-if(NOT EXISTS "${TD_BACKEND_LIB}")
-    message(FATAL_ERROR "torch_delegate_backend not found at ${TD_BACKEND_LIB}")
+# ── torch_delegate_backend: in-tree target (顶层 add_subdirectory) 或 fallback 预编译 .so ──
+set(TD_BACKEND_LIB "${PROJECT_ROOT}/build/libtorch_delegate_backend.so")
+if(NOT TARGET torch_delegate_backend)
+    if(NOT EXISTS "${TD_BACKEND_LIB}")
+        message(FATAL_ERROR
+            "torch_delegate_backend not found at ${TD_BACKEND_LIB}\n"
+            "  顶层统一构建: bash scripts/cann_lm_compile/build_cpp.sh\n"
+            "  bash scripts/cann_lm_compile/build_cpp.sh --target torch_delegate_backend")
+    endif()
+    add_library(torch_delegate_backend SHARED IMPORTED GLOBAL)
+    set_target_properties(torch_delegate_backend PROPERTIES
+        IMPORTED_LOCATION "${TD_BACKEND_LIB}"
+        INTERFACE_INCLUDE_DIRECTORIES "${CSRC_DIR}/inc/external"
+    )
 endif()
 
-add_library(torch_delegate_backend SHARED IMPORTED GLOBAL)
-set_target_properties(torch_delegate_backend PROPERTIES
-    IMPORTED_LOCATION "${TD_BACKEND_LIB}"
-    INTERFACE_INCLUDE_DIRECTORIES "${CSRC_DIR}"
-)
-target_link_libraries(torch_delegate_backend INTERFACE
+# CANN 依赖 (test exe 直接 link, 不依赖 backend target 的 INTERFACE 传播)
+set(CANN_LM_TEST_DEPS
     graph graph_base metadef ascendcl acl_rt
-    ${TORCH_LIBRARIES} nlohmann_json::nlohmann_json
+    nlohmann_json::nlohmann_json
     runtime securec ascend_hal ge_runner_v2
 )
 
@@ -93,7 +99,6 @@ function(add_cann_lm_test TEST_NAME SOURCE_FILE)
 
     target_include_directories(${TEST_NAME} PRIVATE
         "${CSRC_DIR}"
-        "${TORCH_INCLUDE_DIRS}"
         "${CANN_INCLUDE_DIRS}"
     )
     target_compile_definitions(${TEST_NAME} PRIVATE
@@ -105,10 +110,10 @@ function(add_cann_lm_test TEST_NAME SOURCE_FILE)
     target_link_libraries(${TEST_NAME} PRIVATE
         torch_delegate_backend
         GTest::gtest_main
+        ${CANN_LM_TEST_DEPS}
     )
-    target_compile_options(${TEST_NAME} PRIVATE -Wall -Wextra)
+    delegate_apply_common_flags(${TEST_NAME})
     target_link_options(${TEST_NAME} PRIVATE
-        -Wall -Wextra
         -Wl,--disable-new-dtags
         ${RPATH_LINK_FLAGS}
     )

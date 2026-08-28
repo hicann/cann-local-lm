@@ -746,7 +746,7 @@ cd examples/test_converter/export_llm_model/om_npu_verify
 # 2. 编译 OM（系统环境，关 AUB，cfg 格式 {"Switch":{"UBFusion":{"AutomaticUbFusion":"off"}}}）
 export GE_FUSION_SWITCH_FILE=/tmp/fusion_autoub_off.cfg
 export SOC_VERSION=Ascend910_9362
-../build/export_llm_model epair_qwen3_5_emb/ep_json_with_ascend_ir.json \
+../build/cann_lm_compile epair_qwen3_5_emb/ep_json_with_ascend_ir.json \
   epair_qwen3_5_emb/weight_info.json qwen3_5_emb_noaub
 
 # 3. 验证（系统 Python, NPU acl + HF 对比）

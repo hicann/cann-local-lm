@@ -199,9 +199,9 @@ def parse_args() -> argparse.Namespace:
                         help="Format/bit-width (w4a8, default w4a8). Only effective with --quant-method; passed to dopt_config's strategy.")
     parser.add_argument("--quant-device", default=None, choices=["npu", "cuda", "cpu"],
                         help="Quant subprocess device (npu/cuda/cpu), skips env detection. Default None inherits the "
-                             "parent DEVICE (set_env.sh npu mode export) or spawn-detects (falls back to cpu when no "
+                             "parent DEVICE (set_env_npu.sh export) or spawn-detects (falls back to cpu when no "
                              "NPU/GPU). cpu only for small models / debugging (dopt_lm supports CPU float32, 7B+ is "
-                             "very slow). Equivalent to set_env.sh.")
+                             "very slow). Equivalent to set_env_npu.sh.")
     return parser.parse_args()
 
 

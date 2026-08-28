@@ -102,7 +102,8 @@ TEST_F(AtenTensorDescMapperTest, MapGeLayoutStringEmpty) {
 }
 
 TEST_F(AtenTensorDescMapperTest, MapGeLayoutStringUnsupported) {
-  mapper_.MapGeLayoutString("NCHW", result_, "test");
+  // "NCDHW" 不在支持集 {empty, ND, NCHW, NHWC} 内 → 应报 UNSUPPORTED_GE_LAYOUT
+  mapper_.MapGeLayoutString("NCDHW", result_, "test");
   EXPECT_FALSE(result_.ok);
 }
 

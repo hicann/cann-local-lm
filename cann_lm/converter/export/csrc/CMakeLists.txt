@@ -12,11 +12,9 @@ set(TORCH_DELEGATE_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
 # ── CANN ──
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/../../../../cmake/modules")
 include(TorchDelegateCannCommon)
+include(DelegateCommonFlags)
 torch_delegate_cann_include_search_paths(CANN_INCLUDE_DIRS)
 torch_delegate_cann_library_search_paths(CANN_LIB_DIRS)
-
-# ── PyTorch ──
-find_package(Torch REQUIRED)
 
 # ── nlohmann_json ──
 find_package(nlohmann_json REQUIRED)
@@ -51,13 +49,18 @@ add_library(torch_delegate_backend SHARED
     ${TORCH_DELEGATE_BACKEND_SOURCES}
 )
 
+# .so 固定落 build 根 (不按源码树嵌套): build_cpp.sh → build/ (统一入口)
+# (保 example CMakeLists fallback 契约: ${CANN_LM_CSRC_DIR}/build/libtorch_delegate_backend.so)
+set_target_properties(torch_delegate_backend PROPERTIES
+    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
+)
+
 target_include_directories(torch_delegate_backend SYSTEM PUBLIC
     $<BUILD_INTERFACE:${CSRC_DIR}/inc/external>
 )
 
 target_include_directories(torch_delegate_backend SYSTEM PRIVATE
     ${CSRC_DIR}
-    ${TORCH_INCLUDE_DIRS}
 )
 
 target_link_libraries(torch_delegate_backend PUBLIC
@@ -69,7 +72,6 @@ target_link_libraries(torch_delegate_backend PUBLIC
 target_link_libraries(torch_delegate_backend PRIVATE
     ascendcl
     acl_rt
-    ${TORCH_LIBRARIES}
     nlohmann_json::nlohmann_json
     runtime
     securec
@@ -78,5 +80,23 @@ target_link_libraries(torch_delegate_backend PRIVATE
 )
 
 target_compile_definitions(torch_delegate_backend PRIVATE _GLIBCXX_USE_CXX11_ABI=1)
-target_compile_options(torch_delegate_backend PRIVATE -Wall -Wextra)
-target_link_options(torch_delegate_backend PRIVATE -Wall -Wextra)
+delegate_apply_common_flags(torch_delegate_backend)
+
+# ── cann_lm_compile (epair→OM 编译工具) ──
+# main: tools/compile_main.cc; reg_register.h 在 inc/external (经 backend PUBLIC include 可达)
+# 链 torch_delegate_backend (EpairModelLoader) + ge_runner_v2/ge_compiler/acl_rt (aclgrphBuildModel)
+# backend 不链 torch (csrc 不用 torch) → 工具无 torch 依赖, 运行只需 CANN
+option(BUILD_COMPILE_TOOL "Build cann_lm_compile (epair→OM) tool" ON)
+if(BUILD_COMPILE_TOOL)
+    add_executable(cann_lm_compile tools/compile_main.cc)
+    delegate_apply_common_flags(cann_lm_compile)
+    target_include_directories(cann_lm_compile PRIVATE ${CANN_INCLUDE_DIRS})
+    target_link_directories(cann_lm_compile PRIVATE ${CANN_LIB_DIRS})
+    target_link_libraries(cann_lm_compile PRIVATE
+        torch_delegate_backend
+        ge_runner_v2
+        ge_compiler
+        acl_rt
+    )
+    set_target_properties(cann_lm_compile PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
+endif()

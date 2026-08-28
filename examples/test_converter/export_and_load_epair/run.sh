@@ -20,7 +20,7 @@ TORCHAIR_FULL="${TORCHAIR_FULL:-/mnt/workspace/torchair}"
 PYTHON="${TORCH_DELEGATE_HOME}/.venv/bin/python3"
 _VENV_PY="${PYTHON}"   # 取 TORCH_PKG_DIR（匹配 backend 构建）
 CSRC_DIR="${PROJECT_ROOT}/cann_lm/converter/export/csrc"
-BACKEND_LIB="${CSRC_DIR}/build/libtorch_delegate_backend.so"
+BACKEND_LIB="${PROJECT_ROOT}/build/libtorch_delegate_backend.so"
 STUBS_LIB="${TORCHAIR_FULL}/build/stubs"
 PHASE=0
 
@@ -82,7 +82,7 @@ PY
 # --- stubs (converter CPU 环境需要) ---
 [[ -d "${STUBS_LIB}" ]] && ok "stubs: ${STUBS_LIB}" || warn "stubs 目录缺失: ${STUBS_LIB} (converter export 会失败)"
 # --- backend lib (C++ 加载需要) ---
-[[ -f "${BACKEND_LIB}" ]] && ok "backend lib (prebuilt): ${BACKEND_LIB##*/}" || warn "backend 待构建 (本脚本会自动 build_csrc.sh)"
+[[ -f "${BACKEND_LIB}" ]] && ok "backend lib (prebuilt): ${BACKEND_LIB##*/}" || warn "backend 待构建 (本脚本会自动 build_cpp.sh)"
 # --- TORCH_PKG_DIR (C++ 链接 torch) ---
 TORCH_PKG_DIR="$("${_VENV_PY}" -c 'import torch,os;print(os.path.dirname(torch.__file__))' 2>/dev/null)" || die "无法从 venv 获取 torch 路径"
 ok "TORCH_PKG_DIR=${TORCH_PKG_DIR}"
@@ -91,8 +91,7 @@ ok "TORCH_PKG_DIR=${TORCH_PKG_DIR}"
 phase "编译 CANN-LM C++ 后端库 (libtorch_delegate_backend.so)"
 # =========================================================
 if [[ ! -f "${BACKEND_LIB}" ]]; then
-  export CANN_PATH="${ASCEND_HOME_PATH}"
-  (cd "${CSRC_DIR}" && bash build_csrc.sh) || die "build_csrc.sh 失败"
+  bash "${PROJECT_ROOT}/scripts/cann_lm_compile/build_cpp.sh" --target torch_delegate_backend --no-tests --no-om || die "build_cpp.sh 失败"
 fi
 ok "${BACKEND_LIB##*/}"
 
@@ -124,9 +123,9 @@ ok "build/export_and_load_example"
 phase "C++ 加载验证 (main.cpp 场景: load→GetGEGraph→DumpToFile→编译→.om)"
 # =========================================================
 _PY_LIB="$("${PYTHON}" -c 'import sys;print(sys.base_prefix)')/lib"
-# libascend_hal.so 在 CANN devlib/ 或 csrc/build/stub_lib/（build_csrc.sh 放的 stub），
+# libascend_hal.so 在 CANN devlib/ 或 build/stub_lib/（build_cpp.sh 放的 stub），
 # 不在 lib64/。缺它则 libtorch_delegate_backend.so 加载失败 → EpairModelLoader 符号不可用。
-_BACKEND_STUB_LIB="${CSRC_DIR}/build/stub_lib"
+_BACKEND_STUB_LIB="${PROJECT_ROOT}/build/stub_lib"
 export LD_LIBRARY_PATH="${_PY_LIB}:${TORCHAIR_FULL}/build/stubs:${ASCEND_HOME_PATH}/lib64:${ASCEND_HOME_PATH}/aarch64-linux/devlib:${TORCH_PKG_DIR}/lib:${TORCH_PKG_DIR}/../torch.libs:${_BACKEND_STUB_LIB:+${_BACKEND_STUB_LIB}}:${LD_LIBRARY_PATH:-}"
 export ASCEND_SLOG_PRINT_TO_STDOUT=1  # 打开 GE 详细日志（定位 not registered 等）
 # SKIP_OM_BUILD 值判断: 默认 1=只 load+GetGEGraph+ONNX (本例主用途); 设 0=编译 OM (CPU 侧, 需算子对 SOC_VERSION 存在, 不需 NPU)

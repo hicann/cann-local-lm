@@ -13,17 +13,11 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${ROOT_DIR}/../../../.." && pwd)"
-VENV_DIR="${VENV_DIR:-/mnt/workspace/torch-delegate-harmony/.venv}"
-PYTHON="${VENV_DIR}/bin/python3"
 CONVERTER="${PROJECT_ROOT}/cann_lm/converter/cann_lm_converter.py"
 
-source /home/developer/Ascend/cann/set_env.sh
+source "$PROJECT_ROOT/scripts/set_env_export.sh"
 
-export PYTHONPATH="${PROJECT_ROOT}:${PYTHONPATH:-}"
-export TORCH_DELEGATE_ENABLE_FALLBACK_CODEGEN=0
-export TORCH_DEVICE_BACKEND_AUTOLOAD=0
-_TORCHAIR_STUBS="/mnt/workspace/torchair/build/stubs"
-export LD_LIBRARY_PATH="${ASCEND_HOME_PATH}/lib64:${_TORCHAIR_STUBS}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+PYTHON="${CONVERTER_PYTHON:-${TORCH_DELEGATE_HOME:-/mnt/workspace/torch-delegate-harmony}/.venv/bin/python3}"
 
 # model -> HF path 映射 (本地已下载)
 declare -A HF_PATHS=(

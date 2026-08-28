@@ -7,7 +7,6 @@ __pycache__/
 *.pt2
 *.epair
 *.graph.py
-generate/
 
 # Build artifacts
 build/

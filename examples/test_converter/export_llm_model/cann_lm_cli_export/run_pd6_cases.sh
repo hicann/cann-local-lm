@@ -66,20 +66,12 @@ import torchair, torch_delegate; print('torchair+torch_delegate OK')
 
 # ─── env: converter (CPU venv + torchair stubs) / dopt (系统 python + 真 NPU) ───
 setup_converter_env() {
-  source /home/developer/Ascend/cann/set_env.sh
-  export PYTHONPATH="$PROJECT_ROOT:${PYTHONPATH:-}"
-  export TORCH_DELEGATE_ENABLE_FALLBACK_CODEGEN=0
-  export TORCH_DEVICE_BACKEND_AUTOLOAD=0
-  export TORCH_DELEGATE_HOME=/mnt/workspace/torch-delegate-harmony
-  export LD_LIBRARY_PATH="${ASCEND_HOME_PATH}/lib64:/mnt/workspace/torchair/build/stubs:${LD_LIBRARY_PATH:-}"
+  source "$PROJECT_ROOT/scripts/set_env_export.sh"
 }
 
 setup_dopt_env() {
-  source /home/developer/Ascend/cann/set_env.sh
-  export PYTHONPATH="$QD:$PROJECT_ROOT:${PYTHONPATH:-}"
-  export TORCH_DEVICE_BACKEND_AUTOLOAD=0
-  export DEVICE=npu
-  export LD_LIBRARY_PATH="${ASCEND_HOME_PATH}/lib64:${LD_LIBRARY_PATH:-}"
+  source "$PROJECT_ROOT/scripts/set_env_npu.sh"
+  export PYTHONPATH="$QD:${PYTHONPATH:-}"
 }
 
 # ─── 临时改 config.yaml 加速 (ptq_samples=16); 备份 + trap 还原 ───

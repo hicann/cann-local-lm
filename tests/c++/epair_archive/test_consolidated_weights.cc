@@ -48,7 +48,7 @@ td::GeWeightLoader CreateLoader(const std::string &dir_path, td::ValidationResul
   const std::string model_json = ReadFile(dir_path + "/extra/ep_json_with_ascend_ir.json");
   td::EpairModelParser parser = td::EpairModelParser::Parse(model_json, result);
   if (!result.ok) return {};
-  return td::GeWeightLoader::CreateFromDirectory(dir_path, parser.Model(), result);
+  return td::GeWeightLoader::Create(dir_path + "/data/weights_index.json", parser.Model(), result);
 }
 
 }  // namespace

@@ -8,6 +8,8 @@
 #include "reg_register.h"
 #include <iostream>
 #include <string>
+#include <cstdlib>
+#include <filesystem>
 
 namespace {
 
@@ -81,24 +83,6 @@ int main(int argc, char *argv[]) {
   std::cout << "  model_json:   " << model_json_path << std::endl;
   std::cout << "  weights_index:" << weights_index_path << std::endl;
   std::cout << "  output_name: " << output_name << std::endl;
-
-  td::EpairModelLoader loader(model_json_path, weights_index_path);
-  std::cout << "[PASS] EpairModelLoader constructed" << std::endl;
-
-  // [2/3] Extract GE Graph (also validates initialization)
-  PrintStage(2, kTotalStages, "Extract GE Graph");
-
-  ge::Graph graph("delegate_graph");
-  td::Status graph_status = loader.GetGEGraph(&graph);
-  if (graph_status != td::SUCCESS) {
-    std::cerr << "[ERROR] GetGEGraph failed, status: " << graph_status << std::endl;
-    return -1;
-  }
-  std::cout << "[PASS] GE Graph extracted successfully" << std::endl;
-
-  // [3/3] Compile graph
-  PrintStage(3, kTotalStages, "Compile graph");
-
   // SOC version: 本机芯片 Ascend910_9362 (npu-smi 显示), CANN platform_config 有 Ascend910_9362.ini
   // 用环境变量 SOC_VERSION 覆盖 (默认 Ascend910_9362)
   const char *soc_env = std::getenv("SOC_VERSION");
@@ -109,6 +93,25 @@ int main(int argc, char *argv[]) {
     std::cerr << "[ERROR] aclgrphBuildInitialize failed, status: " << init_status << std::endl;
     return -1;
   }
+  td::EpairModelLoader loader(model_json_path, weights_index_path);
+  std::cout << "[PASS] EpairModelLoader constructed" << std::endl;
+
+  // [2/3] Extract GE Graph (also validates initialization)
+  PrintStage(2, kTotalStages, "Extract GE Graph");
+
+  ge::Graph graph("delegate_graph");
+  td::Status graph_status = loader.GetGEGraph(&graph);
+  if (graph_status != td::SUCCESS) {
+    std::cerr << "[ERROR] GetGEGraph failed, status: " << graph_status << std::endl;
+    ge::aclgrphBuildFinalize();
+    return -1;
+  }
+  std::cout << "[PASS] GE Graph extracted successfully" << std::endl;
+
+  // [3/3] Compile graph
+  PrintStage(3, kTotalStages, "Compile graph");
+
+
   std::cout << "[PASS] aclgrphBuildInitialize succeeded" << std::endl;
 
   ge::ModelBufferData model;
@@ -137,6 +140,12 @@ int main(int argc, char *argv[]) {
     graph.SetAttr(ge::AscendString("_no_need_dynamic_shape_partition"), attr_val);
     std::cout << "[INFO] Set _no_need_dynamic_shape_partition=true (skip dynamic shape partition)" << std::endl;
   }
+  // 权值分离: GE_EXTERNAL_WEIGHT=0(内嵌,默认)/1(每个权值分文件)/2(全合一 .bin)
+  // =2 时 .om 变小, 权值存到 output_name 同目录的 .bin (Om2PackageHelper 自动重定位)
+  if (const char *v = std::getenv("GE_EXTERNAL_WEIGHT")) {
+    build_options.emplace(ge::AscendString("ge.externalWeight"), ge::AscendString(v));
+    std::cout << "[INFO] ge.externalWeight=" << v << " (0=内嵌/1=分文件/2=全合一)" << std::endl;
+  }
   ge::graphStatus build_status = aclgrphBuildModel(graph, build_options, model);
   if (build_status != ge::GRAPH_SUCCESS) {
     std::cerr << "[ERROR] aclgrphBuildModel failed, status: " << build_status << std::endl;
@@ -144,6 +153,13 @@ int main(int argc, char *argv[]) {
     return -1;
   }
   std::cout << "[PASS] aclgrphBuildModel succeeded, model size: " << model.length << " bytes" << std::endl;
+
+  // 权值分离: GE MoveFilePath 把权值移到 <output 目录>/weight/, 但不 mkdir → 预建
+  if (std::getenv("GE_EXTERNAL_WEIGHT")) {
+    std::filesystem::path weight_dir = std::filesystem::path(output_name).parent_path() / "weight";
+    std::filesystem::create_directories(weight_dir);
+    std::cout << "[INFO] pre-created external weight dir: " << weight_dir.string() << std::endl;
+  }
 
   ge::graphStatus save_status = ge::aclgrphSaveModel(output_name.c_str(), model);
   if (save_status != ge::GRAPH_SUCCESS) {

@@ -92,7 +92,9 @@ def _write_fixture(fixture_name: str, model_json: dict, bin_data: bytes = b"",
     if bin_data:
         _write_bytes(os.path.join(out, "data", "weights.bin"), bin_data)
     if index_data is not None:
-        _write_json(os.path.join(out, "data", "weights_index.json"), index_data)
+        # loader (ge_weight_loader.cc:LoadConsolidated) 要求 index 为 object, key=bin 文件名;
+        # bin 固定写 out/data/weights.bin, 故 key="weights.bin"
+        _write_json(os.path.join(out, "data", "weights_index.json"), {"weights.bin": index_data})
 
     print(f"Generated: {fixture_name}/")
     return out

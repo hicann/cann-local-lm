@@ -11,7 +11,7 @@ HF 模型 (safetensors)
 epair (ep_json_with_ascend_ir.json + weights_*.bin + host_weights_*.bin)
     │  ② 产物校验 (verify.py) + IR 算子统计
     ▼
-C++ OM 编译 (export_llm_model/build/export_llm_model + reg_register.h, 真 CANN, CPU 侧)
+C++ OM 编译 (build/cann_lm_compile + csrc/inc/external/reg_register.h, 真 CANN, CPU 侧)
     │  ③ aclgrphBuildModel → .om
     ▼
 OM 运行/出字 (系统 Python + torch_npu + acl + NPU)
@@ -31,7 +31,7 @@ OM 运行/出字 (系统 Python + torch_npu + acl + NPU)
 | ├ CLI 导出测试　　　 | `export_llm_model/cann_lm_cli_export/`　　　　　　　　　　　　　　　　| ①②　　　　　　　 | `run.sh` + `verify.py` + README（含测试方案）　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　 |
 | ├ OM 编译+出字　　　 | `export_llm_model/om_npu_verify/`　　　　　　　　　　　　　　　　　　 | ③④　　　　　　　 | `run_*_gen.py`/`run_*_om.py` + `check_env.sh` + README　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　|
 | ├ CPU 调试验证　　　 | `export_llm_model/llm_engine_on_cpu/`　　　　　　　　　　　　　　　　 | ①③(ep回环)　　　 | `debug_*/verify_*.py`（ep 回环、vs HF、chunk）+ skills　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　|
-| └ OM 编译器+算子注册 | `export_llm_model/{main.cpp, reg_register.h, CMakeLists.txt, build/}` | ③　　　　　　　　| `main.cpp`=EpairModelLoader→OM；`reg_register.h`=IR 校准 81 ops（master，om_npu_verify/export_and_load_epair 软链引用） |
+| └ OM 编译器+算子注册 | `cann_lm/converter/export/csrc/{tools/compile_main.cc, inc/external/reg_register.h}` | ③　　　　　　　　| `compile_main.cc`=EpairModelLoader→OM（产 `build/cann_lm_compile`）；`reg_register.h`=IR 校准 81 ops（master，om_npu_verify/export_and_load_epair 经 backend PUBLIC include 引用） |
 | **量化**　　　　　　 | [`export_quant_matmul_single_op/`](export_quant_matmul_single_op/)　　| ①③　　　　　　　 | W4A8 单算子 OM 编译；`verify_quant_matmul_v4_w8a8.py`=W8A8 NPU eager　　　　　　　　　　　　　　　　　　　　　　　　　　|
 | **RoPE**　　　　　　 | [`rope_apply_rotary_pos_emb/`](rope_apply_rotary_pos_emb/)　　　　　　| ③　　　　　　　　| `verify_rope.py`：ApplyRotaryPosEmb 数值/IR 验证（demo）　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　|
 | **eager 参考**　　　 | [`run_gemma4_npu/`](run_gemma4_npu/)　　　　　　　　　　　　　　　　　| ④(eager)　　　　 | torch_npu 直跑 gemma4 出字（不经 OM/epair，基线对照）+ HF 对比　　　　　　　　　　　　　　　　　　　　　　　　　　　　　|
@@ -77,9 +77,9 @@ cd examples/test_converter/export_llm_model
 TORCH_PKG_DIR=/mnt/workspace/torch-delegate-harmony/.venv/lib/python3.11/site-packages/torch
 cmake -S . -B build -DCANN_ROOT=$ASCEND_HOME_PATH -DTORCH_PKG_DIR=$TORCH_PKG_DIR   # 一次性
 cmake --build build -j4
-./build/export_llm_model om_npu_verify/epair_gemma4_pd/prefill_ep_json_with_ascend_ir.json \
+./build/cann_lm_compile om_npu_verify/epair_gemma4_pd/prefill_ep_json_with_ascend_ir.json \
   om_npu_verify/epair_gemma4_pd/weight_info.json /tmp/opencode/gemma4_pd/prefill
-./build/export_llm_model om_npu_verify/epair_gemma4_pd/decode_ep_json_with_ascend_ir.json  \
+./build/cann_lm_compile om_npu_verify/epair_gemma4_pd/decode_ep_json_with_ascend_ir.json  \
   om_npu_verify/epair_gemma4_pd/weight_info.json /tmp/opencode/gemma4_pd/decode
 ln -sf prefill_linux_aarch64.om prefill.om   # 在 /tmp/opencode/gemma4_pd/
 ```

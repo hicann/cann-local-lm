@@ -33,7 +33,14 @@ def test_strategy_returns_deep_copy_and_group_override():
     assert get_optimize_cfg("float") == {}
 
 
-@pytest.mark.parametrize("strategy,match", [("unknown", "not support"), ("Quant_INT8-4_ECO;bad", "invalid literal")])
+@pytest.mark.parametrize(
+    "strategy,match",
+    [
+        ("unknown", "not support"),
+        ("Quant_lm_head", "not support"),
+        ("Quant_INT8-4_ECO;bad", "invalid literal"),
+    ],
+)
 def test_strategy_rejects_invalid_values(strategy, match):
     with pytest.raises(Exception, match=match):
         get_optimize_cfg(strategy)

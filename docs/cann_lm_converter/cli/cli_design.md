@@ -199,7 +199,7 @@ convert(hf_path, output_dir, dtype, ...)   # device 写死 CPU, 不暴露 CLI
      │            内部调 dopt_wrapper.main(hf_path, optimize_config, output_dir, ...)
     │            ├─ model_define(hf_path) 加载 transformers 模型
     │            ├─ _build_layer_strategy(model) → dopt_config.json (带策略)
-    │            │   Linear→Quant_INT8-4_ECO, lm_head→Quant_lm_head,
+    │            │   Linear（含 lm_head）→Quant_INT8-4_ECO,
     │            │   Embedding→Quant_Embed_MinMax / Quant_Gemma4_Embed
     │            ├─ del model 释放
     │            └─ weight_quant_pipline(...) (dopt 内部加载 2 次,不改 dopt 的代价)

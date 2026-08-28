@@ -57,20 +57,6 @@ strategy_dict = {
         }
     },
     "Quant_Dummy": {"quant_info": "default version"},
-    "Quant_lm_head" : {
-            "weight" : {
-                "bit"           : 4,
-                "group_size"    : 128,
-                "blocksize"     : 128,
-                "per_channel"   : True,
-                "weight_algo"   : "omni_group_min_max",
-            },
-            "input" : {
-                "bit"           : 16,
-                "per_channel"   : False,
-                "input_algo"    : "min_max",
-            }
-        },
 }
 
 

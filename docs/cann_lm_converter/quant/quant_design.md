@@ -189,7 +189,7 @@ auto_quant.py               ← 场景 2 入口，subprocess 调 dopt_wrapper.py
 
 ### dopt 实测量化范围（gemma4-E4B，346 个 quant 模块）
 
-`dopt_config.json`（796 行）配置：`embed_tokens` → `Quant_Embed_MinMax`（bit=8 int8 per-channel，host gather）、`lm_head` → `Quant_lm_head`（bit=4）、其余 Linear → `Quant_INT8-4_ECO`（默认 group 128）。dopt 产物里 `lm_head.weight` 与 `model.embed_tokens.weight` 已**实质 untie**（max diff ≈0.01 = GPTQ 修正量，lm_head 是 GPTQ 修正版给 W4、embed 是原始版给 W8）。
+`dopt_config.json`（796 行）配置：`embed_tokens` → `Quant_Embed_MinMax`（bit=8 int8 per-channel，host gather），`lm_head` 和其他 Linear → `Quant_INT8-4_ECO`（默认 group 128）。dopt 产物里 `lm_head.weight` 与 `model.embed_tokens.weight` 已**实质 untie**（max diff ≈0.01 = GPTQ 修正量，lm_head 是 GPTQ 修正版给 W4、embed 是原始版给 W8）。
 
 - **bit 分布**：bit=4 共 344 个（attn q/k/v/o_proj + mlp gate/up/down_proj + PLE per_layer_input_gate/per_layer_projection/per_layer_model_projection + lm_head），bit=8 共 2 个（embed_tokens + embed_tokens_per_layer）。
 - **gemma4 KV 共享**：`k_proj`/`v_proj` 只 0..23（24 层）有独立权重，后 18 层（24..41）复用前层 KV 无独立 k/v_proj——模型结构决定，非漏量化。
@@ -433,7 +433,7 @@ class QuantLinear(nn.Module):
 | `_resolve_parent` | `(model: Module, dotted_name: str) -> tuple[Module, str]` | 2 | 私有辅助：把 `"a.b.c"` 拆成 `(parent=a.b module, leaf="c")`，供 setattr 替换 |
 | `load_dopt_state_dict` | `(dopt_path: str \| Path) -> dict` | 1 | 接受 `.safetensors` / `.pth` / 目录(含 `model.safetensors`)。规范化 `model.language_model.*` 前缀（VLM → text-only，cann_lm 匹配）。返回 `{name: tensor}` dict |
 | `_read_dopt_quant_meta` | `(sd, name, out_f, in_f, group_size) -> tuple[int, float, Tensor \| None]` | 5 | 私有辅助：读 `{name}.quant_op.weight_quantizer.{bit, unsigned_quant, offset}`。bit=int64 标量，unsigned_quant=fp32 标量，offset=fp32 扁平 `[out*groups]`（reshape 到 `[out, in//group]`）。老版 dopt 无 buffer 时 fallback (4, 0.0, None) |
-| `_STRATEGY_DEFAULT_PARAMS` | 模块级常量 dict | — | dopt 策略默认参数硬编码（`Quant_act_weight_eco` / `Quant_lm_head` 的 group_size=128/bit=4/blocksize=128/per_channel/weight_algo=omni_group_min_max）。converter venv 不装 dopt_lm 不能 import，硬编码；新增带 weight 量化的策略时需同步更新 |
+| `_STRATEGY_DEFAULT_PARAMS` | 模块级常量 dict | — | dopt 策略默认参数硬编码（`Quant_INT8-4_ECO` 的 group_size=128/bit=4/blocksize=128/per_channel/weight_algo=omni_group_min_max）。converter venv 不装 dopt_lm 不能 import，硬编码；新增带 weight 量化的策略时需同步更新 |
 | `_read_quant_param_map` | `(dopt_path: str \| Path \| None) -> dict[str, dict]` | 1 | 从 dopt 产物目录的 `dopt_config.json` 解析 `{层名: weight 侧量化参数 dict}`。后缀解析（`"Quant_act_weight_eco;128"` → strategy + gs_override）+ `_STRATEGY_DEFAULT_PARAMS` 默认值。无 dopt_config.json / 层未配置 / 策略无默认参数 → 不在该 dict |
 | `_infer_group_size` | `(s_flat: Tensor, out_f: int, in_f: int, name: str) -> tuple[int, int]` | 4 | 从 dopt scale s_flat（扁平 `[out*groups]`）推断 (group_size, groups)。支持 pergroup/perchannel；拒绝 pertensor（numel==1）/ 非 1D / numel 不是 out_f 整数倍 |
 | `_swap_linear_from_sd` | `(model, sd, skip=DEFAULT_SKIP, act_quant=True, param_map=None) -> dict` | 5 | **核心 swap 逻辑**（接收已加载 sd，避免重复 IO）。遍历 `nn.Linear`（非 skip）：读 w_gptq/s_flat；group_size 来源优先级 `param_map[name]` > `_infer_group_size`；reshape s_flat → scale2d；`_read_dopt_quant_meta` → bit/uq/offset；校验 uq==0（symmetric only，否则 ValueError）；校验 offset 全 0（否则 NotImplementedError）；`materialize_int4_per_group_symmetric(packed=True)` → 预转置 `[k//2,n]`/`[k//g,n]` → `QuantLinear` → setattr 替换。返回 quant-info dict |
@@ -475,7 +475,7 @@ converter `--quant-method gptq` 一键触发：检测 NPU/GPU/CPU → spawn `dop
 
 | 函数 | 签名 | 参数数 | 作用 |
 |------|------|--------|------|
-| `_build_layer_strategy` | `(model, model_type: str) -> dict` | 2 | 遍历 `model.named_modules` 赋量化策略（Linear→`Quant_act_weight_eco`，lm_head→`Quant_lm_head`，Embedding→`Quant_Embed_MinMax`）。cann_lm 与 transformers 层名一致，通用 |
+| `_build_layer_strategy` | `(model, model_type: str) -> dict` | 2 | 遍历 `model.named_modules` 赋量化策略（Linear，包括 lm_head→`Quant_INT8-4_ECO`，Embedding→`Quant_Embed_MinMax`）。cann_lm 与 transformers 层名一致，通用 |
 | `generate_dopt_config` | `(artifact, quant_bits: str) -> str` | 2 | 场景 1 离线辅助：遍历 cann_lm `artifact.model` 生成 dopt_config，返回临时文件路径（`examples/run_pd4_cases.sh:gen_dopt_config` 依赖） |
 | `_run_dopt_subprocess` | `(hf_path: str, quant_bits: str, device: str) -> str` | 3 | 方案 C 主体：spawn `dopt_wrapper.py` subprocess（subprocess env，`PYTHONPATH` 加 `quant/`、`DEVICE=<npu\|cuda\|cpu>`、`LD_LIBRARY_PATH` 去 stubs；`DOPT_PYTHON` 可覆盖系统 Python 路径）。退出码非 0 raise `RuntimeError`，保留临时产物供调试 |
 | `_detect_device_type` | `() -> str` | 0 | 检测系统计算设备：优先读父进程 `DEVICE`（含 `cpu`），未设才 spawn 检测（`torch_npu`/`torch.cuda`）。关 `ASCEND_SLOG_PRINT_TO_STDOUT` 防 CANN 日志污染 stdout 解析；**无 NPU/GPU 时回落 `cpu`**（不再返回 None/报错） |

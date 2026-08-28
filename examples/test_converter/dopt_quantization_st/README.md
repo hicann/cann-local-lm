@@ -13,7 +13,7 @@
 | DOPT-ST-VERIFY | 两个输出目录 | 独立解析配置和产物 | 不需要设备 | `config.yaml`、`dopt_config.json`、量化权重满足契约 |
 | DOPT-ST-CHECK | 两个用例定义 | 不加载权重 | 不需要设备 | 内置数据、demo 参数、命令构造及 fail-fast 检查通过 |
 
-自动生成的普通 Linear 策略为 `Quant_INT8-4_ECO`；`lm_head` 和 embedding 分别使用 `Quant_lm_head`、`Quant_Embed_MinMax`。
+自动生成的 Linear（包括 `lm_head`）策略为 `Quant_INT8-4_ECO`；embedding 使用 `Quant_Embed_MinMax`。
 
 ## 运行两个真实 demo 用例
 

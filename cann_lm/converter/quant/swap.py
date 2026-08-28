@@ -134,13 +134,9 @@ def _read_dopt_quant_meta(
 # converter venv doesn't install dopt_lm, so hardcoded; update here when adding a weight-quant strategy.
 # Only strategy config (group_size/bit/blocksize/per_channel/weight_algo) — unsigned_quant/offset
 # are GPTQ runtime state (dopt writes them to safetensors buffers, not in config).
-# dopt 53ad5ec changed group_size 256 -> 128 (Quant_INT8-4_ECO + Quant_lm_head); synced here.
+# dopt 53ad5ec changed Quant_INT8-4_ECO group_size from 256 to 128; synced here.
 _STRATEGY_DEFAULT_PARAMS: dict[str, dict] = {
     "Quant_INT8-4_ECO": {
-        "group_size": 128, "bit": 4, "blocksize": 128,
-        "per_channel": True, "weight_algo": "omni_group_min_max",
-    },
-    "Quant_lm_head": {
         "group_size": 128, "bit": 4, "blocksize": 128,
         "per_channel": True, "weight_algo": "omni_group_min_max",
     },

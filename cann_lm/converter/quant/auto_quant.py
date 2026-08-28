@@ -13,13 +13,12 @@ import torch
 
 
 _LINEAR_STRATEGY = "Quant_INT8-4_ECO"
-_LM_HEAD_STRATEGY = "Quant_lm_head"
 _EMBED_STRATEGY = "Quant_Embed_MinMax" 
 
 
 def _build_layer_strategy(model, model_type: str) -> dict:
     """Assign quant strategies by module type (Linear->Quant_INT8-4_ECO,
-    lm_head->Quant_lm_head, Embedding->Quant_Embed_MinMax). cann_lm and
+    Embedding->Quant_Embed_MinMax). cann_lm and
     transformers share layer names, so this is model-agnostic.
 
     Note: dopt 53ad5ec removed Quant_Gemma4_Embed; gemma4 embed uses Quant_Embed_MinMax too.
@@ -27,13 +26,12 @@ def _build_layer_strategy(model, model_type: str) -> dict:
     layer_strategy = {}
     for name, m in model.named_modules():
         if isinstance(m, torch.nn.Linear):
-            if "lm_head" in name:
-                strategy = _LM_HEAD_STRATEGY
-            elif "embed_tokens" in name:
+            if "embed_tokens" in name:
                 continue
-            else:
-                strategy = _LINEAR_STRATEGY
-            layer_strategy[name] = {"type": str(type(m)), "quant_strategy": strategy}
+            layer_strategy[name] = {
+                "type": str(type(m)),
+                "quant_strategy": _LINEAR_STRATEGY,
+            }
         elif isinstance(m, torch.nn.Embedding):
             strategy = _EMBED_STRATEGY
             layer_strategy[name] = {"type": str(type(m)), "quant_strategy": strategy}

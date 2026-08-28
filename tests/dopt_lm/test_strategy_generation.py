@@ -23,7 +23,7 @@ def test_automatic_generators_use_canonical_int8_4_eco_strategy():
         strategies = build_strategy(model, "toy")
 
         assert strategies["proj"]["quant_strategy"] == "Quant_INT8-4_ECO"
-        assert strategies["lm_head"]["quant_strategy"] == "Quant_lm_head"
+        assert strategies["lm_head"]["quant_strategy"] == "Quant_INT8-4_ECO"
         assert strategies["embed_tokens"]["quant_strategy"] == "Quant_Embed_MinMax"
 
 

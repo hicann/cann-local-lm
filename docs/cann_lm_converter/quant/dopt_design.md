@@ -71,7 +71,7 @@ python -m dopt_lm.opt_main \
 
 | 模块类型 | 推荐 `quant_strategy` | 说明 |
 |---------|----------------------|------|
-| `nn.Linear`（q/k/v/o/gate/up/down_proj 等） | `Quant_act_weight_eco` | W4A8 主路径（默认 group 128）；可用 `;group_size` 按层覆盖 |
+| `nn.Linear`（q/k/v/o/gate/up/down_proj 等） | `Quant_INT8-4_ECO` | W4A8 主路径（默认 group 128）；可用 `;group_size` 按层覆盖 |
 | `nn.Linear`（lm_head） | `Quant_lm_head` | W4 A16 |
 | `nn.Embedding` / `Gemma4TextScaledWordEmbedding` | `Quant_Embed_MinMax` | 按原始类名自动映射 `QEmbedding` / `QGemma4ScaledEmbedding`；embed int8 per-channel |
 | 不量化的层 | `float` | 配置解析时从 GPTQ 任务中移除，并在 optimize 阶段保留原始 module |
@@ -81,8 +81,8 @@ python -m dopt_lm.opt_main \
 {
   "layer_strategy": {
     "model.embed_tokens": {"quant_strategy": "Quant_Embed_MinMax"},
-    "model.layers.0.self_attn.q_proj": {"quant_strategy": "Quant_act_weight_eco"},
-    "model.layers.0.mlp.gate_proj": {"quant_strategy": "Quant_act_weight_eco"},
+    "model.layers.0.self_attn.q_proj": {"quant_strategy": "Quant_INT8-4_ECO"},
+    "model.layers.0.mlp.gate_proj": {"quant_strategy": "Quant_INT8-4_ECO"},
     "lm_head": {"quant_strategy": "Quant_lm_head"}
   }
 }
@@ -221,15 +221,15 @@ dopt 可设置的量化参数分布在 4 个层面。**用户实际可设的只�
 
 `quant_strategy` 从 `strategy_dict` 选（8 个预设），支持 `"name;group_size"` 语法覆盖 `group_size`（`get_optimize_cfg`）：
 
-| 策略名　　　　　　　　 | 用途　　　　　　　 | weight                              | act                      | 备注　　　　　 |
-| ------------------------| --------------------| -------------------------------------| --------------------------| ----------------|
-| `float`　　　　　　　　| 不量化　　　　　　 | —                                   | —                        | 　　　　　　　 |
-| `Quant_aigc_ptq`　　　 | W8A8　　　　　　　 | 8(per-channel min_max)              | 8(ema_min_max, unsigned) | 　　　　　　　 |
-| `Quant_aigc_qat`　　　 | W8A8　　　　　　　 | 8(omni_min_max)                     | 8(omni, unsigned)        | QAT 用　　　　 |
-| `Quant_act_weight_eco` | **W4A8（主路径）** | 4(group 128, block 128, omni_group) | 8(dyn_s8, signed)        | converter 默认 |
-| `Quant_Embed_MinMax`　 | embed int8　　　　 | 8(per-channel min_max)              | —                        | host gather　　|
-| `Quant_Dummy`　　　　　| 占位　　　　　　　 | —                                   | —                        | 　　　　　　　 |
-| `Quant_lm_head`　　　　| W4 A16　　　　　　 | 4(group 128)                        | 16(min_max)              | lm_head 专用　 |
+| 策略名 | 用途 | weight | act | 备注 |
+|--------|------|--------|-----|------|
+| `float` | 不量化 | — | — | |
+| `Quant_aigc_ptq` | W8A8 | 8(per-channel min_max) | 8(ema_min_max, unsigned) | |
+| `Quant_aigc_qat` | W8A8 | 8(omni_min_max) | 8(omni, unsigned) | QAT 用 |
+| `Quant_INT8-4_ECO` | **W4A8（主路径）** | 4(group 128, block 128, omni_group) | 8(dyn_s8, signed) | converter 默认 |
+| `Quant_Embed_MinMax` | embed int8 | 8(per-channel min_max) | — | host gather |
+| `Quant_Dummy` | 占位 | — | — | |
+| `Quant_lm_head` | W4 A16 | 4(group 128) | 16(min_max) | lm_head 专用 |
 
 ### ③ `config.yaml` 训练配置（GPTQ 校准）
 
@@ -289,12 +289,12 @@ dopt_lm/
 │   └── weight_quant_ptq/
 │       ├── __init__.py
 │       └── ptq_algo_hessian/
-│           ├── __init__.py
-│           ├── datautils.py              get_pangupi / get_pt_data / get_loaders
-│           ├── modelutils.py             find_layers / DEV
-│           ├── ptq_algo.py               WeightQuantHeissen (GPTQ 核心)
-│           ├── ptq_loop.py               llama_sequential / weight_quant_loop
-│           └── quant.py                  Quantizer (GPTQ 专用 min-max)
+│           ├── __init__.py             (0)
+│           ├── datautils.py            (109 行)  get_json_data / get_pt_data / get_loaders
+│           ├── modelutils.py           (25 行)   find_layers / DEV
+│           ├── ptq_algo.py             (185 行)  WeightQuantHeissen (GPTQ 核心)
+│           ├── ptq_loop.py             (375 行)  llama_sequential / weight_quant_loop
+│           └── quant.py                (134 行) Quantizer (GPTQ 专用 min-max)
 ├── quantizer/
 │   ├── __init__.py
 │   ├── qeval.py                          autograd 量化函数 + DynEvalGridS8
@@ -328,7 +328,7 @@ ptq_quant_pipline(base_model, config, output_dir, hf_type_save, quant_method='gp
   │         ├─ args.quant_config = paser_quant_config(model, quant_config)  # 解析 layer_strategy
   │         ├─ dataloader, _ = get_loaders(data_set, nsamples, seed, model, seqlen)
   │         │      ├─ .pt → get_pt_data
-  │         │      └─ else → get_pangupi (json/jsonl/wikitext2)
+  │         │      └─ else → get_json_data (json/jsonl/wikitext2)
   │         └─ llama_sequential(model, dataloader, DEV) → quantizers
   │                ├─ Catcher 捕 layer0 输入 → inps[nsamples, seqlen, hidden]
   │                ├─ (gemma4) unique_layer_types → causal_mask_map / position_embeddings_map
@@ -388,13 +388,13 @@ dopt 的**推理期 fakequant 实现**，不是导出用算子。把 `nn.Linear`
 
 5 个文件分工——`strategy.py`（策略字典）/`qmanager.py`（QClass 容器）/`qeval.py`（autograd 量化函数）/`qmin_max.py`（min-max/group/omni 量化器实现，`Register` 注册）/`qutils.py`（clip range、min-max 统计、NF2/3/4 查找表等工具）。是典型的"注册表 + 字符串策略名"模式（非 GoF 策略类）。
 
-| 文件　　　　　| 角色　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　 | 关键导出 |
-| ---------------| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------| ----------|
-| `strategy.py` | **策略字典** `strategy_dict` + `get_optimize_cfg()`。7 个预设策略（`Quant_aigc_ptq/qat`、`Quant_act_weight_eco`、`Quant_Embed_MinMax`、`Quant_lm_head`、`Quant_Dummy`、`float`），每项含 `weight`/`input`/`output` 子 cfg，子 cfg 里 `weight_algo`/`input_algo` 字符串指向 `Quantizers` Register 名。`get_optimize_cfg` 支持 `"name;group_size"` 字符串拼接语法覆盖 group_size；未注册策略 raise　　　　　　　　　　　　　　　　　 | 　　　　 |
-| `qmanager.py` | **容器** `QClass(nn.Module)`：把 weight/input/output 三种量化器 cfg 通过 `Quantizers.get(algo)(m, **cfg)` 工厂实例化聚合。`__init__(m, weight_quantizer_cfg=None, input_quantizer_cfg=None, output_quantizer_cfg=None)`；`set_quant_state(weight, input)` / `set_calibrate_state(state)` / `forward(weight, x) -> (weight, x)` / `is_empty() -> bool`　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　| 　　　　 |
-| `qeval.py`　　| **autograd 量化原语** `QuantizerFuncIntOffset`（整数 offset 路径：`round(x/s+offset)` clamp 再 `(q-offset)*s`，STE backward）/ `QuantizerFuncFpOffset`（浮点 offset 路径：`round((x+offset)/s)`）/ `DynIntSymQuantizer`（动态 per-token 对称 int8，amax/127，返回 `(normalized, scale)`）。`@Quantizers.register_func("dyn_s8") class DynEvalGridS8`（动态 s8 包装）　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　 | 　　　　 |
-| `qmin_max.py` | **min-max 系列量化器实现**（4 个 `Register` 注册）：`MinMaxGrid`（`min_max`/`minmax`，基础 per-channel min-max，calibrate 阶段算 scale/offset，eval 用缓存）、`GroupMinMaxGridWeight`（`group_min_max`/`group_minmax`，per-group 维度 reshape 后调父类）、`OmniMinMaxGrid`（`omni_min_max`/`omni_minmax`，LSQ 可学习 `quant_alpha` + sigmoid 自适应 scale）、`OmniGroupMinMaxGridWeight`（`omni_group_min_max`，omni 的 group 版） | 　　　　 |
-| `qutils.py`　 | **纯工具**：常量 `MIN_SCALE_VALUE=1e-5`、`NF2/NF3/NF4`（normal_float 查找表，×127 量化）、`get_clip_range(bit, unsigned_quant, keep_neg_max=True)`（含 2.5bit 特例）、`RoundWithGrad`（round 的 STE）、`get_min_max`/`get_abs_max_per_channel`/`get_min_max_per_channel`、`do_quantize`/`do_antiquantize`/`fakequant_forward`、`get_grad_max`/`get_grad_min`、`fake_nf`　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　| 　　　　 |
+| 文件 | 角色 | 关键导出 |
+|------|------|---------|
+| `strategy.py` | **策略字典** `strategy_dict` + `get_optimize_cfg()`。7 个预设策略（`Quant_aigc_ptq/qat`、`Quant_INT8-4_ECO`、`Quant_Embed_MinMax`、`Quant_lm_head`、`Quant_Dummy`、`float`），每项含 `weight`/`input`/`output` 子 cfg，子 cfg 里 `weight_algo`/`input_algo` 字符串指向 `Quantizers` Register 名。`get_optimize_cfg` 支持 `"name;group_size"` 字符串拼接语法覆盖 group_size；未注册策略 raise |
+| `qmanager.py` | **容器** `QClass(nn.Module)`：把 weight/input/output 三种量化器 cfg 通过 `Quantizers.get(algo)(m, **cfg)` 工厂实例化聚合。`__init__(m, weight_quantizer_cfg=None, input_quantizer_cfg=None, output_quantizer_cfg=None)`；`set_quant_state(weight, input)` / `set_calibrate_state(state)` / `forward(weight, x) -> (weight, x)` / `is_empty() -> bool` |
+| `qeval.py` | **autograd 量化原语** `QuantizerFuncIntOffset`（整数 offset 路径：`round(x/s+offset)` clamp 再 `(q-offset)*s`，STE backward）/ `QuantizerFuncFpOffset`（浮点 offset 路径：`round((x+offset)/s)`）/ `DynIntSymQuantizer`（动态 per-token 对称 int8，amax/127，返回 `(normalized, scale)`）。`@Quantizers.register_func("dyn_s8") class DynEvalGridS8`（动态 s8 包装） |
+| `qmin_max.py` | **min-max 系列量化器实现**（4 个 `Register` 注册）：`MinMaxGrid`（`min_max`/`minmax`，基础 per-channel min-max，calibrate 阶段算 scale/offset，eval 用缓存）、`GroupMinMaxGridWeight`（`group_min_max`/`group_minmax`，per-group 维度 reshape 后调父类）、`OmniMinMaxGrid`（`omni_min_max`/`omni_minmax`，LSQ 可学习 `quant_alpha` + sigmoid 自适应 scale）、`OmniGroupMinMaxGridWeight`（`omni_group_min_max`，omni 的 group 版） |
+| `qutils.py` | **纯工具**：常量 `MIN_SCALE_VALUE=1e-5`、`NF2/NF3/NF4`（normal_float 查找表，×127 量化）、`get_clip_range(bit, unsigned_quant, keep_neg_max=True)`（含 2.5bit 特例）、`RoundWithGrad`（round 的 STE）、`get_min_max`/`get_abs_max_per_channel`/`get_min_max_per_channel`、`do_quantize`/`do_antiquantize`/`fakequant_forward`、`get_grad_max`/`get_grad_min`、`fake_nf` |
 
 **关键分工**：`strategy.py` 提供配置模板 → `qmanager.QClass` 按 cfg 里 `algo` 名查 `Quantizers` Register → `qmin_max.py`/`qeval.py` 提供注册的具体量化器 → `qutils.py` 提供底层 clip/min-max/round 工具。
 
@@ -436,7 +436,7 @@ dopt 的**推理期 fakequant 实现**，不是导出用算子。把 `nn.Linear`
 | `quant.py` | **独立 min-max 量化器**（不注册到 `Quantizers`，与 `quantizer/` 体系平行）：`Quantizer` 类、`find_params`（per-channel min-max + 可选 mse shrink）、`quantize(x, scale, zero, maxq)`。GPTQ 算 int4 时 `maxq=2^bits-1=15`、`sym=True` → `scale=(xmax-xmin)/15`、`zero=(maxq+1)/2=8` |
 | `ptq_algo.py` | **GPTQ 算法核心**：`WeightQuantHeissen` 类。`add_batch` 累积 Hessian（按 Linear/Conv2D/Conv1D 适配输入 reshape）；`fasterquant` 跑 Cholesky 逆 + 逐列量化更新；产出 `quantizer.group_scale`/`group_zero`（per-channel × per-group）。NPU 路径把 Hessian 搬 CPU 算 cholesky |
 | `ptq_loop.py` | **逐层编排**：`get_llama`（加载并把 `model.model.layers` 留 CPU、其他 to DEV）、`sort_sequent`（按 layer 名分 4 子序列，true_sequential 模式）、`llama_sequential`（GPTQ 主循环，含 Catcher、多层类型预算、PLE/KV 共享、逐层 hook+`fasterquant`、可选 PLE 投影 / lm_head 量化）、`weight_quant_loop`（外层入口）。用模块级全局 `args`（`QuantArgs`）传参 |
-| `datautils.py` | **校准数据加载**：`set_seed`、`get_pangupi`（多 json 按 `path:ratio` 拼比，tokenize 拼全文，切 `target_chunks × seqlen` 块）、`get_pt_data`（读预 tokenize 的 `.pt`）、`get_loaders`（调度） |
+| `datautils.py` | **校准数据加载**：`set_seed`、`get_json_data`（多 json 按 `path:ratio` 拼比，tokenize 拼全文，切 `target_chunks × seqlen` 块）、`get_pt_data`（读预 tokenize 的 `.pt`）、`get_loaders`（调度） |
 | `modelutils.py` | **工具**：`find_layers(module, layers=None, name='') -> {name: module}`（递归找 `nn.Conv2d`/`nn.Linear`）+ `DEV` |
 
 ## 代码风格观察（dopt_lm 内部）

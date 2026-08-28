@@ -61,6 +61,9 @@ class WeightQuantHessian:
     def fasterquant(
         self, blocksize=128, percdamp=.01, groupsize=-1, actorder=False, static_groups=False
     ):
+        if static_groups and groupsize <= 0:
+            raise ValueError("static_groups requires groupsize to be greater than zero")
+
         weight_matrix = self.layer.weight.data.clone()
         if isinstance(self.layer, nn.Conv2d):
             weight_matrix = weight_matrix.flatten(1)
@@ -88,6 +91,8 @@ class WeightQuantHessian:
                 quantizer = copy.deepcopy(self.quantizer)
                 quantizer.find_params(weight_matrix[:, i:(i + groupsize)], weight=True)
                 groups.append(quantizer)
+            group_scale = [quantizer.scale for quantizer in groups]
+            group_zero = [quantizer.zero for quantizer in groups]
 
         if actorder:
             perm = torch.argsort(torch.diag(hessian_mat), descending=True)
@@ -163,10 +168,11 @@ class WeightQuantHessian:
         self.quantizer.group_zero = torch.cat(group_zero, dim=1)
         if actorder:
             quantized_w_matrix = quantized_w_matrix[:, invperm]
-            self.quantizer.group_scale = self.quantizer.group_scale.repeat(1, groupsize)
-            self.quantizer.group_zero = self.quantizer.group_zero.repeat(1, groupsize)
-            self.quantizer.group_scale = self.quantizer.group_scale[:, invperm].view(self.rows, -1, groupsize).mean(dim=2)
-            self.quantizer.group_zero = self.quantizer.group_zero[:, invperm].view(self.rows, -1, groupsize).mean(dim=2)
+            if not static_groups:
+                self.quantizer.group_scale = self.quantizer.group_scale.repeat(1, groupsize)
+                self.quantizer.group_zero = self.quantizer.group_zero.repeat(1, groupsize)
+                self.quantizer.group_scale = self.quantizer.group_scale[:, invperm].view(self.rows, -1, groupsize).mean(dim=2)
+                self.quantizer.group_zero = self.quantizer.group_zero[:, invperm].view(self.rows, -1, groupsize).mean(dim=2)
 
         self.quantizer.group_scale = self.quantizer.group_scale.flatten().unsqueeze(1).cpu()
         self.quantizer.group_zero = self.quantizer.group_zero.flatten().unsqueeze(1).cpu()

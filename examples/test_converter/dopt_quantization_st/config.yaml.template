@@ -1,0 +1,13 @@
+kd:
+  enable: false
+dataset:
+  train_files:
+    - __CALIBRATION_DATA__
+  ptq_samples: __PTQ_SAMPLES__
+extra_training_config:
+  fp16: __FP16__
+cutoff_len: __CUTOFF_LEN__
+num_samples: __NUM_SAMPLES__
+quant_param_2: false
+embedding_separate: true
+lm_head_size:

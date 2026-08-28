@@ -42,6 +42,7 @@ weight_info.json
 examples/*/data/
 examples/*/epair_model/
 examples/test_converter/**/epair_*/
+examples/test_converter/dopt_quantization_st/output*/
 
 # local file
 AGENTS.md

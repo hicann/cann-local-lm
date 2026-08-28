@@ -12,18 +12,24 @@ from pathlib import Path
 import torch
 
 
-_LINEAR_STRATEGY = "Quant_act_weight_eco"
+_LINEAR_STRATEGY = "Quant_INT8-4_ECO"
 _LM_HEAD_STRATEGY = "Quant_lm_head"
 _EMBED_STRATEGY = "Quant_Embed_MinMax" 
 
 
 def _build_layer_strategy(model, model_type: str) -> dict:
+<<<<<<< HEAD
     """Assign quant strategies by module type (Linear->Quant_act_weight_eco,
     lm_head->Quant_lm_head, Embedding->Quant_Embed_MinMax). cann_lm and
     transformers share layer names, so this is model-agnostic.
 
     Note: dopt 53ad5ec removed Quant_Gemma4_Embed; gemma4 embed uses Quant_Embed_MinMax too.
     """
+=======
+    """遍历 model.named_modules 赋量化策略 (Linear→Quant_INT8-4_ECO, lm_head→Quant_lm_head,
+    Embedding→Quant_Embed_MinMax). cann_lm 与 transformers 模型层名一致,通用.
+    注: dopt 53ad5ec 删了 Quant_Gemma4_Embed, gemma4 embed 也用 Quant_Embed_MinMax."""
+>>>>>>> add utst for doptlm
     layer_strategy = {}
     for name, m in model.named_modules():
         if isinstance(m, torch.nn.Linear):

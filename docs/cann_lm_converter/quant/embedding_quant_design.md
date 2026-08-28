@@ -65,7 +65,7 @@ host 查表+gather:
 | scale 来源 | **dopt 实际数据** | 从 dopt `Quant_Embed_MinMax` 产物 port(`.s`),非 converter 自算 min_max |
 | 图入口处理 | **dequant 回 float**(方案 A) | int8+scale → float → 现有 float 流程;不引入量化 RMSNorm(CANN 无现成 int8 RMSNorm) |
 | dequant 算子 | aten `to`+`mul` | GE converter 已支持,无新算子 |
-| lm_head | **QuantLinear W4A8** | 从 DEFAULT_SKIP 移除,走标准 W4A8(同其他 Linear),dopt 用 `Quant_act_weight_eco` |
+| lm_head | **QuantLinear W4A8** | 从 DEFAULT_SKIP 移除,走标准 W4A8(同其他 Linear),dopt 用 `Quant_INT8-4_ECO` |
 | host_weights 存储 | **swap 返回 dict 直存** | materialized int8+scale 不走 wrapper.state_dict,swap 直接返回 dict 给 saver |
 
 ### gemma4 PLE 契约(同构)
@@ -203,7 +203,7 @@ gemma4 dopt 产物**不含** embed_tokens/embed_tokens_per_layer scale → 需�
 
 ## 风险与未决
 
-1. **lm_head dopt 策略对齐**:dopt 产物 lm_head 已有 `quant_op`(11 keys,含 `input_quantizer` bit/max/min/offset)。本设计定 lm_head → QuantLinear W4A8(`act_quant=True`,dopt 用 `Quant_act_weight_eco`)。**需核实** dopt 跑 lm_head 用的是 `Quant_act_weight_eco`(W4A8)还是 `Quant_lm_head`(W4+int16);若后者,`act_quant` 须对应调整。
+1. **lm_head dopt 策略对齐**:dopt 产物 lm_head 已有 `quant_op`(11 keys,含 `input_quantizer` bit/max/min/offset)。本设计定 lm_head → QuantLinear W4A8(`act_quant=True`,dopt 用 `Quant_INT8-4_ECO`)。**需核实** dopt 跑 lm_head 用的是 `Quant_INT8-4_ECO`(W4A8)还是 `Quant_lm_head`(W4+int16);若后者,`act_quant` 须对应调整。
 2. **tied 模型**(qwen3-0.6B `tie_word_embeddings=True`):`embed_tokens.weight == lm_head.weight` → embed 量化(int8 per-vocab for host lookup)+ lm_head 量化(int4 W4A8 for graph matmul)是**同一权重的两种量化表示**,各自独立,可行(host 用 int8+scale 查表,图内 lm_head 用 int4+group_scale matmul)。
 3. **dopt embed offset=0 vs quant.py zero=128**:实测 dopt embed 是 `offset=0` signed(非 `quant.py` GPTQ 量子的 `zero=128` unsigned)。`materialize_int8_per_channel_symmetric` 用 signed `round(w/s).clamp(-128,127)` 已对齐(精确重建)。CANN/GE 侧 int8 signed 存储匹配(aten cast int8→float)。
 4. **精度回归**:int8 量化误差(dopt fakequant 已含 round/clamp 误差,但 `q*s` 精确重建 dopt 产物,故 host gather + dequant = dopt fakequant 值,与"float embeddings"差异 = dopt 量化误差本身)。需 vs 原始 float embeddings(未量化)做端到端 logits 回归,确认 int8 量化误差可接受。

@@ -1,7 +1,6 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 # Copyright Huawei Technologies Co., Ltd. 2010-2026. All rights reserved
-import os
 import copy
 
 
@@ -33,7 +32,7 @@ strategy_dict = {
             "unsigned_quant": True,
         },
     },
-    "Quant_act_weight_eco": {
+    "Quant_INT8-4_ECO": {
         "weight": {
             "blocksize": 128,
             "group_size": 128,

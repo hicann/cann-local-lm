@@ -32,6 +32,15 @@ std::map<ge::AscendString, ge::AscendString> GlobalOptionsWithSoc(const std::str
   if (const char *v = std::getenv("GE_FUSION_SWITCH_FILE")) {
     opts.emplace(ge::AscendString("ge.fusionSwitchFile"), ge::AscendString(v));
   }
+  // 在线编译模式 (全局 init option): GE_JIT_COMPILE=0(二进制优先)/1(在线,默认)/2(静态在线+动态二进制)
+  // =2 对具体 shape 在线编译产静态 kernel, 可减少 _is_op_dynamic_impl 动态算子
+  if (const char *v = std::getenv("GE_JIT_COMPILE")) {
+    opts.emplace(ge::AscendString("ge.jit_compile"), ge::AscendString(v));
+  }
+  // AutoTune 调优算子库 (全局): GE_OP_BANK_PATH=<dir>
+  if (const char *v = std::getenv("GE_OP_BANK_PATH")) {
+    opts.emplace(ge::AscendString("ge.op_bank_path"), ge::AscendString(v));
+  }
   return opts;
 }
 

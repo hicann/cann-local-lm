@@ -261,3 +261,85 @@ decode 的 `kvlen=kv_max` 修复**不能照搬到 prefill**：
 | `cann_lm/converter/export/epair_utils.py` | `inline_fused_attn_seq_constants` 加 `kvlen_value`（committed 2f4755d，全 eager 下 no-op） |
 | `cann_lm/converter/saver.py` | decode 调用传 `kvlen_value=kv_cache_max_len`（committed，全 eager 下 no-op）；prefill 多 chunk 限制注释 |
 | `docs/cann_lm_models/fused_ops/fused_ops.md` | qwen3.5 OM 算子表（§5.4，全 eager 态） |
+
+---
+
+## 权值分离 OM + 动态算子变体分析（qwen3.5，2026-08-28）
+
+### 背景：权值分离（GE_EXTERNAL_WEIGHT）+ 出字验证
+
+- `compile_main.cc` 加 `GE_EXTERNAL_WEIGHT` env knob（`0`=内嵌 / `1`=分文件 / `2`=全合一 `.bin`）。`=2` 时 `.om` 仅结构（~33 MB），权值存 `<output 目录>/weight/delegate_graph_weight_combined`（~1.5 GB），运行时 `acl.mdl.load_from_file` **自动加载旁路 weight/ 目录**（无需 `aclmdlSetExternalWeightAddress`/config handle，pipeline 无需改动）。
+- qwen3.5 出字验证（prefill+decode 分离 OM）：`run_qwen3_5_gen_emb.py`（embeddings 入图变体）+ `PREFILL_OM`/`DECODE_OM` env 指向分离 OM → 3 stages pass，出字正常（`' John. I am a 19-year-old male...'`）。
+- 约束：`GE_EXTERNAL_WEIGHT=2` 时 output 路径须与 CWD 同文件系统（GE 临时权值在 CWD，`MoveFilePath` 跨 fs rename 会 EXDEV 失败）；`compile_main.cc` 已预建 `<output 目录>/weight/` 目录（GE 不 mkdir）。
+
+### seq 维度：已固定，非可变
+
+- converter `--seq-len`（"Shape-specialized seq_len for torch.export"，prefill=8 / decode=1，具体值）。
+- OM 输入 shape 全具体（如 `attention_mask=[1,1,8,2048]`，8=seq、2048=KV_MAX），**0 个符号/None shape**。
+- → "seq 可变"是误解；seq 在 export 时已 shape-specialized 成具体值。
+
+### 动态算子变体（`_is_op_dynamic_impl`）概念
+
+CANN kernel 库每个算子可有多种实现版本，按是否绑定具体 shape 分：
+
+| | 静态变体（static variant） | 动态变体（dynamic variant） |
+|---|---|---|
+| 绑定 shape | 是，针对具体 shape（如 [1,8,1024]）编译 | 否，处理任意 shape |
+| shape 用法 | 编译时折叠成常量（循环展开、tiling 固定、布局固化） | 运行时作为参数传入，kernel 内按 dim 动态分支 |
+| 性能 | 高（无运行时判断、可深度优化） | 稍低（运行时分支/循环判断） |
+| 灵活性 | 差（换 shape 不能用） | 好（任意 shape 可跑） |
+| 典型 | 标准大小（NCHW 图像等）预编译 | LLM 的非标 shape（[1,8,2048] 等） |
+
+`_is_op_dynamic_impl=true`（OM 算子 attr）= 该 op 用了**动态变体 kernel**。
+
+### 基线动态算子数（无 jit_compile）
+
+| OM | 总算子 | `_is_op_dynamic_impl=true` | 占比 | PartitionedCall（动态 shape 分区） |
+|---|---|---|---|---|
+| prefill | 1551 | 1158 | 75% | 0 |
+| decode | 1423 | 1032 | 72% | 0 |
+
+- 0 个 PartitionedCall（无动态 shape 分区，`_no_need_dynamic_shape_partition` 或 GE 未触发分区）。
+- 75% 动态变体因 LLM shape 非标，CANN opp 库没预编译静态变体 → GE 选动态。
+
+### `GE_JIT_COMPILE=2` 效果（init option，在线静态编译）
+
+`compile_main.cc::GlobalOptionsWithSoc`（`aclgrphBuildInitialize` 的 init options，**非 build_options**——放 build_options 会报 "options illegal" 50331649）加 `GE_JIT_COMPILE`（→`ge.jit_compile`）+ `GE_OP_BANK_PATH`（→`ge.op_bank_path`）。
+
+`GE_JIT_COMPILE=2` 对具体 shape 在线编译静态变体：
+
+| | 基线 | `GE_JIT_COMPILE=2` | 变化 |
+|---|---|---|---|
+| prefill 动态算子 | 1158 (75%) | **838 (54%)** | **-320（28%↓）** |
+
+### 剩余 838 动态变体（按类型，该 SOC 无静态变体）
+
+```
+208 Cast / 108 Transpose / 84 Mul / 79 RmsNorm / 66 Add / 61 ConcatV2D /
+ 60 Swish / 36 TransData / 24 Sigmoid / 24 SplitVD ...
+```
+
+"只有动态变体"三层含义：① CANN opp 库没预置静态；② `jit_compile=2` 在线编译器没给这些 op 类生成静态（Cast/Transpose 等在线静态化未启用/不支持）；③ 要造静态需 **AutoTune**（`GE_OP_BANK_PATH`，对具体 shape 跑调优产 tuned 静态 kernel 存进 bank）。
+
+### TransData（36 个，Conv2D 激活转换，非权重）
+
+OM 36 个 `TransData`：18× `ConcatV2D→TransData→Conv2D`（ND→NCHW）+ 18× `Conv2D→TransData→StridedSliceD`（NCHW→ND）。是 Conv2D 的 NCHW 格式要求桥接，**非权重 ND→NZ**（权重 `FileConstant→MatMul` 直连，0 weight TransData，GE 编译期已处理权重格式）。
+
+### 权值文件不一致（prefill vs decode）
+
+| | prefill | decode |
+|---|---|---|
+| size | 1,589,371,392 | 1,538,470,4（差 13,312B） |
+| md5 | a89cd25d… | 0d62295e…（不同） |
+| FileConstant 数 | 339 | 337（prefill 多 2） |
+
+模型权重相同，但 combined `.bin` 打包不同（prefill vs decode 图对权值引用顺序/子集不同，prefill 339 vs decode 337 FileConstant）→ 字节布局不同，两 `.bin` 不能互换。
+
+### 相关 env knob（compile_main.cc）
+
+| knob | → GE option | 位置 | 作用 |
+|---|---|---|---|
+| `GE_EXTERNAL_WEIGHT` | `ge.externalWeight` | build_options | 权值分离 0/1/2 |
+| `GE_JIT_COMPILE` | `ge.jit_compile` | init_options (GlobalOptionsWithSoc) | 在线编译 0/1/2，=2 降动态变体 |
+| `GE_OP_BANK_PATH` | `ge.op_bank_path` | init_options | AutoTune 调优库，产静态 kernel |
+

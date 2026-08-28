@@ -130,19 +130,11 @@ def _read_dopt_quant_meta(
     return bit, uq, offset
 
 
-<<<<<<< HEAD
 # dopt strategy defaults (aligned with dopt_lm/quantizer/strategy.py strategy_dict weight fields).
 # converter venv doesn't install dopt_lm, so hardcoded; update here when adding a weight-quant strategy.
 # Only strategy config (group_size/bit/blocksize/per_channel/weight_algo) — unsigned_quant/offset
 # are GPTQ runtime state (dopt writes them to safetensors buffers, not in config).
-# dopt 53ad5ec changed group_size 256 -> 128 (Quant_act_weight_eco + Quant_lm_head); synced here.
-=======
-# dopt 策略默认参数 (与 dopt_lm/quantizer/strategy.py 的 strategy_dict weight 字段对齐).
-# converter venv 不装 dopt_lm 不能 import,硬编码;新增带 weight 量化的策略时需同步更新此处.
-# 注意: 只含策略配置 (group_size/bit/blocksize/per_channel/weight_algo);
-#       unsigned_quant/offset 是 GPTQ 运行时状态 (dopt 写到 safetensors buffer),不在 config.
-# dopt 53ad5ec 把 group_size 从 256 改成 128 (Quant_INT8-4_ECO + Quant_lm_head), 此处同步.
->>>>>>> add utst for doptlm
+# dopt 53ad5ec changed group_size 256 -> 128 (Quant_INT8-4_ECO + Quant_lm_head); synced here.
 _STRATEGY_DEFAULT_PARAMS: dict[str, dict] = {
     "Quant_INT8-4_ECO": {
         "group_size": 128, "bit": 4, "blocksize": 128,
@@ -158,15 +150,9 @@ _STRATEGY_DEFAULT_PARAMS: dict[str, dict] = {
 def _read_quant_param_map(dopt_path: str | Path | None) -> dict[str, dict]:
     """Parse {layer_name: weight-side quant params} from dopt_config.json in the dopt output dir.
 
-<<<<<<< HEAD
     Parsing (aligned with dopt strategy.get_optimize_cfg):
-    1. quant_strategy suffix (e.g. "Quant_act_weight_eco;128") overrides group_size
+    1. quant_strategy suffix (e.g. "Quant_INT8-4_ECO;128") overrides group_size
     2. _STRATEGY_DEFAULT_PARAMS provides defaults (group_size/bit/blocksize/per_channel/weight_algo)
-=======
-    解析逻辑 (与 dopt strategy.get_optimize_cfg 对齐):
-    1. quant_strategy 后缀 (如 "Quant_INT8-4_ECO;128") 覆盖 group_size
-    2. _STRATEGY_DEFAULT_PARAMS 提供默认值 (group_size/bit/blocksize/per_channel/weight_algo)
->>>>>>> add utst for doptlm
 
     Returns {name: {group_size, bit, blocksize, per_channel, weight_algo}};
     absent dopt_config.json / unconfigured layer / strategy without defaults -> not in dict
@@ -186,11 +172,7 @@ def _read_quant_param_map(dopt_path: str | Path | None) -> dict[str, dict]:
     out: dict[str, dict] = {}
     for name, layer in layer_strategy.items():
         strategy = layer.get("quant_strategy", "")
-<<<<<<< HEAD
-        # suffix parse (e.g. "Quant_act_weight_eco;128" -> strategy="Quant_act_weight_eco", gs=128)
-=======
-        # 后缀解析 (如 "Quant_INT8-4_ECO;128" → strategy="Quant_INT8-4_ECO", gs=128)
->>>>>>> add utst for doptlm
+        # Suffix parse (e.g. "Quant_INT8-4_ECO;128" -> strategy="Quant_INT8-4_ECO", gs=128).
         gs_override = None
         if ";" in strategy:
             strategy, gs_str = strategy.split(";", 1)

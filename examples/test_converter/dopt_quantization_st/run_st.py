@@ -23,7 +23,9 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = SCRIPT_DIR.parents[2]
 QUANT_DIR = PROJECT_ROOT / "cann_lm" / "converter" / "quant"
 TEMPLATE_PATH = SCRIPT_DIR / "config.yaml.template"
-CALIBRATION_DATA = QUANT_DIR / "train.jsonl"
+# Keep the ST self-contained by using the tracked calibration set that the
+# converter's default config also references.
+CALIBRATION_DATA = QUANT_DIR / "calibrate_sets" / "calibrate_c4.jsonl"
 DEFAULT_OUTPUT_ROOT = SCRIPT_DIR / "output"
 PLACEHOLDERS = {
     "__CALIBRATION_DATA__",

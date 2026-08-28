@@ -1,6 +1,6 @@
 # dopt_quantization_st — gemma4/Qwen3.5 真实量化系统测试
 
-本目录把 `demos/gemma4` 和 `demos/qwen3dot5_4B` 收敛为两个固定的真实模型 ST。模型权重仍由运行环境提供；校准数据固定使用仓库内的 `cann_lm/converter/quant/train.jsonl`，因此使用者只需要配置两个模型路径。
+本目录把 `demos/gemma4` 和 `demos/qwen3dot5_4B` 收敛为两个固定的真实模型 ST。模型权重仍由运行环境提供；校准数据固定使用仓库内的 `cann_lm/converter/quant/calibrate_sets/calibrate_c4.jsonl`，因此使用者只需要配置两个模型路径。
 
 仓库不归档真实模型权重、量化产物或机器相关模型路径。默认输出目录 `output/` 已被 `.gitignore` 屏蔽。
 

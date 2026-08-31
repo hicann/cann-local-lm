@@ -36,8 +36,6 @@
 | `--num-layers`　　　 | —　　　　　　　　| 仅导出前 N 层（切片/调试，None=全部）　　　　　　　　　　　　　　　　　　　　 |
 | `--quant-path`　　　 | —　　　　　　　　| dopt GPTQ 产物路径（量化接入，详见 [INDEX.md](../quant/INDEX.md)）　　　　　　 |
 | `--quant-method`　　 | `gptq`　　　　　 | 量化算法（当前仅 gptq；自动 spawn dopt，场景 2，已实现；与 --quant-path 互斥）|
-| `--quant-bits`　　　 | `w4a8`　　　　　 | 格式/位宽（w4a8，默认 w4a8；--quant-method 时生效）　　　　　　　　　　　　　　|
-| `--quant-device`　　 | —　　　　　　　　| 量化子进程设备（npu/cuda/cpu），跳过环境探测　　　　　　　　　　　　　　　　　|
 
 > 完整参数说明见 [cli_design.md](./cli_design.md) "命令行参数"。
 
@@ -51,4 +49,4 @@ parse_args → convert → loader.load_model (export_index) → [可选 quant sw
 ## 关联模块
 
 - **导出**：[INDEX.md](../export/INDEX.md) — `load_model` / `save_epair` / `ExportWrapper` / 产物布局
-- **量化**：[INDEX.md](../quant/INDEX.md) — `--quant-path` / `--quant-method` / `--quant-bits` 接入
+- **量化**：[INDEX.md](../quant/INDEX.md) — `--quant-path` / `--quant-method` 接入

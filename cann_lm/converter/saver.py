@@ -1,7 +1,5 @@
 """Saver — export model to epair format with tokenizer and config."""
 
-from __future__ import annotations
-
 import dataclasses
 import json
 import shutil
@@ -55,7 +53,7 @@ def save_epair(
     max_file_size: int = 50 * 1024 * 1024 * 1024,
     kv_cache_max_len: int = 2048,
     seq_len: int = 128,
-    use_embeddings: bool = False,
+    use_embeddings: bool = True,
     save_weights: bool = True,
     whitelist_decompositions: set | None = None,
     embed_quant: dict[str, tuple[torch.Tensor, torch.Tensor]] | None = None,
@@ -136,7 +134,7 @@ def save_epair_prefill_decode(
     max_file_size: int = 50 * 1024 * 1024 * 1024,
     kv_cache_max_len: int = 2048,
     seq_len: int = 128,
-    use_embeddings: bool = False,
+    use_embeddings: bool = True,
     save_weights: bool = True,
     whitelist_decompositions: set | None = None,
     embed_quant: dict[str, tuple[torch.Tensor, torch.Tensor]] | None = None,

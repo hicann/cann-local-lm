@@ -28,7 +28,7 @@ def _read_model_type(model_path: str) -> str:
         return json.load(f).get("model_type", "")
 
 
-def _build_layer_strategy(model, model_type: str) -> dict:
+def build_layer_strategy(model, model_type: str) -> dict:
     layer_strategy = {}
     for name, m in model.named_modules():
         if isinstance(m, torch.nn.Linear):
@@ -64,7 +64,7 @@ def main() -> None:
     print("[wrapper] loading transformers model (fp16)...", flush=True)
     model = model_define(args.model_path, torch_dtype=torch.float16)
 
-    layer_strategy = _build_layer_strategy(model, model_type)
+    layer_strategy = build_layer_strategy(model, model_type)
     dopt_config_path = os.path.join(args.output_dir, "dopt_config.json")
     with open(dopt_config_path, "w") as f:
         json.dump({"layer_strategy": layer_strategy}, f, indent=2)

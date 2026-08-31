@@ -29,6 +29,8 @@ converter 全流程三阶段，各阶段计算域需求不同：
 - `--quant-device` 仅控制 dopt subprocess 设备（`npu`/`cuda`/`cpu`），通过 `os.environ["DEVICE"]` 传递给 subprocess；`None` 则 `_detect_device_type` spawn 检测或继承父进程 `DEVICE`，无 NPU/GPU 时回落 `cpu`（dopt_lm 支持 CPU float32，7B+ 极慢）。
 - subprocess 用独立 Python（`DOPT_PYTHON`，默认系统 `/opt/buildtools/Python-3.11.4/bin/python3`）+ 真 torch_npu/torch.cuda + NPU/GPU env（`LD_LIBRARY_PATH` 去 stubs）。
 
+> **状态变更（2026-08-31）**：`--quant-device` 已从 converter CLI 删除。subprocess 设备改由 `auto_quant._detect_device_type` 自动检测（读 `os.environ["DEVICE"]`，外部 env 如 `set_env_npu.sh` 可设；未设则 spawn 检测，无加速器回落 `cpu`），`_run_dopt_subprocess` 的 `env.setdefault("DEVICE", device)` 机制保留。本条所述 CLI `os.environ["DEVICE"]` 触发路径不再存在，但 `_detect_device_type` + subprocess env 机制保留。
+
 理由：导出只需 fake-meta trace（`_library.py` 自提供，不需 torch_npu）；GPTQ 需真算子 eager（必须计算设备）。两者计算域不同，且环境冲突（torch_npu 装了会破坏 GE 转换）无解，故用 subprocess 隔离两套环境。
 
 ## 后果 (Consequences)
@@ -39,7 +41,7 @@ converter 全流程三阶段，各阶段计算域需求不同：
   - 纯 CPU 机可用（`--quant-path` 消费离线 dopt 产物 + export stubs）
 - **负面/代价**：
   - subprocess 有磁盘桥接 IO（临时盘 `tempfile.mkdtemp`，swap 成功后 `shutil.rmtree` 清理，失败保留供调试）
-  - `auto_quant.py` 与 `dopt_wrapper.py` 各有一份 `_build_layer_strategy`（重复，计划合并到单文件消除，尚未落地）
+  - ~~`auto_quant.py` 与 `dopt_wrapper.py` 各有一份 `_build_layer_strategy`（重复，计划合并到单文件消除，尚未落地）~~ **已落地（2026-08-31）**：`auto_quant._build_layer_strategy` 删除，`dopt_wrapper._build_layer_strategy` 改名 `build_layer_strategy`，单一实现
   - 场景 2 内存峰值 2×（subprocess 内 dopt 2 份 HF 模型 + 主进程 cann_lm，分进程；非真一步化）
 - **引入的约束**：
   - `load_model` 永远 CPU（cann_lm 融合算子只在 CPU 实现，不计划移植到 NPU）

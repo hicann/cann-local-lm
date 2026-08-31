@@ -18,12 +18,12 @@
 
 | 文件 | 职责 |
 |------|------|
-| `auto_quant.py` | 一键式量化（方案 C）：`run_auto_quant` / `generate_dopt_config` / `_run_dopt_subprocess` / `_detect_device_type` |
-| `dopt_wrapper.py` | dopt subprocess 主体：`main` / `_build_layer_strategy` / `parse_args` |
+| `auto_quant.py` | 一键式量化（方案 C）：`run_auto_quant` / `_run_dopt_subprocess` / `_detect_device_type` |
+| `dopt_wrapper.py` | dopt subprocess 主体：`main` / `build_layer_strategy` / `parse_args` |
 | `config.yaml` | dopt GPTQ 校准训练配置（`--optimize-config`） |
 | `calibrate_sets/` | GPTQ 校准语料（jsonl，由 `download_dataset.py` 下载生成，可替换/多选） |
 | `download_dataset.py` | 校准数据集下载脚本（ultrachat_200k/fineweb_edu/toolbench/bfclv4/c4/coig_cqia/mc4） |
-| `dopt_config.json` | dopt 层策略配置（由 `_build_layer_strategy` 自动生成到产物目录；converter 侧 `_read_quant_param_map` 从产物目录读） |
+| `dopt_config.json` | dopt 层策略配置（由 `build_layer_strategy` 自动生成到产物目录；converter 侧 `_read_quant_param_map` 从产物目录读） |
 
 ### dopt_lm 子包（vendored GPTQ 框架）
 
@@ -50,7 +50,7 @@
 | `swap_to_quant_linear_from_dopt(model, dopt_path, ...)` | 向后兼容薄 wrapper（场景 1 离线/单独 Linear swap） |
 | `swap_embeddings_from_dopt(sd, model)` | embed_tokens 的 W8 host gather（不替换成图模块） |
 | `load_dopt_state_dict(dopt_path) -> dict` | 加载 dopt 产物（.safetensors/.pth/目录） |
-| `run_auto_quant(hf_path, quant_bits) -> str` | 一键式 GPTQ（场景 2）：检测 NPU/GPU → spawn dopt subprocess → 返回 dopt_out_dir |
+| `run_auto_quant(hf_path) -> str` | 一键式 GPTQ（场景 2）：检测 NPU/GPU → spawn dopt subprocess → 返回 dopt_out_dir |
 | `materialize_int4_per_group_symmetric(weight, scale, group_size, ...)` | 用 dopt 预算 scale 量化（主路径） |
 | `materialize_int8_per_channel_symmetric(weight, scale)` | 8-bit per-row 对称量化（embed 用） |
 | `QuantLinear(nn.Module)` | 导出用替身，forward 调 `npu::npu_quant_matmul` + `npu::npu_dynamic_quant` |
@@ -71,13 +71,11 @@
 |------|------|
 | `--quant-path <dopt产物目录>` | 场景 1：加载 dopt GPTQ 产物，物化 int4 + swap QuantLinear（兜底） |
 | `--quant-method` | `gptq` | 场景 2：自动 spawn dopt subprocess 跑 GPTQ（已实现，NPU/GPU/CPU；与 --quant-path 互斥） |
-| `--quant-bits` | `w4a8` | 格式/位宽（w4a8，默认 w4a8；--quant-method 时生效；w4a16 不支持） |
-| `--quant-device` | `npu`\|`cuda`\|`cpu` | 场景 2 subprocess 设备（默认检测，无加速器回落 cpu；cpu 仅小模型适用） |
 
 > CLI 用法见 [INDEX.md](../cli/INDEX.md) / [cli_design.md](../cli/cli_design.md)。
 
 ## 关联模块
 
-- **CLI**：[INDEX.md](../cli/INDEX.md) — `--quant-path` / `--quant-method` / `--quant-bits` 参数
+- **CLI**：[INDEX.md](../cli/INDEX.md) — `--quant-path` / `--quant-method` 参数
 - **导出**：[INDEX.md](../export/INDEX.md) — `QuantLinear` 替换后走 `save_epair` / `host_weights` 机制 / C++ `GeWeightLoader`
 - **总览**：[converter_design.md](../converter_design.md) — 待实现与遗留（量化部分）

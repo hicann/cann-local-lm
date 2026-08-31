@@ -2,7 +2,7 @@ import json
 
 import torch
 
-from cann_lm.converter.quant import auto_quant, dopt_wrapper
+from cann_lm.converter.quant import dopt_wrapper
 from cann_lm.converter import swap
 
 
@@ -17,15 +17,11 @@ class ToyModel(torch.nn.Module):
 def test_automatic_generators_use_canonical_int8_4_eco_strategy():
     model = ToyModel()
 
-    for build_strategy in (
-        auto_quant._build_layer_strategy,
-        dopt_wrapper._build_layer_strategy,
-    ):
-        strategies = build_strategy(model, "toy")
+    strategies = dopt_wrapper.build_layer_strategy(model, "toy")
 
-        assert strategies["proj"]["quant_strategy"] == "Quant_INT8-4_ECO"
-        assert strategies["lm_head"]["quant_strategy"] == "Quant_INT8-4_ECO"
-        assert strategies["embed_tokens"]["quant_strategy"] == "Quant_Embed_MinMax"
+    assert strategies["proj"]["quant_strategy"] == "Quant_INT8-4_ECO"
+    assert strategies["lm_head"]["quant_strategy"] == "Quant_INT8-4_ECO"
+    assert strategies["embed_tokens"]["quant_strategy"] == "Quant_Embed_MinMax"
 
 
 def test_converter_reads_int8_4_eco_defaults_and_group_override(tmp_path):

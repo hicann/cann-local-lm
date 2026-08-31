@@ -29,7 +29,7 @@
 2. **保存**：`saver.save_epair` / `save_epair_prefill_decode` → epair 目录（详见 [export_design.md](../export/export_design.md) "saver"）
 3. **验证产物**：检查输出文件是否齐全
 
-CLI 只做编排，不实现加载/保存逻辑（二者在 [export_design.md](../export/export_design.md)）。量化接入由 `--quant-path` / `--quant-method` / `--quant-bits` 触发，调用 [quant 模块](../quant/quant_design.md) 的 swap 函数（详见 [quant_design.md](../quant/quant_design.md)）。
+CLI 只做编排，不实现加载/保存逻辑（二者在 [export_design.md](../export/export_design.md)）。量化接入由 `--quant-path` / `--quant-method` 触发，调用 [quant 模块](../quant/quant_design.md) 的 swap 函数（详见 [quant_design.md](../quant/quant_design.md)）。
 
 ## convert 程序化入口
 
@@ -46,8 +46,6 @@ def convert(
     num_layers: int | None = None,  # 截层调试; None = 全部
     quant_path: str | None = None,  # 场景 1: dopt GPTQ 产物; 与 quant_method 互斥
     quant_method: str | None = None,  # 场景 2: "gptq" 自动 spawn dopt; 与 quant_path 互斥
-    quant_bits: str = "w4a8",  # 格式/位宽; 仅 quant_method 时生效
-    quant_device: str | None = None,  # subprocess 设备 'npu'/'cuda'/'cpu'; None 继承父进程 DEVICE 或检测 (无加速器回落 cpu)
 ) -> None:
     """程序化入口：HF 模型 → epair
 
@@ -64,7 +62,7 @@ def convert(
     dopt_out_path = None
     if quant_method == "gptq":
         from cann_lm.converter.quant_entry import run_auto_quant
-        dopt_out_path = run_auto_quant(hf_path, quant_bits)
+        dopt_out_path = run_auto_quant(hf_path)
     elif quant_path:
         dopt_out_path = quant_path
 
@@ -149,10 +147,6 @@ def parse_args():
                              help="dopt GPTQ 产物路径 (场景 1). 与 --quant-method 互斥")
     quant_group.add_argument("--quant-method", default=None, choices=["gptq"],
                              help="量化算法 (场景 2, 自动 spawn dopt, NPU/GPU/CPU). 与 --quant-path 互斥")
-    parser.add_argument("--quant-bits", default="w4a8", choices=["w4a8"],
-                        help="格式/位宽. 仅 --quant-method 时生效")
-    parser.add_argument("--quant-device", default=None, choices=["npu", "cuda", "cpu"],
-                        help="量化 subprocess 设备. None 继承父进程 DEVICE 或检测 (无加速器回落 cpu)")
     return parser.parse_args()
 ```
 
@@ -169,24 +163,21 @@ def parse_args():
 | `--num-layers`　　　 | `None`　　　　　 | 只导出前 N 层（截层调试）；`None` = 全部；截 `model.model.layers`，`config.num_hidden_layers` 不变 |
 | `--quant-path`　　　 | `None`　　　　　 | dopt GPTQ 产物路径（场景 1，自动推断 group_size/embed；与 `--quant-method gptq` 互斥）　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　 |
 | `--quant-method`　 | `gptq`　 | 量化算法（当前仅 gptq；自动 spawn dopt subprocess 跑 GPTQ，场景 2；与 `--quant-path` 互斥）　|
-| `--quant-bits`　　 | `w4a8`　 | 格式/位宽（w4a8，默认 w4a8；`--quant-method` 时生效）　|
-| `--quant-device`　 | `None`　 | 量化 subprocess 设备 `npu`/`cuda`/`cpu`（跳过环境检测）；`None` 继承父进程 `DEVICE` 或 spawn 检测（无加速器回落 `cpu`，仅小模型适用） |
 
-> **load_model 写死 CPU**（融合算子只在 CPU 实现），故**不暴露 `--device` CLI 参数**。GPTQ 跑在 NPU/GPU/CPU subprocess（dopt_lm 支持 CPU float32），通过 `--quant-method gptq` + subprocess 隔离（`--quant-device` 仅控制 subprocess 设备）。
+> **load_model 写死 CPU**（融合算子只在 CPU 实现），故**不暴露 `--device` CLI 参数**。GPTQ 跑在 NPU/GPU/CPU subprocess（dopt_lm 支持 CPU float32），通过 `--quant-method gptq` + subprocess 隔离（subprocess 设备由 `_detect_device_type` 自动检测）。
 
 > **量化两流程**：`--quant-path <dopt产物>`（场景 1，手动先跑 dopt GPTQ 产物到 `--output-dir` 目录，converter 消费）或 `--quant-method gptq`（场景 2，converter 自动 spawn dopt subprocess 在 NPU/GPU/CPU 跑 GPTQ → swap → export，一键式）。互斥。精细调整走 dopt 分步（[dopt_design.md](../quant/dopt_design.md)）。详见 [quant_design.md](../quant/quant_design.md)。
 
 ## 完整调用链
 
-> **改造(2026-08-18)**:场景 2 (`--quant-method gptq`) 时 `load_model` 推到 `run_auto_quant` 之后,避免主进程 cann_lm 模型与 subprocess transformers 模型同时持有(2× 内存峰值)。`generate_dopt_config` 不再被场景 2 用(策略赋值逻辑在 subprocess 内用 transformers 模型生成),swap 移回主进程与场景 1 共用统一路径。**当前 subprocess 入口为独立脚本 `quant/dopt_wrapper.py`**(`python dopt_wrapper.py ...`,系统 Python + torch_npu + NPU env);计划改造为 `auto_quant._dopt_wrapper_main` 模块内函数(`python -m cann_lm.converter.quant.auto_quant --wrapper ...`,合并到单文件消除两份重复的 `_build_layer_strategy`),**尚未落地**。
+> **改造(2026-08-18)**:场景 2 (`--quant-method gptq`) 时 `load_model` 推到 `run_auto_quant` 之后,避免主进程 cann_lm 模型与 subprocess transformers 模型同时持有(2× 内存峰值)。策略赋值逻辑在 subprocess 内用 transformers 模型生成(`dopt_wrapper.build_layer_strategy`),swap 移回主进程与场景 1 共用统一路径。**当前 subprocess 入口为独立脚本 `quant/dopt_wrapper.py`**(`python dopt_wrapper.py ...`,系统 Python + torch_npu + NPU env)。
 
 ```
 cann_lm_converter.py (CLI)
     │
     ├── parse_args()  ← --hf-path, --output-dir, --dtype, --max-file-size,
     │                    --kv-cache-max-len, --seq-len, --use-embeddings,
-    │                    --mode, --seq-len, [--quant-path | --quant-method gptq],
-    │                    [--quant-device npu|cuda]
+    │                    --mode, --seq-len, [--quant-path | --quant-method gptq]
     │
     ▼
 convert(hf_path, output_dir, dtype, ...)   # device 写死 CPU, 不暴露 CLI
@@ -194,13 +185,13 @@ convert(hf_path, output_dir, dtype, ...)   # device 写死 CPU, 不暴露 CLI
     ▼
 (可选) 场景 2 量化前置: spawn dopt subprocess      # ① GPTQ (详见 quant_design.md "方案 C")
     │   场景2 (--quant-method gptq, 主进程不预 load cann_lm):
-     │     auto_quant.run_auto_quant(hf_path, "w4a8") → 返回 dopt_out_dir
-     │       └─ spawn 'python dopt_wrapper.py ...' (系统 python + torch_npu + NPU)
-     │            内部调 dopt_wrapper.main(hf_path, optimize_config, output_dir, ...)
+     │     auto_quant.run_auto_quant(hf_path) → 返回 dopt_out_dir
+     │       └─ spawn 'python dopt_wrapper.py --model-path <hf> --optimize-config config.yaml --output-dir <临时盘> --hf-type-save' (系统 python + torch_npu + NPU)
+     │            内部 dopt_wrapper.main() 运行 (parse_args 从命令行读 --model-path / --optimize-config / --output-dir / --hf-type-save)
     │            ├─ model_define(hf_path) 加载 transformers 模型
-    │            ├─ _build_layer_strategy(model) → dopt_config.json (带策略)
+     │            ├─ build_layer_strategy(model) → dopt_config.json (带策略)
     │            │   Linear（含 lm_head）→Quant_INT8-4_ECO,
-    │            │   Embedding→Quant_Embed_MinMax / Quant_Gemma4_Embed
+    │            │   Embedding→Quant_Embed_MinMax
     │            ├─ del model 释放
     │            └─ weight_quant_pipline(...) (dopt 内部加载 2 次,不改 dopt 的代价)
     │               → 产物 → 临时盘 model.safetensors + dopt_config.json
@@ -269,7 +260,7 @@ save_epair_prefill_decode(
     max_file_size=50*1024**3,      # 单 bin 最大字节数
     kv_cache_max_len=2048,         # KV buffer 第一维
     seq_len=128,           # prefill 图 seq_len (可配)
-    use_embeddings=True,          # saver 默认 False; CLI 默认 True 传入 (纯 embeddings); False 走图内查表
+    use_embeddings=True,          # saver 默认 True (纯 embeddings); CLI 默认 True 传入; False 走图内查表
     save_weights=True,             # 是否写 weights_*.bin (False 只写 ep_json)
     whitelist_decompositions=None, # 限定 decomposition 白名单 (None = 全跑)
     embed_quant=None,              # 量化 embed int8+scale (swap_from_dopt 返回; None 无量化 embed)
@@ -388,7 +379,7 @@ converter 全流程三阶段：**加载**（torch CPU）→ **量化**（GPTQ �
 
 **通用（`auto_quant.py`）**：
 1. ✅ **DEVICE 检测**：`_detect_device_type` 自动检测 NPU→`npu` / GPU→`cuda` / 无加速器→**回落 `cpu`**（不再报错；dopt_lm 支持 CPU float32）
-2. ✅ **CPU 回落**：无 NPU/GPU → `--quant-device cpu` 或自动回落，warn 7B+ 极慢
+2. ✅ **CPU 回落**：无 NPU/GPU → `_detect_device_type` 自动回落 `cpu`，warn 7B+ 极慢
 
 **NPU**：方案 C 已可用（subprocess + stubs export），无缺失（方案 A 已放弃，torchair 带 CANN SDK 不完整）
 
@@ -455,7 +446,7 @@ converter 只需要 `npu::` 算子的 **fake-meta**（torch.export trace 用）�
 | 文档　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　| 关联内容　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　|
 | -----------------------------------------------------------------------------------------| -------------------------------------------------------------------------------------------------------|
 | [export_design.md](../export/export_design.md)　　　　　　　　　　　　　　　　　　　　　| `loader.load_model` / `saver.save_epair` / `ExportWrapper` / `model_registry` / 产物布局 / C++ 加载侧 |
-| [quant_design.md](../quant/quant_design.md)　　　　　　　　　　　　　　　　　　　　　　 | `--quant-path` / `--quant-method` / `--quant-bits` 量化接入 / `swap_from_dopt`（主路径）　　　　　　　　　　　　　　　　　　　　　　　　　　　 |
+| [quant_design.md](../quant/quant_design.md)　　　　　　　　　　　　　　　　　　　　　　 | `--quant-path` / `--quant-method` 量化接入 / `swap_from_dopt`（主路径）　　　　　　　　　　　　　　　　　　　　　　　　　　　 |
 | [converter_design.md](../converter_design.md)　　　　　　　　　　　　　　　　　　　　　 | 跨模块调用链总览 / 模型差异总览 / 精度汇总　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　|
 | [reference_pipeline_walkthrough.md](../reference_pipeline_walkthrough.md)　　　　　　　 | gemma4 端到端 6 阶段流程示例（参考）　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　|
 | [reference_python_to_om_self_test_flow.md](../reference_python_to_om_self_test_flow.md) | 改源码到 OM 出字的自验证流程（参考）　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　|

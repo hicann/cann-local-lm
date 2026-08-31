@@ -1,7 +1,5 @@
 """Utilities for packing consolidated weights into binary files + index."""
 
-from __future__ import annotations
-
 import dataclasses
 import json
 from pathlib import Path

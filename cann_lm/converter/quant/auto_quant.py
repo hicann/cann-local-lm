@@ -3,55 +3,12 @@
 See docs/cann_lm_converter/quant/quant_design.md (one-shot quant plan selection).
 """
 
-import json
 import os
 import subprocess
 import tempfile
 from pathlib import Path
 
-import torch
-
-
-_LINEAR_STRATEGY = "Quant_INT8-4_ECO"
-_EMBED_STRATEGY = "Quant_Embed_MinMax" 
-
-
-def _build_layer_strategy(model, model_type: str) -> dict:
-    """Assign quant strategies by module type (Linear->Quant_INT8-4_ECO,
-    Embedding->Quant_Embed_MinMax). cann_lm and
-    transformers share layer names, so this is model-agnostic.
-
-    Note: dopt 53ad5ec removed Quant_Gemma4_Embed; gemma4 embed uses Quant_Embed_MinMax too.
-    """
-    layer_strategy = {}
-    for name, m in model.named_modules():
-        if isinstance(m, torch.nn.Linear):
-            if "embed_tokens" in name:
-                continue
-            layer_strategy[name] = {
-                "type": str(type(m)),
-                "quant_strategy": _LINEAR_STRATEGY,
-            }
-        elif isinstance(m, torch.nn.Embedding):
-            strategy = _EMBED_STRATEGY
-            layer_strategy[name] = {"type": str(type(m)), "quant_strategy": strategy}
-    return layer_strategy
-
-
-def generate_dopt_config(artifact, quant_bits: str) -> str:
-    """Scene-1 offline helper: walk cann_lm artifact.model to generate a dopt_config,
-    return the temp file path. Used before manually running dopt GPTQ
-    (examples/run_pd4_cases.sh:gen_dopt_config depends on it).
-    """
-    layer_strategy = _build_layer_strategy(artifact.model, artifact.model_type)
-    fd, cfg_path = tempfile.mkstemp(prefix="dopt_config_", suffix=".json")
-    with os.fdopen(fd, "w") as f:
-        json.dump({"layer_strategy": layer_strategy}, f, indent=2)
-    print(f"      Generated dopt_config: {cfg_path} ({len(layer_strategy)} layers)")
-    return cfg_path
-
-
-def _run_dopt_subprocess(hf_path: str, quant_bits: str, device: str) -> str:
+def _run_dopt_subprocess(hf_path: str, device: str) -> str:
     quant_dir = Path(__file__).resolve().parent
     wrapper_path = quant_dir / "dopt_wrapper.py"
     dopt_python = os.environ.get("DOPT_PYTHON", "/opt/buildtools/Python-3.11.4/bin/python3")
@@ -62,7 +19,6 @@ def _run_dopt_subprocess(hf_path: str, quant_bits: str, device: str) -> str:
         "--optimize-config", str(quant_dir / "config.yaml"),
         "--output-dir", tmp_out,
         "--hf-type-save",
-        "--quant-bits", quant_bits,
     ]
     env = os.environ.copy()
     env["PYTHONPATH"] = f"{quant_dir}:{env.get('PYTHONPATH', '')}"
@@ -114,7 +70,7 @@ def _detect_device_type() -> str:
         return "cpu"
 
 
-def run_auto_quant(hf_path: str, quant_bits: str) -> str:
+def run_auto_quant(hf_path: str) -> str:
     """One-shot GPTQ: detect NPU/GPU/CPU -> plan C (subprocess). Return the dopt_out_dir path.
 
     CPU fallback does not raise (dopt_lm supports CPU, dispatch_dtype=float32);
@@ -126,4 +82,4 @@ def run_auto_quant(hf_path: str, quant_bits: str) -> str:
         print("      [warn] CPU GPTQ: dopt_lm supports CPU (float32) but 7B+ Hessian is very slow; "
               "prefer NPU/GPU or --quant-path to consume offline output")
     print(f"   spawn dopt subprocess (device={dev})")
-    return _run_dopt_subprocess(hf_path, quant_bits, dev)
+    return _run_dopt_subprocess(hf_path, dev)

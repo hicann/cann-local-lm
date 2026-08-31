@@ -44,8 +44,8 @@ DOPT_PY="/opt/buildtools/Python-3.11.4/bin/python3"
 QD="$PROJECT_ROOT/cann_lm/converter/quant"
 WORK_DIR="/tmp/opencode"
 
-HF_QWEN3_5="/mnt/workspace/data/models/Qwen3.5-0.8B"
-HF_GEMMA4="/mnt/workspace/data/models/gemma-4-E2B-it"
+HF_QWEN3_5="/mnt/workspace/models/Qwen/Qwen3.5-0.8B"
+HF_GEMMA4="/mnt/workspace/models/unsloth/gemma-4-E2B-it"
 
 # ─── 一次性 setup: 确保 converter venv 不装 torch_npu (stub 路径) ───
 setup_torch_npu() {
@@ -112,11 +112,14 @@ gen_dopt_config() {
   local HF="$1" OUT="$2"
   echo "### generate dopt_config for $(basename "$HF")"
   "$VENV/bin/python3" - "$HF" "$OUT" <<'PYEOF'
-import json, sys, shutil, torch
+import json, sys, shutil, os, tempfile, torch
 from cann_lm.converter.loader import load_model
-from cann_lm.converter.quant.auto_quant import generate_dopt_config
+from cann_lm.converter.quant.dopt_wrapper import build_layer_strategy
 art = load_model(sys.argv[1], dtype=torch.bfloat16, device="cpu")
-cfg = generate_dopt_config(art, "w4a8")
+layer_strategy = build_layer_strategy(art.model, art.model_type)
+fd, cfg = tempfile.mkstemp(prefix="dopt_config_", suffix=".json")
+with os.fdopen(fd, "w") as f:
+    json.dump({"layer_strategy": layer_strategy}, f, indent=2)
 shutil.copy(cfg, sys.argv[2])
 from collections import Counter
 d = json.load(open(sys.argv[2]))

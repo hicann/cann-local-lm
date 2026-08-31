@@ -3,7 +3,7 @@
 
 Model type is auto-detected from config.json; no --model-type needed.
 load_model is hardwired to CPU (cann_lm/models/fused_ops/ only has CPU impls), no --device.
-GPTQ runs via --quant-method gptq + --quant-device npu (subprocess isolation); cpu also works (small models).
+GPTQ runs via --quant-method gptq (subprocess isolation); cpu also works (small models).
 
 Usage:
   cann-lm-converter \          # after install (console_scripts); or python -m cann_lm.converter.cann_lm_converter
@@ -14,10 +14,7 @@ Usage:
       --seq-len 128
 """
 
-from __future__ import annotations
-
 import argparse
-import os
 import sys
 from pathlib import Path
 
@@ -51,26 +48,21 @@ def convert(
     num_layers: int | None = None,
     quant_path: str | None = None,
     quant_method: str | None = None,  # quant algo, currently only "gptq" (auto-spawns dopt); mutually exclusive with quant_path
-    quant_bits: str = "w4a8",  # format/bit-width (w4a8); only effective with quant_method
-    quant_device: str | None = None,  # quant subprocess device ('npu'/'cuda'/'cpu'), skips env detection; None = inherit parent DEVICE or detect
 ) -> None:
     """Programmatic entry: HF model -> epair.
 
     load_model is hardwired to CPU (fused_ops only has CPU impls). GPTQ runs in an
-    NPU/GPU/CPU subprocess (--quant-method gptq + --quant-device); --quant-path consumes
+    NPU/GPU/CPU subprocess (--quant-method gptq); --quant-path consumes
     offline dopt output. See quant_design.md for the scene 1/2 split.
     """
-    # --quant-device: write to os.environ["DEVICE"] so the subprocess inherits it (skips spawn-detect).
-    if quant_device:
-        os.environ["DEVICE"] = quant_device
     # Scene 2 (--quant-method gptq): spawn dopt subprocess first; don't pre-load cann_lm to avoid 2x peak
     # memory (cann_lm model + subprocess's transformers model). Scene 1 (--quant-path): consume offline output.
     dopt_out_path = None
     dopt_out_is_temp = False  # True = converter temp dir (scene 2), cleaned after swap; False = user path (scene 1)
     if quant_method == "gptq":
         from cann_lm.converter.quant_entry import run_auto_quant
-        print(f"[1/3] Quant: --quant-method gptq (bits={quant_bits}), spawn dopt subprocess (GPTQ)")
-        dopt_out_path = run_auto_quant(hf_path, quant_bits)
+        print(f"[1/3] Quant: --quant-method gptq, spawn dopt subprocess (GPTQ)")
+        dopt_out_path = run_auto_quant(hf_path)
         dopt_out_is_temp = True
         print(f"      dopt GPTQ done: {dopt_out_path}")
         print(f"      Loading cann_lm model from {hf_path}")
@@ -110,7 +102,6 @@ def convert(
         print(f"      Quantized {info['n_quantized']} linears (skipped {info['n_skipped_no_dopt_key']}, group_size={info['group_size']})")
         if embed_quant:
             print(f"      Embedding int8 (auto-detected from dopt): {list(embed_quant)}")
-        # On swap success, temp output is consumed into QuantLinear + embed int8/scale (in-memory); clean disk. On failure (swap raises), keep temp for debugging.
         if dopt_out_is_temp:
             import shutil
             shutil.rmtree(dopt_out_path, ignore_errors=True)
@@ -195,13 +186,6 @@ def parse_args() -> argparse.Namespace:
     quant_group.add_argument("--quant-method", default=None, choices=["gptq"],
                              help="Quant algo (currently only gptq). Scene 2: converter auto-spawns a dopt subprocess to "
                                   "run GPTQ (NPU/GPU/CPU env; CPU only for small models). Mutually exclusive with --quant-path.")
-    parser.add_argument("--quant-bits", default="w4a8", choices=["w4a8"],
-                        help="Format/bit-width (w4a8, default w4a8). Only effective with --quant-method; passed to dopt_config's strategy.")
-    parser.add_argument("--quant-device", default=None, choices=["npu", "cuda", "cpu"],
-                        help="Quant subprocess device (npu/cuda/cpu), skips env detection. Default None inherits the "
-                             "parent DEVICE (set_env_npu.sh export) or spawn-detects (falls back to cpu when no "
-                             "NPU/GPU). cpu only for small models / debugging (dopt_lm supports CPU float32, 7B+ is "
-                             "very slow). Equivalent to set_env_npu.sh.")
     return parser.parse_args()
 
 
@@ -219,8 +203,6 @@ def main() -> None:
         num_layers=args.num_layers,
         quant_path=args.quant_path,
         quant_method=args.quant_method,
-        quant_bits=args.quant_bits,
-        quant_device=args.quant_device,
     )
 
 

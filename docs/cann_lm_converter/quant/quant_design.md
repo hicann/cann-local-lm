@@ -28,7 +28,7 @@
 
 ## 概述
 
-> 量化接入的 CLI 参数（`--quant-path` / `--quant-method` / `--quant-bits`）见 [cli_design.md](../cli/cli_design.md)；量化 epair 的产物布局、host_weights 机制、C++ 加载侧见 [export_design.md](../export/export_design.md)。embedding 量化的 W8 host gather 子主题见 [embedding_quant_design.md](./embedding_quant_design.md)。
+> 量化接入的 CLI 参数（`--quant-path` / `--quant-method`）见 [cli_design.md](../cli/cli_design.md)；量化 epair 的产物布局、host_weights 机制、C++ 加载侧见 [export_design.md](../export/export_design.md)。embedding 量化的 W8 host gather 子主题见 [embedding_quant_design.md](./embedding_quant_design.md)。
 
 `cann_lm/converter/quant/` 下内置两块：
 
@@ -40,7 +40,7 @@
 - **输入**：HF 模型目录 + 校准数据（`calibrate_sets/` 下 jsonl，由 `download_dataset.py` 下载生成）+ dopt GPTQ 产物（`model.safetensors` 或 `.pth`，目录由 `--quant-path`/dopt `--output-dir` 指定）。
 - **输出**：epair 模型目录，其 `*_ep_json_with_ascend_ir.json` 含 `npu::npu_quant_matmul` + `npu::npu_dynamic_quant` IR 节点，权重 bin 含 nibble-packed int4（int8 存储）+ fp32 scale，`model_config.json` 含 `quant_info` 字段。
 - **量化范围**：全部 `nn.Linear`（attn q/k/v/o_proj + mlp gate/up/down_proj + gemma4 的 `per_layer_input_gate` / `per_layer_projection` / `per_layer_model_projection` + `lm_head`），**仅 `embed_tokens` / `embed_tokens_per_layer` 不走 Linear swap**——它们是 `nn.Embedding`，由 `swap_embeddings_from_dopt` 走 W8 host gather（converter 自动检测 dopt 产物含 embed scale 即做）。
-- **不包含**：GPTQ 与导出的内存链路一体化（仍两步磁盘桥接，见 [端到端流程](#端到端流程)）。CPU 跑 GPTQ **已支持**（dopt_lm `SUPPORTED_DEVICE_TYPES` 含 `cpu`，走 `--quant-device cpu` 或无加速器时自动回落），但 7B+ Hessian 极慢，仅小模型/调试适用。
+- **不包含**：GPTQ 与导出的内存链路一体化（仍两步磁盘桥接，见 [端到端流程](#端到端流程)）。CPU 跑 GPTQ **已支持**（dopt_lm `SUPPORTED_DEVICE_TYPES` 含 `cpu`，无加速器时自动回落），但 7B+ Hessian 极慢，仅小模型/调试适用。
 
 ---
 
@@ -50,12 +50,10 @@
 
 ### 设计原则
 
-1. **dopt 分步使用（精细调整）**：dopt 作为独立 CLI 工具（[dopt_design.md](./dopt_design.md) "使用方法"），用户可调整所有量化参数——层策略（`dopt_config.json` 的 `quant_strategy`，由 `_build_layer_strategy` 自动生成后可手改）、校准（`config.yaml` 的 `ptq_samples`/`cutoff_len`，`train_files` 指向 `calibrate_sets/`）、group_size（`"name;group_size"` 语法）。产物落 `--output-dir` 指定目录。
-2. **CLI 一键导出（少量重要参数）**：converter CLI 只暴露 **两个互斥** 量化入口 + 一个格式参数 + 一个设备参数，精细参数不暴露（走 dopt 分步）：
+1. **dopt 分步使用（精细调整）**：dopt 作为独立 CLI 工具（[dopt_design.md](./dopt_design.md) "使用方法"），用户可调整所有量化参数——层策略（`dopt_config.json` 的 `quant_strategy`，由 `build_layer_strategy` 自动生成后可手改）、校准（`config.yaml` 的 `ptq_samples`/`cutoff_len`，`train_files` 指向 `calibrate_sets/`）、group_size（`"name;group_size"` 语法）。产物落 `--output-dir` 指定目录。
+2. **CLI 一键导出（少量重要参数）**：converter CLI 只暴露 **两个互斥** 量化入口，精细参数不暴露（走 dopt 分步）：
    - `--quant-path <dopt产物>`：场景 1，dopt 已 GPTQ，converter 消费产物
    - `--quant-method gptq`：场景 2，converter 自动 spawn dopt subprocess 跑 GPTQ（已实现 `auto_quant.py`，见 [一键式量化方案选型](#一键式量化方案选型)）
-   - `--quant-bits w4a8|w4a16`：格式/位宽（默认 `w4a8`，`--quant-method` 时生效，传给 dopt_config 的 strategy）
-   - `--quant-device npu|cuda|cpu`：场景 2 subprocess 设备（默认 `None` 继承父进程 `DEVICE` 或 spawn 检测，无加速器回落 `cpu`；`cpu` 仅小模型适用）
 3. **converter 自动推断**：场景 1 的 `group_size` 从 dopt 产物 `group_scale` shape 自动反推（`swap.py`），`embed` 量化自动检测（dopt 产物含 `embed_tokens.quant_op...s` 即做），无需用户重复传参。
 
 ### 两场景对比
@@ -65,22 +63,22 @@
 | 输入 | dopt GPTQ 产物（`--output-dir` 指定目录） | HF 原始权重 |
 | 谁跑 dopt | 用户手动跑 dopt（`dopt_wrapper.py`，dopt_config 自动生成） | converter 自动 spawn dopt subprocess |
 | 量化算法 | GPTQ（dopt，精度高） | GPTQ（dopt，精度高） |
-| 格式 | 从产物推断 | `--quant-bits` 配（w4a8/w4a16，默认 w4a8） |
+| 格式 | 从产物推断 | 由 `Quant_INT8-4_ECO` strategy 决定（W4A8） |
 | group_size | 自动推断（从 dopt 产物） | dopt_config 自动生成（默认 128） |
 | embed 量化 | 自动检测 | dopt_config 自动生成（Quant_Embed_MinMax） |
-| 环境 | converter CPU stubs（消费离线产物） | converter CPU stubs + subprocess（NPU/GPU/CPU，`--quant-device` 选） |
+| 环境 | converter CPU stubs（消费离线产物） | converter CPU stubs + subprocess（NPU/GPU/CPU，`_detect_device_type` 自动检测） |
 | 状态 | ✅ 已实现 | ✅ 已实现（方案 C） |
-| 精细调整 | dopt 分步（层策略等，dopt_config 自动生成后可手改） | dopt 分步（或 `--quant-bits` 简配） |
+| 精细调整 | dopt 分步（层策略等，dopt_config 自动生成后可手改） | dopt 分步 |
 
 ### 互斥约束
 
 `--quant-path` 和 `--quant-method` 互斥（argparse `mutually_exclusive_group`），二选一：
 - 都不传 → 不量化（导出 fp 原始权重 epair）
 - 传 `--quant-path <产物>` → 场景 1
-- 传 `--quant-method gptq` → 场景 2（+ `--quant-bits` 配格式）
+- 传 `--quant-method gptq` → 场景 2
 - 都传 → argparse 报错
 
-`--quant-bits` 仅 `--quant-method` 时生效（场景 1 从产物推断格式）。
+位宽由 dopt_config 的 `Quant_INT8-4_ECO` strategy 决定（W4A8），无 CLI 参数；场景 1 从产物推断。
 
 > CLI 量化参数精简的设计取舍：`--quant-group-size` / `--quant-act` / `--quant-embeddings` / `--no-quant-linears` 已移除（group_size/act/embed 改自动推断或 dopt_config 配）。converter 的 min-max 快速路径（`swap_to_quant_linear` + `materialize_int4`）已删除（dopt 只支持 GPTQ，min-max 精度差无实用价值）。精细调整全部由 dopt 分步完成。
 
@@ -110,7 +108,7 @@ cann_lm/converter/export/quant_swap/      # 量化物化内部（materialize + Q
 
 > **迁移说明**（2026-08-31）：`materialize.py` / `quant_linear.py` / `swap.py` 从 `cann_lm/converter/quant/` 迁出。`materialize.py` / `quant_linear.py` 落 `cann_lm/converter/export/quant_swap/`（物化内部）；`swap.py` 进一步升至 `cann_lm/converter/swap.py`（converter 根，编排层 peer of `loader.py` / `saver.py`，绝对 import materialize/quant_linear）。`quant/` 现仅留 dopt 编排（`auto_quant` / `dopt_wrapper`）+ vendored `dopt_lm` + 校准数据。旧 import 路径已干净切断：`swap_from_dopt` 走 `cann_lm.converter.swap`，物化符号走 `cann_lm.converter.export.quant_swap`。
 
-> **dopt_config.json 不在 quant/ 包目录**：层策略配置（`{层名: quant_strategy}`）由 `_build_layer_strategy` 遍历模型自动生成，写入 dopt 产物目录（`--output-dir`/临时盘），converter 侧 `swap._read_quant_param_map` 从该产物目录读取。**两场景均自动生成**，无需用户手写。`download_dataset.py` 默认输出目录是 `calibration_data/`，但本仓库实际产物落在 `calibrate_sets/`（config.yaml 的 `train_files` 指向）。
+> **dopt_config.json 不在 quant/ 包目录**：层策略配置（`{层名: quant_strategy}`）由 `build_layer_strategy` 遍历模型自动生成，写入 dopt 产物目录（`--output-dir`/临时盘），converter 侧 `swap._read_quant_param_map` 从该产物目录读取。**两场景均自动生成**，无需用户手写。`download_dataset.py` 默认输出目录是 `calibration_data/`，但本仓库实际产物落在 `calibrate_sets/`（config.yaml 的 `train_files` 指向）。
 
 ### 依赖关系
 
@@ -149,7 +147,7 @@ cann_lm/converter/quant_entry.py        ← facade，re-export run_auto_quant + 
 | `dopt_config.json`（产物目录内） | dopt `--dopt-config`（dopt_wrapper 自动生成写入产物目录） + converter 侧 `swap._read_quant_param_map` 解析层策略 | **converter 侧 swap.py 也读**（从 dopt 产物目录解析 `{层名: 量化参数}`）；两场景均自动生成，非手写 |
 | `<产物目录>/model.safetensors` | `swap.load_dopt_state_dict(quant_path)`（`swap.py` 的 `load_dopt_state_dict`，用 `safetensors.safe_open`） | swap.py 读 |
 
-**结论**：converter 侧 5 个 .py 里，`swap.py`（`load_dopt_state_dict` + `_read_quant_param_map`）和 `auto_quant.py`（spawn subprocess）做 I/O；`materialize.py` / `quant_linear.py` / `dopt_wrapper.py` 完全无 I/O、无状态（`dopt_wrapper.py` 在 subprocess 内跑，I/O 走 dopt_lm）。`config.yaml` / `calibrate_sets/*.jsonl` 全是 dopt GPTQ 阶段输入；`dopt_config.json` 由 `_build_layer_strategy` 自动生成到产物目录，dopt 内部消费 + converter 侧 `swap.py` 解析层策略（`_read_quant_param_map`，方案 C 的 group_size/bit 来源）。
+**结论**：converter 侧 5 个 .py 里，`swap.py`（`load_dopt_state_dict` + `_read_quant_param_map`）和 `auto_quant.py`（spawn subprocess）做 I/O；`materialize.py` / `quant_linear.py` / `dopt_wrapper.py` 完全无 I/O、无状态（`dopt_wrapper.py` 在 subprocess 内跑，I/O 走 dopt_lm）。`config.yaml` / `calibrate_sets/*.jsonl` 全是 dopt GPTQ 阶段输入；`dopt_config.json` 由 `build_layer_strategy` 自动生成到产物目录，dopt 内部消费 + converter 侧 `swap.py` 解析层策略（`_read_quant_param_map`，方案 C 的 group_size/bit 来源）。
 
 ---
 
@@ -222,7 +220,7 @@ cann_lm/converter/quant_entry.py        ← facade，re-export run_auto_quant + 
 │   场景 1 (--quant-path): 用户手动跑 dopt_wrapper (dopt_config 自动生成) │
 │   场景 2 (--quant-method gptq): auto_quant.run_auto_quant 检测 NPU/GPU/CPU │
 │           → spawn dopt_wrapper.py subprocess (subprocess env, cwd=quant/)│
-│           → dopt_wrapper 内 _build_layer_strategy 自动生成 dopt_config  │
+│           → dopt_wrapper 内 build_layer_strategy 自动生成 dopt_config  │
 │                                                                         │
 │  输入:                                                                   │
 │   - HF 模型 (--hf-path / --model-path)                                  │
@@ -235,7 +233,7 @@ cann_lm/converter/quant_entry.py        ← facade，re-export run_auto_quant + 
 │        Embedding→Quant_Embed_MinMax)                                    │
 │                                                                         │
 │  执行: python dopt_wrapper.py --model-path ... --hf-type-save           │
-│        (两场景都用 dopt_wrapper; 或手动 dopt_lm.opt_main + generate_dopt_config)│
+│        (两场景都用 dopt_wrapper; 或手动 dopt_lm.opt_main + 用例内联 build_layer_strategy)│
 │                                                                         │
 │  产物 (--output-dir 指定目录 或 场景 2 临时盘):                          │
 │   - model.safetensors (~3GB) ← load_dopt_state_dict 读这个               │
@@ -249,7 +247,7 @@ cann_lm/converter/quant_entry.py        ← facade，re-export run_auto_quant + 
 │       model.embed_tokens.quant_op.weight_quantizer.s (per-channel)     │
 │   - config.json (HF 模型 config 副本)                                   │
 │   - config.yaml (dopt 写的训练回放)                                     │
-│   - dopt_config.json (层策略, _build_layer_strategy 自动生成; converter  │
+│   - dopt_config.json (层策略, build_layer_strategy 自动生成; converter  │
 │     侧 _read_quant_param_map 读它解析 group_size/bit)                  │
 └─────────────────────────────────────────────────────────────────────────┘
                                     │
@@ -334,15 +332,13 @@ cann_lm/converter/quant_entry.py        ← facade，re-export run_auto_quant + 
 
 #### 方案 C 设计
 
-converter `--quant-method gptq` 一键触发：主进程 spawn `dopt_wrapper.py` subprocess（NPU/GPU/CPU 环境，由 `--quant-device` 选，无加速器回落 `cpu`）跑 GPTQ → 产物到临时盘 → converter swap + export。实现位于 `cann_lm/converter/quant/auto_quant.py`（`generate_dopt_config` + `run_auto_quant`）。
+converter `--quant-method gptq` 一键触发：主进程 spawn `dopt_wrapper.py` subprocess（NPU/GPU/CPU 环境，由 `_detect_device_type` 自动检测，无加速器回落 `cpu`）跑 GPTQ → 产物到临时盘 → converter swap + export。实现位于 `cann_lm/converter/quant/auto_quant.py`（`run_auto_quant`）。
 
 ```
 converter 主进程 (CPU stubs)                      subprocess (NPU/GPU/CPU 环境)
 ─────────────────────────────                     ─────────────────────────
 convert(--quant-method gptq)                      python dopt_wrapper.py
-  ├─ generate_dopt_config(artifact, quant_bits)    --model-path <hf> --optimize-config config.yaml
-  │   遍历 cann_lm 模型生成 dopt_config             --output-dir <临时盘> --hf-type-save --quant-bits w4a8
-  ├─ run_auto_quant → spawn subprocess ───────→     ├─ _build_layer_strategy 自动生成 dopt_config
+  ├─ run_auto_quant → spawn subprocess ───────→     ├─ build_layer_strategy 自动生成 dopt_config
   │   (系统 Python + subprocess env + cwd=quant/)  ├─ weight_quant_loop (GPTQ, NPU/GPU/CPU)
   │                                                  └─ 产物 → 临时盘 model.safetensors
   ├─ wait subprocess 完成
@@ -357,7 +353,7 @@ DEVICE=npu python cann_lm_converter.py \
   --hf-path /path/to/hf --output-dir /path/to/out --dtype float16 \
   --quant-method gptq
 # converter 自动: 检测设备 → spawn dopt subprocess (GPTQ) → 临时盘 → swap → export
-# (--quant-method gptq 与 --quant-path 互斥; --quant-bits 配格式; --quant-device 显式选 npu/cuda/cpu)
+# (--quant-method gptq 与 --quant-path 互斥; 设备由 _detect_device_type 自动检测)
 ```
 
 **两阶段实现**：
@@ -367,16 +363,16 @@ DEVICE=npu python cann_lm_converter.py \
 **实现状态**（`auto_quant.py` + `dopt_wrapper.py`）：
 1. **subprocess 环境** ✅：`PYTHONPATH` 加 `quant/` + `DEVICE=<npu|cuda|cpu>` + `LD_LIBRARY_PATH` 去 stubs；`DOPT_PYTHON` 环境变量可覆盖系统 Python 路径
 2. **calibration 路径** ✅：subprocess `cwd=cann_lm/converter/quant/`（config.yaml 的 `train_files` 指向 `calibrate_sets/*.jsonl`，相对 CWD）
-3. **dopt_config 生成** ✅：两场景均由 `_build_layer_strategy` 遍历模型层名自动生成（写入产物目录），**无需用户手写**；场景 2 在 subprocess 内（dopt_wrapper），场景 1 离线由 `auto_quant.generate_dopt_config` 遍历 cann_lm `artifact.model` 生成临时 cfg 供 raw `dopt_lm.opt_main` 用（`examples/run_pd4_cases.sh:gen_dopt_config` 依赖）
+3. **dopt_config 生成** ✅：两场景均由 `build_layer_strategy` 遍历模型层名自动生成（写入产物目录），**无需用户手写**；场景 2 在 subprocess 内（dopt_wrapper），场景 1 离线由用例（`examples/run_pd6_cases.sh:gen_dopt_config`）内联 `build_layer_strategy` 遍历 cann_lm `artifact.model` 生成临时 cfg 供 raw `dopt_lm.opt_main` 用
 4. **subprocess 失败处理** ✅：退出码非 0 raise `RuntimeError`，保留临时产物路径供调试
 5. **设备检测** ✅：`_detect_device_type` 优先读父进程 `DEVICE`（含 `cpu`），未设才 spawn 检测（`torch_npu`/`torch.cuda`）；关 `ASCEND_SLOG_PRINT_TO_STDOUT` 防 CANN 日志污染 stdout 解析；**无 NPU/GPU 时回落 `cpu`**（dopt_lm 支持 CPU float32，7B+ Hessian 极慢，仅小模型/调试适用，不再报错）
 6. **dopt_wrapper 主体** ✅：`model_define`（transformers fp16）+ `weight_quant_pipline`（GPTQ）已落地，`--hf-type-save` 产 safetensors
-7. **w4a8** ✅：`dopt_wrapper.parse_args` 的 `--quant-bits` default=`w4a8`，choices=`["w4a8"]`
-8. **w4a16** ❌ 不支持：`choices=["w4a8"]` 限制，无 preset W4A16 Linear strategy
+7. **w4a8** ✅：量化方式由 dopt_config 的 `quant_strategy`（`Quant_INT8-4_ECO`）决定，无 CLI 参数控制位宽（`_LINEAR_STRATEGY` 硬编码为 `Quant_INT8-4_ECO`）
+8. **w4a16** ❌ 不支持：`_LINEAR_STRATEGY` 仅 `Quant_INT8-4_ECO`（W4A8），无 preset W4A16 Linear strategy
 9. **临时盘清理** ⏳ 待实现：当前不清理（保留供调试），7B+ 大文件需 `shutil.rmtree`
 10. **实测验证** ⏳ 待做：cann_lm 层名 vs HF 匹配、subprocess 环境跑通、calibration 匹配
 
-> `--quant-path`（消费已存在的 dopt 磁盘产物）保留作兜底，与 `--quant-method gptq`（自动 spawn dopt）互斥。`--quant-bits` 仅 `--quant-method` 时生效；`--quant-device`（`npu`/`cuda`/`cpu`，默认检测/回落）选 subprocess 设备。
+> `--quant-path`（消费已存在的 dopt 磁盘产物）保留作兜底，与 `--quant-method gptq`（自动 spawn dopt）互斥。subprocess 设备由 `_detect_device_type` 自动检测（无加速器回落 `cpu`）。
 ### `materialize.py` — 权重物化纯函数
 
 纯函数模块，把 fp16/bf16/fp32 的 `nn.Linear` 权重 `[out, in]` 物化成量化 payload + per-group/per-channel scale。**无状态、无副作用、无外部 I/O**。是整个量化链路的"数值核心"。
@@ -484,15 +480,13 @@ __all__ = [
 
 ### `auto_quant.py` — 一键式量化（方案 C）
 
-converter `--quant-method gptq` 一键触发：检测 NPU/GPU/CPU → spawn `dopt_wrapper.py` subprocess（subprocess env，`--quant-device` 选设备）跑 GPTQ → 临时盘产物 → converter swap。与主进程 CPU stubs 环境隔离。
+converter `--quant-method gptq` 一键触发：检测 NPU/GPU/CPU → spawn `dopt_wrapper.py` subprocess（subprocess env，设备由 `_detect_device_type` 自动检测）跑 GPTQ → 临时盘产物 → converter swap。与主进程 CPU stubs 环境隔离。
 
 | 函数 | 签名 | 参数数 | 作用 |
 |------|------|--------|------|
-| `_build_layer_strategy` | `(model, model_type: str) -> dict` | 2 | 遍历 `model.named_modules` 赋量化策略（Linear，包括 lm_head→`Quant_INT8-4_ECO`，Embedding→`Quant_Embed_MinMax`）。cann_lm 与 transformers 层名一致，通用 |
-| `generate_dopt_config` | `(artifact, quant_bits: str) -> str` | 2 | 场景 1 离线辅助：遍历 cann_lm `artifact.model` 生成 dopt_config，返回临时文件路径（`examples/run_pd4_cases.sh:gen_dopt_config` 依赖） |
-| `_run_dopt_subprocess` | `(hf_path: str, quant_bits: str, device: str) -> str` | 3 | 方案 C 主体：spawn `dopt_wrapper.py` subprocess（subprocess env，`PYTHONPATH` 加 `quant/`、`DEVICE=<npu\|cuda\|cpu>`、`LD_LIBRARY_PATH` 去 stubs；`DOPT_PYTHON` 可覆盖系统 Python 路径）。退出码非 0 raise `RuntimeError`，保留临时产物供调试 |
+| `_run_dopt_subprocess` | `(hf_path: str, device: str) -> str` | 2 | 方案 C 主体：spawn `dopt_wrapper.py` subprocess（subprocess env，`PYTHONPATH` 加 `quant/`、`DEVICE=<npu\|cuda\|cpu>`、`LD_LIBRARY_PATH` 去 stubs；`DOPT_PYTHON` 可覆盖系统 Python 路径）。退出码非 0 raise `RuntimeError`，保留临时产物供调试 |
 | `_detect_device_type` | `() -> str` | 0 | 检测系统计算设备：优先读父进程 `DEVICE`（含 `cpu`），未设才 spawn 检测（`torch_npu`/`torch.cuda`）。关 `ASCEND_SLOG_PRINT_TO_STDOUT` 防 CANN 日志污染 stdout 解析；**无 NPU/GPU 时回落 `cpu`**（不再返回 None/报错） |
-| `run_auto_quant` | `(hf_path: str, quant_bits: str) -> str` | 2 | **主入口**：检测 NPU/GPU/CPU → 方案 C (subprocess)；CPU 时 warn 慢（dopt_lm 支持 CPU float32，7B+ 极慢）。返回 dopt_out_dir 路径 |
+| `run_auto_quant` | `(hf_path: str) -> str` | 1 | **主入口**：检测 NPU/GPU/CPU → 方案 C (subprocess)；CPU 时 warn 慢（dopt_lm 支持 CPU float32，7B+ 极慢）。返回 dopt_out_dir 路径 |
 
 ### `dopt_wrapper.py` — dopt subprocess 主体
 
@@ -501,8 +495,8 @@ converter `--quant-method gptq` 一键触发：检测 NPU/GPU/CPU → spawn `dop
 | 函数 | 签名 | 参数数 | 作用 |
 |------|------|--------|------|
 | `_read_model_type` | `(model_path: str) -> str` | 1 | 从 `config.json` 读 `model_type` |
-| `_build_layer_strategy` | `(model, model_type: str) -> dict` | 2 | 同 `auto_quant._build_layer_strategy`（subprocess 内独立实现，不 import auto_quant） |
-| `parse_args` | `() -> Namespace` | 0 | `--model-path` / `--optimize-config` / `--output-dir` / `--hf-type-save` / `--quant-bits`（default=`w4a8`, choices=`["w4a8"]`，w4a16 不支持） |
+| `build_layer_strategy` | `(model, model_type: str) -> dict` | 2 | 唯一实现（subprocess 内遍历模型赋策略：Linear→`Quant_INT8-4_ECO`，Embedding→`Quant_Embed_MinMax`） |
+| `parse_args` | `() -> Namespace` | 0 | `--model-path` / `--optimize-config` / `--output-dir` / `--hf-type-save`（量化方式由 dopt_config 的 `quant_strategy` 决定，不在此传） |
 | `main` | `() -> None` | 0 | 读 model_type → `model_define`（transformers fp16）→ 生成 dopt_config.json → `del model` + `gc.collect` → `weight_quant_pipline`（GPTQ）→ 产物到 `--output-dir` |
 
 ### `config.yaml` — dopt GPTQ 训练配置
@@ -817,7 +811,7 @@ int64 bytes = uint64 bytes (8 字节小端序, 位模式相同)
 1. **unsigned int4 不支持**：`_swap_linear_from_sd`（`swap.py:291-295`）读 dopt 产物的 `unsigned_quant`，校验必须 = 0（symmetric signed `[-8, 7]`）。非 0（unsigned int4 `[0, 15]`）触及 CANN int4 signed/unsigned 编码约定，当前直接 `ValueError` 拒绝。dopt 默认 `Quant_INT8-4_ECO` 的 `unsigned_quant=False`，故主路径不触发。
 2. **非对称 offset 不支持**：`_swap_linear_from_sd`（`swap.py:296-301`）读 dopt 产物的 `offset`，校验必须全 0（symmetric）。非零 offset（asymmetric）`NotImplementedError`——`npu::npu_quant_matmul` 只支持 symmetric offset=0。dopt `weight_q_params_adapter_into_dopt` 把 offset 置零（`offset=torch.zeros_like(...)`），故主路径不触发。dopt `QuantizerFuncIntOffset` 反量化 `w_fp=(q-offset)*scale`；若未来支持非对称，需对齐 op 的 offset 语义 + 按 group `repeat_interleave` 扩维。
 3. **CPU-only 适配**：converter 侧 GPTQ 跑不了（需 NPU/GPU + 校准）。**`--quant-path` 已作兜底**：离线机跑 dopt GPTQ 产出（`quant_output/model.safetensors` 或 `trained_quant_weight.pth`），converter 加载它只做物化 + swap + 导出（不跑 GPTQ）。dopt `opt_main` 在本机 NPU 上跑 GPTQ 曾静默卡住（converter 一键式接入待解，见 [一键式量化方案选型](#一键式量化方案选型)）。
-4. **一键式量化（方案 C）已实现**：converter `--quant-method gptq`（`auto_quant.py`：`generate_dopt_config` + `run_auto_quant` spawn dopt subprocess + swap）。w4a16/实测待做，详见 [一键式量化方案选型](#一键式量化方案选型)。
+4. **一键式量化（方案 C）已实现**：converter `--quant-method gptq`（`auto_quant.py`：`run_auto_quant` spawn dopt subprocess + swap）。w4a16/实测待做，详见 [一键式量化方案选型](#一键式量化方案选型)。
 5. **dopt 函数超规**：`swap.py _swap_linear_from_sd` 函数超 100 行（221-331），`materialize.py materialize_int4_with_scale` 6 参数（超 5 参数原则）。两者建议按单一职责拆分 + `Int4Spec` dataclass 收敛，当前未拆。
 6. **dopt gemma4 多模态约束**：dopt GPTQ 主循环按文本 `ForCausalLM` 结构访问 `model.model.layers`；`model_define` 会从多模态模型抽取并重挂语言模型。`QGemma4ScaledEmbedding` 已通过 `visible_type_dict` 的原始类名分支接入。
 7. ~~**dopt_lm 拼写错误**~~ **已修复**：源码已用正确拼写 `ptq_algo_hessian` / `WeightQuantHessian`（`dopt_lm/opt_funcs/weight_quant_ptq/ptq_algo_hessian/`）。仅 `dopt_lm/weight_quant_ptq/ptq_algo_heissen/__pycache__/` 遗留旧编译产物（heissen 拼写），可删。
@@ -1234,7 +1228,7 @@ V3 和 V4 的支持表中，x1 和 x2 的 dtype 必须**成对相同**：
 
 | 文档 | 关联内容 |
 |------|---------|
-| [cli_design.md](../cli/cli_design.md) | CLI 入口 `--quant-path` / `--quant-method` / `--quant-bits` 参数 / `convert()` 程序化入口 |
+| [cli_design.md](../cli/cli_design.md) | CLI 入口 `--quant-path` / `--quant-method` 参数 / `convert()` 程序化入口 |
 | [export_design.md](../export/export_design.md) | epair 产物布局 / host_weights 机制 / C++ `GeWeightLoader` / GE 算子注册两层 |
 | [embedding_quant_design.md](./embedding_quant_design.md) | embed_tokens 的 W8 host gather 量化子主题（`swap_embeddings_from_dopt` + `materialize_int8_per_channel_symmetric`） |
 | [dopt_design.md](./dopt_design.md) | dopt_lm vendored GPTQ 框架（文件树 / 入口 / GPTQ 调用链 / 可设置参数清单 / 历史调试档案） |

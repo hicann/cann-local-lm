@@ -97,11 +97,10 @@ python cann_lm/converter/quant/dopt_wrapper.py \
     --model-path /path/to/hf-model \
     --optimize-config config.yaml \
     --output-dir /path/to/dopt_out \
-    --hf-type-save \
-    --quant-bits w4a8
+    --hf-type-save
 ```
 
-或手动 `python -m dopt_lm.opt_main`（需先由 `auto_quant.generate_dopt_config` 生成 `--dopt-config`）：
+或手动 `python -m dopt_lm.opt_main`（需先用例内联 `build_layer_strategy` 生成 `--dopt-config`）：
 
 ```bash
 python -m dopt_lm.opt_main \
@@ -579,4 +578,4 @@ GPTQ 循环写死**文本-only ForCausalLM** 结构假设：
 |------|---------|
 | [quant_design.md](./quant_design.md) | converter 侧量化接入（`materialize` / `swap` / `quant_linear` / 端到端两步流程 / 方案 A 算子 / 已知问题） |
 | [embedding_quant_design.md](./embedding_quant_design.md) | embed_tokens 的 W8 host gather 量化子主题 |
-| [cli_design.md](../cli/cli_design.md) | CLI `--quant-path` / `--quant-method` / `--quant-bits` 参数 |
+| [cli_design.md](../cli/cli_design.md) | CLI `--quant-path` / `--quant-method` 参数 |

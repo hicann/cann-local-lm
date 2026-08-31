@@ -12,8 +12,6 @@ The output directory defaults to ``./calibration_data``. Hugging Face's default
 cache is used unless ``--cache-dir`` is specified.
 """
 
-from __future__ import annotations
-
 import argparse
 import json
 import os

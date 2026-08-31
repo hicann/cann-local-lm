@@ -14,8 +14,6 @@
 
 """Register cann_lm GE converters (torch.export -> epair IR)."""
 
-from __future__ import annotations
-
 from typing import Any
 
 import torch

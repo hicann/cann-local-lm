@@ -44,7 +44,7 @@ loader.load_model(hf_path, dtype, device)                          ← export_de
     │   → ModelArtifact
     ▼
 (可选) 量化 swap                                                    ← quant_design.md
-    │   swap_from_dopt(model, quant_path, ...)
+    │   swap_from_dopt(model, quant_path)
     │   swap_embeddings_from_dopt(sd, model)   # embed 自动检测 (embed_quant 非空时)
     ▼
 saver.save_epair(...) / save_epair_prefill_decode(...)             ← export_design.md

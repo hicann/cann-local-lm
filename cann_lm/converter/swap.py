@@ -147,8 +147,9 @@ def _read_quant_param_map(dopt_path: str | Path | None) -> dict[str, dict]:
     """Parse {layer_name: weight-side quant params} from dopt_config.json in the dopt output dir.
 
     Parsing (aligned with dopt strategy.get_optimize_cfg):
-    1. quant_strategy suffix (e.g. "Quant_INT8-4_ECO;128") overrides group_size
-    2. _STRATEGY_DEFAULT_PARAMS provides defaults (group_size/bit/blocksize/per_channel/weight_algo)
+    1. layer fields (group_size/bit/blocksize/per_channel/weight_algo) override _STRATEGY_DEFAULT_PARAMS defaults
+    2. quant_strategy suffix (e.g. "Quant_INT8-4_ECO;128") overrides group_size
+    3. _STRATEGY_DEFAULT_PARAMS provides fallback defaults (when layer field absent)
 
     Returns {name: {group_size, bit, blocksize, per_channel, weight_algo}};
     absent dopt_config.json / unconfigured layer / strategy without defaults -> not in dict
@@ -180,6 +181,10 @@ def _read_quant_param_map(dopt_path: str | Path | None) -> dict[str, dict]:
         if defaults is None:
             continue  # strategy has no weight defaults (e.g. Quant_Embed_MinMax is embedding-side)
         params = dict(defaults)
+        # dopt_config.json layer 字段优先(覆盖默认),suffix ";gs" 最后覆盖 group_size
+        for key in ("group_size", "bit", "blocksize", "per_channel", "weight_algo"):
+            if key in layer:
+                params[key] = layer[key]
         if gs_override is not None:
             params["group_size"] = gs_override
         out[name] = params
@@ -222,7 +227,6 @@ def _swap_linear_from_sd(
     model: nn.Module,
     sd: dict,
     skip: tuple[str, ...] = DEFAULT_SKIP,
-    act_quant: bool = True,
     param_map: dict[str, dict] | None = None,
 ) -> dict:
     """Port a loaded dopt GPTQ sd -> materialize int4 -> swap QuantLinear in place.
@@ -307,12 +311,12 @@ def _swap_linear_from_sd(
         weight_q = weight_q.transpose(-1, -2).contiguous()
         weight_scale = weight_scale.transpose(-1, -2).contiguous()
         ql = QuantLinear(
-            weight_q, weight_scale, group_size, bias=m.bias, act_quant=act_quant,
+            weight_q, weight_scale, group_size, bias=m.bias, act_quant=True,
         )
         parent, child = _resolve_parent(model, name)
         setattr(parent, child, ql)
         n_q += 1
-    scheme = "W4A8-s8s4" if act_quant else "W4A16-s4"
+    scheme = "W4A8-s8s4"
     return {
         "scheme": scheme,
         "group_size": group_size,
@@ -320,7 +324,7 @@ def _swap_linear_from_sd(
         "blocksize": blocksize,
         "per_channel": per_channel,
         "weight_algo": weight_algo,
-        "act_quant": act_quant,
+        "act_quant": True,
         "scope": f"all nn.Linear except {list(skip)}",
         "n_quantized": n_q,
         "n_skipped_no_dopt_key": n_skip,
@@ -334,8 +338,6 @@ def _swap_linear_from_sd(
 def swap_from_dopt(
     model: nn.Module,
     dopt_path: str | Path,
-    skip: tuple[str, ...] = DEFAULT_SKIP,
-    act_quant: bool = True,
 ) -> tuple[dict, dict[str, tuple[torch.Tensor, torch.Tensor]]]:
     """One dopt sd load -> Linear swap + Embedding extraction.
 
@@ -352,7 +354,7 @@ def swap_from_dopt(
     sd = load_dopt_state_dict(dopt_path)
     param_map = _read_quant_param_map(dopt_path)
     info = _swap_linear_from_sd(
-        model, sd, skip=skip, act_quant=act_quant, param_map=param_map,
+        model, sd, skip=DEFAULT_SKIP, param_map=param_map,
     )
     info["dopt_path"] = str(dopt_path)
     embed_quant = swap_embeddings_from_dopt(sd, model)

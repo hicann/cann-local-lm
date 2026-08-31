@@ -12,7 +12,7 @@ def _run_dopt_subprocess(hf_path: str, device: str) -> str:
     quant_dir = Path(__file__).resolve().parent
     wrapper_path = quant_dir / "dopt_wrapper.py"
     dopt_python = os.environ.get("DOPT_PYTHON", "/opt/buildtools/Python-3.11.4/bin/python3")
-    tmp_out = tempfile.mkdtemp(prefix="dopt_gptq_")
+    tmp_out = tempfile.mkdtemp(prefix="dopt_gptq_", dir=os.environ.get("DOPT_TMP_DIR"))
     cmd = [
         dopt_python, str(wrapper_path),
         "--model-path", hf_path,

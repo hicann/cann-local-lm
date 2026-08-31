@@ -15,6 +15,9 @@
 - [CLI-006 `generate_dopt_config` 删除 + `build_layer_strategy` 改名](#cli-006-generate_dopt_config-删除--build_layer_strategy-改名)
 - [CLI-007 TODO:CPU/GPU 一键式不分进程评估](#cli-007-todocpugpu-一键式不分进程评估)
 - [CLI-008 `swap_to_quant_linear_from_dopt` 死代码删除](#cli-008-swap_to_quant_linear_from_dopt-死代码删除)
+- [CLI-009 `swap_from_dopt` 参数精简(删 skip/act_quant)](#cli-009-swap_from_dopt-参数精简删-skipact_quant)
+- [CLI-010 TODO:load_model 加载 HF 原始 Linear fp 浪费(swap 丢弃)](#cli-010-todoload_model-加载-hf-原始-linear-fp-浪费swap-丢弃)
+- [CLI-011 TODO:build_layer_strategy 与 strategy.py 一致性](#cli-011-todobuild_layer_strategy-与-strategypy-一致性)
 
 ---
 
@@ -358,3 +361,136 @@ converter venv 装 `torch 2.9.0+cpu` + `torchair`(源码+stubs)+ `torch-delegate
 - 源码文件:`cann_lm/converter/swap.py`
 - 设计文档:[quant_design.md](./quant/quant_design.md)「`swap.py` 签名表」「swap 模块符号」、[export_design.md](./export/export_design.md)「文件树」
 - 历史决策:[adr/README.md](../adr/README.md) L39(重构项 ❌→✅ 已落地)
+
+---
+
+## CLI-009 `swap_from_dopt` 参数精简(删 skip/act_quant)
+
+| 字段 | 值 |
+|------|-----|
+| 编号 | CLI-009 |
+| 位置 | `cann_lm/converter/swap.py` L334-355(swap_from_dopt 签名 + 内部调用);文档:`quant_design.md` L448、`quant/INDEX.md` L49、`converter_design.md` L47 |
+| 背景 | `swap_from_dopt(model, dopt_path, skip=DEFAULT_SKIP, act_quant=True)` 的 `skip`/`act_quant` 参数:无代码调用方传(唯一调用方 `cann_lm_converter.py:100` 只传 `model+dopt_path`,用默认)。`skip=DEFAULT_SKIP`(固定跳 embed_tokens)、`act_quant=True`(W4A8,当前不支持 W4A16)均为固定值,无外部覆盖需求 |
+| 违反约定 | 无(参数精简) |
+| 发现日期 | 2026-08-31 |
+| 状态 | **已清理(2026-08-31)** |
+
+### 决策
+
+删 `swap_from_dopt` 的 `skip`/`act_quant` 参数,内部硬编码 `skip=DEFAULT_SKIP`/`act_quant=True` 传 `_swap_linear_from_sd`。`_swap_linear_from_sd` 保留参数(核心逻辑接口,灵活性)。
+
+### 清理动作(已执行)
+
+- **代码**:`swap.py` `swap_from_dopt` 签名删 `skip`/`act_quant`,内部 `_swap_linear_from_sd` 调用改 `skip=DEFAULT_SKIP, act_quant=True`
+- **文档**:`quant_design.md` L448 签名表(签名 `(model, dopt_path)`,参数数 4→2,补注硬编码)、`quant/INDEX.md` L49(删 `...`)、`converter_design.md` L47(删 `...`)
+
+### 验证
+
+`py_compile swap.py` 通过;`swap_from_dopt` 唯一调用方 `cann_lm_converter.py:100` 只传 `(artifact.model, dopt_out_path)`,删参数后兼容。
+
+### 关联
+
+- 源码文件:`cann_lm/converter/swap.py`
+- 调用方:`cann_lm/converter/cann_lm_converter.py:100`
+- 设计文档:[quant_design.md](./quant/quant_design.md)「`swap.py` 签名表」
+
+---
+
+## CLI-010 TODO:load_model 加载 HF 原始 Linear fp 浪费(swap 丢弃)
+
+| 字段 | 值 |
+|------|-----|
+| 编号 | CLI-010 |
+| 类型 | TODO(待优化,非偏离) |
+| 背景 | `load_model(hf_path)` 加载 HF 原始(含 Linear fp16 权重)→ cann_lm 模型;`swap_from_dopt` 的 `_swap_linear_from_sd` 从 dopt 产物 sd 读 int4+scale,`setattr` 替换 Linear→QuantLinear,**不读 model Linear 的 weight**。故 load_model 加载的 Linear HF fp 被替换丢弃,浪费 IO+内存(场景2 内存峰值:subprocess transformers + 主进程 cann_lm 含被丢弃的 Linear fp) |
+| 状态 | **TODO(待评估)** |
+| 发现日期 | 2026-08-31 |
+
+### 浪费点
+
+`_swap_linear_from_sd`(swap.py:221-331)遍历 `model.named_modules()`,对 `nn.Linear` 从 sd(dopt 产物)读 `{name}.weight`+`{name}.quant_op...s`,materialize int4,`setattr` 替换 QuantLinear。**完全不读 model 自身 Linear 的 `.weight`**(只定位模块名 + setattr 替换)。所以 load_model 加载的 Linear HF fp 被丢弃,不进最终产物。
+
+| 模块 | load_model 加载(HF fp) | swap 后 | 浪费 |
+|------|-------------------------|---------|------|
+| `nn.Linear` | HF 原始 fp16 | 丢弃(setattr 替换 QuantLinear,int4 来自 dopt) | ✅ IO+内存 |
+| `nn.Embedding` | HF 原始 fp16 | 抽 int8(若 dopt 量化 embed),否则保留 fp | 部分 |
+| LayerNorm/其他 | HF 原始 fp16 | 保留(dopt 不动) | 必要 |
+
+### 为什么当前 load HF 原始(设计权衡)
+
+1. cann_lm 模型结构需 HF 原始构建(`model_registry` + cann_lm 模型类 + key 重映射)
+2. 非 Linear(LayerNorm)需 HF 原始 fp(dopt 不动,但 dopt 产物层名可能带 `model.language_model.` 等 VLM 前缀,load_model key 重映射面向 HF 原始)
+3. 简单:load_model 通用加载(不区分 Linear/非 Linear),swap 替换
+
+### 优化方向(未做)
+
+- **load_model 加载 dopt 产物**(`load_model(dopt_out_path)`):Linear = fakequant fp(与 swap 同源),避免 HF 原始 Linear fp 浪费。但需 load_model key 重映射适配 dopt 产物层名(剥 `language_model.` 等)+ dopt 产物含完整模块权重
+- **load_model 跳过 Linear weight(meta 占位)**:只构建结构 + 非 Linear 权重,Linear meta tensor 占位(反正是替换)。省 Linear fp IO+内存。但 load_model 通用(`param.copy_`),需加选择性跳过逻辑
+
+### 行动项
+
+- [ ] 评估 load_model 加载 dopt 产物的 key 重映射兼容性(Qwen3_5 `language_model.` 前缀)
+- [ ] 评估 load_model 跳过 Linear weight(meta)的可行性 + swap 是否需 Linear 模块存在(setattr 替换)
+- [ ] 对比优化前后内存峰值(场景2 小模型冒烟)
+
+### 关联
+
+- 源码:`cann_lm/converter/cann_lm_converter.py:77`(load_model)+ `cann_lm/converter/swap.py:221`(_swap_linear_from_sd,不读 model Linear weight)
+- 设计文档:[cli_design.md](./cli/cli_design.md)「完整调用链」(load_model → swap)、[quant_design.md](./quant/quant_design.md)「swap.py 签名表」
+- 相关:CLI-007(场景2 内存峰值,subprocess + 主进程)
+
+---
+
+## CLI-011 TODO:build_layer_strategy 与 strategy.py 一致性
+
+| 字段 | 值 |
+|------|-----|
+| 编号 | CLI-011 |
+| 类型 | TODO(待验证/同步) |
+| 背景 | `dopt_wrapper.build_layer_strategy` 生成 `dopt_config.json` 层策略(`quant_strategy` 名:`Quant_INT8-4_ECO` / `Quant_Embed_MinMax`)。dopt 读 strategy 名查 `dopt_lm/quantizer/strategy.py` 的 `strategy_dict` 拿完整策略(weight + input)。需确保 build_layer_strategy 的 strategy 名与 strategy.py 定义对应,效果一致 |
+| 状态 | **TODO(待验证)** |
+| 发现日期 | 2026-08-31 |
+
+### dopt_lm/quantizer/strategy.py 策略定义(参考)
+
+```python
+"Quant_INT8-4_ECO": {
+    "weight": {
+        "blocksize": 128, "group_size": 128, "bit": 4,
+        "per_channel": True, "weight_algo": "omni_group_min_max",
+    },
+    "input": {
+        "bit": 8, "per_channel": False,
+        "input_algo": "dyn_s8", "unsigned_quant": False,
+    },
+},
+"Quant_Embed_MinMax": {
+    "weight": {
+        "bit": 8, "per_channel": True, "weight_algo": "min_max",
+        "fp16": True, "tie_lmhead": False,
+    }
+},
+```
+
+### 当前实现对照
+
+- `dopt_wrapper.build_layer_strategy`(dopt_wrapper.py:31):赋 `quant_strategy` 名(`Quant_INT8-4_ECO` for Linear,`Quant_Embed_MinMax` for Embedding),dopt 读查 strategy.py 拿完整策略 → 效果应一致(若 strategy 名对应)
+- `swap.py _STRATEGY_DEFAULT_PARAMS`(swap.py:138):硬编码 `Quant_INT8-4_ECO` weight 5 字段(group_size:128, bit:4, blocksize:128, per_channel:True, weight_algo:omni_group_min_max)→ 与 strategy.py weight 部分一致(当前)
+- swap.py 不含 input 部分(A8):swap 只物化 weight int4,input A8 由 `npu::npu_dynamic_quant` 在 QuantLinear forward 处理(`act_quant=True` 硬编码 W4A8)
+
+### 待验证/同步
+
+1. build_layer_strategy 的 strategy 名(`Quant_INT8-4_ECO`/`Quant_Embed_MinMax`)与 strategy.py `strategy_dict` key 一致(dopt 能查到)
+2. swap.py `_STRATEGY_DEFAULT_PARAMS` 与 strategy.py weight 部分同步(strategy.py 更新时,swap.py 硬编码需同步;swap.py:137 注释「converter venv 不装 dopt_lm, so hardcoded; update here when adding a weight-quant strategy」)
+3. dopt GPTQ input 策略(A8 `dyn_s8`)与 swap W4A8(`act_quant=True`)一致(dopt 产 A8 量化模型,swap 物化 W4A8,需对应)
+
+### 行动项
+
+- [ ] 验证 build_layer_strategy strategy 名与 strategy.py strategy_dict key 对应
+- [ ] 同步 swap.py _STRATEGY_DEFAULT_PARAMS 与 strategy.py weight(strategy.py 更新时)
+- [ ] 确认 dopt input 策略(A8 dyn_s8)与 swap act_quant=True(W4A8)一致
+
+### 关联
+
+- 源码:`cann_lm/converter/quant/dopt_wrapper.py:31`(build_layer_strategy)、`cann_lm/converter/swap.py:138`(_STRATEGY_DEFAULT_PARAMS)、`cann_lm/converter/quant/dopt_lm/quantizer/strategy.py`(策略定义)
+- 相关:CLI-009(swap_from_dopt 删 act_quant,硬编码 W4A8)

@@ -43,6 +43,7 @@ CONV="$PROJECT_ROOT/cann_lm/converter/cann_lm_converter.py"
 DOPT_PY="/opt/buildtools/Python-3.11.4/bin/python3"
 QD="$PROJECT_ROOT/cann_lm/converter/quant"
 WORK_DIR="/tmp/opencode"
+export DOPT_TMP_DIR="$CLI_DIR"   # dopt GPTQ 临时盘(auto_quant tempfile dir,swap 后清理);未设→系统 /tmp
 
 HF_QWEN3_5="/mnt/workspace/models/Qwen/Qwen3.5-0.8B"
 HF_GEMMA4="/mnt/workspace/models/unsloth/gemma-4-E2B-it"

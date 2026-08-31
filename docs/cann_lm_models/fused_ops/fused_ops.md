@@ -449,14 +449,14 @@ Gemma-4 重叠（详见 §4.1，此处只列差异）。
 #### 5.2.1 线性注意力核心（GatedDeltaNet）— **segfault 已解决（chunk_gated_delta_rule 已落地）**
 
 **当前实现**（`Qwen3_5GatedDeltaNet.forward`，modeling_qwen3_5.py）：
-- **active 路径**：prefill + decode **共用** `torch.ops.npu.npu_chunk_gated_delta_rule`（行 621），融合算子已落地（`fused_ops/chunk_gated_delta_rule.py` + `_chunk_gated_delta_rule_converter.py`→`ge.ChunkGatedDeltaRule`，ge_converter.py:84-85）。OM 终态命中 18 个。
+- **active 路径**：prefill + decode **共用** `torch.ops.npu.npu_chunk_gated_delta_rule`（行 621），融合算子已落地（`fused_ops/chunk_gated_delta_rule.py` + `_chunk_gated_delta_rule_converter.py`→`ge.ChunkGatedDeltaRule`，ge_converter.py:55-56）。OM 终态命中 18 个。
 - **fallback（未激活）**：`torch_chunk_gated_delta_rule`（行 264）+ `torch_recurrent_gated_delta_rule`（行 346）为纯 torch 参考实现，保留作对照，不在 export 路径。
 
 | 算子 | 状态 | 说明 |
 |------|------|------|
-| `torch_npu.npu_chunk_gated_delta_rule` | ✅ 已落地+已用 | segfault 已解决：`fused_ops/chunk_gated_delta_rule.py` 注册 schema+fake+CPU impl（`npu::` 命名空间）；`_chunk_gated_delta_rule_converter.py`→`ge.ChunkGatedDeltaRule`（ge_converter.py:84-85）；modeling 行 621 调用。OM 终态命中 18 个 |
+| `torch_npu.npu_chunk_gated_delta_rule` | ✅ 已落地+已用 | segfault 已解决：`fused_ops/chunk_gated_delta_rule.py` 注册 schema+fake+CPU impl（`npu::` 命名空间）；`_chunk_gated_delta_rule_converter.py`→`ge.ChunkGatedDeltaRule`（ge_converter.py:55-56）；modeling 行 621 调用。OM 终态命中 18 个 |
 | `torch_npu.npu_recurrent_gated_delta_rule` | ❌ 未注册（不需要） | decode **不走 recurrent**：chunk_gated_delta_rule prefill+decode 共用（decode seq=1 时 chunk 内 pad，见 `chunk_gated_delta_rule.py` docstring）。`torch_recurrent_gated_delta_rule`（行 346）仅作纯 torch fallback 保留 |
-| `causal_conv1d_fn` / `causal_conv1d_update` | ✅ aten::conv1d 路径已落地 | modeling `torch_causal_conv1d_update`（行 243-260）用 `F.conv1d`+`F.silu`；`ge_converter.py:89-90` 注册 `aten::conv1d` converter（`_conv1d_converter.py`）。未注册独立 `cann_lm::causal_conv1d`（aten 路径已够） |
+| `causal_conv1d_fn` / `causal_conv1d_update` | ✅ aten::conv1d 路径已落地 | modeling `torch_causal_conv1d_update`（行 243-260）用 `F.conv1d`+`F.silu`；`ge_converter.py:58-59` 注册 `aten::conv1d` converter（`_conv1d_converter.py`）。未注册独立 `cann_lm::causal_conv1d`（aten 路径已够） |
 | `FusedRMSNormGated` | ⚠️ 拆解方案已采用（融合版未落地） | modeling `Qwen3_5RMSNormGated`（行 40-42）= `npu_rms_norm` + `F.silu(gate)*x`（拆解，非融合单 kernel）。`npu::npu_rms_norm`→`ge.RmsNorm` 已用；融合 `rms_norm_gated` 未注册 |
 
 > **平台分支**：参考实现 `npu_chunk_gated_delta_rule` 只在非 950（910/A3）启用，950 走纯 torch。
@@ -486,7 +486,7 @@ Gemma-4 重叠（详见 §4.1，此处只列差异）。
 
 | 算子 | 状态 | 说明 |
 |------|------|------|
-| `aten::index_copy` → `ge.InplaceUpdate + TransposeD` | ✅ 已落地 | `ge_converter.py:110-111` 注册 `aten::index_copy` converter（`_index_copy_converter.py`：TensorMove + TransposeD + InplaceUpdate，**非** `ge_converter.py:234` 该行号不存在）。IR 导出路径已通。实机可用 `npu_scatter_update_` |
+| `aten::index_copy` → `ge.InplaceUpdate + TransposeD` | ✅ 已落地 | `ge_converter.py:61-62` 注册 `aten::index_copy` converter（`_index_copy_converter.py`：TensorMove + TransposeD + InplaceUpdate，**非** `ge_converter.py:234` 该行号不存在）。IR 导出路径已通。实机可用 `npu_scatter_update_` |
 
 #### 5.2.5 Full Attention → `npu_fused_infer_attention_score_v2`（op 已落地；启用状态待核实）
 
@@ -494,7 +494,7 @@ Gemma-4 重叠（详见 §4.1，此处只列差异）。
 
 | 算子 | 状态 | 说明 |
 |------|------|------|
-| `npu::npu_fused_infer_attention_score_v2` | ✅ op 已落地（启用待核实） | `fused_ops/fused_infer_attention_score.py` 注册 schema+fake（`npu::` 命名空间，**非** `cann_lm::`）；`ge_converter.py:128-129`（`_fused_infer_attention_score_v2_converter.py`）→`ge.FusedInferAttentionScore`（**非** `ge_converter.py:82` 该行号不存在）。modeling 行 215 有调用，但 OM 终态 FIA=0（见 §5.4 qwen3.5 表），export 路径待核实 |
+| `npu::npu_fused_infer_attention_score_v2` | ✅ op 已落地（启用待核实） | `fused_ops/fused_infer_attention_score.py` 注册 schema+fake（`npu::` 命名空间，**非** `cann_lm::`）；`ge_converter.py:71-72`（`_fused_infer_attention_score_v2_converter.py`）→`ge.FusedInferAttentionScore`（**非** `ge_converter.py:82` 该行号不存在）。modeling 行 215 有调用，但 OM 终态 FIA=0（见 §5.4 qwen3.5 表），export 路径待核实 |
 
 #### 5.2.6 激活 → `npu_swiglu`（未落地）
 
@@ -512,19 +512,19 @@ Gemma-4 重叠（详见 §4.1，此处只列差异）。
 
 | 优先级 | 融合算子　　　　　　　　　　　　　　　　　　　　　　　　　　　　| 替换目标　　　　　　　　　　　　　　　　　　 | 状态/预期收益　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　 |
 | --------| -----------------------------------------------------------------| ----------------------------------------------| ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| **P0** | `npu::npu_chunk_gated_delta_rule`（→ `ge.ChunkGatedDeltaRule`） | `torch_chunk_gated_delta_rule`（prefill）　　| ✅ **已解决**：`fused_ops/chunk_gated_delta_rule.py` + `_chunk_gated_delta_rule_converter.py`（ge_converter.py:84-85）；modeling 行 621 调用；OM 命中 18 个。19418 节点 → 1 算子 |
+| **P0** | `npu::npu_chunk_gated_delta_rule`（→ `ge.ChunkGatedDeltaRule`） | `torch_chunk_gated_delta_rule`（prefill）　　| ✅ **已解决**：`fused_ops/chunk_gated_delta_rule.py` + `_chunk_gated_delta_rule_converter.py`（ge_converter.py:55-56）；modeling 行 621 调用；OM 命中 18 个。19418 节点 → 1 算子 |
 | **P0** | `npu_recurrent_gated_delta_rule`　　　　　　　　　　　　　　　　| `torch_recurrent_gated_delta_rule`（decode） | ❌ **不需要**：decode 走 chunk_gated_delta_rule 共用（chunk 内 pad）；recurrent 仅作 torch fallback 保留，未注册　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　 |
-| P1　　 | `aten::conv1d`（→ `_conv1d_converter.py`）　　　　　　　　　　　| `torch_causal_conv1d_update`　　　　　　　　 | ✅ **已落地**：ge_converter.py:89-90 注册 `aten::conv1d`；modeling 用 `F.conv1d`+`F.silu`（行 259-260）。未建独立 `cann_lm::causal_conv1d`　　　　　　　　　　　　　　　　　　　 |
+| P1　　 | `aten::conv1d`（→ `_conv1d_converter.py`）　　　　　　　　　　　| `torch_causal_conv1d_update`　　　　　　　　 | ✅ **已落地**：ge_converter.py:58-59 注册 `aten::conv1d`；modeling 用 `F.conv1d`+`F.silu`（行 259-260）。未建独立 `cann_lm::causal_conv1d`　　　　　　　　　　　　　　　　　　　 |
 | P1　　 | `FusedRMSNormGated`　　　　　　　　　　　　　　　　　　　　　　 | `Qwen3_5RMSNormGated`　　　　　　　　　　　　| ⚠️ **拆解方案已采用**：modeling 行 40-42 = `npu_rms_norm` + `F.silu(gate)*x`；融合 `rms_norm_gated` 未注册（拆解已可用）　　　　　　　　　　　　　　　　　　　　　　　　　　　　 |
 | P2　　 | `npu::npu_rms_norm`　　　　　　　　　　　　　　　　　　　　　　 | `Qwen3_5RMSNorm` 纯 torch　　　　　　　　　　| ✅ **已落地+已用**：modeling 行 25/41 调用；torchair `custom/npu_rms_norm.py`→`ge.RmsNorm`　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　 |
 | P2　　 | `npu::npu_add_rms_norm`　　　　　　　　　　　　　　　　　　　　 | 残差 add + norm 两步　　　　　　　　　　　　 | ❌ **未落地**：无 add_rms_norm.py/converter；gemma4 显式拆分为 add+`npu_rms_norm`（modeling_gemma4.py:308），qwen3.5 同设计　　　　　　　　　　　　　　　　　　　　　　　　　　　|
-| P3　　 | `npu::npu_fused_infer_attention_score_v2`　　　　　　　　　　　 | full attention eager　　　　　　　　　　　　 | ⚠️ **op 已落地**（ge_converter.py:128-129），modeling 行 215 有调用，但 OM 终态 FIA=0（待核实，见 §5.4）　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　 |
+| P3　　 | `npu::npu_fused_infer_attention_score_v2`　　　　　　　　　　　 | full attention eager　　　　　　　　　　　　 | ⚠️ **op 已落地**（ge_converter.py:71-72），modeling 行 215 有调用，但 OM 终态 FIA=0（待核实，见 §5.4）　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　 |
 | P3　　 | `npu_swiglu`　　　　　　　　　　　　　　　　　　　　　　　　　　| `F.silu(gate) * up`　　　　　　　　　　　　　| ❌ 未落地（纯 torch 分解为 Swish/Sigmoid+Mul 已能导出，OM 命中 Swish=60/Sigmoid=24）　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　 |
 
 > **P0 已解决**：`chunk_gated_delta_rule` 是 Qwen3.5 `export_to_epair` segfault 的解（纯 torch for
 > 循环展开 19418 节点 → GE 图爆炸）。已按 ① `fused_ops/chunk_gated_delta_rule.py` 注册 schema+fake
 > （`npu::` 命名空间）+ CPU impl；② `_chunk_gated_delta_rule_converter.py`→`ge.ChunkGatedDeltaRule`
-> （ge_converter.py:84-85，查 CANN `aic-ascend910_93-ops-info-*.json`）；③ modeling 行 621 调用
+> （ge_converter.py:55-56，查 CANN `aic-ascend910_93-ops-info-*.json`）；③ modeling 行 621 调用
 > `torch.ops.npu.npu_chunk_gated_delta_rule`。`recurrent_gated_delta_rule` 未注册（decode 走 chunk 共用）。
 > 参考 cann-recipes-infer 的 `npu_chunk_gated_delta_rule` 签名（行 1541）对齐参数。
 

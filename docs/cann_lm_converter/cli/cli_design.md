@@ -63,7 +63,7 @@ def convert(
     # 无量化: dopt_out_path = None
     dopt_out_path = None
     if quant_method == "gptq":
-        from cann_lm.converter.quant.auto_quant import run_auto_quant
+        from cann_lm.converter.quant_entry import run_auto_quant
         dopt_out_path = run_auto_quant(hf_path, quant_bits)
     elif quant_path:
         dopt_out_path = quant_path
@@ -84,7 +84,7 @@ def convert(
     # 量化 swap: 场景 1 + 场景 2 共用统一路径 (一次 load → Linear swap + Embedding 抽取)
     embed_quant = None
     if dopt_out_path:
-        from cann_lm.converter.quant import swap_from_dopt
+        from cann_lm.converter.quant_entry import swap_from_dopt
         info, embed_quant = swap_from_dopt(artifact.model, dopt_out_path)
         artifact.quant_info = info
         print(f"      Quantized {info['n_quantized']} linears (group_size={info['group_size']})")

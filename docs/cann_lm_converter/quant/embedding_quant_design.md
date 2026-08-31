@@ -116,7 +116,7 @@ def materialize_int8_per_channel_symmetric(weight_fp: torch.Tensor,
   - 遍历 `nn.Embedding`(embed_tokens + gemma4 `embed_tokens_per_layer` 子类),读 `{name}.weight` + `{name}.quant_op.weight_quantizer.s`
   - 调 `materialize_int8_per_channel_symmetric` → 返回 `{name: (int8, scale)}` dict
   - **不 swap 成图模块**(embedding 外置给 host,非图内 matmul)——区别于 Linear→QuantLinear
-- `swap_to_quant_linear_from_dopt`:
+- `swap_from_dopt`:
   - `DEFAULT_SKIP` 移除 `lm_head`(→ swap QuantLinear W4A8,同其他 Linear)
   - embed_tokens/embed_tokens_per_layer 仍**不**走 QuantLinear(走 `swap_embeddings_from_dopt` 返回 dict)
   - 返回值加 `embed_quant: {name: (int8, scale)}`(供 saver 存 host_weights)
@@ -129,8 +129,8 @@ def materialize_int8_per_channel_symmetric(weight_fp: torch.Tensor,
 
 ### 4. `cann_lm/models/export_wrapper.py` + 子类 — wrapper
 
-- `forward`:加 `embeddings_q`+`embeddings_scale`(+ gemma4 `ple_q`+`ple_scale`),替换 float `embeddings`/`per_layer_token_identity`
-- `_drive_layers`:入口 dequant(`q.float()*scale[b,s,...]`)→ float → 传 `inputs_embeds`(+ gemma4 经实例方法替换传 float `per_layer_token_identity`)→ model forward 不变
+- `forward`:加 `embeddings`(复用, 传 int8)+`embeddings_scale`(+ gemma4 `per_layer_token_identity` 保留),基类 forward 入口反量化 int8* scale→float (非 `_drive_layers`)
+- `_drive_layers`:收 float `embeddings`→ 传 `inputs_embeds`(+ gemma4 经实例方法替换传 float `per_layer_token_identity`)→ model forward 不变 (dequant 已在基类 forward 完成)
 - `get_sample_inputs(use_embeddings=True, quant_embeddings=True)`:host 用 materialized int8+scale(从 swap dict 或 host_weights),gather → int8+scale sample
 - `detach_externalized_lookups`:不变(仍 del embed_tokens/embed_tokens_per_layer;int8+scale 已在 host_weights)
 
@@ -152,14 +152,14 @@ cann_lm_converter.py --quant-path <dopt产物>   # embed 量化自动检测 (dop
   │
   ├─ load_model(hf_path)                    cann_lm 模型(float 权重)
   │
-  ├─ swap_to_quant_linear_from_dopt(model, dopt_path)
+  ├─ swap_from_dopt(model, dopt_path)
   │   ├─ Linear (非 embed/lm_head) → QuantLinear W4A8 (int4 weight + per-group scale, 图内)
   │   ├─ lm_head → QuantLinear W4A8 (从 DEFAULT_SKIP 移除, 同其他 Linear)
   │   └─ swap_embeddings_from_dopt → {embed_tokens: (int8, scale[vocab]),
   │                                    embed_tokens_per_layer: (int8, scale[ple_vocab])}  (gemma4)
   │
   ├─ wrapper = wrapper_cls(model) + get_sample_inputs(use_embeddings=True, quant_embeddings=True)
-  │   └─ host 用 int8+scale gather → int8+scale sample (embeddings_q, embeddings_scale, [ple_q, ple_scale])
+  │   └─ host 用 int8+scale gather → int8+scale sample (embeddings(int8), embeddings_scale, [per_layer_token_identity])
   │
   ├─ _extract_host_side_weights → int8+scale (从 swap dict, 非 float)
   ├─ detach_externalized_lookups()          del embed_tokens/embed_tokens_per_layer

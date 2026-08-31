@@ -31,7 +31,7 @@
 
 **调用关系**：dopt_lm 在主仓代码中**不被 `import`**，而是作为独立 CLI 工具运行，其产物（.pth/safetensors）由 converter 的 `swap.py`（`cann_lm/converter/swap.py`，converter 根）在导出时加载。dopt_lm 内部通过相对导入 `from dopt_lm.xxx import yyy` 自引用（需将 `cann_lm/converter/quant` 放进 `PYTHONPATH`）。
 
-> **拼写说明**：目录名已使用正确拼写 `ptq_algo_hessian`，但类名 `WeightQuantHeissen` 等历史标识仍保留了 `Hessian` 的拼写错误。算法本质是 GPTQ（基于 Hessian 矩阵的 PTQ）。
+> **拼写说明**：目录名与类名均已使用正确拼写 `ptq_algo_hessian` / `WeightQuantHessian`。算法本质是 GPTQ（基于 Hessian 矩阵的 PTQ）。
 
 ## 使用方法
 

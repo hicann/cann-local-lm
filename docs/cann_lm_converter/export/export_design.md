@@ -2,11 +2,11 @@
 
 > 把 HuggingFace 模型导出为 epair 格式的完整设计：注册表 → 加载 → ExportWrapper → torch.export → epair 落盘 → C++ 加载。
 >
-> 涵盖 `cann_lm/converter/` 下的 `model_registry.py` / `loader.py` / `saver.py` / `export_wrapper.py` / `export/`（含 C++ `csrc/`）。
+> 涵盖 `cann_lm/models/` 下的 `model_registry.py` / `export_wrapper.py` + `cann_lm/converter/` 下的 `loader.py` / `saver.py` / `swap.py` / `quant_entry.py` / `export/`（含 C++ `csrc/`）。
 >
 > CLI 入口见 [cli_design.md](../cli/cli_design.md)，量化接入见 [quant_design.md](../quant/quant_design.md)。
 >
-> 状态: 待核对 | 最后核对: 2026-08-22
+> 状态: 已核对 | 最后核对: 2026-08-31
 
 ## 目录
 
@@ -60,25 +60,28 @@ ge::Graph
 ### 目录结构
 
 ```
-cann_lm/converter/
-├── __init__.py
-├── cann_lm_converter.py          # CLI 入口 (pipeline) + 程序化 convert() 函数  ← 见 cli_design.md
-├── loader.py                     # 模型加载 (config + weights + tokenizer, 自动探测模型类型)
-├── saver.py                      # epair 保存 (save_epair / save_epair_prefill_decode / save_model_config / copy_tokenizer_files)
-├── model_registry.py             # 模型注册表 (ModelEntry + REGISTRY + get_entry + detect_model_type + available_models)
-├── export_wrapper.py             # ExportWrapper 基类 (forward + get_sample_inputs + make_sample_inputs)
-└── export/
-    ├── epair_utils.py            # pack_weights + consolidated_weights_save
-    ├── ge_converter.py           # register_ge_converters (cann_lm 自定义算子 + 部分 aten 算子的 GE 映射)
-    ├── _quant_matmul_s8s4_converter.py # cann_lm::quant_matmul_s8s4 GE converter (详见 quant_design.md)
-    └── csrc/                     # C++ 后端 (epair_model_loader / ge_graph_builder / ge_weight_loader, 详见下文 C++ 加载侧)
+cann_lm/
+├── models/
+│   ├── model_registry.py          # 模型注册表 (ModelEntry + REGISTRY + detect_model_type + available_models)
+│   ├── export_wrapper.py           # ExportWrapper 基类 (forward + get_sample_inputs + _drive_layers)
+│   ├── fused_ops/                  # 自定义算子库 (cann_lm:: + npu::, 见 fused_ops.md)
+│   └── {gemma4,qwen3,qwen3_5}/     # 各模型定义 + 子类 export_wrapper.py
+└── converter/
+    ├── __init__.py
+    ├── cann_lm_converter.py        # CLI 入口 (pipeline) + 程序化 convert() 函数  ← 见 cli_design.md
+    ├── loader.py                   # 模型加载 (config + weights + tokenizer, 自动探测模型类型)
+    ├── saver.py                    # epair 保存 (save_epair / save_epair_prefill_decode / save_model_config / copy_tokenizer_files)
+    ├── swap.py                     # 量化编排 (swap_from_dopt 等主路径, 见 quant_design.md)
+    ├── quant_entry.py              # 量化入口 facade (re-export run_auto_quant + swap_from_dopt)
+    ├── quant/                      # 量化子包 (dopt GPTQ / auto_quant, 见 quant_design.md)
+    └── export/
+        ├── epair_utils.py          # pack_weights + consolidated_weights_save
+        ├── ge_converters/          # register_ge_converters (cann_lm/npu 自定义算子 + 部分 aten 算子的 GE 映射)
+        ├── quant_swap/             # 量化物化内部包 (materialize.py + quant_linear.py, 见 quant_design.md)
+        └── csrc/                   # C++ 后端 (epair_model_loader / ge_graph_builder / ge_weight_loader, 详见下文 C++ 加载侧)
 ```
 
-自定义算子库位于 `cann_lm/models/fused_ops/`（`torch.ops.cann_lm.*`），每个算子 `define` schema + `register_fake` meta，再在 `ge_converter.py` 注册对应 GE converter：
-`add_rms_norm` / `rms_norm` / `rotary_mul` / `rope_in_place` / `quant_matmul_s8s4` /
-`fused_infer_attention_score` / `beam_search`。其中：
-- **有 CPU eager kernel**（可 eager 跑 + 导出）：`add_rms_norm` / `rms_norm` / `rotary_mul`
-- **仅 fake/meta（export-only，无 eager 计算）**：`rope_in_place` / `quant_matmul_s8s4` / `fused_infer_attention_score` / `beam_search` — 这类算子只占 schema/shape，真实计算靠 GE converter 映射到 NPU 算子。
+自定义算子库位于 `cann_lm/models/fused_ops/`，命中两个命名空间：多数走 `torch.ops.npu.*`（`npu::`，converter env 由 `_library.py` 自定义 schema + `register_fake`，不依赖 torch_npu），仅 `l2_norm` 走 `torch.ops.cann_lm.*`（`cann_lm::`，无 torchair 对应）。算子清单：`chunk_gated_delta_rule` / `dynamic_quant` / `fused_infer_attention_score` / `l2_norm` / `quant_matmul` / `rms_norm` / `rotary_mul` / `scatter_nd_update`。每个算子在 `export/ge_converters/ge_converter.py` 注册对应 GE converter（映射实现见 [`fused_ops.md`](../../cann_lm_models/fused_ops/fused_ops.md) §3）。CPU eager impl 由 `_library.py` 的 `register_cpu_impl` 装饰器按需注册（stub/export env 跳过仅留 `register_fake`；非 stub env 注册后可 eager），真实计算靠 GE converter 映射到 NPU 算子。
 
 ## 模型注册表 model_registry.py
 
@@ -319,34 +322,50 @@ class ExportWrapper(nn.Module):
         embeddings=None,           # ← use_embeddings=True: host 算好的 embeddings
         output_pos=None,           # ← 选位：decode 时只算最后一个 token 的 logits
         per_layer_token_identity=None,  # ← 仅 gemma4 (PLE): host 算好的 token identity
+        embeddings_scale=None,     # ← quant-embeddings: int8 权重 per-channel scale (基类 forward 反量化)
+        delta_states=None,          # ← qwen3_5 线性注意力 recurrent state (conv_flat, recurrent_flat)
     ):
-        logits, past_kv_flat = self._drive_layers(
+        # quant-embeddings: int8 embeddings * per-channel scale -> float (基类 forward 反量化, _drive_layers 收 float)
+        if embeddings is not None and embeddings_scale is not None:
+            embeddings = embeddings.to(dt) * embeddings_scale.to(dt).unsqueeze(-1)
+        logits, past_kv_flat, delta_out_flat = self._drive_layers(
             input_ids, attention_mask, position_ids,
             past_key_values, new_kv_cache_pos, embeddings,
+            per_layer_token_identity, delta_states,
         )
         if output_pos is not None:
-            logits = logits[:, output_pos, :]
-        return logits, *past_kv_flat
+            logits = logits.index_select(1, output_pos.to(torch.int64))
+        return logits, *past_kv_flat, *delta_out_flat
 
     def _drive_layers(self, input_ids, attention_mask, position_ids,
-                      past_key_values, new_kv_cache_pos, embeddings=None):
-        """子类实现：统一 I/O → 原生 forward kwargs → 提取 logits + 展平 KV cache"""
+                      past_key_values, new_kv_cache_pos, embeddings=None,
+                      per_layer_token_identity=None, delta_states=None
+    ) -> tuple[torch.Tensor, list[torch.Tensor], list[torch.Tensor]]:
+        """子类实现：统一 I/O → 原生 forward kwargs → 提取 logits + 展平 KV/delta
+
+        返回 3-tuple (logits, past_kv_flat, delta_out_flat)：qwen3 的 delta_out_flat 为 []，
+        qwen3_5 线性注意力填 recurrent state。per_layer_token_identity 仅 gemma4 PLE。
+        """
         raise NotImplementedError
 
-    def get_sample_inputs(self, seq_len=128, use_embeddings=False):
+    def get_sample_inputs(self, seq_len=128, use_embeddings=False, quant_embeddings=False) -> tuple:
         """构造导出用示例输入
 
         Args:
             use_embeddings: True 时传 embeddings (图外查表), False 时传 input_ids (图内查表)
+            quant_embeddings: True 时传 int8 embeddings + scale (host 查 int8 表, 基类 forward 反量化)
         """
-        # ... 构造 input_ids, attention_mask, position_ids, past_key_values, ...
+        # ... 构造 input_ids, attention_mask, position_ids, past_key_values, output_pos, ...
         if use_embeddings:
+            if quant_embeddings:
+                # int8 per-channel: host gather int8_weight[input_ids] + scale[input_ids]; 图入口反量化
+                return (None, ..., emb_q, output_pos, ple, emb_scale)  # 9-tuple (gemma4 含 ple)
             embeddings = self.model.model.embed_tokens(input_ids).detach()
             return (None, attention_mask, position_ids, past_key_values,
-                    new_kv_cache_pos, embeddings, output_pos)
+                    new_kv_cache_pos, embeddings, output_pos, *extras)  # 7-tuple (gemma4 含 ple → 8)
         else:
             return (input_ids, attention_mask, position_ids, past_key_values,
-                    new_kv_cache_pos, None, output_pos)
+                    new_kv_cache_pos, None, output_pos)  # 7-tuple
 ```
 
 ### 统一图 I/O 契约
@@ -388,7 +407,7 @@ class Qwen3ExportWrapper(ExportWrapper):
 
     def _drive_layers(self, input_ids, attention_mask, position_ids,
                       past_key_values, new_kv_cache_pos, embeddings=None,
-                      per_layer_token_identity=None):  # qwen3 无 PLE, 忽略
+                      per_layer_token_identity=None, delta_states=None):  # qwen3 无 PLE/delta, 忽略
         kwargs = {
             "attention_mask": attention_mask,
             "position_ids": position_ids,
@@ -405,10 +424,13 @@ class Qwen3ExportWrapper(ExportWrapper):
         outputs = self.model(**kwargs)
         logits = outputs["logits"]
         past_kv_flat = []
-        for layer_kv in outputs["past_key_values"]:
-            past_kv_flat.append(layer_kv[0])
-            past_kv_flat.append(layer_kv[1])
-        return logits, past_kv_flat
+        updated_kv = outputs.get("past_key_values") or [None] * self._num_layers()
+        for i, layer_kv in enumerate(updated_kv):
+            k = layer_kv[0] if layer_kv is not None else past_key_values[i][0]
+            v = layer_kv[1] if layer_kv is not None else past_key_values[i][1]
+            past_kv_flat.append(k)
+            past_kv_flat.append(v)
+        return logits, past_kv_flat, []   # delta_out_flat 为空 (qwen3 无线性注意力)
 ```
 
 > gemma4 子类（`Gemma4ExportWrapper`）在纯 embeddings 分支额外处理 PLE：用**实例方法替换**把 `text_model._compute_per_layer_inputs` 临时替换为返回 host 算好的 `per_layer_token_identity`，使 model.forward 跳过 `embed_tokens_per_layer(input_ids)` 查表 + bf16 反查，而层循环/mask/rope/lm_head 仍复用 model.forward（不改 modeling）。`_build_external_extras` 算 `per_layer_token_identity = embed_tokens_per_layer(input_ids).reshape(b,s,L,h_pl)`。详见 `models/gemma4/export_wrapper.py`。
@@ -450,6 +472,8 @@ def save_epair(
     seq_len: int = 128,
     use_embeddings: bool = False,         # ← True: 图外查表 (量化用)
     save_weights: bool = True,
+    whitelist_decompositions: set | None = None,   # 额外 decomposition 白名单
+    embed_quant: dict[str, tuple[torch.Tensor, torch.Tensor]] | None = None,  # ← quant-embeddings: {fqn:(int8,scale)}
 ) -> None:
     """
     保存流程（不输出 .pt2 / input_N.bin，二者由 verify 脚本另行生成）
@@ -458,11 +482,13 @@ def save_epair(
     ├── ep_json_with_ascend_ir.json     # torch.export + ascend_ir
     ├── weight_info.json                # 权重索引
     ├── weights_0.bin                   # 权重数据 (按 max_file_size 切分)
-    ├── model_config.json               # 自定义 config 序列化 + HF 原始信息
-    └── tokenizer 文件
+    ├── model_config.json               # config + HF 原始信息 + use_embeddings/quant_embeddings
+    ├── tokenizer 文件
+    └── host_weights_*.bin              # (仅 use_embeddings/quant_embeddings) host 查表权重
     """
     import torch_delegate
-    from cann_lm.converter.export.ge_converter import register_ge_converters
+    from torch_delegate import EpairConfig
+    from cann_lm.converter.export.ge_converters import register_ge_converters
 
     output_dir = Path(output_dir).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -482,16 +508,38 @@ def save_epair(
         batch=1,
     ).eval()
 
-    # 3. 创建示例输入 (统一 I/O 契约, 支持 embeddings 模式)
+    # quant-embeddings: 注入 int8 + per-channel scale (bool() 兜底 dopt 无 embed-quant 返回 {})
+    quant_embeddings = bool(embed_quant)
+    if quant_embeddings:
+        wrapper.set_quant_embeddings(embed_quant)
+
+    # 3. 创建示例输入 (统一 I/O 契约, 支持 embeddings/quant_embeddings 模式)
     sample_inputs = wrapper.get_sample_inputs(
-        seq_len=seq_len, use_embeddings=use_embeddings
+        seq_len=seq_len, use_embeddings=use_embeddings, quant_embeddings=quant_embeddings
     )
+
+    # host 侧查表权重: quant-embeddings 取 int8+scale; 纯 embeddings 取 embed_tokens (+ gemma4 PLE)
+    if quant_embeddings:
+        host_side_weights = [(fqn + "_q", int8) for fqn, (int8, _) in embed_quant.items()] + \
+                            [(fqn + "_scale", scale) for fqn, (_, scale) in embed_quant.items()]
+    else:
+        host_side_weights = _extract_host_side_weights(wrapper, use_embeddings)
+
+    # 纯 embeddings: detach 外置查表子模块 → torch.export 不 lift → weights_*.bin ≈ OM
+    if use_embeddings:
+        wrapper.detach_externalized_lookups()
 
     # 4. torch.export (strict=False 允许 None placeholder / 动态分支)
     ep = torch.export.export(wrapper, sample_inputs, strict=False)
 
-    # 5. export_to_epair
-    epair = torch_delegate.export_to_epair(ep)
+    # 断言 detach 生效 (外置查表权重未被 lift, 否则 weights_*.bin 携带冗余查表权重)
+    if use_embeddings:
+        _assert_externalized_not_lifted(ep, wrapper.host_side_weight_names())
+
+    # 5. export_to_epair (EpairConfig 带 decomposition 白名单: eye/type_as/index_copy/index_put)
+    config = EpairConfig()
+    config.whitelist_decompositions.update(_EXTRA_DECOMPOSITION_OPS)
+    epair = torch_delegate.export_to_epair(ep, config)
 
     # C++ 侧已兜底处理 (无需 Python 侧 strip ep_json):
     #   - _assert_tensor_metadata 节点: PlanNodes 顶部 IsAssertTensorMetadataNode 跳过
@@ -503,16 +551,18 @@ def save_epair(
     del artifact.model
     import gc; gc.collect()
 
-    # 7. 保存权重 + ep_json (复用已有 consolidated_weights_save)
+    # 7. 保存权重 + ep_json (含 host 侧查表权重打包)
     consolidated_weights_save(
         epair, output_dir,
         save_weights=save_weights,
         max_file_size=max_file_size,
+        host_side_weights=host_side_weights,
     )
 
-    # 8. 复制 tokenizer + 保存 model_config
+    # 8. 复制 tokenizer + 保存 model_config (记录 use_embeddings/quant_embeddings)
     copy_tokenizer_files(artifact.tokenizer_files, output_dir)
-    save_model_config(artifact, output_dir)
+    save_model_config(artifact, output_dir, use_embeddings=use_embeddings,
+                      quant_embeddings=quant_embeddings)
 ```
 
 ### get_sample_inputs — 基类实现
@@ -535,12 +585,13 @@ attention_mask = mask.unsqueeze(0).unsqueeze(0).expand(batch, 1, seq_len, kv_max
 
 其余输入：input_ids（random）、position_ids（arange）、new_kv_cache_pos（arange）、output_pos（`[seq_len-1]`）、past_key_values（每层一对零 buffer，per-layer head_dim 由 `_get_layer_head_dim` 决定）。
 
-纯 embeddings 模式（`use_embeddings=True`）：`input_ids` 不入位置参数（None placeholder），改由 `embeddings = embed_tokens(input_ids).detach()`（host 算）；gemma4 经 `_build_external_extras` 额外追加 `per_layer_token_identity`。返回 7-tuple（qwen3/qwen3_5）或 8-tuple（gemma4，末位 `per_layer_token_identity`），对齐 `forward` 签名（`per_layer_token_identity` 默认 None，7-tuple 时取默认）。
+纯 embeddings 模式（`use_embeddings=True`）：`input_ids` 不入位置参数（None placeholder），改由 `embeddings = embed_tokens(input_ids).detach()`（host 算）；gemma4 经 `_build_external_extras` 额外追加 `per_layer_token_identity`。返回 tuple 数随模式变化：`use_embeddings=False`=7-tuple；纯 embeddings qwen3=7 / gemma4=8（末位 `per_layer_token_identity`）；quant-embeddings=9（多 `embeddings_scale`，gemma4 含 PLE）；qwen3_5 经子类重写追加 `delta_states` 为 10-tuple。均对齐 `forward` 签名（缺省位取 None 默认）。
 
 ### save_model_config
 
 ```python
-def save_model_config(artifact: ModelArtifact, output_dir: Path) -> None:
+def save_model_config(artifact: ModelArtifact, output_dir: Path, *,
+                      use_embeddings: bool = False, quant_embeddings: bool = False) -> None:
     # to_dict 有则用 (gemma4/qwen3)，无则用 dataclasses.asdict (qwen3_5)
     if hasattr(artifact.config, "to_dict"):
         config_dict = artifact.config.to_dict()
@@ -830,8 +881,10 @@ for (const auto &node : parser.Nodes()) {
 GE 算子注册分两层，互补：
 
 1. **Python 侧 `converter/export/ge_converters/ge_converter.py`** — `register_ge_converters()` 把 `torch.ops` 节点映射到 GE 算子，在 `export_to_epair` 前调用（save_epair 步骤 1）。覆盖：
-   - `cann_lm.*` 自定义算子：`add_rms_norm`/`rms_norm`/`rotary_mul`/`rope_in_place`/`quant_matmul_s8s4`/`fused_infer_attention_score`/`beam_search`（算子定义在 `cann_lm/models/fused_ops/`，GE 映射实现见 [`fused_ops.md`](../../cann_lm_models/fused_ops/fused_ops.md) §3）
-   - 部分 `aten.*` 算子：`softplus`/`eye`/`type_as`/`index_copy`/`index_put`（torch.export 残留的 aten 节点，torchair 无内置映射时补）
+   - `npu.*` 自定义算子：`npu_quant_matmul`(→`QuantBatchMatmulV4`)/`npu_chunk_gated_delta_rule`/`npu_scatter_nd_update`(+`_`变体)/`npu_fused_infer_attention_score_v2`（算子定义在 `cann_lm/models/fused_ops/`，GE 映射实现见 [`fused_ops.md`](../../cann_lm_models/fused_ops/fused_ops.md) §3）
+   - `cann_lm.*`：`l2norm`(→`L2Normalize`)
+   - 部分 `aten.*` 算子：`softplus`(→`SoftplusV2`)/`conv1d`/`index_copy`/`index_put`（torch.export 残留的 aten 节点，torchair 无内置映射时补）
+   - 另有 `aten.eye`/`aten.type_as` 经 `_EXTRA_DECOMPOSITION_OPS` 白名单走 decomposition（非 GE converter 映射）
 
 2. **C++ 侧 `examples/test_converter/export_llm_model/reg_register.h`** — 注册 GE 图编译期需要的算子实现（aclgrphBuildModel 前），不同模型需要的算子集不同：
 
@@ -895,6 +948,8 @@ save_epair_prefill_decode(
     seq_len=128,           # prefill 图 seq_len (可配)
     use_embeddings=False,          # True: 图外查表
     save_weights=True,             # 是否写 weights_*.bin (False 只写 ep_json)
+    whitelist_decompositions=None,  # 额外 decomposition 白名单
+    embed_quant=None,               # ← quant-embeddings: {fqn:(int8,scale)}
 )
 ```
 
@@ -1228,7 +1283,7 @@ HF (Gemma4ClippableLinear):           cann_lm (nn.Linear):
 | 文档 | 关联内容 |
 |------|---------|
 | [cli_design.md](../cli/cli_design.md) | CLI 入口 `cann_lm_converter.py` / `convert()` / 命令行参数 / 使用示例 |
-| [quant_design.md](../quant/quant_design.md) | 量化接入 `--quant-path` / `swap_to_quant_linear_from_dopt` / `quant_matmul_s8s4` |
+| [quant_design.md](../quant/quant_design.md) | 量化接入 `--quant-path` / `swap_from_dopt` / `npu_quant_matmul` |
 | [converter_design.md](../converter_design.md) | 跨模块调用链总览 / 模型差异总览 / 精度汇总 |
 | [reference_qwen3_5_export.md](../reference_qwen3_5_export.md) | qwen3.5 线性注意力导出 / `ChunkGatedDeltaRule` / delta_states tensor 化（参考） |
 | [reference_pipeline_walkthrough.md](../reference_pipeline_walkthrough.md) | gemma4 端到端 6 阶段流程示例（参考） |

@@ -40,7 +40,7 @@ docs/cann_lm_converter/
 |------|---------|------|------|
 | **CLI** | [cli_design.md](./cli/cli_design.md) | [INDEX.md](./cli/INDEX.md) | `cann_lm_converter.py` 入口 / `convert()` / 命令行参数 / 调用链 / 环境变量 |
 | **模型导出** | [export_design.md](./export/export_design.md) | [INDEX.md](./export/INDEX.md) | `model_registry` / `loader` / `saver` / `ExportWrapper` / `epair_utils` / C++ 加载侧 / GE 算子注册 |
-| **量化** | [quant_design.md](./quant/quant_design.md) | [INDEX.md](./quant/INDEX.md) | W4A8 s8s4 / dopt GPTQ / `quant_matmul_s8s4` / swap 接入 |
+| **量化** | [quant_design.md](./quant/quant_design.md) | [INDEX.md](./quant/INDEX.md) | W4A8 s8s4 / dopt GPTQ / `npu_quant_matmul` / swap 接入 |
 
 子主题：[embedding_quant_design.md](./quant/embedding_quant_design.md)（embed_tokens 的 W8 host gather 量化）
 

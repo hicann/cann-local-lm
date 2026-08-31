@@ -41,5 +41,5 @@
 - **converter 导出**：[export_design.md](../../cann_lm_converter/export/export_design.md) — `ExportWrapper` / `consolidated_weights_save` / GE 算子注册两层
 - **OM 算子等价替换**：[ops_replacement.md](../../cann_lm_converter/ops_replacement.md) — gemma4 OM 终态算子对齐 fused_ops.md 定义（对齐 §1 算子总表）
 - **CLI**：[cli_design.md](../../cann_lm_converter/cli/cli_design.md) —「converter 与 torch_npu 的关系」（`_library.py` stub 路径根因）
-- **量化**：[quant_design.md](../../cann_lm_converter/quant/quant_design.md) — `quant_matmul_s8s4`
+- **量化**：[quant_design.md](../../cann_lm_converter/quant/quant_design.md) — `npu_quant_matmul`
 - **模型设计**：[long_term_design.md](../long_term_design.md) / [short_term_design.md](../short_term_design.md) — 模型统一方案

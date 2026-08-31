@@ -5,11 +5,11 @@
 > 详细设计已按模块拆分：
 > - **CLI 模块** → [cli_design.md](./cli/cli_design.md)（`cann_lm_converter.py` 入口 / `convert()` / 命令行参数 / 调用链 / 环境变量 / 使用示例）
 > - **模型导出模块** → [export_design.md](./export/export_design.md)（`model_registry` / `loader` / `saver` / `ExportWrapper` / `epair_utils` / C++ 加载侧 / GE 算子注册 / prefill-decode / 新增模型接入 / 精度分析）
-> - **量化模块** → [quant_design.md](./quant/quant_design.md)（W4A8 s8s4 / dopt GPTQ 框架 / `quant_matmul_s8s4` 算子 / swap 接入）
+> - **量化模块** → [quant_design.md](./quant/quant_design.md)（W4A8 s8s4 / dopt GPTQ 框架 / `npu_quant_matmul` 算子 / swap 接入）
 > - **模块索引** → [INDEX.md](./cli/INDEX.md) / [INDEX.md](./export/INDEX.md) / [INDEX.md](./quant/INDEX.md)
 > - **参考文档** → 见 [模块导航](#模块导航)
 >
-> 状态: 待核对 | 最后核对: 2026-08-15
+> 状态: 已核对 | 最后核对: 2026-08-31
 
 ## 目录
 
@@ -44,7 +44,7 @@ loader.load_model(hf_path, dtype, device)                          ← export_de
     │   → ModelArtifact
     ▼
 (可选) 量化 swap                                                    ← quant_design.md
-    │   swap_to_quant_linear_from_dopt(model, quant_path, ...)
+    │   swap_from_dopt(model, quant_path, ...)
     │   swap_embeddings_from_dopt(sd, model)   # embed 自动检测 (embed_quant 非空时)
     ▼
 saver.save_epair(...) / save_epair_prefill_decode(...)             ← export_design.md
@@ -133,7 +133,7 @@ C++ EpairModelLoader → GetGEGraph → aclgrphBuildModel → .om        ← exp
 |------|------|---------|
 | [cli_design.md](./cli/cli_design.md) | `cann_lm_converter.py` | `convert()` 程序化入口 / 命令行参数 / 完整调用链 / prefill-decode CLI / 环境变量 / 使用示例 |
 | [export_design.md](./export/export_design.md) | `model_registry` / `loader` / `saver` / `export_wrapper` / `export/`（含 C++ `csrc/`） | `ModelArtifact` / `build_config` / `ExportWrapper` 基类 + 三子类 / 统一图 I/O 契约 / 纯 embeddings 模式 / `pack_weights` / `consolidated_weights_save` / `EpairModelLoader` / `GeWeightLoader` 懒加载 / `_assert_tensor_metadata` / GE 算子注册两层 / prefill-decode 分离 / 新增模型接入 / 精度分析 |
-| [quant_design.md](./quant/quant_design.md) | `cann_lm/converter/quant/` | W4A8 s8s4 方案 / dopt GPTQ 框架 / `materialize_int4_per_group_symmetric` / `QuantLinear` / `swap_to_quant_linear_from_dopt` / 方案 A 自研 `quant_matmul_s8s4` 算子 / C++ 注册 / CANN V3/V4 源码分析附录 |
+| [quant_design.md](./quant/quant_design.md) | `cann_lm/converter/quant/` | W4A8 s8s4 方案 / dopt GPTQ 框架 / `materialize_int4_per_group_symmetric` / `QuantLinear` / `swap_from_dopt` / `npu::npu_quant_matmul` 算子 / C++ 注册 / CANN V3/V4 源码分析附录 |
 | [embedding_quant_design.md](./quant/embedding_quant_design.md) | embed_tokens 量子主题 | W8 host gather / `materialize_int8_per_channel_symmetric` / `swap_embeddings_from_dopt` |
 
 ### 模块索引
@@ -169,10 +169,10 @@ C++ EpairModelLoader → GetGEGraph → aclgrphBuildModel → .om        ← exp
 
 ### 量化模块（详见 [quant_design.md](./quant/quant_design.md) "已知问题与遗留"）
 
-- **一步化流程未实现** — GPTQ 与导出仍是两步磁盘桥接，三处改动点待落地
-- **dopt gemma4 多模态阻塞** — dopt GPTQ 循环写死文本-only `ForCausalLM` 结构
+- ~~**一步化流程未实现**~~ **已实现** — `--quant-method gptq`（方案 C subprocess）一键 spawn dopt GPTQ + swap（见 quant_design.md "一键式量化方案选型"）
+- ~~**dopt gemma4 多模态阻塞**~~ **已解决** — dopt 通过 `visible_type_dict` 原始类名分支接入多模态（`QGemma4ScaledEmbedding` 已通过）
 - ~~**dopt_lm `heissen` 拼写错误**~~ **已修复** — 源码已用 `ptq_algo_hessian` / `WeightQuantHessian` / `hessian_matrix`（正确拼写）
-- **dopt 函数超规** — `swap_to_quant_linear_from_dopt` 76 行 / `materialize_int4_per_group_symmetric` 6 参数，待按 dataclass 拆分收敛
+- **dopt 函数超规** — `_swap_linear_from_sd` 超 100 行（swap.py:221-331）/ `materialize_int4_per_group_symmetric` 6 参数，待按 dataclass 拆分收敛
 
 ### 已解决
 

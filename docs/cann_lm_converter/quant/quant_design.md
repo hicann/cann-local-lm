@@ -814,11 +814,11 @@ int64 bytes = uint64 bytes (8 字节小端序, 位模式相同)
 
 ## 已知问题与遗留
 
-1. **unsigned int4 不支持**：`swap_to_quant_linear_from_dopt`（`swap.py:191-195`）读 dopt 产物的 `unsigned_quant`，校验必须 = 0（symmetric signed `[-8, 7]`）。非 0（unsigned int4 `[0, 15]`）触及 CANN int4 signed/unsigned 编码约定，当前直接 `ValueError` 拒绝。dopt 默认 `Quant_INT8-4_ECO` 的 `unsigned_quant=False`，故主路径不触发。
-2. **非对称 offset 不支持**：`swap_to_quant_linear_from_dopt`（`swap.py:196-201`）读 dopt 产物的 `offset`，校验必须全 0（symmetric）。非零 offset（asymmetric）`NotImplementedError`——方案 A `quant_matmul_s8s4` 只支持 symmetric offset=0。dopt `weight_q_params_adapter_into_dopt` 把 offset 置零（`offset=torch.zeros_like(...)`），故主路径不触发。dopt `QuantizerFuncIntOffset` 反量化 `w_fp=(q-offset)*scale`；若未来支持非对称，需对齐 op 的 offset 语义 + 按 group `repeat_interleave` 扩维。
+1. **unsigned int4 不支持**：`_swap_linear_from_sd`（`swap.py:291-295`）读 dopt 产物的 `unsigned_quant`，校验必须 = 0（symmetric signed `[-8, 7]`）。非 0（unsigned int4 `[0, 15]`）触及 CANN int4 signed/unsigned 编码约定，当前直接 `ValueError` 拒绝。dopt 默认 `Quant_INT8-4_ECO` 的 `unsigned_quant=False`，故主路径不触发。
+2. **非对称 offset 不支持**：`_swap_linear_from_sd`（`swap.py:296-301`）读 dopt 产物的 `offset`，校验必须全 0（symmetric）。非零 offset（asymmetric）`NotImplementedError`——`npu::npu_quant_matmul` 只支持 symmetric offset=0。dopt `weight_q_params_adapter_into_dopt` 把 offset 置零（`offset=torch.zeros_like(...)`），故主路径不触发。dopt `QuantizerFuncIntOffset` 反量化 `w_fp=(q-offset)*scale`；若未来支持非对称，需对齐 op 的 offset 语义 + 按 group `repeat_interleave` 扩维。
 3. **CPU-only 适配**：converter 侧 GPTQ 跑不了（需 NPU/GPU + 校准）。**`--quant-path` 已作兜底**：离线机跑 dopt GPTQ 产出（`quant_output/model.safetensors` 或 `trained_quant_weight.pth`），converter 加载它只做物化 + swap + 导出（不跑 GPTQ）。dopt `opt_main` 在本机 NPU 上跑 GPTQ 曾静默卡住（converter 一键式接入待解，见 [一键式量化方案选型](#一键式量化方案选型)）。
 4. **一键式量化（方案 C）已实现**：converter `--quant-method gptq`（`auto_quant.py`：`generate_dopt_config` + `run_auto_quant` spawn dopt subprocess + swap）。w4a16/实测待做，详见 [一键式量化方案选型](#一键式量化方案选型)。
-5. **dopt 函数超规**：`swap.py swap_to_quant_linear_from_dopt` 函数超 50 行，`materialize.py materialize_int4_with_scale` 6 参数（超 5 参数原则）。两者建议按单一职责拆分 + `Int4Spec` dataclass 收敛，当前未拆。
+5. **dopt 函数超规**：`swap.py _swap_linear_from_sd` 函数超 100 行（221-331），`materialize.py materialize_int4_with_scale` 6 参数（超 5 参数原则）。两者建议按单一职责拆分 + `Int4Spec` dataclass 收敛，当前未拆。
 6. **dopt gemma4 多模态约束**：dopt GPTQ 主循环按文本 `ForCausalLM` 结构访问 `model.model.layers`；`model_define` 会从多模态模型抽取并重挂语言模型。`QGemma4ScaledEmbedding` 已通过 `visible_type_dict` 的原始类名分支接入。
 7. ~~**dopt_lm 拼写错误**~~ **已修复**：源码已用正确拼写 `ptq_algo_hessian` / `WeightQuantHessian`（`dopt_lm/opt_funcs/weight_quant_ptq/ptq_algo_hessian/`）。仅 `dopt_lm/weight_quant_ptq/ptq_algo_heissen/__pycache__/` 遗留旧编译产物（heissen 拼写），可删。
 8. ~~**materialize.py docstring 过时**~~ **已修复**：文件头 docstring 原写 "unpack placeholder/占位实现/先跑通 Python 流程"，已重写为简洁 API 契约（nibble-packed int4 + per-group scale + offset=0，匹配 `npu::npu_quant_matmul` x2 layout）。

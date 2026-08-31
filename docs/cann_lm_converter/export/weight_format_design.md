@@ -51,7 +51,7 @@ cann_lm/converter/export/
 
 ## 配置文件
 
-shipped 默认 `cann_lm/converter/export/weight_format_rules.json`；CLI `--weight-format-config <path>` 可覆盖（符合 AGENTS.md 参数化原则，绝对路径只在调用脚本）。无配置文件时 → 全 ND（等价现状，不启用 NZ）。
+shipped 默认 `cann_lm/converter/export/weight_format_rules.json`，converter 固定加载此默认配置（不暴露 CLI 覆盖）。该配置缺失时 → 全 ND（等价现状，不启用 NZ）。
 
 ### schema
 
@@ -162,12 +162,10 @@ data = raw.numpy().tobytes()
 ### Stage 1 — fp16 路径（本次交付，低风险）
 
 1. `weight_format/transforms.py` 加 `nd2nz`
-2. `weight_format/rules.py` 配置加载 + `resolve_format`
+2. `weight_format/rules.py` 配置加载（`load_rules` 读 shipped 默认配置）+ `resolve_format`
 3. `epair_utils._pack_weights_to_dir` 集成 + 新增 `inline_weight_layout`
-4. `saver.py` 贯穿 `weight_format_config` 参数
-5. `cann_lm_converter.py` CLI 加 `--weight-format-config`
-6. C++ 两处 `"NZ"` case
-7. 文档同步（本文档 + export_design.md / quant_design.md 注记 + INDEX.md）
+4. C++ 两处 `"NZ"` case
+5. 文档同步（本文档 + export_design.md / quant_design.md 注记 + INDEX.md）
 
 ### Stage 2 — 量化路径（独立后续，含强制研究门）
 

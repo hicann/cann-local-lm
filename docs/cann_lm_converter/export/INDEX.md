@@ -15,10 +15,10 @@
 
 | 文件 | 职责 |
 |------|------|
-| `cann_lm/converter/model_registry.py` | `ModelEntry` + `REGISTRY` + `detect_model_type` + `available_models` |
+| `cann_lm/models/model_registry.py` | `ModelEntry` + `REGISTRY` + `detect_model_type` + `available_models` |
 | `cann_lm/converter/loader.py` | `load_model` + `build_config` + `collect_tokenizer_files` |
 | `cann_lm/converter/saver.py` | `save_epair` / `save_epair_prefill_decode` / `save_model_config` / `copy_tokenizer_files` |
-| `cann_lm/converter/export_wrapper.py` | `ExportWrapper` 基类（`forward` + `get_sample_inputs` + `_drive_layers`） |
+| `cann_lm/models/export_wrapper.py` | `ExportWrapper` 基类（`forward` + `get_sample_inputs` + `_drive_layers`） |
 | `cann_lm/models/{gemma4,qwen3,qwen3_5}/export_wrapper.py` | 各模型 `ExportWrapper` 子类 |
 | `cann_lm/converter/export/epair_utils.py` | `pack_weights` + `consolidated_weights_save` |
 | `cann_lm/converter/export/weight_format/` | 权重格式转换包：`transforms.nd2nz`（ND→FractNZ）+ `rules.resolve_format`（配置解析，按 op_type 分流）+ `load_rules`（详见 [weight_format_design.md](./weight_format_design.md)） |

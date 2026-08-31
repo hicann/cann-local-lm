@@ -292,7 +292,7 @@ def collect_tokenizer_files(hf_path: str) -> list[Path]:
 
 > 注：`use_embeddings=True` 时 `saver` 在 `get_sample_inputs`（用它算 sample）+ host 权重抽取**之后**、`torch.export` **之前** 调用 `wrapper.detach_externalized_lookups()` 把外置查表子模块（`embed_tokens`，gemma4 加 `embed_tokens_per_layer`）从模型 `del` 掉 → torch.export 不 lift 它们 → `weights_*.bin` **不含**冗余查表权重（≈ OM，GE 编译本就剪掉它们），查表权重单独打包到 `host_weights_info.json` + `host_weights_*.bin` 给 host（带 dtype/shape）。依赖纯 embeddings forward 不访问这些子模块（`embed_tokens` 被 `inputs_embeds` 跳过、gemma4 `embed_tokens_per_layer` 被实例方法替换跳过）；`saver` 导出后断言它们不在 `inputs_to_parameters` 兜底。tied qwen3：del `embed_tokens` 后 `lm_head.weight`（同数据）仍在 → 被 OM bake；host 从 `host_weights` 拿 `embed_tokens.weight` 查表（lm_head/embed_tokens 双角色，非冗余）。
 
-基类位于 `cann_lm/converter/export_wrapper.py`，子类位于各模型目录（如 `cann_lm/models/qwen3/export_wrapper.py`）。
+基类位于 `cann_lm/models/export_wrapper.py`，子类位于各模型目录（如 `cann_lm/models/qwen3/export_wrapper.py`）。
 
 ```python
 class ExportWrapper(nn.Module):
@@ -474,7 +474,7 @@ def save_epair(
     if artifact.wrapper_cls is None:
         raise ValueError(
             f"Model '{artifact.model_type}' has no ExportWrapper subclass registered. "
-            "Please implement one in cann_lm/converter/export_wrapper.py."
+            "Please implement one in cann_lm/models/export_wrapper.py."
         )
     wrapper = artifact.wrapper_cls(
         artifact.model,
@@ -967,7 +967,7 @@ prefill-decode 共享 `weights_0.bin` 带来一个隐患：modeling 里 `torch.t
 在 `cann_lm/models/{model_name}/export_wrapper.py` 下创建子类，继承 `ExportWrapper`，实现 `_drive_layers`：
 
 ```python
-from cann_lm.converter.export_wrapper import ExportWrapper
+from cann_lm.models.export_wrapper import ExportWrapper
 
 class {ModelName}ExportWrapper(ExportWrapper):
     def _drive_layers(self, input_ids, attention_mask, position_ids,
@@ -1208,12 +1208,12 @@ HF (Gemma4ClippableLinear):           cann_lm (nn.Linear):
 
 | 文件 | 职责 |
 |------|------|
-| `cann_lm/converter/model_registry.py` | 模型注册表（ModelEntry + REGISTRY + detect_model_type） |
+| `cann_lm/models/model_registry.py` | 模型注册表（ModelEntry + REGISTRY + detect_model_type） |
 | `cann_lm/converter/loader.py` | `load_model` + `build_config` + `collect_tokenizer_files` |
 | `cann_lm/converter/saver.py` | `save_epair` / `save_epair_prefill_decode` / `save_model_config` / `copy_tokenizer_files` |
 | `cann_lm/converter/swap.py` | 量化编排（converter 根，peer of loader/saver）：`swap_from_dopt`（主路径）/ `swap_to_quant_linear_from_dopt` / `swap_embeddings_from_dopt` / `load_dopt_state_dict`；绝对 import 自 `export/quant_swap/` |
 | `cann_lm/converter/quant_entry.py` | 量化入口 facade：re-export `run_auto_quant`（`quant/auto_quant.py`）+ `swap_from_dopt`（`swap.py`），供 `cann_lm_converter` 单一 import |
-| `cann_lm/converter/export_wrapper.py` | `ExportWrapper` 基类 |
+| `cann_lm/models/export_wrapper.py` | `ExportWrapper` 基类 |
 | `cann_lm/models/{model}/export_wrapper.py` | 各模型 `ExportWrapper` 子类 |
 | `cann_lm/converter/export/epair_utils.py` | 权重打包（`pack_weights`）、磁盘写入（`consolidated_weights_save`） |
 | `cann_lm/converter/export/ge_converters/ge_converter.py` | `register_ge_converters`（cann_lm.* + aten.* → GE 算子映射） |

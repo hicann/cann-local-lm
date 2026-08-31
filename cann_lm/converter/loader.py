@@ -11,7 +11,7 @@ from typing import Any
 import torch
 import torch.nn as nn
 
-from cann_lm.converter.model_registry import ModelEntry, detect_model_type
+from cann_lm.models.model_registry import ModelEntry, detect_model_type
 
 
 @dataclasses.dataclass

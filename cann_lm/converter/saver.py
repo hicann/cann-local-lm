@@ -72,7 +72,7 @@ def save_epair(
     if artifact.wrapper_cls is None:
         raise ValueError(
             f"Model '{artifact.model_type}' has no ExportWrapper subclass registered. "
-            "Please implement one in cann_lm/converter/export_wrapper.py."
+            "Please implement one in cann_lm/models/export_wrapper.py."
         )
     wrapper = artifact.wrapper_cls(
         artifact.model,
@@ -168,7 +168,7 @@ def save_epair_prefill_decode(
     if artifact.wrapper_cls is None:
         raise ValueError(
             f"Model '{artifact.model_type}' has no ExportWrapper subclass registered. "
-            "Please implement one in cann_lm/converter/export_wrapper.py."
+            "Please implement one in cann_lm/models/export_wrapper.py."
         )
     wrapper = artifact.wrapper_cls(
         artifact.model,

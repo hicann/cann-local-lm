@@ -127,7 +127,7 @@ def materialize_int8_per_channel_symmetric(weight_fp: torch.Tensor,
 - `_pack_host_side_weights_to_dir` 已通用(int8/fp32 自动落盘 + dtype/shape 记录),无需改
 - `model_config.json` 记 `quant_embeddings: true` + scheme(per-vocab int8 sym, scale `[vocab]`)+ lm_head W4A8
 
-### 4. `cann_lm/converter/export_wrapper.py` + 子类 — wrapper
+### 4. `cann_lm/models/export_wrapper.py` + 子类 — wrapper
 
 - `forward`:加 `embeddings_q`+`embeddings_scale`(+ gemma4 `ple_q`+`ple_scale`),替换 float `embeddings`/`per_layer_token_identity`
 - `_drive_layers`:入口 dequant(`q.float()*scale[b,s,...]`)→ float → 传 `inputs_embeds`(+ gemma4 经实例方法替换传 float `per_layer_token_identity`)→ model forward 不变

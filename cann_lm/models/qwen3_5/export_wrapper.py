@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import torch
 
-from cann_lm.converter.export_wrapper import ExportWrapper
+from cann_lm.models.export_wrapper import ExportWrapper
 from cann_lm.models.qwen3_5.modeling_qwen3_5 import SimpleKVCache
 
 

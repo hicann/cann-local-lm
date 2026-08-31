@@ -5,7 +5,7 @@ from __future__ import annotations
 import dataclasses
 from typing import Callable
 
-from cann_lm.converter.export_wrapper import ExportWrapper
+from cann_lm.models.export_wrapper import ExportWrapper
 from cann_lm.models.gemma4 import Gemma4ForCausalLM, Gemma4TextConfig
 from cann_lm.models.gemma4.export_wrapper import Gemma4ExportWrapper
 from cann_lm.models.gemma4.modeling_gemma4 import load_gemma4_weights

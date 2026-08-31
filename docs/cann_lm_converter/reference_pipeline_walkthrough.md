@@ -27,7 +27,7 @@
 cann_lm/models/gemma4/  (configuration / modeling / export_wrapper)
         │
         ▼  注册
-cann_lm/converter/model_registry.py  (REGISTRY["gemma4"] = ModelEntry(...))
+cann_lm/models/model_registry.py  (REGISTRY["gemma4"] = ModelEntry(...))
         │
         ▼  CLI
 cann_lm/converter/cann_lm_converter.py  convert()
@@ -77,7 +77,7 @@ examples/test_converter/export_llm_model/main.cpp
 
 ---
 
-## Phase 2: 注册 `cann_lm/converter/model_registry.py`
+## Phase 2: 注册 `cann_lm/models/model_registry.py`
 
 ```python
 REGISTRY["gemma4"] = ModelEntry(

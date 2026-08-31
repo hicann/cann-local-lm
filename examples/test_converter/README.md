@@ -32,7 +32,8 @@ OM 运行/出字 (系统 Python + torch_npu + acl + NPU)
 | ├ OM 编译+出字　　　 | `export_llm_model/om_npu_verify/`　　　　　　　　　　　　　　　　　　 | ③④　　　　　　　 | `run_*_gen.py`/`run_*_om.py` + `check_env.sh` + README　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　|
 | ├ CPU 调试验证　　　 | `export_llm_model/llm_engine_on_cpu/`　　　　　　　　　　　　　　　　 | ①③(ep回环)　　　 | `debug_*/verify_*.py`（ep 回环、vs HF、chunk）+ skills　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　|
 | └ OM 编译器+算子注册 | `cann_lm/converter/export/csrc/{tools/compile_main.cc, inc/external/reg_register.h}` | ③　　　　　　　　| `compile_main.cc`=EpairModelLoader→OM（产 `build/cann_lm_compile`）；`reg_register.h`=IR 校准 81 ops（master，om_npu_verify/export_and_load_epair 经 backend PUBLIC include 引用） |
-| **量化**　　　　　　 | [`export_quant_matmul_single_op/`](export_quant_matmul_single_op/)　　| ①③　　　　　　　 | W4A8 单算子 OM 编译；`verify_quant_matmul_v4_w8a8.py`=W8A8 NPU eager　　　　　　　　　　　　　　　　　　　　　　　　　　|
+| **量化单算子**　　　 | [`export_quant_matmul_single_op/`](export_quant_matmul_single_op/)　　| ①③　　　　　　　 | W4A8 单算子 OM 编译；`verify_quant_matmul_v4_w8a8.py`=W8A8 NPU eager　　　　　　　　　　　　　　　　　　　　　　　　　　|
+| **dopt 量化 ST**　　 | [`dopt_quantization_st/`](dopt_quantization_st/)　　　　　　　　　　| GPTQ+产物校验　　 | gemma4/Qwen3.5 真实模型路径运行时注入，校准集内置；仓库不含真实权重和机器路径；支持无权重静态自检　　　　　　　　　　　　|
 | **RoPE**　　　　　　 | [`rope_apply_rotary_pos_emb/`](rope_apply_rotary_pos_emb/)　　　　　　| ③　　　　　　　　| `verify_rope.py`：ApplyRotaryPosEmb 数值/IR 验证（demo）　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　|
 | **eager 参考**　　　 | [`run_gemma4_npu/`](run_gemma4_npu/)　　　　　　　　　　　　　　　　　| ④(eager)　　　　 | torch_npu 直跑 gemma4 出字（不经 OM/epair，基线对照）+ HF 对比　　　　　　　　　　　　　　　　　　　　　　　　　　　　　|
 

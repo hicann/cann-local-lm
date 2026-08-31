@@ -19,8 +19,7 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[3]
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-_LINEAR_STRATEGY = "Quant_act_weight_eco"
-_LM_HEAD_STRATEGY = "Quant_lm_head"
+_LINEAR_STRATEGY = "Quant_INT8-4_ECO"
 _EMBED_STRATEGY = "Quant_Embed_MinMax"
 
 
@@ -33,13 +32,12 @@ def _build_layer_strategy(model, model_type: str) -> dict:
     layer_strategy = {}
     for name, m in model.named_modules():
         if isinstance(m, torch.nn.Linear):
-            if "lm_head" in name:
-                strategy = _LM_HEAD_STRATEGY
-            elif "embed_tokens" in name:
+            if "embed_tokens" in name:
                 continue
-            else:
-                strategy = _LINEAR_STRATEGY
-            layer_strategy[name] = {"type": str(type(m)), "quant_strategy": strategy}
+            layer_strategy[name] = {
+                "type": str(type(m)),
+                "quant_strategy": _LINEAR_STRATEGY,
+            }
         elif isinstance(m, torch.nn.Embedding):
             strategy = _EMBED_STRATEGY
             layer_strategy[name] = {"type": str(type(m)), "quant_strategy": strategy}
@@ -52,7 +50,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--optimize-config", required=True)
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--hf-type-save", action="store_true", default=False)
-    parser.add_argument("--quant-bits", default="w4a8", choices=["w4a8"])
     return parser.parse_args()
 
 
@@ -64,7 +61,7 @@ def main() -> None:
     print(f"[wrapper] model_type={model_type}", flush=True)
 
     from dopt_lm.opt_funcs.eco_stage.train import model_define, weight_quant_pipline
-    print(f"[wrapper] loading transformers model (fp16)...", flush=True)
+    print("[wrapper] loading transformers model (fp16)...", flush=True)
     model = model_define(args.model_path, torch_dtype=torch.float16)
 
     layer_strategy = _build_layer_strategy(model, model_type)
@@ -77,7 +74,7 @@ def main() -> None:
     del model
     gc.collect()
 
-    print(f"[wrapper] running weight_quant_pipline (GPTQ)...", flush=True)
+    print("[wrapper] running weight_quant_pipline (GPTQ)...", flush=True)
     weight_quant_pipline(
         model_path=args.model_path,
         config_yaml=args.optimize_config,

@@ -2,15 +2,14 @@
 # -*- coding: utf-8 -*-
 # Copyright Huawei Technologies Co., Ltd. 2010-2025. All rights reserved.
 
-# Stage1 minimal: calibration-data loader for the GPTQ loop. The dead
-# get_pangupi_bk backup is removed; get_pangupi / get_pt_data / get_loaders
-# are kept verbatim.
+# Stage1 minimal: calibration-data loader for the GPTQ loop.
+# Provides get_json_data / get_pt_data / get_loaders.
 import os
 import random
 from collections import defaultdict
 import torch
 if os.getenv("DEVICE", "cuda") == "npu": 
-    import torch_npu
+    import torch_npu  # noqa: F401 - registers the torch.npu backend
 
 
 def set_seed(seed): 
@@ -19,7 +18,7 @@ def set_seed(seed):
     torch.random.manual_seed(seed)
 
 
-def get_pangupi(nsamples, seed, seqlen, model, local_root): 
+def get_json_data(nsamples, seed, seqlen, model, local_root):
     import random
     import torch
     from datasets import load_dataset
@@ -104,6 +103,6 @@ def get_loaders(
 ): 
     if name[0].split(":")[0].endswith('pt'): 
         return get_pt_data(name, nsamples, seed)
-    return get_pangupi(nsamples, seed, seqlen, model, name)
+    return get_json_data(nsamples, seed, seqlen, model, name)
 
     return None, None

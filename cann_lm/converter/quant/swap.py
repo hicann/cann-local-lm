@@ -15,7 +15,6 @@
 """Swap nn.Linear modules for QuantLinear (pre-export op IR replacement)."""
 
 import json
-import os
 from pathlib import Path
 
 import torch
@@ -135,13 +134,9 @@ def _read_dopt_quant_meta(
 # converter venv doesn't install dopt_lm, so hardcoded; update here when adding a weight-quant strategy.
 # Only strategy config (group_size/bit/blocksize/per_channel/weight_algo) — unsigned_quant/offset
 # are GPTQ runtime state (dopt writes them to safetensors buffers, not in config).
-# dopt 53ad5ec changed group_size 256 -> 128 (Quant_act_weight_eco + Quant_lm_head); synced here.
+# dopt 53ad5ec changed Quant_INT8-4_ECO group_size from 256 to 128; synced here.
 _STRATEGY_DEFAULT_PARAMS: dict[str, dict] = {
-    "Quant_act_weight_eco": {
-        "group_size": 128, "bit": 4, "blocksize": 128,
-        "per_channel": True, "weight_algo": "omni_group_min_max",
-    },
-    "Quant_lm_head": {
+    "Quant_INT8-4_ECO": {
         "group_size": 128, "bit": 4, "blocksize": 128,
         "per_channel": True, "weight_algo": "omni_group_min_max",
     },
@@ -152,7 +147,7 @@ def _read_quant_param_map(dopt_path: str | Path | None) -> dict[str, dict]:
     """Parse {layer_name: weight-side quant params} from dopt_config.json in the dopt output dir.
 
     Parsing (aligned with dopt strategy.get_optimize_cfg):
-    1. quant_strategy suffix (e.g. "Quant_act_weight_eco;128") overrides group_size
+    1. quant_strategy suffix (e.g. "Quant_INT8-4_ECO;128") overrides group_size
     2. _STRATEGY_DEFAULT_PARAMS provides defaults (group_size/bit/blocksize/per_channel/weight_algo)
 
     Returns {name: {group_size, bit, blocksize, per_channel, weight_algo}};
@@ -173,7 +168,7 @@ def _read_quant_param_map(dopt_path: str | Path | None) -> dict[str, dict]:
     out: dict[str, dict] = {}
     for name, layer in layer_strategy.items():
         strategy = layer.get("quant_strategy", "")
-        # suffix parse (e.g. "Quant_act_weight_eco;128" -> strategy="Quant_act_weight_eco", gs=128)
+        # Suffix parse (e.g. "Quant_INT8-4_ECO;128" -> strategy="Quant_INT8-4_ECO", gs=128).
         gs_override = None
         if ";" in strategy:
             strategy, gs_str = strategy.split(";", 1)

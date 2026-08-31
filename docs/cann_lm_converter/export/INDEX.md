@@ -7,6 +7,7 @@
 | 文档 | 内容 |
 |------|------|
 | [export_design.md](./export_design.md) | `model_registry` / `loader` / `saver` / `ExportWrapper` 基类 + 三子类 / 统一图 I/O 契约 / 纯 embeddings 模式 / `epair_utils` / C++ `EpairModelLoader` / `GeWeightLoader` 懒加载 / `_assert_tensor_metadata` / GE 算子注册两层 / prefill-decode 分离 / 新增模型接入 / 精度差异分析 |
+| [weight_format_design.md](./weight_format_design.md) | 权重 NZ 格式转换：`weight_format/` 包（`nd2nz` / `resolve_format`）+ `weight_format_rules.json` 配置（op_type + format）+ `epair_utils` 集成 + C++ `MapGeLayoutString` 加 NZ case / Stage 1 fp16 路径 / Stage 2 量化 int4-NZ 研究门 / 后续 quant converter 迁 export |
 
 ## 代码文件
 
@@ -20,6 +21,8 @@
 | `cann_lm/converter/export_wrapper.py` | `ExportWrapper` 基类（`forward` + `get_sample_inputs` + `_drive_layers`） |
 | `cann_lm/models/{gemma4,qwen3,qwen3_5}/export_wrapper.py` | 各模型 `ExportWrapper` 子类 |
 | `cann_lm/converter/export/epair_utils.py` | `pack_weights` + `consolidated_weights_save` |
+| `cann_lm/converter/export/weight_format/` | 权重格式转换包：`transforms.nd2nz`（ND→FractNZ）+ `rules.resolve_format`（配置解析，按 op_type 分流）+ `load_rules`（详见 [weight_format_design.md](./weight_format_design.md)） |
+| `cann_lm/converter/export/weight_format_rules.json` | NZ 转换规则 shipped 默认配置（`name_pattern` + `op_type` + `format` + `pack`） |
 | `cann_lm/converter/export/ge_converter.py` | `register_ge_converters`（cann_lm.* + aten.* → GE 算子映射） |
 | `cann_lm/converter/export/_quant_matmul_s8s4_converter.py` | `cann_lm::quant_matmul_s8s4` GE converter（详见 [INDEX.md](../quant/INDEX.md)） |
 
@@ -52,6 +55,9 @@
 | `ExportWrapper` | 统一 I/O 契约基类（KV cache in/out + output_pos 选位） |
 | `pack_weights(contents, *, max_file_size) -> ConsolidatedWeights` | 权重打包为多个 bin |
 | `consolidated_weights_save(...)` | 写入磁盘（weights_*.bin + weight_info.json + ep_json） |
+| `nd2nz(tensor, block=16, pad=True)` | `[M,K]` ND 行主序 → FractNZ 物理块 `[ceil(M/b),ceil(K/b),b,b]`（见 [weight_format_design.md](./weight_format_design.md)） |
+| `resolve_format(name, is_quantized)` | 按 (name_pattern, op_type) 匹配 `weight_format_rules.json`，返回 format/block/pad/pack 规则 |
+| `inline_weight_layout(ep_json_path, names_nz)` | ep_json 后处理：命中张量 `layout` 字段 `ND`→`NZ`（仿 `inline_weight_scale_dtype`） |
 | `td::EpairModelLoader` | C++ 加载 epair → 构建 GE Graph |
 | `GeWeightLoader` | C++ 懒加载权重 bin |
 | `register_ge_converters()` | 注册 cann_lm.* + aten.* → GE 算子映射 |

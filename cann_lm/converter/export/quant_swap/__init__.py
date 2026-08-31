@@ -26,7 +26,7 @@ Holds the **materialization layer** consumed by the swap orchestrator at
 - QuantLinear: export-path Linear whose forward calls npu::npu_quant_matmul
   (W4A8 also uses npu_dynamic_quant for act quant)
 
-The swap orchestrator (swap_from_dopt / swap_to_quant_linear_from_dopt /
+The swap orchestrator (swap_from_dopt /
 swap_embeddings_from_dopt / load_dopt_state_dict) lives at
 ``cann_lm.converter.swap``. GPTQ (dopt_lm) runs offline on NPU/GPU/CPU and
 produces the dopt output; the converter loads it via --quant-path, materializes

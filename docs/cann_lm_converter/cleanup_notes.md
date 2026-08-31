@@ -13,6 +13,8 @@
 - [CLI-004 场景2 `--quant-bits` 与 dopt_wrapper 不同步](#cli-004-场景2---quant-bits-与-dopt_wrapper-不同步)
 - [CLI-005 `--quant-device` CLI 参数删除(设备自动检测)](#cli-005---quant-device-cli-参数删除设备自动检测)
 - [CLI-006 `generate_dopt_config` 删除 + `build_layer_strategy` 改名](#cli-006-generate_dopt_config-删除--build_layer_strategy-改名)
+- [CLI-007 TODO:CPU/GPU 一键式不分进程评估](#cli-007-todocpugpu-一键式不分进程评估)
+- [CLI-008 `swap_to_quant_linear_from_dopt` 死代码删除](#cli-008-swap_to_quant_linear_from_dopt-死代码删除)
 
 ---
 
@@ -257,3 +259,102 @@ saver 作为底层 API 原默认 `use_embeddings=False`(图内查表,自包含),
 - 源码文件:`cann_lm/converter/quant/auto_quant.py`、`dopt_wrapper.py`、`examples/.../run_pd6_cases.sh`、`tests/dopt_lm/test_strategy_generation.py`
 - 设计文档:[cli_design.md](./cli/cli_design.md)「完整调用链」、[quant_design.md](./quant/quant_design.md)「`auto_quant.py`/`dopt_wrapper.py` 签名表」
 - 历史决策:[adr/0001](../adr/0001-load-model-cpu-quant-subprocess-device.md) L44(状态变更 2026-08-31)
+
+---
+
+## CLI-007 TODO:CPU/GPU 一键式不分进程评估
+
+| 字段 | 值 |
+|------|-----|
+| 编号 | CLI-007 |
+| 类型 | TODO(待评估,非偏离) |
+| 背景 | 当前场景 2(`--quant-method gptq`)主进程 export(CPU stubs)+ dopt subprocess(系统 python + torch_npu + NPU)两套环境,因 NPU 场景 `_LazyTorchair` 代理冲突(装 torch_npu 破坏 export GE 转换)用 subprocess 隔离。但 CPU/GPU(无 NPU)场景**不装 torch_npu → 不撞代理 → 一套环境理论可行** |
+| 状态 | **TODO(待评估)** |
+| 发现日期 | 2026-08-31 |
+
+### 待评估问题
+
+CPU/GPU(无 NPU)时,一键式脚本能否不分进程(一套环境跑 export + GPTQ):
+
+1. 不装 torch_npu → export 不撞 `_LazyTorchair` 代理 → 一套环境(无 subprocess)理论可行
+2. `dopt_lm` 兼容 torch 2.9.0(converter venv)?当前 dopt 在系统 python torch 2.7.1
+3. converter venv 装 `transformers` + `dopt_lm` 依赖?(当前不装)
+4. CPU GPTQ(dopt_lm `dispatch_dtype=float32`)在 converter venv(torch 2.9.0+cpu + torchair stubs)跑通?
+5. GPU GPTQ(`torch.cuda`)适配待验证(cli_design「GPU dopt 适配 ⏳」)
+
+### 目标:一套环境(CPU/GPU,无 NPU)
+
+converter venv 装 `torch 2.9.0+cpu` + `torchair`(源码+stubs)+ `torch-delegate` + `transformers` + `dopt_lm`,GPTQ 走 CPU(float32)或 GPU(cuda),不 spawn subprocess,主进程直接调 `dopt_lm`。
+
+### 当前两套环境对比
+
+| 维度 | ① converter 主进程(export epair) | dopt subprocess(GPTQ) |
+|------|----------------------------------|----------------------|
+| Python | converter venv(`.venv`,3.11.4) | 系统 python(`DOPT_PYTHON`,3.11.4) |
+| torch | 2.9.0+cpu | 2.7.1+cpu |
+| torch_npu | **不装**(stub 路径,`_library.py` 自提供 npu:: fake-meta) | 2.7.1.post4(真,NPU 算子) |
+| torchair | 源码编译(`NO_ASCEND_SDK=1`)+ `build/stubs` | 无(不跑 GE 转换) |
+| torch-delegate | 0.1.0(whl) | 无 |
+| transformers | 不装 | 装(dopt_lm 依赖) |
+| CANN lib | stubs(`LD_LIBRARY_PATH` stubs 在前,避 `aclrtSetDevice→107001`) | 真实 lib64(spawn 时去 stubs) |
+| 芯片 | 无 NPU(CPU-only) | Ascend910 × 2(64GB HBM) |
+| env 脚本 | `set_env_export.sh`(CANN set_env + stubs LD + `TORCH_DELEGATE_HOME` + `AUTOLOAD=0` + `FALLBACK_CODEGEN=0`) | auto_quant spawn(继承去 stubs + `PYTHONPATH` quant/ + `DEVICE` + `DOPT_PYTHON`) |
+
+### 核心差异(为何当前分进程)
+
+1. **torch_npu 有无**:export 不装(避 `_LazyTorchair` 代理覆盖源码 torchair → GE 转换 bug);GPTQ 装(需真 NPU 算子 eager)
+2. **torchair 源码+stubs vs 无**:export 需 GE 转换(torchair);GPTQ 不需
+3. **transformers 无 vs 有**:dopt_lm 用 transformers,converter 不用
+4. **CANN lib stubs vs 真实**:stubs 给 torchair GE 引擎 C 符号(避真 NPU 107001);dopt 需真 lib 跑算子
+5. **torch 版本 2.9.0 vs 2.7.1**:torchair 编译匹配 2.9.0,torch_npu 2.7.1.post4 匹配 2.7.1(不互通,故分进程)
+
+### CPU/GPU 一套的可行性关键
+
+- **NPU 场景**:必须分进程(torch_npu 代理冲突无解)
+- **CPU/GPU 场景**:不装 torch_npu → 无代理冲突 → 一套环境理论可行,但需解决 transformers 依赖 + dopt_lm torch 版本兼容 + CPU/GPU GPTQ 跑通
+
+### 行动项
+
+- [ ] 评估 `dopt_lm` 在 torch 2.9.0 跑通(CPU/GPU)
+- [ ] converter venv 装 `transformers` + `dopt_lm` 依赖
+- [ ] CPU GPTQ 一套环境冒烟(小模型,验证 dopt_lm + export 同进程)
+- [ ] GPU GPTQ 适配验证(`torch.cuda`,dopt GPU 分支)
+- [ ] 若可行,`auto_quant` 加 CPU/GPU 分支:不分进程,主进程直接调 `dopt_lm`(NPU 仍走 subprocess)
+
+### 关联
+
+- 设计文档:[cli_design.md](./cli/cli_design.md)「运行环境支持(NPU/GPU/纯 CPU)」「converter 与 torch_npu 的关系」
+- 历史决策:[adr/0001](../adr/0001-load-model-cpu-quant-subprocess-device.md)(subprocess 隔离决策)
+- 相关代码:`cann_lm/converter/quant/auto_quant.py`(`_detect_device_type` / `run_auto_quant` / `_run_dopt_subprocess`)
+
+---
+
+## CLI-008 `swap_to_quant_linear_from_dopt` 死代码删除
+
+| 字段 | 值 |
+|------|-----|
+| 编号 | CLI-008 |
+| 位置 | `cann_lm/converter/swap.py` L334-351(定义)+ `swap_from_dopt` docstring(对比提及);文档:`quant/INDEX.md` L50、`export_design.md` L1269、`quant_design.md` L136/138/345/450/451、`quant_swap/__init__.py` L29、`adr/README.md` L39 |
+| 背景 | `swap_to_quant_linear_from_dopt` 是向后兼容薄 wrapper(只 Linear swap,自己 load sd),与 `swap_from_dopt`(Linear + embed 一次 load sd)重复。grep 确认**无代码调用**(死代码),只在文档/签名表提。`_swap_linear_from_sd`(私有,接受 sd)已是抽取的 Linear swap 主体,`swap_from_dopt` 复用它,无需 `swap_to_quant_linear_from_dopt` |
+| 违反约定 | 无(清理死代码) |
+| 发现日期 | 2026-08-31 |
+| 状态 | **已清理(2026-08-31)** |
+
+### 决策
+
+删 `swap_to_quant_linear_from_dopt`(死代码),`swap_from_dopt` 保持(已用 `_swap_linear_from_sd` 复用 Linear swap,一次 load sd 共用 embed 抽取)。`swap_from_dopt` 不能调 `swap_to_quant_linear_from_dopt`(会二次 load sd,违背一次 load 设计)。
+
+### 清理动作(已执行)
+
+- **代码**:`swap.py` 删 `swap_to_quant_linear_from_dopt`(L334-351)+ 改 `swap_from_dopt` docstring(删 "avoids swap_to_quant_linear_from_dopt's..." 对比,改为描述自身一次 load)
+- **文档**:`quant_design.md`(L136 删行 + L138 删提及 + L345-346 调用链合并为 `swap_from_dopt` + L450 删签名表行 + L451 删对比)、`quant/INDEX.md` L50 删行、`export_design.md` L1269 删提及、`quant_swap/__init__.py` L29 删提及、`adr/README.md` L39(~~删除线~~ + ❌→✅ 已落地标注)
+
+### 验证
+
+`py_compile swap.py` 通过;`grep swap_to_quant_linear_from_dopt` 仅余 `adr/README.md` 删除线标注(保留历史),代码 + 其他文档 0 残留。
+
+### 关联
+
+- 源码文件:`cann_lm/converter/swap.py`
+- 设计文档:[quant_design.md](./quant/quant_design.md)「`swap.py` 签名表」「swap 模块符号」、[export_design.md](./export/export_design.md)「文件树」
+- 历史决策:[adr/README.md](../adr/README.md) L39(重构项 ❌→✅ 已落地)

@@ -36,7 +36,7 @@
 | weight_scale 落盘 fp32→int64（方案 A 改 buffer vs B 仅落盘） | ✅ | 3,5 |
 | GPTQ 一键式选方案 C（subprocess）vs A（改 dopt）vs B（内存） | ✅（已发生） | 1,4,6 |
 | converter 不装 torch_npu 走 stub 路径 | ✅（已发生，记在 cli_design.md） | 6,8 |
-| `swap_to_quant_linear_from_dopt` 拆成 `_swap_linear_from_sd` + `swap_from_dopt` | ❌ 局部重构 | — |
+| ~~`swap_to_quant_linear_from_dopt` 拆成 `_swap_linear_from_sd` + `swap_from_dopt`~~ | ✅ 已落地（2026-08-31）：`swap_to_quant_linear_from_dopt` 删除，`_swap_linear_from_sd` + `swap_from_dopt` 唯一路径 |
 | `materialize_int4_with_scale` 改名 `materialize_int4_per_group_symmetric` | ❌ 重命名 | — |
 | 函数行号偏移、签名参数收敛为 dataclass | ❌ | — |
 | 新增 `QuantLinear.bias=None` 时 GE converter 塞 dummy zeros[N] | ⚠️ workaround 取舍（属路径 C' 决策的一部分，不单写） | 8（已含在路径 C' ADR 里） |

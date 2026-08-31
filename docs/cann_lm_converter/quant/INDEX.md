@@ -47,7 +47,6 @@
 | 符号 | 作用 |
 |------|------|
 | `swap_from_dopt(model, dopt_path, ...)` | 主路径（场景 1/2 共用）：一次 load sd → Linear swap + Embedding 抽取，返回 `(quant_info, embed_quant)` |
-| `swap_to_quant_linear_from_dopt(model, dopt_path, ...)` | 向后兼容薄 wrapper（场景 1 离线/单独 Linear swap） |
 | `swap_embeddings_from_dopt(sd, model)` | embed_tokens 的 W8 host gather（不替换成图模块） |
 | `load_dopt_state_dict(dopt_path) -> dict` | 加载 dopt 产物（.safetensors/.pth/目录） |
 | `run_auto_quant(hf_path) -> str` | 一键式 GPTQ（场景 2）：检测 NPU/GPU → spawn dopt subprocess → 返回 dopt_out_dir |

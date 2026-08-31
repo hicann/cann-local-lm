@@ -133,9 +133,8 @@ cann_lm/converter/quant_entry.py        ← facade，re-export run_auto_quant + 
 
 - **无循环依赖**：`materialize ← swap → quant_linear` 的有向无环图；`materialize` 与 `quant_linear` 互不依赖；`auto_quant.py` 与 `swap.py` 解耦（subprocess 不 import swap）。
 - **cann_lm_converter 经 `cann_lm.converter.quant_entry` 单一 facade 访问量化入口**（`run_auto_quant` 实现 `quant/auto_quant.py` + `swap_from_dopt` 实现 `swap.py`，facade re-export 二者）。`quant_swap/__init__.py` re-export 6 个物化符号（`materialize_*` / `transdata_scale` / `restore_scale` / `pack_int4` / `QuantLinear`）。`swap_from_dopt`（主路径，场景 1/2 共用，一次 load sd 同时做 Linear swap + Embedding 抽取）+ `run_auto_quant`（场景 2 spawn subprocess）。其余对外暴露为测试/离线/将来直接调用预留：
-  - `swap_to_quant_linear_from_dopt`（向后兼容薄 wrapper，场景 1 离线用户或单独 Linear swap 用，已非主路径；位于 `cann_lm.converter.swap`）
   - `swap_embeddings_from_dopt`（embedding int8+scale 抽取，被 `swap_from_dopt` 内部组合调用；位于 `cann_lm.converter.swap`）
-  - `load_dopt_state_dict`（dopt 产物加载，被 `swap_from_dopt`/`swap_to_quant_linear_from_dopt` 内部调用；位于 `cann_lm.converter.swap`）
+  - `load_dopt_state_dict`（dopt 产物加载，被 `swap_from_dopt` 内部调用；位于 `cann_lm.converter.swap`）
   - `materialize_int4_per_group_symmetric` / `materialize_int8_per_channel_symmetric` / `QuantLinear`（位于 `cann_lm.converter.export.quant_swap`，经 `swap.py` 绝对 import 使用）
 
 ### I/O 定位
@@ -342,8 +341,7 @@ convert(--quant-method gptq)                      python dopt_wrapper.py
   │   (系统 Python + subprocess env + cwd=quant/)  ├─ weight_quant_loop (GPTQ, NPU/GPU/CPU)
   │                                                  └─ 产物 → 临时盘 model.safetensors
   ├─ wait subprocess 完成
-  ├─ swap_to_quant_linear_from_dopt(临时盘)         # 复用 --quant-path 逻辑
-  ├─ swap_embeddings_from_dopt(sd, model)            # embed 自动检测
+  ├─ swap_from_dopt(model, 临时盘)                  # Linear swap + embed 抽取(一次 load sd, 复用 --quant-path 逻辑)
   └─ save_epair_prefill_decode(...)                  # export
 ```
 
@@ -447,8 +445,7 @@ class QuantLinear(nn.Module):
 | `_read_quant_param_map` | `(dopt_path: str \| Path \| None) -> dict[str, dict]` | 1 | 从 dopt 产物目录的 `dopt_config.json` 解析 `{层名: weight 侧量化参数 dict}`。后缀解析（`"Quant_act_weight_eco;128"` → strategy + gs_override）+ `_STRATEGY_DEFAULT_PARAMS` 默认值。无 dopt_config.json / 层未配置 / 策略无默认参数 → 不在该 dict |
 | `_infer_group_size` | `(s_flat: Tensor, out_f: int, in_f: int, name: str) -> tuple[int, int]` | 4 | 从 dopt scale s_flat（扁平 `[out*groups]`）推断 (group_size, groups)。支持 pergroup/perchannel；拒绝 pertensor（numel==1）/ 非 1D / numel 不是 out_f 整数倍 |
 | `_swap_linear_from_sd` | `(model, sd, skip=DEFAULT_SKIP, act_quant=True, param_map=None) -> dict` | 5 | **核心 swap 逻辑**（接收已加载 sd，避免重复 IO）。遍历 `nn.Linear`（非 skip）：读 w_gptq/s_flat；group_size 来源优先级 `param_map[name]` > `_infer_group_size`；reshape s_flat → scale2d；`_read_dopt_quant_meta` → bit/uq/offset；校验 uq==0（symmetric only，否则 ValueError）；校验 offset 全 0（否则 NotImplementedError）；`materialize_int4_per_group_symmetric(packed=True)` → 预转置 `[k//2,n]`/`[k//g,n]` → `QuantLinear` → setattr 替换。返回 quant-info dict |
-| `swap_to_quant_linear_from_dopt` | `(model, dopt_path, skip=DEFAULT_SKIP, act_quant=True) -> dict` | 4 | **向后兼容薄 wrapper**：`load_dopt_state_dict` + `_read_quant_param_map` + 调 `_swap_linear_from_sd`。仅供场景 1 离线用户或单独 Linear swap 用；主进程场景 1/2 用 `swap_from_dopt` |
-| `swap_from_dopt` | `(model, dopt_path, skip=DEFAULT_SKIP, act_quant=True) -> tuple[dict, dict]` | 4 | **主路径**（场景 1/2 共用）：一次 `load_dopt_state_dict` + `_read_quant_param_map` → `_swap_linear_from_sd`（Linear swap）+ `swap_embeddings_from_dopt`（Embedding 抽取）。避免 `swap_to_quant_linear_from_dopt` + `swap_embeddings_from_dopt` 二次 load IO。返回 `(quant_info, embed_quant)` |
+| `swap_from_dopt` | `(model, dopt_path, skip=DEFAULT_SKIP, act_quant=True) -> tuple[dict, dict]` | 4 | **主路径**（场景 1/2 共用）：一次 `load_dopt_state_dict` + `_read_quant_param_map` → `_swap_linear_from_sd`（Linear swap）+ `swap_embeddings_from_dopt`（Embedding 抽取），避免二次 load IO。返回 `(quant_info, embed_quant)` |
 
 > **代码风格观察**：`_swap_linear_from_sd` 函数体超 50 行（超 AGENTS.md 原则）。该函数承担太多职责（遍历 Linear + 读 scale + 读 meta + 校验 uq + 校验 offset + materialize + 预转置 + 实例化 + 替换 + 计数 + 构造返回 dict）。建议按单一职责拆成 `_validate_dopt_quant_meta(uq, offset)` + `_build_quant_info(...)` 等。当前未拆。
 

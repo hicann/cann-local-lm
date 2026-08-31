@@ -331,26 +331,6 @@ def _swap_linear_from_sd(
     }
 
 
-def swap_to_quant_linear_from_dopt(
-    model: nn.Module,
-    dopt_path: str | Path,
-    skip: tuple[str, ...] = DEFAULT_SKIP,
-    act_quant: bool = True,
-) -> dict:
-    """Backward-compatible thin wrapper: load_dopt_state_dict + _read_quant_param_map
-    + _swap_linear_from_sd. Use for offline scene-1 / standalone Linear swap; the
-    main process (scenes 1/2) uses swap_from_dopt (one sd load for both Linear swap
-    + embed extraction).
-    """
-    sd = load_dopt_state_dict(dopt_path)
-    param_map = _read_quant_param_map(dopt_path)
-    info = _swap_linear_from_sd(
-        model, sd, skip=skip, act_quant=act_quant, param_map=param_map,
-    )
-    info["dopt_path"] = str(dopt_path)
-    return info
-
-
 def swap_from_dopt(
     model: nn.Module,
     dopt_path: str | Path,
@@ -360,9 +340,9 @@ def swap_from_dopt(
     """One dopt sd load -> Linear swap + Embedding extraction.
 
     Shared by the main process for scene 1 (--quant-path) and scene 2
-    (--quant-method gptq); avoids the double load IO of
-    swap_to_quant_linear_from_dopt's internal load + swap_embeddings_from_dopt's
-    external load.
+    (--quant-method gptq): one `load_dopt_state_dict` feeds both
+    `_swap_linear_from_sd` (Linear swap) and `swap_embeddings_from_dopt`
+    (Embedding extraction), avoiding double load IO.
 
     Returns:
         (quant_info, embed_quant):

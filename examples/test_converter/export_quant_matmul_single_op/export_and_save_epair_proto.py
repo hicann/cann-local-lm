@@ -36,7 +36,7 @@ from torchair.ge._ge_graph import (
 )
 
 from cann_lm.converter.export.epair_utils import consolidated_weights_save
-from cann_lm.converter.export.ge_converter import register_ge_converters
+from cann_lm.converter.export.ge_converters import register_ge_converters
 import torch_delegate
 
 # registers npu_quant_matmul (schema + fake + cpu impl) on stub env

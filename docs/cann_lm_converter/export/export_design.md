@@ -829,7 +829,7 @@ for (const auto &node : parser.Nodes()) {
 
 GE 算子注册分两层，互补：
 
-1. **Python 侧 `converter/export/ge_converter.py`** — `register_ge_converters()` 把 `torch.ops` 节点映射到 GE 算子，在 `export_to_epair` 前调用（save_epair 步骤 1）。覆盖：
+1. **Python 侧 `converter/export/ge_converters/ge_converter.py`** — `register_ge_converters()` 把 `torch.ops` 节点映射到 GE 算子，在 `export_to_epair` 前调用（save_epair 步骤 1）。覆盖：
    - `cann_lm.*` 自定义算子：`add_rms_norm`/`rms_norm`/`rotary_mul`/`rope_in_place`/`quant_matmul_s8s4`/`fused_infer_attention_score`/`beam_search`（算子定义在 `cann_lm/models/fused_ops/`，GE 映射实现见 [`fused_ops.md`](../../cann_lm_models/fused_ops/fused_ops.md) §3）
    - 部分 `aten.*` 算子：`softplus`/`eye`/`type_as`/`index_copy`/`index_put`（torch.export 残留的 aten 节点，torchair 无内置映射时补）
 
@@ -926,7 +926,7 @@ td::EpairModelLoader decode_loader("decode_ep_json_with_ascend_ir.json",
 
 ### 全链路已通（Python 导出 + C++ OM 编译）
 
-- `aten.index_copy.default` GE converter 缺失已解决：在 `converter/export/ge_converter.py` 用 `ge.InplaceUpdate` + `ge.TransposeD` 实现了 converter。converter CLI 导出 gemma4 prefill/decode + C++ `main.cpp` 加载编译 OM 全链路跑通（prefill 6079 节点 / decode 6044 节点 / `prefill.om` + `decode.om` 各 9.4GB）。
+- `aten.index_copy.default` GE converter 缺失已解决：在 `converter/export/ge_converters/ge_converter.py` 用 `ge.InplaceUpdate` + `ge.TransposeD` 实现了 converter。converter CLI 导出 gemma4 prefill/decode + C++ `main.cpp` 加载编译 OM 全链路跑通（prefill 6079 节点 / decode 6044 节点 / `prefill.om` + `decode.om` 各 9.4GB）。
 
 - **纯 embeddings（`--use-embeddings`）全链路已通**：converter CLI 导出 + C++ `main.cpp` OM 编译跑通——qwen3-0.6B（`qwen3_pure_emb.om` 374MB，weights ≈ OM）+ gemma4-E2B（5B 参数 35 层含 PLE，`gemma4_e2b_pure.om` 4.57GB，ep_json 19MB / weights 4.56GB ≈ OM / host_weights 5.5GB 查表权重给 host）。`saver.detach_externalized_lookups()` 在导出前 del 外置查表子模块 → torch.export 不 lift → `weights_*.bin` 不含冗余查表权重（≈ OM，无 5.5GB 冗余）。数值验证由 OM runner（`examples/test_converter/export_llm_model/om_npu_verify/run_*_om.py`，OM vs eager/HF，ep 回环的超集）承接——原 `verify_qwen3_epair.py`/`verify_gemma4_epair.py`（`ep.module()` vs wrapper 的 ep 回环）已重构进 OM runner。gemma4 经 `run_gemma4_om.py` 验证（OM vs eager maxdiff<1.0 MATCH）+ `run_gemma4_gen.py` 文本生成通过；qwen3.5 经 `run_qwen3_5_om.py`（OM vs EP/HF MATCH）。**注**：qwen3（base）`run_qwen3_om.py` 暴露 OM 数值异常（OM vs eager maxdiff≈20，cann_lm eager≈HF 正确、OM 输出错误），疑在其动态 RoPE（Pow/Cos/Sin，gemma4 用预缓存表不触发），OM 计算侧待排查。
 
@@ -1200,7 +1200,7 @@ HF (Gemma4ClippableLinear):           cann_lm (nn.Linear):
 5. **qwen3.5 线性注意力导出** — 详见 [reference_qwen3_5_export.md](../reference_qwen3_5_export.md)
 6. **新 ExportWrapper 的 ep_json 格式与 C++ 解析器不兼容** — **[已解决]** C++ `epair_model_parser.cc` 的 `parse_named_arg` 已支持 `arg.name` 和 `arg.as_tensor.name` 两种格式
 7. **qwen3 / qwen3.5 scatter-write 改造** — 当前方案 B（预分配 buffer + `index_copy` scatter-write）仅实现 gemma4。qwen3 和 qwen3.5 的 attention 层同样需要从 `torch.cat` 改为 `index_copy` + 预分配 buffer。详见 [reference_qwen3_5_export.md](../reference_qwen3_5_export.md) "scatter-write 改造"
-8. **aten.index_copy.default GE converter 缺失** — **[已解决]** 在 `converter/export/ge_converter.py` 注册 `aten.index_copy.default` converter，用 `ge.InplaceUpdate` + `ge.TransposeD` 实现
+8. **aten.index_copy.default GE converter 缺失** — **[已解决]** 在 `converter/export/ge_converters/ge_converter.py` 注册 `aten.index_copy.default` converter，用 `ge.InplaceUpdate` + `ge.TransposeD` 实现
 
 > 量化相关待实现/遗留见 [quant_design.md](../quant/quant_design.md) "已知问题与遗留"。
 
@@ -1211,10 +1211,12 @@ HF (Gemma4ClippableLinear):           cann_lm (nn.Linear):
 | `cann_lm/converter/model_registry.py` | 模型注册表（ModelEntry + REGISTRY + detect_model_type） |
 | `cann_lm/converter/loader.py` | `load_model` + `build_config` + `collect_tokenizer_files` |
 | `cann_lm/converter/saver.py` | `save_epair` / `save_epair_prefill_decode` / `save_model_config` / `copy_tokenizer_files` |
+| `cann_lm/converter/swap.py` | 量化编排（converter 根，peer of loader/saver）：`swap_from_dopt`（主路径）/ `swap_to_quant_linear_from_dopt` / `swap_embeddings_from_dopt` / `load_dopt_state_dict`；绝对 import 自 `export/quant_swap/` |
+| `cann_lm/converter/quant_entry.py` | 量化入口 facade：re-export `run_auto_quant`（`quant/auto_quant.py`）+ `swap_from_dopt`（`swap.py`），供 `cann_lm_converter` 单一 import |
 | `cann_lm/converter/export_wrapper.py` | `ExportWrapper` 基类 |
 | `cann_lm/models/{model}/export_wrapper.py` | 各模型 `ExportWrapper` 子类 |
 | `cann_lm/converter/export/epair_utils.py` | 权重打包（`pack_weights`）、磁盘写入（`consolidated_weights_save`） |
-| `cann_lm/converter/export/ge_converter.py` | `register_ge_converters`（cann_lm.* + aten.* → GE 算子映射） |
+| `cann_lm/converter/export/ge_converters/ge_converter.py` | `register_ge_converters`（cann_lm.* + aten.* → GE 算子映射） |
 | `cann_lm/converter/export/csrc/inc/external/torch_delegate/epair_model_loader.h` | C++ 公共 API：`EpairModelLoader` |
 | `cann_lm/converter/export/csrc/backend/epair_model_loader.cc` | `EpairModelLoader::Impl` 实现 |
 | `cann_lm/converter/export/csrc/backend/ge_graph_builder.h/.cc` | `GeGraphBuilder`：解析 model JSON + 构建 GE Graph |

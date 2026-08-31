@@ -21,7 +21,7 @@ import torch
 
 from cann_lm.models.gemma4 import Gemma4TextConfig, Gemma4ForCausalLM
 from cann_lm.models.gemma4.export_wrapper import Gemma4ExportWrapper
-from cann_lm.converter.export.ge_converter import register_ge_converters
+from cann_lm.converter.export.ge_converters import register_ge_converters
 from cann_lm.converter.export.epair_utils import consolidated_weights_save
 
 

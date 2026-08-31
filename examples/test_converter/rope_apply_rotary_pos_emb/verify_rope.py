@@ -230,7 +230,7 @@ def _run_export() -> int:
 
     try:
         import torch_delegate  # noqa: F401
-        from cann_lm.converter.export.ge_converter import register_ge_converters
+        from cann_lm.converter.export.ge_converters import register_ge_converters
     except ImportError as e:
         print(f"[SKIP] torch_delegate / cann_lm converter 不可用: {e}")
         return 0

@@ -12,41 +12,23 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Quantization entrypoints for the converter (W4A8 s8s4 / W4A16).
+"""dopt GPTQ tooling + calibration data for the converter.
 
-- materialize_int4_per_group_symmetric: fp weight -> (nibble-packed int4-as-int8, scale),
-  linear symmetric (offset=0), uses dopt GPTQ scale
-- materialize_int8_per_channel_symmetric: embed int8 per-channel (host gather)
-- QuantLinear: export-path Linear whose forward calls npu::npu_quant_matmul
-  (W4A8 also uses npu_dynamic_quant for act quant)
-- swap_to_quant_linear_from_dopt: port dopt GPTQ output (GPTQ weight + group_scale)
-  -> materialize int4 -> swap QuantLinear (legacy, scene-1 offline; internally
-  load_dopt_state_dict + _swap_linear_from_sd)
-- swap_from_dopt: one-shot load sd + Linear swap + embed extraction (main process,
-  scenes 1/2)
-- swap_embeddings_from_dopt: port dopt embed int8+scale for host gather
-- load_dopt_state_dict: load dopt GPTQ output (safetensors/.pth/dir)
+This package holds the **offline GPTQ side**: dopt orchestration (subprocess
+spawn + dopt_config generation), the vendored ``dopt_lm`` framework, and
+calibration datasets. It does NOT contain the converter-side materialize/swap
+logic — that moved to ``cann_lm/converter/export/quant_swap/`` to co-locate
+with the export pipeline.
 
-GPTQ (dopt_lm) runs offline on NPU/GPU/CPU and produces the dopt output; the
-converter loads it via --quant-path, materializes, swaps, exports. See
-docs/cann_lm_converter/quant_design.md.
+Submodules:
+- ``auto_quant``: one-shot quantization (scene 2, spawn dopt subprocess)
+- ``dopt_wrapper``: dopt subprocess body (model_define + weight_quant_pipline)
+- ``download_dataset``: calibration jsonl download script
+- ``dopt_lm/``: vendored GPTQ framework (independent CLI)
+- ``calibrate_sets/``: calibration jsonl datasets
+- ``config.yaml``: dopt GPTQ training config
+
+Converter-side quant integration (materialize / QuantLinear / swap) is at
+``cann_lm.converter.export.quant_swap``. See
+docs/cann_lm_converter/quant/quant_design.md.
 """
-
-from .materialize import materialize_int4_per_group_symmetric, materialize_int8_per_channel_symmetric
-from .quant_linear import QuantLinear
-from .swap import (
-    load_dopt_state_dict,
-    swap_to_quant_linear_from_dopt,
-    swap_from_dopt,
-    swap_embeddings_from_dopt,
-)
-
-__all__ = [
-    "materialize_int4_per_group_symmetric",
-    "materialize_int8_per_channel_symmetric",
-    "QuantLinear",
-    "swap_to_quant_linear_from_dopt",
-    "swap_from_dopt",
-    "swap_embeddings_from_dopt",
-    "load_dopt_state_dict",
-]

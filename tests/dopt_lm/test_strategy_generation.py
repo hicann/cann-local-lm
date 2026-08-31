@@ -2,7 +2,8 @@ import json
 
 import torch
 
-from cann_lm.converter.quant import auto_quant, dopt_wrapper, swap
+from cann_lm.converter.quant import auto_quant, dopt_wrapper
+from cann_lm.converter import swap
 
 
 class ToyModel(torch.nn.Module):

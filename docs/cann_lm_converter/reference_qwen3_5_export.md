@@ -167,7 +167,7 @@ qwen3.5 有 18 层线性注意力（GatedDeltaNet），这是导出问题的集�
    - fake meta: `out = query.new_empty(query.shape[:-1] + (value.shape[-1],))`，`final_state = initial_state.new_empty(initial_state.shape)`
    - CPU impl: 转换 BHSD→BSHD 调纯 torch `torch_chunk_gated_delta_rule`（做数值回归用）
 
-2. **`cann_lm/converter/export/ge_converter.py`** — 手动创建 `ge.ChunkGatedDeltaRule` op（torchair auto_generated 未生成此算子，torchair 自带的 `npu_chunk_gated_delta_rule` converter 直接 `raise RuntimeError`，此处覆盖）：
+2. **`cann_lm/converter/export/ge_converters/ge_converter.py`** — 手动创建 `ge.ChunkGatedDeltaRule` op（torchair auto_generated 未生成此算子，torchair 自带的 `npu_chunk_gated_delta_rule` converter 直接 `raise RuntimeError`，此处覆盖）：
    - CANN op_info: `aic-ascend910_93-ops-info-transformer.json "ChunkGatedDeltaRule"`
    - inputs: query/key/value/beta/initial_state/actual_seq_lengths + g(optional)
    - outputs: out/final_state，attr: `scale_value`（float，default 1.0）

@@ -47,7 +47,7 @@ if str(_PROJECT_ROOT) not in sys.path:
 
 from cann_lm.models.qwen3 import Qwen3ForCausalLM, Qwen3TextConfig, load_qwen3_weights
 from cann_lm.models.qwen3.export_wrapper import Qwen3ExportWrapper
-from cann_lm.converter.export.ge_converter import register_ge_converters
+from cann_lm.converter.export.ge_converters import register_ge_converters
 from cann_lm.converter.export.epair_utils import consolidated_weights_save
 from transformers import AutoTokenizer
 
@@ -337,7 +337,7 @@ def main():
 
     if args.quant_embeddings:
         from safetensors import safe_open
-        from cann_lm.converter.quant.materialize import materialize_int8_per_channel_symmetric
+        from cann_lm.converter.export.quant_swap.materialize import materialize_int8_per_channel_symmetric
         print(f"  Loading dopt embed int8+scale from {DOPT_PATH}")
         with safe_open(DOPT_PATH, "pt") as sf:
             int8_w, scale = materialize_int8_per_channel_symmetric(

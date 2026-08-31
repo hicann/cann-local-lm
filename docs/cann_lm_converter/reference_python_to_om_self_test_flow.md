@@ -83,7 +83,7 @@ export PYTHONPATH=/home/developer/Ascend/cann-9.2.0/python.site-packages:/mnt/wo
 | `cann_lm/models/fused_ops/_library.py` | NPU_LIB / register_cpu_impl 工具 | 一般不动（已处理 stubs 环境） |
 | `cann_lm/models/gemma4/modeling_gemma4.py` | gemma4 模型 forward | 改 attention / RoPE / KV cache 调用 |
 | `cann_lm/models/qwen3_5/modeling_qwen3_5.py` | qwen3.5 模型 forward | 同上 |
-| `cann_lm/converter/export/ge_converter.py` | torchair GE converter | 加 `@register_fx_node_ge_converter(torch.ops.npu.xxx.default)` + 调 `ge.Xxx(...)` |
+| `cann_lm/converter/export/ge_converters/ge_converter.py` | torchair GE converter | 加 `@register_fx_node_ge_converter(torch.ops.npu.xxx.default)` + 调 `ge.Xxx(...)` |
 | `cann_lm/converter/saver.py` | epair 落盘 + config | 改 `whitelist_decompositions` / `EpairConfig` |
 | `examples/test_converter/export_llm_model/om_npu_verify/reg_register.h` | C++ REG_OP 注册 | 加 `REG_OP(Xxx).INPUT(...).ATTR(...).OP_END_FACTORY_REG(Xxx)` |
 
@@ -430,7 +430,7 @@ register_fx_node_ge_converter(torch.ops.npu.npu_fused_infer_attention_score_v2.d
 | stubs 工具 | `cann_lm/models/fused_ops/_library.py` | NPU_LIB / register_cpu_impl（stubs 环境跳过 CPU impl） |
 | 模型 forward | `cann_lm/models/gemma4/modeling_gemma4.py` | attention / RoPE / KV cache 调用 |
 | 模型 forward | `cann_lm/models/qwen3_5/modeling_qwen3_5.py` | 同上 |
-| GE converter | `cann_lm/converter/export/ge_converter.py` | `@register_fx_node_ge_converter` + `ge.Xxx(...)` |
+| GE converter | `cann_lm/converter/export/ge_converters/ge_converter.py` | `@register_fx_node_ge_converter` + `ge.Xxx(...)` |
 | epair 落盘 | `cann_lm/converter/saver.py` | `whitelist_decompositions` / `EpairConfig` |
 | epair 序列化 | `cann_lm/converter/export/epair_utils.py` | `consolidated_weights_save` |
 | 导出 CLI | `cann_lm/converter/cann_lm_converter.py` | `--hf-path --mode --use-embeddings --num-layers` |

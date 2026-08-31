@@ -20,11 +20,11 @@ from pathlib import Path
 import torch
 import torch.nn as nn
 
-from .materialize import (
+from cann_lm.converter.export.quant_swap.materialize import (
     materialize_int4_per_group_symmetric,
     materialize_int8_per_channel_symmetric,
 )
-from .quant_linear import QuantLinear
+from cann_lm.converter.export.quant_swap.quant_linear import QuantLinear
 
 # Linear swap skips names matching these substrings. embed_tokens* are nn.Embedding
 # (consumed by swap_embeddings_from_dopt for W8 host gather). lm_head is NOT skipped

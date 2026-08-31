@@ -119,7 +119,7 @@ mask = torch.where(k_pos <= q_pos, 0.0, minv=-1e4)  # 绝对位 causal + pad 行
 
 ## 5. 旋钮空间(均 modeling 层可改,schema/converter 已透传)
 
-`cann_lm/models/fused_ops/fused_infer_attention_score.py`(schema:34-42)、`cann_lm/converter/export/_fused_infer_attention_score_v2_converter.py`(converter:36,48,75,109)对 `inner_precise`/`atten_mask` 均无硬约束(透传),modeling 层改即可。
+`cann_lm/models/fused_ops/fused_infer_attention_score.py`(schema:34-42)、`cann_lm/converter/export/ge_converters/_fused_infer_attention_score_v2_converter.py`(converter:36,48,75,109)对 `inner_precise`/`atten_mask` 均无硬约束(透传),modeling 层改即可。
 
 | 旋钮 | 当前 | 改 | 改动点(file:line) | 假设 |
 |---|---|---|---|---|
@@ -280,7 +280,7 @@ Phase 0 (variant A + B × 910 + 950)
 | qwen3.5 re-enable FIA | `cann_lm/models/qwen3_5/modeling_qwen3_5.py` 的 FIA call site（切回 `fused_attention_forward`，原 dead code 已弃） |
 | qwen3.5 gen inline mask | `examples/test_converter/export_llm_model/om_npu_verify/run_qwen3_5_gen.py` 的 inline mask |
 | FIA schema + fake + CPU eager | `cann_lm/models/fused_ops/fused_infer_attention_score.py` 的 schema+fake+CPU impl |
-| FIA GE converter | `cann_lm/converter/export/_fused_infer_attention_score_v2_converter.py` 的 GE converter |
+| FIA GE converter | `cann_lm/converter/export/ge_converters/_fused_infer_attention_score_v2_converter.py` 的 GE converter |
 | OM 编译入口(SOC_VERSION env) | `examples/test_converter/export_llm_model/main.cpp` 的 SOC_VERSION 设置 |
 | OM 编译入口(GE_FUSION_SWITCH_FILE) | `examples/test_converter/export_llm_model/main.cpp` 的 GE_FUSION_SWITCH_FILE 设置 |
 | fusion cfg 内容 | `scripts/set_env_compile.sh` 的 fusion cfg 段 |

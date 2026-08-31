@@ -47,7 +47,7 @@ cann_lm/converter/export/
 └── ...（既有文件）
 ```
 
-> **预留**：`transforms.py` 当前仅含 `nd2nz`。Stage 2 的 `pack_int4_nz`（int4 nibble-aware NZ）也放此文件。`quant/materialize.py` 的 `transdata_scale`（fp32→int64 位模式）语义上同属"格式转换"，待 [后续迁移](#后续迁移) 阶段 quant converter 部分迁入 export 时一并挪到 `weight_format/transforms.py`，当前不挪（避免破坏 quant 路径既有 import）。
+> **预留**：`transforms.py` 当前仅含 `nd2nz`。Stage 2 的 `pack_int4_nz`（int4 nibble-aware NZ）也放此文件。`transdata_scale`（fp32→int64 位模式）语义上同属"格式转换"，现位于 `cann_lm/converter/export/quant_swap/materialize.py`（`swap.py` 在 `cann_lm/converter/swap.py`，绝对 import 它）；是否进一步合并到 `weight_format/transforms.py` 待定（`epair_utils` 当前从 `quant_swap.materialize` import）。
 
 ## 配置文件
 
@@ -187,13 +187,17 @@ data = raw.numpy().tobytes()
 
 ## 后续迁移
 
-quant 包中涉及 converter 的部分（`materialize.py` 的 `transdata_scale`/`pack_int4`、`quant_linear.py`、`swap.py` 的物化逻辑）后续计划迁入 `cann_lm/converter/export/`，与 `weight_format/` 合并：
+### 已完成（2026-08-31）：quant_swap 迁入 export/ + swap 升至 converter 根
 
-- `transdata_scale` → `weight_format/transforms.py`
-- `pack_int4` → `weight_format/transforms.py`
-- 量化 swap/物化 → `export/quant_swap/`（或类似）
+`materialize.py` / `quant_linear.py` / `swap.py` 已从 `cann_lm/converter/quant/` 迁出：
+- `materialize.py` / `quant_linear.py` → `cann_lm/converter/export/quant_swap/`（物化内部，与 export pipeline 同位）
+- `swap.py` → `cann_lm/converter/swap.py`（converter 根，编排层 peer of `loader.py` / `saver.py`，绝对 import materialize/quant_linear）
 
-当前不挪（避免破坏 quant 路径既有 import 与测试）。迁移时同步更新本文档目录结构节与 [export_design.md](./export_design.md) 源文件索引。
+旧 import 路径已干净切断：`swap_from_dopt` 走 `cann_lm.converter.swap`，物化符号走 `cann_lm.converter.export.quant_swap`。`quant/` 现仅留 dopt 编排（`auto_quant` / `dopt_wrapper`）+ vendored `dopt_lm` + 校准数据。详见 [quant_design.md](../quant/quant_design.md) "quant 包架构"。
+
+### 待定：transdata_scale / pack_int4 合并到 weight_format/
+
+`transdata_scale` / `pack_int4` 现位于 `export/quant_swap/materialize.py`，语义同属"格式转换"。是否进一步合并到 `weight_format/transforms.py`（与 `nd2nz` 同位）待定——`epair_utils` 当前从 `quant_swap.materialize` import `transdata_scale`，合并需同步改 import + 测试。迁移时同步更新本文档目录结构节与 [export_design.md](./export_design.md) 源文件索引。
 
 ## 文档关联
 

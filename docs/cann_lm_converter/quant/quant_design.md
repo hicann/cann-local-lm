@@ -33,7 +33,7 @@
 `cann_lm/converter/quant/` 下内置两块：
 
 1. **dopt_lm（vendored GPTQ 框架）**：在 **NPU/GPU/CPU** 上对 HF 模型做 GPTQ 权重量化，产出 per-layer `group_scale`（per-channel × per-group 对称，offset=0）+ GPTQ 修正后的 fp16 权重，落盘 `trained_quant_weight.pth` 或 `model.safetensors`。dopt 自身只做 fakequant（权重留在 fp16），不物化真 int4，不接 converter 导出。**dopt 的完整设计（文件树 / 入口 / GPTQ 调用链 / 可设置参数清单 / 历史调试档案）见 [dopt_design.md](./dopt_design.md)**。
-2. **converter 侧量化接入（`materialize.py` / `quant_linear.py` / `swap.py` / `auto_quant.py` / `dopt_wrapper.py` / `__init__.py`）**：在 **CPU venv + torchair stubs** 上加载 dopt 产物，物化成真 int4 payload + fp32 scale，把 `nn.Linear` 替换成 `QuantLinear`（forward 调 `npu::npu_dynamic_quant` + `npu::npu_quant_matmul`），然后 `torch.export` 产出含 `npu_quant_matmul` + `DynamicQuant` 节点的 epair。
+2. **converter 侧量化接入**（`cann_lm/converter/swap.py`：编排层 swap；`cann_lm/converter/export/quant_swap/`：`materialize.py` / `quant_linear.py` 物化内部；`cann_lm/converter/quant/`：`auto_quant.py` / `dopt_wrapper.py`）：在 **CPU venv + torchair stubs** 上加载 dopt 产物，物化成真 int4 payload + fp32 scale，把 `nn.Linear` 替换成 `QuantLinear`（forward 调 `npu::npu_dynamic_quant` + `npu::npu_quant_matmul`），然后 `torch.export` 产出含 `npu_quant_matmul` + `DynamicQuant` 节点的 epair。
 
 ### 能力边界
 
@@ -87,44 +87,58 @@
 ## quant 包架构
 
 ```
-cann_lm/converter/quant/
-├── __init__.py              包门面，re-export 7 个公共符号
-├── materialize.py           权重物化纯函数：fp → (int4 payload, fp32 scale) + transdata_scale/restore_scale
-├── quant_linear.py          导出用 QuantLinear nn.Module，forward 发射 npu::npu_quant_matmul IR
-├── swap.py                  算子 IR 替换 + dopt 产物加载 + 量化元信息读取 + 层策略解析
+cann_lm/converter/quant/                  # dopt GPTQ 工具链 + 校准数据
+├── __init__.py              包门面（dopt 编排 + 校准；不再 re-export materialize/swap）
 ├── auto_quant.py            一键式量化（方案 C：spawn dopt subprocess，检测 NPU/GPU/CPU）
 ├── dopt_wrapper.py          dopt subprocess 主体（model_define + weight_quant_pipline + 自动生成 dopt_config）
 ├── download_dataset.py      校准数据集下载脚本（下载/格式化为 jsonl，默认输出到 calibrate_sets/）
 ├── config.yaml              dopt GPTQ 校准训练配置（train_files 指向 calibrate_sets/，dopt_wrapper via --optimize-config）
 ├── calibrate_sets/                   校准数据集子目录（jsonl，由 download_dataset.py 下载生成，可替换/多选）
 └── dopt_lm/                 vendored GPTQ 框架，独立 CLI 运行
+
+cann_lm/converter/swap.py                 # 编排模块（converter 根，peer of loader/saver；load→swap→save 中间步）
+                                           # 绝对 import 自 quant_swap/：dopt 产物加载 + Linear→QuantLinear swap + 层策略解析
+
+cann_lm/converter/quant_entry.py          # 量化入口 facade（converter 根）：re-export run_auto_quant + swap_from_dopt
+                                           # cann_lm_converter 单一量化 import 点（惰性，no-quant 不触发 swap 副作用）
+
+cann_lm/converter/export/quant_swap/      # 量化物化内部（materialize + QuantLinear，被 swap.py 调用）
+├── __init__.py              re-export 6 物化符号（materialize_*/transdata_scale/restore_scale/pack_int4/QuantLinear）
+├── materialize.py           权重物化纯函数：fp → (int4 payload, fp32 scale) + transdata_scale/restore_scale
+└── quant_linear.py          导出用 QuantLinear nn.Module，forward 发射 npu::npu_quant_matmul IR
 ```
+
+> **迁移说明**（2026-08-31）：`materialize.py` / `quant_linear.py` / `swap.py` 从 `cann_lm/converter/quant/` 迁出。`materialize.py` / `quant_linear.py` 落 `cann_lm/converter/export/quant_swap/`（物化内部）；`swap.py` 进一步升至 `cann_lm/converter/swap.py`（converter 根，编排层 peer of `loader.py` / `saver.py`，绝对 import materialize/quant_linear）。`quant/` 现仅留 dopt 编排（`auto_quant` / `dopt_wrapper`）+ vendored `dopt_lm` + 校准数据。旧 import 路径已干净切断：`swap_from_dopt` 走 `cann_lm.converter.swap`，物化符号走 `cann_lm.converter.export.quant_swap`。
 
 > **dopt_config.json 不在 quant/ 包目录**：层策略配置（`{层名: quant_strategy}`）由 `_build_layer_strategy` 遍历模型自动生成，写入 dopt 产物目录（`--output-dir`/临时盘），converter 侧 `swap._read_quant_param_map` 从该产物目录读取。**两场景均自动生成**，无需用户手写。`download_dataset.py` 默认输出目录是 `calibration_data/`，但本仓库实际产物落在 `calibrate_sets/`（config.yaml 的 `train_files` 指向）。
 
 ### 依赖关系
 
 ```
-__init__.py (门面, re-export 7 符号)
-    │
+cann_lm/converter/swap.py (编排模块, peer of loader/saver; load→swap→save 中间步)
+    │  from cann_lm.converter.export.quant_swap.materialize import (...)
+    │  from cann_lm.converter.export.quant_swap.quant_linear import QuantLinear
+    ▼ (绝对 import, 非 relative — swap 已升到 converter 根)
+cann_lm/converter/export/quant_swap/__init__.py (物化内部, re-export 6 符号)
     ├── materialize.py      ← 叶子，仅 import torch
-    ├── quant_linear.py     ← import cann_lm.models.fused_ops.ops (注册副作用: npu_quant_matmul + npu_dynamic_quant)
-    └── swap.py             ← 相对 import materialize + quant_linear
+    └── quant_linear.py     ← import cann_lm.models.fused_ops.ops (注册副作用: npu_quant_matmul + npu_dynamic_quant)
 
-auto_quant.py               ← 场景 2 入口，subprocess 调 dopt_wrapper.py (独立进程，不 import swap)
-                                    ↑
-                                    │ 外部消费者
-                cann_lm_converter.py:
-                    场景 2:        from cann_lm.converter.quant.auto_quant import run_auto_quant
-                    场景 1/2 共用:  from cann_lm.converter.quant import swap_from_dopt
+cann_lm/converter/quant/auto_quant.py   ← 场景 2 实现 (run_auto_quant)，subprocess 调 dopt_wrapper.py (独立进程，不 import swap)
+cann_lm/converter/swap.py               ← 场景 1/2 实现 (swap_from_dopt)，绝对 import quant_swap/
+cann_lm/converter/quant_entry.py        ← facade，re-export run_auto_quant + swap_from_dopt
+                                     ↑
+                                     │ 外部消费者 (唯一量化入口)
+                 cann_lm_converter.py:
+                     from cann_lm.converter.quant_entry import run_auto_quant, swap_from_dopt
+                     (惰性 import 在 convert() 量化条件块内；no-quant 不导入 facade → 不触发 swap 的 npu op 注册副作用)
 ```
 
 - **无循环依赖**：`materialize ← swap → quant_linear` 的有向无环图；`materialize` 与 `quant_linear` 互不依赖；`auto_quant.py` 与 `swap.py` 解耦（subprocess 不 import swap）。
-- **`__all__` 暴露 7 个符号**（见 `__init__.py` 的 `__all__`）：其中 **2 个** 被 `cann_lm_converter.py` 实际 import —— `swap_from_dopt`（主路径，场景 1/2 共用，一次 load sd 同时做 Linear swap + Embedding 抽取）+ `run_auto_quant`（从 `auto_quant` 直接 import，场景 2 spawn subprocess）。其余 5 个对外暴露为测试/离线/将来直接调用预留：
-  - `swap_to_quant_linear_from_dopt`（向后兼容薄 wrapper，场景 1 离线用户或单独 Linear swap 用，已非主路径）
-  - `swap_embeddings_from_dopt`（embedding int8+scale 抽取，被 `swap_from_dopt` 内部组合调用）
-  - `load_dopt_state_dict`（dopt 产物加载，被 `swap_from_dopt`/`swap_to_quant_linear_from_dopt` 内部调用）
-  - `materialize_int4_per_group_symmetric` / `materialize_int8_per_channel_symmetric` / `QuantLinear`（经 `swap.py` 内部相对 import 使用）
+- **cann_lm_converter 经 `cann_lm.converter.quant_entry` 单一 facade 访问量化入口**（`run_auto_quant` 实现 `quant/auto_quant.py` + `swap_from_dopt` 实现 `swap.py`，facade re-export 二者）。`quant_swap/__init__.py` re-export 6 个物化符号（`materialize_*` / `transdata_scale` / `restore_scale` / `pack_int4` / `QuantLinear`）。`swap_from_dopt`（主路径，场景 1/2 共用，一次 load sd 同时做 Linear swap + Embedding 抽取）+ `run_auto_quant`（场景 2 spawn subprocess）。其余对外暴露为测试/离线/将来直接调用预留：
+  - `swap_to_quant_linear_from_dopt`（向后兼容薄 wrapper，场景 1 离线用户或单独 Linear swap 用，已非主路径；位于 `cann_lm.converter.swap`）
+  - `swap_embeddings_from_dopt`（embedding int8+scale 抽取，被 `swap_from_dopt` 内部组合调用；位于 `cann_lm.converter.swap`）
+  - `load_dopt_state_dict`（dopt 产物加载，被 `swap_from_dopt`/`swap_to_quant_linear_from_dopt` 内部调用；位于 `cann_lm.converter.swap`）
+  - `materialize_int4_per_group_symmetric` / `materialize_int8_per_channel_symmetric` / `QuantLinear`（位于 `cann_lm.converter.export.quant_swap`，经 `swap.py` 绝对 import 使用）
 
 ### I/O 定位
 
@@ -442,28 +456,27 @@ class QuantLinear(nn.Module):
 
 > **代码风格观察**：`_swap_linear_from_sd` 函数体超 50 行（超 AGENTS.md 原则）。该函数承担太多职责（遍历 Linear + 读 scale + 读 meta + 校验 uq + 校验 offset + materialize + 预转置 + 实例化 + 替换 + 计数 + 构造返回 dict）。建议按单一职责拆成 `_validate_dopt_quant_meta(uq, offset)` + `_build_quant_info(...)` 等。当前未拆。
 
-### `__init__.py` — 包门面
+### `__init__.py` — 物化内部门面（`cann_lm/converter/export/quant_swap/`）
 
-re-export 7 个公共符号（见 `__init__.py` 的 `__all__`）：
+re-export 6 个物化符号（`swap.py` 升至 `cann_lm/converter/swap.py` 后，本门面仅留 materialize + QuantLinear；swap 入口在 `cann_lm.converter.swap`）：
 
 ```python
-from .materialize import materialize_int4_per_group_symmetric, materialize_int8_per_channel_symmetric
-from .quant_linear import QuantLinear
-from .swap import (
-    load_dopt_state_dict,
-    swap_to_quant_linear_from_dopt,
-    swap_from_dopt,
-    swap_embeddings_from_dopt,
+from .materialize import (
+    materialize_int4_per_group_symmetric,
+    materialize_int8_per_channel_symmetric,
+    transdata_scale,
+    restore_scale,
+    pack_int4,
 )
+from .quant_linear import QuantLinear
 
 __all__ = [
     "materialize_int4_per_group_symmetric",
     "materialize_int8_per_channel_symmetric",
+    "transdata_scale",
+    "restore_scale",
+    "pack_int4",
     "QuantLinear",
-    "swap_to_quant_linear_from_dopt",
-    "swap_from_dopt",
-    "swap_embeddings_from_dopt",
-    "load_dopt_state_dict",
 ]
 ```
 
@@ -515,12 +528,12 @@ converter `--quant-method gptq` 一键触发：检测 NPU/GPU/CPU → spawn `dop
 
 | # | 改造项 | 实现位置 | 状态 |
 |---|--------|---------|------|
-| 1 | `materialize_int4_per_group_symmetric(..., packed=True)` 产出 nibble-packed int8 `[n, k//2]` | `cann_lm/converter/quant/materialize.py` 的 `pack_int4` / `materialize_int4_per_group_symmetric` | ✅ |
-| 2 | `QuantLinear` 权重/scale **预转置** 到 `[k//2, n]`/`[k//g, n]`，`transpose_x2=False` | `cann_lm/converter/quant/quant_linear.py` 的 `__init__`/`forward` + `swap.py` 的预转置 | ✅ |
-| 3 | `group_sizes=[1,1,g]` 三元组（V4 48-bit 编码，K-group at index [2]） | `cann_lm/converter/quant/quant_linear.py` 的 `group_sizes` | ✅ |
+| 1 | `materialize_int4_per_group_symmetric(..., packed=True)` 产出 nibble-packed int8 `[n, k//2]` | `cann_lm/converter/export/quant_swap/materialize.py` 的 `pack_int4` / `materialize_int4_per_group_symmetric` | ✅ |
+| 2 | `QuantLinear` 权重/scale **预转置** 到 `[k//2, n]`/`[k//g, n]`，`transpose_x2=False` | `cann_lm/converter/export/quant_swap/quant_linear.py` 的 `__init__`/`forward` + `swap.py` 的预转置 | ✅ |
+| 3 | `group_sizes=[1,1,g]` 三元组（V4 48-bit 编码，K-group at index [2]） | `cann_lm/converter/export/quant_swap/quant_linear.py` 的 `group_sizes` | ✅ |
 | 4 | bias=None 时 forward 传 None，GE converter 侧塞 dummy zeros[N] | `quant_linear.py` 的 `forward` + `_quant_matmul_converter.py` 的 dummy bias workaround | ✅ |
-| 5 | `npu::npu_quant_matmul`（CANN 原生，取代自研 `quant_matmul_s8s4`） | `cann_lm/converter/quant/quant_linear.py` 的 `forward` | ✅ |
-| 6 | `_quant_matmul_converter.py` 映射到 `ge.QuantBatchMatmulV4`（V4 full IR + dummy bias） | `cann_lm/converter/export/_quant_matmul_converter.py` | ✅ |
+| 5 | `npu::npu_quant_matmul`（CANN 原生，取代自研 `quant_matmul_s8s4`） | `cann_lm/converter/export/quant_swap/quant_linear.py` 的 `forward` | ✅ |
+| 6 | `_quant_matmul_converter.py` 映射到 `ge.QuantBatchMatmulV4`（V4 full IR + dummy bias） | `cann_lm/converter/export/ge_converters/_quant_matmul_converter.py` | ✅ |
 | 7 | `reg_register.h` 注册 `QuantBatchMatmulV4` + `DynamicQuant` + `Bitcast`（`QuantMatmulS8S4` 方案 A 遗留仍注册，见下） | `examples/test_converter/export_llm_model/reg_register.h`、`examples/test_converter/export_and_load_epair/reg_register.h`、`examples/test_converter/export_llm_model/om_npu_verify/reg_register.h` | ✅ |
 | 8 | custom op schema + fake-meta + CPU impl 自提供（converter venv 无 torch_npu） | `cann_lm/models/fused_ops/quant_matmul.py`（schema + fake-meta + CPU impl） | ✅ |
 
@@ -617,7 +630,7 @@ y[b,m,n] = Σ_k ( x1_q[b,m,k] · x1_scale[b,m] ) · ( x2_q[n,k] · x2_scale[n, k
 
 ### GE converter 与权重落盘
 
-- **GE converter**：`cann_lm/converter/export/_quant_matmul_converter.py`（无 `_s8s4` 后缀）把 `npu::npu_quant_matmul` 映射到 `ge.QuantBatchMatmulV4`（V4 full IR + dummy bias，详见 [路径 C' GE converter 关键技术](#ge-converter-关键技术_quant_matmul_converterpy)）。
+- **GE converter**：`cann_lm/converter/export/ge_converters/_quant_matmul_converter.py`（无 `_s8s4` 后缀）把 `npu::npu_quant_matmul` 映射到 `ge.QuantBatchMatmulV4`（V4 full IR + dummy bias，详见 [路径 C' GE converter 关键技术](#ge-converter-关键技术_quant_matmul_converterpy)）。
 - **权重落盘（无需改 pack）**：`epair_utils.pack_weights` 是**通用**的——序列化 state_dict 里任意 tensor（int8 weight_q + fp32 scale 自动进 bin，bf16→int16 view 已处理，weight_scale fp32→int64 经 `transdata_scale` 转换见 [weight_scale 落盘格式](#weight_scale-落盘格式fp32uint64-位模式转换)）。`weight_info.json` 按 name 记 offset/size。**量化权重无需改打包逻辑**（weight_scale 的 fp32→int64 转换在 `_pack_weights_to_dir` 识别 name 含 `weight_scale` 时调 `transdata_scale`）。
 - **C++ ge_graph_builder**：`PreparePlaceholders` 通用喂权重常量到任意算子输入（`ReadTensorData`→Const 节点）→ `npu_quant_matmul` 的 `x2`/`scale`/`bias` 自动喂入。`ge_weight_loader` 支持 int8/uint8/fp32/int64 等 dtype（`ElementSizeForPt2Dtype` / `Pt2DtypeFromGeString`）。
 

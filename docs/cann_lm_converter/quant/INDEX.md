@@ -12,14 +12,12 @@
 
 ## 代码文件
 
-### converter 侧（`cann_lm/converter/quant/`）
+### dopt 编排 + 校准（`cann_lm/converter/quant/`）
+
+> converter 侧 `swap.py` 升至 `cann_lm/converter/swap.py`（converter 根，编排层 peer of loader/saver）；`materialize.py` / `quant_linear.py` 落 `cann_lm/converter/export/quant_swap/`（物化内部），详见 [../export/INDEX.md](../export/INDEX.md) "Python 代码文件"。`quant/__init__.py` 不再 re-export materialize/swap 符号。
 
 | 文件 | 职责 |
 |------|------|
-| `__init__.py` | 包门面，re-export 7 个公共符号 |
-| `materialize.py` | 权重物化纯函数：`_SCALE_MASK` / `transdata_scale` / `restore_scale` / `pack_int4` / `materialize_int4_per_group_symmetric` / `materialize_int8_per_channel_symmetric` |
-| `quant_linear.py` | 导出用 `QuantLinear(nn.Module)`，forward 发射 `npu::npu_quant_matmul` + `npu::npu_dynamic_quant` IR |
-| `swap.py` | `swap_from_dopt`（主路径）/ `swap_to_quant_linear_from_dopt`（薄 wrapper）/ `_swap_linear_from_sd` / `swap_embeddings_from_dopt` / `load_dopt_state_dict` / `_read_dopt_quant_meta` / `_read_quant_param_map` / `_infer_group_size` / `_STRATEGY_DEFAULT_PARAMS` |
 | `auto_quant.py` | 一键式量化（方案 C）：`run_auto_quant` / `generate_dopt_config` / `_run_dopt_subprocess` / `_detect_device_type` |
 | `dopt_wrapper.py` | dopt subprocess 主体：`main` / `_build_layer_strategy` / `parse_args` |
 | `config.yaml` | dopt GPTQ 校准训练配置（`--optimize-config`） |
@@ -42,7 +40,7 @@
 |------|------|
 | `cann_lm/models/fused_ops/quant_matmul.py` | `npu::npu_quant_matmul` custom op（schema + fake/meta + CPU PoC impl） |
 | `cann_lm/models/fused_ops/dynamic_quant.py` | `npu::npu_dynamic_quant` custom op（激活动态量化 s8） |
-| `cann_lm/converter/export/_quant_matmul_converter.py` | `npu::npu_quant_matmul` → `ge.QuantBatchMatmulV4` converter（V4 full IR + dummy bias） |
+| `cann_lm/converter/export/ge_converters/_quant_matmul_converter.py` | `npu::npu_quant_matmul` → `ge.QuantBatchMatmulV4` converter（V4 full IR + dummy bias） |
 
 ## 关键函数 / 类
 

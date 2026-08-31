@@ -23,7 +23,8 @@
 | `cann_lm/converter/export/epair_utils.py` | `pack_weights` + `consolidated_weights_save` |
 | `cann_lm/converter/export/weight_format/` | 权重格式转换包：`transforms.nd2nz`（ND→FractNZ）+ `rules.resolve_format`（配置解析，按 op_type 分流）+ `load_rules`（详见 [weight_format_design.md](./weight_format_design.md)） |
 | `cann_lm/converter/export/weight_format_rules.json` | NZ 转换规则 shipped 默认配置（`name_pattern` + `op_type` + `format` + `pack`） |
-| `cann_lm/converter/export/ge_converter.py` | `register_ge_converters`（cann_lm.* + aten.* → GE 算子映射） |
+| `cann_lm/converter/export/quant_swap/` | 量化物化内部包（2026-08-31 从 `quant/` 迁入）：`materialize.py`（int4 物化 + `transdata_scale`/`pack_int4`）/ `quant_linear.py`（QuantLinear）；`__init__` re-export 6 物化符号。编排层 `swap.py` 已升至 `cann_lm/converter/swap.py`（converter 根）。详见 [quant_design.md](../quant/quant_design.md) |
+| `cann_lm/converter/export/ge_converters/ge_converter.py` | `register_ge_converters`（cann_lm.* + aten.* → GE 算子映射） |
 | `cann_lm/converter/export/_quant_matmul_s8s4_converter.py` | `cann_lm::quant_matmul_s8s4` GE converter（详见 [INDEX.md](../quant/INDEX.md)） |
 
 ### C++（`cann_lm/converter/export/csrc/`）

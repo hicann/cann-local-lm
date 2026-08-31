@@ -236,7 +236,7 @@ def _pack_weights_to_dir(contents, output_dir: Path, max_file_size: int) -> dict
 
     Streaming write — never accumulates more than one tensor in memory.
     """
-    from cann_lm.converter.quant.materialize import transdata_scale
+    from cann_lm.converter.export.quant_swap.materialize import transdata_scale
 
     raw_sd = contents.ep.state_dict() if callable(contents.ep.state_dict) else contents.ep.state_dict
     state_dict = dict(raw_sd)

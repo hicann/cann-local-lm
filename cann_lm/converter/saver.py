@@ -62,7 +62,7 @@ def save_epair(
 ) -> None:
     import torch_delegate
     from torch_delegate import EpairConfig
-    from cann_lm.converter.export.ge_converter import register_ge_converters
+    from cann_lm.converter.export.ge_converters import register_ge_converters
 
     output_dir = Path(output_dir).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -158,7 +158,7 @@ def save_epair_prefill_decode(
     """
     import torch_delegate
     from torch_delegate import EpairConfig
-    from cann_lm.converter.export.ge_converter import register_ge_converters
+    from cann_lm.converter.export.ge_converters import register_ge_converters
 
     output_dir = Path(output_dir).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)

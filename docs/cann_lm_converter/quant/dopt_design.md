@@ -29,7 +29,7 @@
 
 `dopt_lm/` 是华为 vendored 的 **GPTQ 风格权重 PTQ 框架**（命名 `dopt` = "do optimize"，Quantization Optimization）。它本身是自洽的、可独立运行的 Python 包（入口 `opt_main.py`，CLI 模式），在 **NPU/GPU** 上对 HuggingFace 模型做 **GPTQ 权重量化**，产出 per-layer `group_scale`（per-channel × per-group 对称，offset=0）+ GPTQ 修正后的 fp16 权重，最终序列化成 `trained_quant_weight.pth`（或 `--hf_type_save` 的 HF 目录）。
 
-**调用关系**：dopt_lm 在主仓代码中**不被 `import`**，而是作为独立 CLI 工具运行，其产物（.pth/safetensors）由 converter 的 `quant/swap.py` 在导出时加载。dopt_lm 内部通过相对导入 `from dopt_lm.xxx import yyy` 自引用（需将 `cann_lm/converter/quant` 放进 `PYTHONPATH`）。
+**调用关系**：dopt_lm 在主仓代码中**不被 `import`**，而是作为独立 CLI 工具运行，其产物（.pth/safetensors）由 converter 的 `swap.py`（`cann_lm/converter/swap.py`，converter 根）在导出时加载。dopt_lm 内部通过相对导入 `from dopt_lm.xxx import yyy` 自引用（需将 `cann_lm/converter/quant` 放进 `PYTHONPATH`）。
 
 > **拼写说明**：目录名已使用正确拼写 `ptq_algo_hessian`，但类名 `WeightQuantHeissen` 等历史标识仍保留了 `Hessian` 的拼写错误。算法本质是 GPTQ（基于 Hessian 矩阵的 PTQ）。
 

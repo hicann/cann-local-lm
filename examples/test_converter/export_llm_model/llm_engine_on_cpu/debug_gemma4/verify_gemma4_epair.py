@@ -42,7 +42,7 @@ if str(_PROJECT_ROOT) not in sys.path:
 from cann_lm.models.gemma4 import Gemma4ForCausalLM, Gemma4TextConfig
 from cann_lm.models.gemma4.modeling_gemma4 import load_gemma4_weights
 from cann_lm.models.gemma4.export_wrapper import Gemma4ExportWrapper
-from cann_lm.converter.export.ge_converter import register_ge_converters
+from cann_lm.converter.export.ge_converters import register_ge_converters
 from transformers import AutoTokenizer
 
 HF_PATH = "/mnt/workspace/data/models/gemma-4-E2B-it"

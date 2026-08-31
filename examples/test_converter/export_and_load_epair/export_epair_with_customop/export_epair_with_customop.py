@@ -37,7 +37,7 @@ import torch
 from torch import nn
 
 from cann_lm.models.fused_ops.ops import *  # noqa: F401  (registers cann_lm fused ops: rms_norm/add_rms_norm/rotary_mul/chunk_gated_delta_rule/quant_matmul)
-from cann_lm.converter.export.ge_converter import register_ge_converters
+from cann_lm.converter.export.ge_converters import register_ge_converters
 
 # customop 专用算子 (三模型未用, 从 cann_lm/models/fused_ops/ 移至此):
 #   beam_search / fused_infer_attention_score / rope_in_place (schema + fake meta)

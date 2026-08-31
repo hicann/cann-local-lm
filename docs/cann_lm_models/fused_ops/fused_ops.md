@@ -5,7 +5,7 @@
 > **数据来源**：
 > - 参考实现（CANN 优化版）：Gemma-4 `cann-recipes-infer/models/gemma_4/models/modeling_gemma4.py`；Qwen3.5 `cann-recipes-infer/models/qwen3_5/models/modeling_qwen3_5_moe.py`
 > - 本仓实现：`cann_lm/models/gemma4/modeling_gemma4.py` / `cann_lm/models/qwen3_5/modeling_qwen3_5.py`
-> - 自定义算子：`cann_lm/models/fused_ops/`（`_library.py` 注册 `npu::`/`cann_lm::` schema+fake+CPU impl）+ GE 映射 `cann_lm/converter/export/ge_converter.py` + torchair `custom/`
+> - 自定义算子：`cann_lm/models/fused_ops/`（`_library.py` 注册 `npu::`/`cann_lm::` schema+fake+CPU impl）+ GE 映射 `cann_lm/converter/export/ge_converters/ge_converter.py` + torchair `custom/`
 > - 验证环境：torch_npu 2.7.1.post4（系统 Python，NPU 实机）；converter venv（torchair 源码编译，torch_npu absent，走 `_library.py` stub 路径）。详见 [AGENTS.md](../../../AGENTS.md)「converter 与 torch_npu 的关系」。
 
 参考实现基于 CANN 推理框架（TND/BNSD Paged Attention + MC2 EP + GE Graph），大量使用 `torch_npu` / `torch.ops.npu` 融合算子。本仓 `modeling_*.py` 调用 `torch.ops.npu.*`（+ `torch.ops.cann_lm::l2norm`）融合算子；converter venv 无 torch_npu 时，由 `cann_lm/models/fused_ops/_library.py` 自提供 `npu::` schema+fake-meta（torch.export 能 trace），FX→GE 转换经 `ge_converter.py`（cann_lm 自带 converter）+ torchair `custom/`（自动注册）。NPU 实机走系统 Python 的 torch_npu。
@@ -122,14 +122,14 @@ torch_npu 包 absent；torchair present（`/mnt/workspace/torch-delegate-harmony
 | FusedInferAttention | `custom/fused_infer_attention_score_v2.py`（npu::） | `npu.npu_fused_infer_attention_score_v2.default` | `convert_npu_npu_fused_infer_attention_score_v2(q,k,v,*,query_rope?,key_rope?,pse_shift?,atten_mask?,actual_seq_qlen?,actual_seq_kvlen?,block_table?,dequant_scale_*?,quant_scale_*?,learnable_sink?,input_layout,sparse_mode,block_size,...)` | `ge.FusedInferAttentionScore(...)` → `(out,lse)` | air:: 版在 `torchair/ops/_npu_fused_infer_attention_score_v2.py`（自带 schema+Meta） |
 | l2norm | — | — | — | GE raw op `L2Normalize`（仅 IR 级 REG_OP） | torchair 无 converter/schema/Meta；cann_lm 自带 `_convert_l2norm`（→`ge.L2Normalize`） |
 | RotaryPositionEmbedding | `custom/npu_rotary_mul.py` | `npu.npu_rotary_mul.default` | `conveter_npu_rotary_mul_default(self,r1,r2,rotary_mode='half',rotate?)` | 默认 `ge.RotaryMul(self,r1,r2)`；arch35 或带 `rotate` 时 `ge.RotaryPositionEmbedding(self,r1,r2,mode=,rotate=)` | gemma4 走默认 `ge.RotaryMul` 分支（⚠️ OM 终态见 §4.4「RoPE 注」） |
-| ScatterNdUpdate | `custom/npu_scatter_nd_update.py` | `npu.npu_scatter_nd_update.default` + `npu.npu_scatter_nd_update_.default` | out-of-place / in-place 两版 | out-of-place: `ge.TensorMove(self)`+`ge.ScatterNdUpdate(copy,idx,upd)`（2 算子）；in-place: `ge.ScatterNdUpdate(self,idx,upd)`+`dont_prune_me`（1 算子） | ⚠️ cann_lm 已自带 `converter/export/_scatter_nd_update_converter.py` 覆盖此 converter（产出相同 `ge.ScatterNdUpdate`，行为可控）；gemma4 已落地（`scatter_kv_to_cache` 构造多维 indices 适配标准语义） |
+| ScatterNdUpdate | `custom/npu_scatter_nd_update.py` | `npu.npu_scatter_nd_update.default` + `npu.npu_scatter_nd_update_.default` | out-of-place / in-place 两版 | out-of-place: `ge.TensorMove(self)`+`ge.ScatterNdUpdate(copy,idx,upd)`（2 算子）；in-place: `ge.ScatterNdUpdate(self,idx,upd)`+`dont_prune_me`（1 算子） | ⚠️ cann_lm 已自带 `converter/export/ge_converters/_scatter_nd_update_converter.py` 覆盖此 converter（产出相同 `ge.ScatterNdUpdate`，行为可控）；gemma4 已落地（`scatter_kv_to_cache` 构造多维 indices 适配标准语义） |
 
 ### 3.2 quant_op
 
 | quant_op | converter 文件 | 注册 schema | 产出 GE 算子 | 备注 |
 |---|---|---|---|---|
 | DynamicQuant | `custom/npu_dynamic_quant.py` | `npu.npu_dynamic_quant.default` + `npu.npu_dynamic_quant_asymmetric.default` | `quant_mode=="pertoken" && dst_type_max≈0`: `ge.DynamicQuant(...)`→`(y,scale)`；其他: `ge.DynamicQuantV2(...)`→`(y,scale,offset)`；int4(dst_type==16) 额外 Const/Shape/Div/ConcatV2/Bitcast/Reshape bitcast 子图 | `@declare_supported`（F16/BF16） |
-| QuantBatchMatmulV4 | `custom/quantmatmul.py` | `npu.npu_quant_matmul.default` | 主: `ge.QuantBatchMatmulV4(...)`；备: `ge.QuantBatchMatmulV3(...)`；含 int4/fp4 bitcast+Transpose+Reshape 子图 | ⚠️ cann_lm 实际走**自带 converter** `cann_lm/converter/export/_quant_matmul_converter.py`（去除 torch_npu 依赖、去掉 a8w4 分支），不命中 torchair 此 converter |
+| QuantBatchMatmulV4 | `custom/quantmatmul.py` | `npu.npu_quant_matmul.default` | 主: `ge.QuantBatchMatmulV4(...)`；备: `ge.QuantBatchMatmulV3(...)`；含 int4/fp4 bitcast+Transpose+Reshape 子图 | ⚠️ cann_lm 实际走**自带 converter** `cann_lm/converter/export/ge_converters/_quant_matmul_converter.py`（去除 torch_npu 依赖、去掉 a8w4 分支），不命中 torchair 此 converter |
 
 ### 3.3 关键说明
 
@@ -273,7 +273,7 @@ cache_v = scatter_kv_to_cache(cache_v, new_kv_cache_pos, value_states)
 
 | 算子 | 适用性 | 说明 |
 |------|--------|------|
-| `torch_npu.npu_scatter_nd_update_` | ✅ 已落地 | cann_lm 自带 converter (`converter/export/_scatter_nd_update_converter.py`) 覆盖 torchair，直接产出 `ge.ScatterNdUpdate`（不绕 `aten.index_copy` 的 `InplaceUpdate+Transpose`）。gemma4 经 `scatter_kv_to_cache` 构造多维 indices 适配标准语义。CPU else 分支与 GE `ge.ScatterNdUpdate` 语义一致，export trace 命中 `npu_scatter_nd_update_` |
+| `torch_npu.npu_scatter_nd_update_` | ✅ 已落地 | cann_lm 自带 converter (`converter/export/ge_converters/_scatter_nd_update_converter.py`) 覆盖 torchair，直接产出 `ge.ScatterNdUpdate`（不绕 `aten.index_copy` 的 `InplaceUpdate+Transpose`）。gemma4 经 `scatter_kv_to_cache` 构造多维 indices 适配标准语义。CPU else 分支与 GE `ge.ScatterNdUpdate` 语义一致，export trace 命中 `npu_scatter_nd_update_` |
 
 #### 4.2.7 MoE 算子（不适用）
 

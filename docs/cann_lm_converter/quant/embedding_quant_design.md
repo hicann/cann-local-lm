@@ -97,7 +97,7 @@ embed_tokens_per_layer.*:                                     0 keys (qwen3 无 
 
 ## 改造点
 
-### 1. `cann_lm/converter/quant/materialize.py` — 新增
+### 1. `cann_lm/converter/export/quant_swap/materialize.py` — 新增
 
 ```python
 def materialize_int8_per_channel_symmetric(weight_fp: torch.Tensor,
@@ -110,7 +110,7 @@ def materialize_int8_per_channel_symmetric(weight_fp: torch.Tensor,
     """
 ```
 
-### 2. `cann_lm/converter/quant/swap.py` — 扩展
+### 2. `cann_lm/converter/swap.py` — 扩展
 
 - **新增 `swap_embeddings_from_dopt(model, sd) -> dict`**:
   - 遍历 `nn.Embedding`(embed_tokens + gemma4 `embed_tokens_per_layer` 子类),读 `{name}.weight` + `{name}.quant_op.weight_quantizer.s`
@@ -141,7 +141,7 @@ def materialize_int8_per_channel_symmetric(weight_fp: torch.Tensor,
 
 ### 6. 图入口 dequant
 
-aten `to`(int8→float)+ `mul`(scale `[b,s,1]` 广播)→ `cann_lm/converter/export/ge_converter.py` 已支持 aten.to/mul → `ge.Cast`/`ge.Mul`,**无新算子**。
+aten `to`(int8→float)+ `mul`(scale `[b,s,1]` 广播)→ `cann_lm/converter/export/ge_converters/ge_converter.py` 已支持 aten.to/mul → `ge.Cast`/`ge.Mul`,**无新算子**。
 
 ---
 

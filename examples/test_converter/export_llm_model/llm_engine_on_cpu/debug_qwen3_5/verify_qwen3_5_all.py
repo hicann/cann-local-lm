@@ -19,7 +19,7 @@ if str(_PROJECT_ROOT) not in sys.path:
 from cann_lm.models.qwen3_5 import Qwen3_5ForCausalLM, Qwen3_5TextConfig, load_qwen3_5_weights
 from cann_lm.models.qwen3_5.export_wrapper import Qwen3_5ExportWrapper
 from cann_lm.models.qwen3_5.modeling_qwen3_5 import SimpleKVCache
-from cann_lm.converter.export.ge_converter import register_ge_converters
+from cann_lm.converter.export.ge_converters import register_ge_converters
 import torch_delegate
 from transformers import Qwen3_5ForCausalLM as HFQwen3_5ForCausalLM
 

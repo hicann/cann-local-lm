@@ -15,7 +15,7 @@
 | OM 终态　　　　| `ScatterUpdate` 30　　　　　　　　　　　　　　　| `ScatterNdUpdate` 30　　　　　　　　　　　　　　　　　　　　　 |
 | fused_ops.md | ❌（InplaceUpdate 融合成 ScatterUpdate，不匹配） | ✅ fuse_op `ScatterNdUpdate` 直接命中　　　　　　　　　　　　　 |
 
-- **文件**：`cann_lm/models/gemma4/modeling_gemma4.py` `scatter_kv_to_cache` + `cann_lm/converter/export/_scatter_nd_update_converter.py`（cann_lm 自带 converter 覆盖 torchair，产出 `ge.ScatterNdUpdate`）
+- **文件**：`cann_lm/models/gemma4/modeling_gemma4.py` `scatter_kv_to_cache` + `cann_lm/converter/export/ge_converters/_scatter_nd_update_converter.py`（cann_lm 自带 converter 覆盖 torchair，产出 `ge.ScatterNdUpdate`）
 - **语义**：构造 `[b*n*seq, 3]` 多维坐标 indices `(b,n,kv_pos)` + `[b*n*seq, d]` updates，命中 `ge.ScatterNdUpdate` 标准多维 scatter，等价 `index_copy(2, kv_pos, kv_new)`
 - **用 out-of-place 版（无 `_`）**：in-place 版 schema 有 alias annotation `Tensor(a!)`，torch.export functionalization（`run_decompositions`/aot_autograd）不支持自定义算子输出带 alias；out-of-place `-> Tensor out` 无 alias，converter 加 `ge.TensorMove(self)` 保证不原地改
 
@@ -156,8 +156,8 @@ gemma4 OM 终态非框架算子**全部命中 fused_ops.md 定义**，只剩 `Mu
 |---|---|
 | `cann_lm/models/gemma4/modeling_gemma4.py` | `scatter_kv_to_cache`（cat+transpose+Const+StridedSliceD+ConcatV2D）+ rotary `index_select` |
 | `cann_lm/models/gemma4/export_wrapper.py` | logits `index_select` |
-| `cann_lm/converter/export/_scatter_nd_update_converter.py` | 新建，产出 `ge.ScatterNdUpdate`（覆盖 torchair） |
-| `cann_lm/converter/export/ge_converter.py` | 注册 `npu_scatter_nd_update(_)` 覆盖 |
+| `cann_lm/converter/export/ge_converters/_scatter_nd_update_converter.py` | 新建，产出 `ge.ScatterNdUpdate`（覆盖 torchair） |
+| `cann_lm/converter/export/ge_converters/ge_converter.py` | 注册 `npu_scatter_nd_update(_)` 覆盖 |
 | `cann_lm/models/fused_ops/scatter_nd_update.py` | docstring 更新（gemma4 已落地） |
 | `docs/cann_lm_models/fused_ops/fused_ops.md` | §3 torchair converter 映射 + 备注（原 support_ops §4）|
 | `docs/cann_lm_models/fused_ops/fused_ops.md` | §4.2.6 / §5.3 P2 标记已落地（原 compositte_op §2.6）|

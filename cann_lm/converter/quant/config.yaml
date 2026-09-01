@@ -1,7 +1,7 @@
 dataset:
   # calibration set: jsonl under calibrate_sets/ (downloaded by download_dataset.py, swappable/multi-select)
   train_files:
-    - "calibrate_sets/calibrate_c4.jsonl"
+    - "calibrate_sets/calibrate_coig_cqia.jsonl"
   ptq_samples: 256
 cutoff_len: 1024
 

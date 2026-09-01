@@ -66,7 +66,7 @@ def convert(
     elif quant_path:
         dopt_out_path = quant_path
 
-    print(f"[1/3] Loading model from {hf_path}")
+    print(f"[1/2] Loading model from {hf_path}")
     artifact = load_model(hf_path, dtype=dtype, device="cpu")  # 场景 2 时在 subprocess 之后
     print(f"      Model: {type(artifact.model).__name__}")
     print(f"      Parameters: {sum(p.numel() for p in artifact.model.parameters()):,}")
@@ -87,7 +87,7 @@ def convert(
         artifact.quant_info = info
         print(f"      Quantized {info['n_quantized']} linears (group_size={info['group_size']})")
 
-    print(f"[2/3] Saving epair to {output_dir}")
+    print(f"[2/2] Saving epair to {output_dir}")
     if mode == "prefill-decode":
         save_epair_prefill_decode(
             artifact, output_dir,
@@ -107,19 +107,6 @@ def convert(
             embed_quant=embed_quant,
         )
 
-    print(f"[3/3] Verifying output")
-    out = Path(output_dir)
-    if mode == "prefill-decode":
-        expected = ["prefill_ep_json_with_ascend_ir.json",
-                    "decode_ep_json_with_ascend_ir.json",
-                    "model_config.json", "weight_info.json"]
-    else:
-        expected = ["ep_json_with_ascend_ir.json",
-                    "model_config.json", "weight_info.json"]
-    for name in expected:
-        fp = out / name
-        print(f"      [{'OK' if fp.exists() else 'MISSING'}] {name}")
-    print(f"      Weight files: {len(list(out.glob('weights_*.bin')))}")
     print(f"\nDone. Output: {output_dir}")
 ```
 
@@ -229,9 +216,6 @@ saver.save_epair(...) / save_epair_prefill_decode(...)  # ④ 保存 (详见 exp
     ├── consolidated_weights_save(epair, output_dir, ...)
     ├── copy_tokenizer_files(...)
     └── save_model_config(artifact, output_dir, use_embeddings)
-
-    ▼
-verify output                                          # ⑤ 检查产物文件齐全
 ```
 
 ## prefill/decode 分离模式 CLI

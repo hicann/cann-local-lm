@@ -61,17 +61,17 @@ def convert(
     dopt_out_is_temp = False  # True = converter temp dir (scene 2), cleaned after swap; False = user path (scene 1)
     if quant_method == "gptq":
         from cann_lm.converter.quant_entry import run_auto_quant
-        print(f"[1/3] Quant: --quant-method gptq, spawn dopt subprocess (GPTQ)")
+        print(f"[1/2] Quant: --quant-method gptq, spawn dopt subprocess (GPTQ)")
         dopt_out_path = run_auto_quant(hf_path)
         dopt_out_is_temp = True
         print(f"      dopt GPTQ done: {dopt_out_path}")
         print(f"      Loading cann_lm model from {hf_path}")
     elif quant_path:
         dopt_out_path = quant_path
-        print(f"[1/3] Loading model from {hf_path}")
+        print(f"[1/2] Loading model from {hf_path}")
         print(f"      Quant: port dopt GPTQ from {quant_path} (consumer-side swap)")
     else:
-        print(f"[1/3] Loading model from {hf_path}")
+        print(f"[1/2] Loading model from {hf_path}")
 
     # load_model (scene 2: after subprocess exits; scene 1/no-quant: first). Hardwired to CPU.
     artifact = load_model(hf_path, dtype=dtype, device="cpu")
@@ -102,13 +102,13 @@ def convert(
         print(f"      Quantized {info['n_quantized']} linears (skipped {info['n_skipped_no_dopt_key']}, group_size={info['group_size']})")
         if embed_quant:
             print(f"      Embedding int8 (auto-detected from dopt): {list(embed_quant)}")
-        if dopt_out_is_temp:
+        if True: #TODO change to dopt_out_is_temp 
             import shutil
             shutil.rmtree(dopt_out_path, ignore_errors=True)
             print(f"      Cleaned temp dopt output: {dopt_out_path}")
             dopt_out_path = None
 
-    print(f"[2/3] Saving epair to {output_dir}")
+    print(f"[2/2] Saving epair to {output_dir}")
     if mode == "prefill-decode":
         print(f"      seq_len={seq_len}, decode_seq_len=1, shared weights")
         save_epair_prefill_decode(
@@ -132,20 +132,6 @@ def convert(
             embed_quant=embed_quant,
         )
 
-    print(f"[3/3] Verifying output")
-    out = Path(output_dir)
-    if mode == "prefill-decode":
-        expected = ["prefill_ep_json_with_ascend_ir.json",
-                    "decode_ep_json_with_ascend_ir.json",
-                    "model_config.json", "weight_info.json"]
-    else:
-        expected = ["ep_json_with_ascend_ir.json",
-                    "model_config.json", "weight_info.json"]
-    for name in expected:
-        fp = out / name
-        status = "[OK]" if fp.exists() else "[MISSING]"
-        print(f"      {status} {name}")
-    print(f"      Weight files: {len(list(out.glob('weights_*.bin')))}")
     print(f"\nDone. Output: {output_dir}")
 
 

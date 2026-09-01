@@ -43,7 +43,7 @@
 
 ```
 parse_args → convert → loader.load_model (export_index) → [可选 quant swap (quant_index)]
-           → saver.save_epair / save_epair_prefill_decode (export_index) → verify output
+           → saver.save_epair / save_epair_prefill_decode (export_index)
 ```
 
 ## 关联模块

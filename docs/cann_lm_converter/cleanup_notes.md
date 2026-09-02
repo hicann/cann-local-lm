@@ -3,7 +3,7 @@
 > 记录 `cann_lm/converter/` 代码与 [AGENTS.md](../../AGENTS.md) 约定 / 设计文档的偏离点,按发现顺序累积。
 > 每条含:位置、现状、约定、根因、影响、状态、清理动作。清理完成后状态置「已清理」并保留记录。
 >
-> 状态:累积中 | 最后更新: 2026-08-31
+> 状态:累积中 | 最后更新: 2026-09-01
 
 ## 目录
 
@@ -18,6 +18,13 @@
 - [CLI-009 `swap_from_dopt` 参数精简(删 skip/act_quant)](#cli-009-swap_from_dopt-参数精简删-skipact_quant)
 - [CLI-010 TODO:load_model 加载 HF 原始 Linear fp 浪费(swap 丢弃)](#cli-010-todoload_model-加载-hf-原始-linear-fp-浪费swap-丢弃)
 - [CLI-011 TODO:build_layer_strategy 与 strategy.py 一致性](#cli-011-todobuild_layer_strategy-与-strategypy-一致性)
+- [CLI-012 TODO:gemma4 PLE 量化未适配(_build_external_extras 用 HF 原始 float)](#cli-012-todogemma4-ple-量化未适配_build_external_extras-用-hf-原始-float)
+- [CLI-013 TODO:端侧 LLM 工具 CLI 与文档提供方式调研](#cli-013-todo端侧-llm-工具-cli-与文档提供方式调研)
+- [CLI-014 TODO:PD 分离导出只存一份权重,decode 权重丢弃(PD 权重不一致时失效)](#cli-014-todopd-分离导出只存一份权重decode-权重丢弃pd-权重不一致时失效)
+- [CLI-015 TODO:参考 weight_format_design.md 实现权重 ND 到 NZ 格式转换](#cli-015-todo参考-weight_format_designmd-实现权重-nd-到-nz-格式转换)
+- [CLI-016 TODO:epair 权重与 const 分离](#cli-016-todoepair-权重与-const-分离)
+- [CLI-017 TODO:torch-delegate 支持 torchair 打桩后整体整理安装脚本](#cli-017-todotorch-delegate-支持-torchair-打桩后整体整理安装脚本)
+- [CLI-018 TODO:参考 mlx-lm 环境处理简化 cann-lm 多套环境](#cli-018-todo参考-mlx-lm-环境处理简化-cann-lm-多套环境)
 
 ---
 
@@ -448,7 +455,7 @@ converter venv 装 `torch 2.9.0+cpu` + `torchair`(源码+stubs)+ `torch-delegate
 | 编号 | CLI-011 |
 | 类型 | TODO(待验证/同步) |
 | 背景 | `dopt_wrapper.build_layer_strategy` 生成 `dopt_config.json` 层策略(`quant_strategy` 名:`Quant_INT8-4_ECO` / `Quant_Embed_MinMax`)。dopt 读 strategy 名查 `dopt_lm/quantizer/strategy.py` 的 `strategy_dict` 拿完整策略(weight + input)。需确保 build_layer_strategy 的 strategy 名与 strategy.py 定义对应,效果一致 |
-| 状态 | **TODO(待验证)** |
+| 状态 | **已验证(2026-09-01,三者一致,无需改代码)** |
 | 发现日期 | 2026-08-31 |
 
 ### dopt_lm/quantizer/strategy.py 策略定义(参考)
@@ -486,11 +493,402 @@ converter venv 装 `torch 2.9.0+cpu` + `torchair`(源码+stubs)+ `torch-delegate
 
 ### 行动项
 
-- [ ] 验证 build_layer_strategy strategy 名与 strategy.py strategy_dict key 对应
-- [ ] 同步 swap.py _STRATEGY_DEFAULT_PARAMS 与 strategy.py weight(strategy.py 更新时)
-- [ ] 确认 dopt input 策略(A8 dyn_s8)与 swap act_quant=True(W4A8)一致
+- [x] 验证 build_layer_strategy strategy 名与 strategy.py strategy_dict key 对应 → **一致**:`Quant_INT8-4_ECO` / `Quant_Embed_MinMax` 均在 strategy_dict(dopt_wrapper.py:22-23 赋值,strategy.py:35,50 定义)
+- [x] 同步 swap.py _STRATEGY_DEFAULT_PARAMS 与 strategy.py weight → **已同步**:swap.py:138-143 `Quant_INT8-4_ECO` weight 5 字段(group_size:128, bit:4, blocksize:128, per_channel:True, weight_algo:omni_group_min_max)与 strategy.py:36-42 完全一致;注释(swap.py:133-137)已注明「aligned with strategy.py」「dopt 53ad5ec group_size 256→128 synced」
+- [x] 确认 dopt input 策略(A8 dyn_s8)与 swap act_quant=True(W4A8)一致 → **一致**:strategy.py Quant_INT8-4_ECO input(bit:8, input_algo:dyn_s8, unsigned_quant:False)=A8 动态量化;swap act_quant=True(CLI-009 硬编码)→ QuantLinear forward 由 `npu::npu_dynamic_quant` 处理 A8;dopt 产 W4A8 模型(weight int4 + input A8),swap 物化 W4A8,对应
+
+### 验证结果(2026-09-01)
+
+三者全部一致,无需改代码:
+
+| 验证点 | 对照(source : line) | 结论 |
+|--------|----------------------|------|
+| strategy 名对应 | build_layer_strategy 赋 `Quant_INT8-4_ECO`(Linear)/`Quant_Embed_MinMax`(Embedding)(dopt_wrapper.py:22-23,39,42);strategy_dict 含两 key(strategy.py:35,50) | ✅ 一致 |
+| weight 字段同步 | swap.py _STRATEGY_DEFAULT_PARAMS 5 字段(group_size:128/bit:4/blocksize:128/per_channel:True/omni_group_min_max)(swap.py:138-143)= strategy.py Quant_INT8-4_ECO weight(strategy.py:36-42) | ✅ 完全一致 |
+| input/A8 对应 | strategy.py input(bit8/dyn_s8/unsigned False)(strategy.py:43-48)=A8;swap act_quant=True(CLI-009)→`npu::npu_dynamic_quant` A8(swap.py:482) | ✅ W4A8 对应 |
+
+> 维护约束(swap.py:134 注释):converter venv 不装 dopt_lm,`_STRATEGY_DEFAULT_PARAMS` 硬编码;**strategy.py 新增 weight-quant strategy 时须手动同步 swap.py**。当前仅 `Quant_INT8-4_ECO` 一个 weight strategy,已同步;`Quant_Embed_MinMax` 为 embedding-side(swap.py:182 注释,不走 Linear swap,不在 _STRATEGY_DEFAULT_PARAMS)。
 
 ### 关联
 
 - 源码:`cann_lm/converter/quant/dopt_wrapper.py:31`(build_layer_strategy)、`cann_lm/converter/swap.py:138`(_STRATEGY_DEFAULT_PARAMS)、`cann_lm/converter/quant/dopt_lm/quantizer/strategy.py`(策略定义)
 - 相关:CLI-009(swap_from_dopt 删 act_quant,硬编码 W4A8)
+
+---
+
+## CLI-012 TODO:gemma4 PLE 量化未适配(_build_external_extras 用 HF 原始 float)
+
+| 字段 | 值 |
+|------|-----|
+| 编号 | CLI-012 |
+| 类型 | TODO(bug,待修复) |
+| 背景 | gemma4 PLE(`embed_tokens_per_layer`)被 dopt 量化(`Quant_Embed_MinMax` → QEmbedding int8 per-channel + scale),`host_weights_*.bin` pack `_q`/`_scale`(int8 `[vocab,8960]` + float32 `[vocab]`)。但 `_build_external_extras`(gemma4/export_wrapper.py:273-283)用 `m.embed_tokens_per_layer(input_ids)`(**HF 原始 float**,swap_embeddings_from_dopt 不替换 Embedding 模块),图输入 `per_layer_token_identity` float(**无 scale**),与 embed_tokens 量化处理(int8+scale 作图输入 + 图 dequant)不对称 |
+| 状态 | **TODO(待修复)** |
+| 发现日期 | 2026-08-31 |
+
+### 证据
+
+**host_weights_info.json**(epair_gemma4_quant_path):
+```json
+{ "name": "model.model.embed_tokens_per_layer.weight_q", "dtype": "int8", "shape": [262144, 8960] },
+{ "name": "model.model.embed_tokens_per_layer.weight_scale", "dtype": "float32", "shape": [262144] }
+```
+PLE 打包了 `weight_q`(int8)+ `weight_scale`(float32)——dopt 量化了 PLE。
+
+**dopt 产物** model.safetensors:
+```
+model.embed_tokens_per_layer.weight [262144, 8960] (fakequant fp16)
+model.embed_tokens_per_layer.quant_op.weight_quantizer.s [262144] (scale)
+model.embed_tokens_per_layer.quant_op.weight_quantizer.bit/unsigned_quant/offset/max/min
+```
+dopt 用 QEmbedding 量化 PLE(int8 + scale + meta)。
+
+**_build_external_extras**(gemma4/export_wrapper.py:280):
+```python
+token_identity = m.embed_tokens_per_layer(input_ids).reshape(...).detach()   # HF 原始 float
+```
+`m.embed_tokens_per_layer` 是 cann_lm 模型的 Embedding(load_model 加载 HF 原始 fp,swap 不替换)。
+
+### 问题
+
+| | embed_tokens(quant) | PLE(embed_tokens_per_layer,quant) |
+|---|---|---|
+| dopt 量化 | ✅ int8+scale | ✅ int8+scale |
+| host_weights pack | ✅ _q + _scale | ✅ _q + _scale |
+| **导出时图输入** | `emb_q`(int8)+ `emb_scale`(从 `_quant_embeddings` gather) | `per_layer_token_identity`(**HF 原始 float**,从 `m.embed_tokens_per_layer` 查表) |
+| forward | `int8*scale→float` dequant(图内) | 直接用 float(无 dequant,无 scale 参数) |
+
+1. **数值不一致**:导出时图 trace 用 **HF 原始 PLE**(_build_external_extras);host 推理传 **dopt 量化 PLE dequant**(`int8*scale`)。HF 原始 ≠ 量化 dequant → 图期望原始数值,host 传量化数值 → **精度不匹配**
+2. **forward 无 scale**:`per_layer_token_identity` 单 tensor(无 `_scale` 参数),图不 dequant PLE;host 需在 host 侧 dequant 再传图——但图 trace 用 HF 原始(不是 dequant),host 传 dequant,数值对不上
+3. **与 embed_tokens 不对称**:embed_tokens quant 走 int8+scale 作图输入 + 图 dequant;PLE quant 却走 HF 原始 float(未适配 int8)
+
+### 修复方向
+
+1. **`_build_external_extras` 适配 PLE 量化**:检测 `_quant_embeddings` 含 PLE(`model.model.embed_tokens_per_layer.weight`)→ 从中取 int8+scale,gather `input_ids` → `ple_q`(int8)+ `ple_scale`(per-token scale)
+2. **forward 加 `per_layer_token_identity_scale` 参数**:`per_layer_token_identity`(int8)* `per_layer_token_identity_scale` → float dequant(类似 `embeddings`/`embeddings_scale`)
+3. **get_sample_inputs 传 `ple_q` + `ple_scale`**(quant 时,与非 quant 的 float PLE 分支区分)
+4. **host 推理脚本适配**:读 host_weights PLE `_q`/`_scale`,gather + 传 int8+scale(图 dequant),或 host dequant 传 float(图不 dequant,需与导出一致)
+
+### 行动项
+
+- [ ] `_build_external_extras` 加 quant 分支(从 `_quant_embeddings` 取 PLE int8+scale,gather)
+- [ ] forward 加 `per_layer_token_identity_scale` 参数 + dequant 逻辑
+- [ ] get_sample_inputs(quant)传 `ple_q`+`ple_scale`
+- [ ] host 推理脚本适配 PLE int8+scale(读 host_weights_info `_q`/`_scale`)
+- [ ] 验证:case 4(gemma4 场景1)PLE 数值一致(导出 trace vs host 推理)
+
+### 关联
+
+- 源码:`cann_lm/models/gemma4/export_wrapper.py:273-283`(_build_external_extras)、`cann_lm/models/export_wrapper.py:44-60`(forward per_layer_token_identity/embeddings_scale)、`cann_lm/converter/swap.py:35-56`(swap_embeddings_from_dopt,不替换 Embedding)
+- 产物:`host_weights_info.json`(PLE `_q`/`_scale`)、dopt `model.safetensors`(PLE fakequant+scale)
+- 相关文档:[embedding_design.md](./embedding_design.md)「gemma4 PLE 特殊」「dopt 对 gemma4 的实现」
+- 相关:CLI-011(build_layer_strategy 与 strategy.py 一致性)
+
+---
+
+## CLI-013 TODO:端侧 LLM 工具 CLI 与文档提供方式调研
+
+| 字段 | 值 |
+|------|-----|
+| 编号 | CLI-013 |
+| 类型 | TODO(调研,非偏离) |
+| 背景 | cann-lm-converter 当前 CLI 是单脚本 `python cann_lm_converter.py --hf-path ... --mode ...`(argparse,无子命令),文档在 `docs/cann_lm_converter/` 分目录。为评估 CLI/文档提供方式是否需对齐端侧 LLM 工具主流做法,调研 mlx-lm 等端侧工具的命令行入口 + 文档组织 |
+| 状态 | **TODO(调研完成,待评估采纳)** |
+| 发现日期 | 2026-09-01 |
+
+### 调研对象
+
+端侧(本地/设备侧)LLM 推理或转换工具,与 cann-lm-converter(导出 epair 供 C++ delegate 加载)定位可比(均含「转换/量化 + 运行」链路):
+
+- **mlx-lm**(Apple Silicon,Python+MLX):转换/量化 + 生成 + 微调
+- **llama.cpp**(C/C++,多后端含 CANN):GGUF 转换 + cli/serve 推理
+- **mlc-ai/mlc-llm**(MLC,多平台):convert/build/serve/chat
+- **ollama**(Go):run/pull/serve(运行时,转换在服务侧)
+
+### 调研发现:命令行工具提供方式
+
+| 工具 | CLI 入口风格 | entry point 机制 | 子命令示例 |
+|------|-------------|-------------------|-----------|
+| mlx-lm | `mlx_lm.<cmd>` 多 entry(点分 namespace) | `console_scripts` 注册多个(`mlx_lm.generate`/`.chat`/`.convert`/`.server`/`.cache_prompt`/`.benchmark`) | `mlx_lm.generate --model ... --prompt ...` |
+| llama.cpp | 统一 `llama <subcmd>` | C++ binary(`llama`)+ Python 脚本(`convert_hf_to_gguf.py` 顶层) | `llama cli -hf ...` / `llama serve -hf ...` |
+| mlc-llm | 统一 `mlc_llm <subcmd>`(typer) | `console_scripts` | `mlc_llm convert` / `mlc_llm build` / `mlc_llm chat` / `mlc_llm serve` |
+| ollama | 统一 `ollama <cmd>` | Go binary | `ollama run` / `ollama pull` / `ollama serve` / `ollama list` |
+
+**共性**:端侧工具普遍用「**统一入口 + 子命令**」(`llama cli/serve`、`mlc_llm convert/build`、`ollama run/pull`),而非单脚本;mlx-lm 用点分多 entry(`mlx_lm.generate`)是 Python 包惯例的变体。子命令粒度按「动作」划分(cli/serve/convert/build/chat/run/pull),每子命令独立 `--help`。
+
+**cann-lm-converter 现状**:`python cann_lm_converter.py --hf-path ... --mode prefill-decode ...`(单脚本 + argparse,`--mode` 区分 prefill-decode/single,`--quant-method`/`--quant-path` 区分量化场景)。无子命令,无 console_scripts entry(脚本直调)。
+
+### 调研发现:文档提供方式
+
+| 工具 | 文档结构 | 命令参考 | 示例 |
+|------|---------|---------|------|
+| mlx-lm | README.md 单文件(Quick Start/Command Line/Python API/各功能章节)+ `LORA.md`(微调)+ `examples/`(generate_response.py 等)+ `AGENTS.md`/`CLAUDE.md` | README「Command Line」章节 + 每命令 `-h` | `examples/` 目录 |
+| llama.cpp | README.md(主,Quick Start/Description/Backends)+ `docs/`(按主题分文件:build.md/docker.md/android.md/multi-gpu.md/backend/*.md)+ `tools/<tool>/README.md`(每工具独立)+ wiki | `tools/cli/README.md` + `tools/server/README.md`(每工具 README)+ `docs/build.md` | `examples/` |
+| mlc-llm | docs site(独立站点)+ README | docs site 命令参考页 | `examples/` |
+| ollama | docs site(独立站点) | docs site 命令参考 | — |
+
+**共性**:文档分两类——**单 README + examples/**(mlx-lm,轻量)或 **README + docs/ 分主题 + 每工具 README**(llama.cpp,结构化)。命令参考要么在 README 章节,要么每子命令/工具独立 README(llama.cpp `tools/<t>/README.md`)。`-h`/`--help` 是 CLI 自文档兜底。llama.cpp 的「docs/ 按主题分文件 + tools/<t>/README.md 每工具」结构与 cann-lm 当前 `docs/cann_lm_converter/{cli,quant,export}/` 分目录接近。
+
+**cann-lm-converter 现状**:`docs/cann_lm_converter/` 分目录(cli/cli_design.md、quant/quant_design.md、export/export_design.md、converter_design.md、cleanup_notes.md 等),接近 llama.cpp docs/ 分主题模式;无独立「命令参考」页(CLI 参数散在 cli_design.md);examples/ 下有用例脚本(run_pd6_cases.sh)但无独立 example 文档。
+
+### 对 cann-lm-converter 的启示(待评估)
+
+1. **CLI 入口**:
+   - 当前单脚本 `python cann_lm_converter.py` 适合 converter 单一职责(导出 epair)。若后续扩展「验证/加载/serve」等动作,可参考 `llama cli/serve` 或 `mlc_llm convert/build/serve` 子命令化(`cann-lm convert`/`cann-lm serve`)
+   - entry point:当前 whl(torch_delegate)已装,但 `cann_lm_converter.py` 仍脚本直调。可考虑 console_scripts 注册 `cann-lm-converter` 命令(参考 mlx-lm `mlx_lm.convert` / mlc-llm `mlc_llm convert`),pip install 后直接调用,免去 `python cann_lm_converter.py`
+2. **文档**:
+   - 当前 `docs/cann_lm_converter/` 分目录接近 llama.cpp docs/ 模式(可保留)。可补「命令参考」独立页(CLI 参数汇总表,参考 mlx-lm README「Command Line」章节或 llama.cpp `tools/cli/README.md`),现在参数散在 cli_design.md
+   - examples/ 用例脚本(run_pd6_cases.sh)无独立 README,可参考 llama.cpp `tools/<t>/README.md` 给每用例/工具补 README
+3. **`-h`/`--help` 自文档**:确保 `cann_lm_converter.py --help` 输出完整可用(参考 mlx-lm「Use -h to see a list of available options for a command」)
+
+### 行动项
+
+- [x] 评估 cann-lm-converter 是否需子命令化 → **保持单命令**(converter 单一职责导出 epair,无 serve/verify 动作;子命令化待职责扩展再议)
+- [x] 评估 console_scripts 注册 `cann-lm-converter` 命令 → **已完成**:`scripts/cann_lm_converter/pyproject.toml:20-21` `cann-lm-converter = "cann_lm.converter.cann_lm_converter:main"`,pip install 后直调
+- [x] 补「命令参考」独立文档页 → **已完成**:cli/INDEX.md 加「命令参考」节(console_scripts 入口 `cann-lm-converter` + 用法示例 5 类)
+- [ ] examples/ 用例补 README(参考 llama.cpp `tools/<t>/README.md`)
+
+### 关联
+
+- 调研来源:mlx-lm(github.com/ml-explore/mlx-lm)、llama.cpp(github.com/ggml-org/llama.cpp)、mlc-llm(github.com/mlc-ai/mlc-llm)、ollama(github.com/ollama/ollama)
+- 相关代码:`cann_lm/converter/cann_lm_converter.py`(CLI)、`pyproject.toml`(entry point,torch_delegate 已有)
+- 设计文档:[cli_design.md](./cli/cli_design.md)(CLI 参数/调用链)、[converter_design.md](./converter_design.md)
+
+---
+
+## CLI-014 TODO:PD 分离导出只存一份权重,decode 权重丢弃(PD 权重不一致时失效)
+
+| 字段 | 值 |
+|------|-----|
+| 编号 | CLI-014 |
+| 类型 | TODO(遗留设计假设限制,非偏离) |
+| 位置 | `cann_lm/converter/saver.py:220-238`(prefill `save_weights=True` / decode `save_weights=False`)+ docstring:142-148「shared weights (packed once)」;设计:[export_design.md:936](./export/export_design.md)「权重共享:两张图 state_dict 相同」 |
+| 现状 | `save_epair_prefill_decode` 假设 prefill/decode 两图 state_dict 相同(同一模型),只 prefill 存权重(`consolidated_weights_save(prefill_epair, save_weights=True)` 写 `weights_*.bin` + `weight_info.json`),decode `save_weights=False`(只写 `decode_ep_json_with_ascend_ir.json`,权重丢弃) |
+| 违反约定 | 无(设计假设,非偏离) |
+| 发现日期 | 2026-09-01 |
+| 状态 | **TODO(遗留问题,待评估)** |
+
+### 设计假设(当前)
+
+`save_epair_prefill_decode` docstring(:142-148)与 [export_design.md:936](./export/export_design.md) 明确:
+- **权重共享**:两张图 state_dict 相同(同一模型),`pack_weights` 只执行一次,`weight_info.json` + `weights_*.bin` 只写一份
+- prefill 存权重(`save_weights=True`),decode `save_weights=False`(权重丢弃,只写 ep_json)
+- C++ 加载侧(`GeWeightLoader`)读 `weight_info.json` + `weights_*.bin`,prefill/decode 两图共用同一份权重(层名一致)
+
+### 遗留问题
+
+当 **PD 分离且权重不一致**时(非同一模型/state_dict 不同),decode 权重丢弃会出错:
+
+1. decode `save_weights=False` → decode 引用的权重节点不进 `weights_*.bin` / `weight_info.json`
+2. C++ 加载 decode graph 时,decode ep_json 引用的权重在 prefill 的 `weight_info.json` 找不到对应条目(层名/shape/value 不同)→ 加载失败或错配
+3. 场景:PD 不同量化(prefill W8A8 / decode W4A8)、PD disaggregated 部署(两份权重)、PD 层名差异(带前缀)
+
+### 当前可行的前提
+
+仅当 prefill 与 decode **同一模型、同 state_dict**(权重组完全一致)时,decode 复用 prefill 权重安全。这是当前 `--mode prefill-decode` 的隐含约束,`run_pd6_cases.sh` 各 case 均同一模型导出 PD 两图,满足此约束。
+
+### 待解决方向
+
+1. **PD 分别存权重**:decode 也 `save_weights=True`,分文件(`weights_prefill_*.bin` / `weights_decode_*.bin`)+ 分别 `weight_info_prefill.json` / `weight_info_decode.json`,C++ 加载 decode 时读 decode 权重
+2. **C++ 加载侧适配**:`GeWeightLoader` / `epair_model_loader` 支持 per-graph 权重索引(decode graph 关联 decode weight_info)
+3. **一致性校验**:export 时 assert prefill/decode state_dict 一致(默认场景),不一致则报错或走分文件路径
+4. **产物布局**:`model_config.json` 需记录 PD 权重是否分离(标记 `pd_weight_split: true/false`),C++ 按标记加载
+
+### 行动项
+
+- [ ] 评估 PD 权重分离场景的实际需求(PD disaggregated 部署 / PD 不同量化)
+- [ ] 设计 PD 分别存权重的产物布局(`weights_prefill_*.bin` / `weights_decode_*.bin` + per-graph weight_info)
+- [ ] C++ 加载侧(`GeWeightLoader` / `epair_model_loader`)支持 per-graph 权重索引
+- [ ] export 时 PD 权重一致性校验(默认一致场景报错保护)
+- [ ] 文档:[export_design.md](./export/export_design.md):936 补「PD 权重分离场景」说明(当前只写共享假设)
+
+### 关联
+
+- 源码:`cann_lm/converter/saver.py:220-238`(save_epair_prefill_decode 权重保存)、`cann_lm/converter/export/epair_utils.py:131`(consolidated_weights_save save_weights 语义)、C++ `GeWeightLoader`(权重加载)
+- 设计文档:[export_design.md](./export/export_design.md)「prefill/decode 分离导出 / 权重共享」(L928-962)
+- 相关:CLI-010(load_model 加载浪费,swap 丢弃 Linear fp)
+
+---
+
+## CLI-015 TODO:参考 weight_format_design.md 实现权重 ND 到 NZ 格式转换
+
+| 字段 | 值 |
+|------|-----|
+| 编号 | CLI-015 |
+| 类型 | TODO(遗留问题/待实现,非偏离) |
+| 位置 | 设计:[weight_format_design.md](./export/weight_format_design.md);代码待实现:`cann_lm/converter/export/weight_format/`(`transforms.py` `nd2nz` + `rules.py` `resolve_format`)+ `weight_format_rules.json` + `epair_utils._pack_weights_to_dir` 集成 + `inline_weight_layout` + C++ `aten_tensor_desc_mapper.cc:112` `MapGeLayoutString` / `ge_weight_loader.cc:115` `Pt2LayoutFromGeString` |
+| 背景 | `weight_format_design.md` 设计了权重落盘从 ND(行主序)转 NZ(FractNZ 16×16 块主序),让 Ascend cube 计算权重 Const 直接以 `FORMAT_FRACTAL_NZ` 进 GE 图,避免 OM 编译/运行期 transdata。Stage 1(fp16 `MatMul` Linear 权重 `*_proj`)已设计,但 `weight_format/` 包 + `weight_format_rules.json` **0 实现**(`ls` 确认 NOT implemented) |
+| 违反约定 | 无(待实现) |
+| 发现日期 | 2026-09-01 |
+| 状态 | **TODO(待实现,Stage 1 设计已就绪)** |
+
+### 设计已就绪(Stage 1,weight_format_design.md)
+
+- `weight_format/transforms.py`:`nd2nz(tensor, block=16, pad=True)` [M,K] ND → [ceil(M/b),ceil(K/b),b,b] 块主序(非 b 倍数维内部补零)
+- `weight_format/rules.py`:`load_rules`(读 shipped `weight_format_rules.json`)+ `resolve_format(name, is_quantized)`(按 `name_pattern` + `op_type` 分流 MatMul/QuantBatchMatmulV4)
+- `weight_format_rules.json`:默认配置(`*_proj.weight` → NZ;`QuantBatchMatmulV4` → ND Stage 2 待研究)
+- `epair_utils._pack_weights_to_dir` 集成:插 `resolve_format` + `nd2nz`(仿 `transdata_scale` 先例),`weight_info.json` 条目加 `"format"` 字段
+- `inline_weight_layout`:ep_json `tensor_values.layout` + `ascend_ir.desc.layout` ND→NZ
+- C++ `MapGeLayoutString`/`Pt2LayoutFromGeString` 加 `"NZ"` case
+
+### 不做(Stage 2,含强制研究门)
+
+量化 `QuantBatchMatmulV4` int4 nibble-packed 权重 NZ——标准 `nd2nz` 会打散 nibble 配对,需专用 `pack_int4_nz`,但 int4-NZ 字节布局由 CANN V4/V3 runtime kernel 决定,不能凭推断实现。研究门:① `atc --mode=1` 解析现有量化 OM 看有无 TransData 残留(CANN 自动转则量化 weight 保持 ND);② 读 GE 源码 `quant_batch_matmul_v4` op_graph + 950-ops int4 NZ kernel 拿字节布局。当前 ND 量化 OM 已跑通,Stage 2 是性能优化非正确性必需。
+
+### 待验证
+
+1. MatMul NZ 输入接受性:`reg_register.h` MatMul 是否接受 weight Const `FORMAT_FRACTAL_NZ` 而不插运行期 transdata(需最小 qwen3-0.6B NZ 导出 + OM 编译验证,参数化放 `examples/`)
+2. NZ shape 语义:实现按 GE 标准(逻辑 shape + 内部 pad),OM 编译实测确认 kernel 正确读 partial block
+
+### 行动项
+
+- [ ] 实现 `cann_lm/converter/export/weight_format/`(`transforms.py` `nd2nz` + `rules.py` `resolve_format`/`load_rules`)+ `weight_format_rules.json`
+- [ ] `epair_utils._pack_weights_to_dir` 集成 `resolve_format` + `nd2nz` + `weight_info.json` 加 `"format"` 字段
+- [ ] 新增 `inline_weight_layout`(ep_json layout 标注)
+- [ ] C++ `aten_tensor_desc_mapper.cc:112` / `ge_weight_loader.cc:115` 加 `"NZ"` case
+- [ ] 最小 qwen3-0.6B NZ 导出 + OM 编译验证(MatMul NZ 接受性 + shape 语义)
+
+### 关联
+
+- 设计文档:[weight_format_design.md](./export/weight_format_design.md)(Stage 1 设计 + Stage 2 研究门)
+- 相关代码:`cann_lm/converter/export/epair_utils.py`(`_pack_weights_to_dir` 集成点 + `inline_weight_scale_dtype` 先例)、C++ `aten_tensor_desc_mapper.cc`/`ge_weight_loader.cc`/`ge_graph_builder.cc`
+- 相关:CLI-014(PD 权重产物布局)、CLI-016(epair 权重与 const 分离)
+
+---
+
+## CLI-016 TODO:epair 权重与 const 分离
+
+| 字段 | 值 |
+|------|-----|
+| 编号 | CLI-016 |
+| 类型 | TODO(遗留问题/待澄清+待实现) |
+| 位置 | `cann_lm/converter/export/epair_utils.py`(`_pack_weights_to_dir`/`ConsolidatedWeights`,权重与 const 混合落盘)+ `weight_info.json`(索引)+ C++ `GeWeightLoader`(加载) |
+| 背景 | epair 当前 `weights_*.bin` 把模型权重(Linear `*.weight`、Embedding、norm、bias 等)与图常量(const tensor,如 fused_attn_seq 常量、shape/dtype 常量等)混合落盘到一个 bin,`weight_info.json` 统一索引。需将「权重」与「const」分离(分文件/分类索引),便于 C++ 加载侧区分权重 Const 节点与图常量,支持差异化处理(如 NZ 格式只作用于权重 const 保持 ND;或 const 外置/共享) |
+| 违反约定 | 无(待澄清+待实现) |
+| 发现日期 | 2026-09-01 |
+| 状态 | **TODO(待澄清范围+待实现)** |
+
+### 待澄清
+
+1. 「const」范围:仅图常量(`ascend_ir` 中的 Const 节点,如 inline 的 fused_attn_seq 常量、scalar 常量)?还是含所有非 Linear-weight 张量(norm/bias/embed)?
+2. 分离粒度:分文件(`weights_*.bin` vs `consts_*.bin`)+ 分别索引(`weight_info.json`/`const_info.json`)?还是同文件分类索引(`weight_info.json` 加 `"kind": "weight"|"const"` 字段)?
+3. C++ 加载侧:`GeWeightLoader` 是否需区分 weight/const 走不同加载路径(如 weight 支持 NZ 格式,const 保持 ND;const 可能外置/共享)
+
+### 待解决方向
+
+1. **产物布局**:`weights_*.bin`(权重)+ `consts_*.bin`(图常量)分文件 + `weight_info.json`/`const_info.json` 分索引;或同 bin + `kind` 字段分类
+2. **C++ 加载**:`GeWeightLoader` 按 kind 区分加载(weight 走 NZ/格式转换路径,const 走 ND)
+3. **与 CLI-015 协同**:NZ 格式转换只作用于权重(const 保持 ND),分离后 CLI-015 的 `resolve_format` 只匹配 weight kind
+4. **model_config.json**:记录 const 分离标记
+
+### 行动项
+
+- [ ] 澄清「const」范围(图常量 vs 非权重张量)与分离粒度(分文件 vs 分类索引)
+- [ ] 设计权重/const 分离产物布局(`consts_*.bin` + `const_info.json` 或 `kind` 字段)
+- [ ] C++ `GeWeightLoader` 按 kind 区分加载路径
+- [ ] 与 CLI-015(NZ 格式)协同:resolve_format 只匹配 weight kind
+- [ ] 文档:export_design.md 补权重/const 分离说明
+
+### 关联
+
+- 源码:`cann_lm/converter/export/epair_utils.py`(`_pack_weights_to_dir`/`ConsolidatedWeights`/`weight_info.json`)、C++ `GeWeightLoader`
+- 设计文档:[export_design.md](./export/export_design.md)(产物布局/权重加载)、[weight_format_design.md](./export/weight_format_design.md)
+- 相关:CLI-015(weight_format NZ,只作用于权重)、CLI-014(PD 权重产物布局)
+
+---
+
+## CLI-017 TODO:torch-delegate 支持 torchair 打桩后整体整理安装脚本
+
+| 字段 | 值 |
+|------|-----|
+| 编号 | CLI-017 |
+| 类型 | TODO(遗留问题/待 torch-delegate 支持后整理) |
+| 位置 | `torch-delegate-harmony/build.sh`(只构建 torch-delegate whl + .run,不含 torchair stubs);torchair 安装独立步骤(clone + configure `NO_ASCEND_SDK=1` + `build_and_install.sh` + cp `build/dist/torchair` 到 venv + `LD_LIBRARY_PATH` 设 stubs,见 SKILL.md 步骤3);CANN-LM `scripts/set_env_export.sh`(`LD_LIBRARY_PATH` stubs 在前) |
+| 背景 | 当前 converter env(torch-delegate venv + torchair stubs)搭建分散:torch-delegate `build.sh` 只产 `torch_delegate` whl + .run,torchair stubs 需手动 `git clone gitcode.com/Ascend/torchair` + `NO_ASCEND_SDK=1 bash configure` + `bash build_and_install.sh` + 手动 cp `build/dist/torchair`(build_and_install 可能未自动装) + 设 `LD_LIBRARY_PATH=/mnt/workspace/torchair/build/stubs:...`(SKILL.md 步骤3 + AGENTS.md converter env)。torchair stubs 是 converter env 必需(给 torchair GE 引擎 C 符号,避真 NPU `aclrtSetDevice→107001`),但不在 torch-delegate 安装脚本内。等 torch-delegate 支持 torchair 打桩方式(如 `build.sh` 集成 torchair stubs 构建/安装),再整体整理安装脚本(一键搭 converter env) |
+| 违反约定 | 无(待 torch-delegate 支持) |
+| 发现日期 | 2026-09-01 |
+| 状态 | **TODO(待 torch-delegate 支持 torchair 打桩后整理)** |
+
+### 现状(分散的搭建步骤)
+
+converter env = torch-delegate venv + torchair stubs,搭建分散:
+
+1. **torch-delegate**(`build.sh`):venv 创建 + torch 2.9.0+cpu + 三方库 + C++ 编译 + whl + .run(产出 `torch_delegate-0.1.0-*.whl/.run`)
+2. **torchair**(手动,SKILL.md 步骤3):`git clone --recursive gitcode.com/Ascend/torchair` + `NO_ASCEND_SDK=1 bash configure` + `bash build_and_install.sh <site-packages>` + 手动 cp `build/dist/torchair`(build_and_install 可能未自动装) + `pip install packaging`
+3. **stubs env**(CANN-LM `set_env_export.sh`):`LD_LIBRARY_PATH=${TORCHAIR_ROOT}/build/stubs:${ASCEND_HOME_PATH}/lib64:...`(stubs 在前,避 `aclrtSetDevice→107001`)
+
+问题:torchair stubs 是 converter env 必需(无 stubs → torchair GE 引擎调真 CANN `aclrtSetDevice` → 107001 无设备),但 torch-delegate `build.sh` 不含 torchair 构建/安装,需手动多步。env 跨 torch-delegate(`/mnt/workspace/torch-delegate-harmony`)+ torchair(`/mnt/workspace/torchair`)+ CANN-LM `set_env_export.sh` 三处。
+
+### 待 torch-delegate 支持
+
+- torch-delegate `build.sh` 集成 torchair stubs 构建选项(如 `--with_torchair_stubs`,调 torchair `configure NO_ASCEND_SDK=1` + `build_and_install` + 装 `dist/torchair` 到 venv)
+- 或 torchair 作为 torch-delegate 依赖(pip install 或 build.sh 拉取 + 编译 stubs)
+- 产出:torch-delegate 安装后 venv 自带 torchair + stubs,无需手动多步
+
+### 整理目标(待支持后)
+
+1. **一键搭 converter env**:`torch-delegate build.sh --with_torchair`(或类似)产 whl + .run + 装 torchair stubs 到 venv
+2. **env 脚本简化**:CANN-LM `set_env_export.sh` 只 source CANN + 设 `LD_LIBRARY_PATH`(stubs 路径由 torch-delegate 安装记录/默认),无需手动维护 torchair 路径
+3. **文档统一**:SKILL.md 步骤3(torchair 手动)合并到 torch-delegate 安装文档,或 torch-delegate 文档说明 torchair stubs 集成
+
+### 行动项
+
+- [ ] 等 torch-delegate 支持 torchair 打桩方式(`build.sh` 集成或依赖)
+- [ ] 整理安装脚本:torch-delegate `build.sh` 一键产 whl + .run + torchair stubs
+- [ ] CANN-LM `set_env_export.sh` 简化(stubs 路径由 torch-delegate 安装默认)
+- [ ] SKILL.md / AGENTS.md 文档统一(torchair stubs 集成到 torch-delegate 安装)
+
+### 关联
+
+- 安装脚本:`torch-delegate-harmony/build.sh`(torch-delegate 构建)、`torchair/build_and_install.sh`(torchair 构建)
+- env:CANN-LM `scripts/set_env_export.sh`(converter env,`LD_LIBRARY_PATH` stubs)、`scripts/_env_common.sh`(`TORCHAIR_ROOT`/`TORCH_DELEGATE_HOME` 默认)
+- 文档:`examples/.../skills/torch-delegate-epair/SKILL.md`(步骤3 torchair 手动安装)、CANN-LM AGENTS.md「运行环境设置(converter)」
+
+---
+
+## CLI-018 TODO:参考 mlx-lm 环境处理简化 cann-lm 多套环境
+
+| 字段 | 值 |
+|------|-----|
+| 编号 | CLI-018 |
+| 类型 | TODO(遗留问题/调研+简化方向,非偏离) |
+| 位置 | 调研:mlx-lm `setup.py`(extras + install_requires)+ mlx 库设备抽象(`mx.default_device`/`mx.device_info`)+ 4 env 变量代码内设;cann-lm `scripts/set_env_{export,compile,generate,npu}.sh` + `_env_common.sh` + AGENTS.md「运行环境设置」 |
+| 背景 | mlx-lm 环境处理极简:单一 mlx 库(pip install mlx-lm 即用,macOS 自动拉 mlx,Linux 选 extras cpu/cuda)+ 设备全交 mlx 库(`mx.default_device()` 自动选 macOS→Metal / Linux→CPU)+ 仅 4 env 变量(`TOKENIZERS_PARALLELISM`/`MLXLM_USE_MODELSCOPE`/`MLX_GDN_PACKED`/`TRANSFORMERS_NO_ADVISORY_WARNINGS`,代码内设,无需 source)+ wired memory(`mx.set_wired_limit`)+ 无 env 脚本/stubs/LD_LIBRARY_PATH 管理。cann-lm 相反:4 套 env(converter venv+stubs / compile / generate / npu)+ `LD_LIBRARY_PATH` stubs 在前避 `aclrtSetDevice→107001` + `ASCEND_HOME_PATH` + `TORCH_DEVICE_BACKEND_AUTOLOAD=0` + `TORCH_DELEGATE_*` + torchair 源码编译 + torch_npu 不装(stub 路径)。根因:mlx-lm 依赖单一 mlx 库(Apple 官方,设备抽象完整);cann-lm 跨 CANN+torchair+torch_npu+torch-delegate 多组件,组件间 ABI/版本耦合(torchair 编译匹配 torch 2.9.0,torch_npu 2.7.1 不互通) |
+| 违反约定 | 无(调研+简化方向) |
+| 发现日期 | 2026-09-01 |
+| 状态 | **TODO(调研完成,简化方向待评估)** |
+
+### mlx-lm 环境处理(调研)
+
+| 维度 | mlx-lm | cann-lm |
+|------|--------|---------|
+| 环境数量 | 单一(mlx 库统一设备抽象) | 多套(converter venv+stubs / compile / generate / npu) |
+| 安装 | `pip install mlx-lm`(macOS 自动拉 mlx,Linux extras) | build.sh + torchair 手动 + CANN 升级 + stubs(CLI-017 待整理) |
+| 设备管理 | mlx 库 `mx.default_device()` 自动 | 手动 set_env_export.sh + LD_LIBRARY_PATH stubs + ASCEND_HOME_PATH |
+| env 脚本 | 无(pip install 即用) | 4 套 set_env_*.sh |
+| env 变量 | 4 个(代码内设) | 多个(ASCEND_HOME_PATH/LD_LIBRARY_PATH/TORCH_DEVICE_BACKEND_AUTOLOAD/TORCH_DELEGATE_*,需 source) |
+| 平台 | Apple Silicon 单一 | Ascend NPU + CANN + torchair + torch_npu 多组件 |
+| 打桩 | 无需(mlx 直接跑) | stub 路径(torchair stubs 避 aclrtSetDevice→107001) |
+
+### 简化方向(待评估,受多组件耦合限制)
+
+1. **单一依赖收敛**:torch-delegate build.sh 集成 torchair stubs(CLI-017)后,`pip install torch-delegate` 或 build.sh 一键产 whl+stubs,接近 mlx-lm `pip install mlx-lm`
+2. **设备抽象层**:cann-lm 无 mlx 库对应的统一设备抽象(CANN/torchair/torch_npu 各管各的);长期可封装 device 抽象层(如 `cann_lm.device.is_available()` 对标 `mx.default_device()`),但受多组件限制
+3. **env 内设**:mlx-lm env 变量代码内设(`os.environ[...]=...`),无需 source;cann-lm 部分可内设(如 `TRANSFORMERS_NO_ADVISORY_WARNINGS` 已仿),但 LD_LIBRARY_PATH/ASCEND_HOME_PATH 需 source(因 CANN lib 路径)
+4. **env 脚本简化**:CLI-017 后 set_env_export.sh 简化(stubs 路径由 torch-delegate 安装默认);4 套 env 收敛(若 converter/compile/generate/npu 能合并)
+5. **打桩透明化**:mlx-lm 无 stubs(mlx 直接跑);cann-lm stubs 是 torchair GE 引擎避真 NPU 的权宜,长期若 torchair 支持纯 CPU 转换(无 GE 引擎调 aclrt)可去 stubs
+
+### 行动项
+
+- [ ] 评估单一依赖收敛(torch-delegate build.sh 集成 torchair stubs 后,接近 pip install 即用)
+- [ ] 评估 device 抽象层(对标 `mx.default_device`,受多组件限制)
+- [ ] env 变量内设(能内设的仿 mlx-lm 代码内设,减少 source)
+- [ ] env 脚本简化(依赖 CLI-017,4 套 env 收敛)
+- [ ] 打桩透明化评估(长期,若 torchair 支持纯 CPU 转换可去 stubs)
+
+### 关联
+
+- 调研来源:mlx-lm `setup.py` + `mlx_lm/{generate,server,utils,__init__}.py`(device/env 处理)
+- 相关 cann-lm:`scripts/set_env_*.sh` + `_env_common.sh` + AGENTS.md「运行环境设置(converter)」
+- 相关遗留:**CLI-017**(torchair 打桩集成 + 安装脚本整理,本条的环境简化依赖 CLI-017)
+- 调研文档:[side_tools_survey.md](./side_tools_survey.md) mlx-lm 章节 + 环境处理对比

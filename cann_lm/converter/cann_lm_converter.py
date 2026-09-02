@@ -102,7 +102,7 @@ def convert(
         print(f"      Quantized {info['n_quantized']} linears (skipped {info['n_skipped_no_dopt_key']}, group_size={info['group_size']})")
         if embed_quant:
             print(f"      Embedding int8 (auto-detected from dopt): {list(embed_quant)}")
-        if True: #TODO change to dopt_out_is_temp 
+        if dopt_out_is_temp:
             import shutil
             shutil.rmtree(dopt_out_path, ignore_errors=True)
             print(f"      Cleaned temp dopt output: {dopt_out_path}")

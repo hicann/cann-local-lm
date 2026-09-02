@@ -78,7 +78,7 @@ setup_dopt_env() {
 # ─── 临时改 config.yaml 加速 (ptq_samples=16); 备份 + trap 还原 ───
 _quick_config() {
   cp "$QD/config.yaml" "$QD/config.yaml.bak"
-  printf 'dataset:\n  train_files:\n    - "calibrate_sets/calibrate_coig_cqia.jsonl"\n  ptq_samples: 5\ncutoff_len: 64\nextra_training_config:\n  fp16: true\n' > "$QD/config.yaml"
+  printf 'dataset:\n  train_files:\n    - "calibrate_sets/calibrate_coig_cqia.jsonl"\n  ptq_samples: 8\ncutoff_len: 64\nextra_training_config:\n  fp16: true\n' > "$QD/config.yaml"
 }
 _restore_config() { mv "$QD/config.yaml.bak" "$QD/config.yaml" 2>/dev/null || true; }
 

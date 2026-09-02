@@ -58,12 +58,18 @@ class Gemma4ExportWrapper(ExportWrapper):
         output_pos: torch.Tensor | None = None,
         per_layer_token_identity: torch.Tensor | None = None,
         embeddings_scale: torch.Tensor | None = None,
+        per_layer_token_identity_scale: torch.Tensor | None = None,
     ):
         # quant-embeddings: int8 embeddings + per-token scale -> float (model dtype)。
         # signed, 无 zero-point (dopt offset=0)。dequant 在 forward 做, _drive_layers 收 float。
         if embeddings is not None and embeddings_scale is not None:
             dt = self._model_dtype
             embeddings = embeddings.to(dt) * embeddings_scale.to(dt).unsqueeze(-1)
+        # quant-PLE (gemma4 embed_tokens_per_layer): int8 per_layer_token_identity + per-token scale
+        # -> float; scale [b,s] broadcast over [num_layers, hidden_size_per_layer_input]。
+        if per_layer_token_identity is not None and per_layer_token_identity_scale is not None:
+            dt = self._model_dtype
+            per_layer_token_identity = per_layer_token_identity.to(dt) * per_layer_token_identity_scale.to(dt).unsqueeze(-1).unsqueeze(-1)
         logits, past_kv_flat = self._drive_layers(
             input_ids,
             mask_full,
@@ -244,26 +250,37 @@ class Gemma4ExportWrapper(ExportWrapper):
             past_key_values.append((k, v))
 
         if use_embeddings:
-            extras = self._build_external_extras(input_ids)
-            ple = extras[0] if extras else None
             if quant_embeddings:
                 q_w, q_s = self._quant_embeddings["model.model.embed_tokens.weight"]
                 emb_q = q_w[input_ids]       # int8 [b, s, hidden]
                 emb_scale = q_s[input_ids]    # [b, s]
+                # PLE quant: gather int8 + per-token scale from _quant_embeddings (dopt Quant_Embed_MinMax)。
+                ple_q, ple_scale = None, None
+                ple_key = "model.model.embed_tokens_per_layer.weight"
+                if self._ple_enabled and ple_key in self._quant_embeddings:
+                    m = self.model.model
+                    pq_w, pq_s = self._quant_embeddings[ple_key]
+                    ple_q = pq_w[input_ids].reshape(
+                        *input_ids.shape, cfg.num_hidden_layers, m.hidden_size_per_layer_input
+                    )
+                    ple_scale = pq_s[input_ids]  # [b, s]
                 return (
                     None, mask_full, mask_sliding, position_ids, past_key_values,
-                    new_kv_cache_pos, emb_q, output_pos, ple, emb_scale,
+                    new_kv_cache_pos, emb_q, output_pos, ple_q, emb_scale, ple_scale,
                 )
+            # 非 quant: PLE 走 HF 原始 float (_build_external_extras), ple_scale=None。
+            extras = self._build_external_extras(input_ids)
+            ple = extras[0] if extras else None
             embeddings = self.model.model.embed_tokens(input_ids).detach()
             return (
                 None, mask_full, mask_sliding, position_ids, past_key_values,
-                new_kv_cache_pos, embeddings, output_pos, ple, None,
+                new_kv_cache_pos, embeddings, output_pos, ple, None, None,
             )
         else:
             # 图内查表: input_ids 入图, embeddings/per_layer_token_identity=None (wrapper 内查)
             return (
                 input_ids, mask_full, mask_sliding, position_ids, past_key_values,
-                new_kv_cache_pos, None, output_pos, None, None,
+                new_kv_cache_pos, None, output_pos, None, None, None,
             )
 
     # ──────────────────────────────────────────────────────────────

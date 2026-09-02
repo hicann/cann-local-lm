@@ -90,6 +90,14 @@ if not _HAS_TORCH_NPU:
         if causal_mask is not None:
             attn_weights = attn_weights + causal_mask
         if atten_mask is not None:
+            # gemma4 mask 方阵 [b,1,kv_max,kv_max] bool (False=attend, True=mask out):
+            # 截前 seq_len 行匹配 attn_weights [b,heads,seq_len,kv_max] + bool→float (True→-inf)。
+            # 非方阵 [b,1,seq_len,kv_max] float mask (qwen3 等) 直用, 不受影响。
+            if atten_mask.shape[2] != attn_weights.shape[2]:
+                atten_mask = atten_mask[:, :, :attn_weights.shape[2], :]
+            if atten_mask.dtype == torch.bool:
+                min_val = torch.finfo(attn_weights.dtype).min
+                atten_mask = torch.where(atten_mask, min_val, 0.0).to(attn_weights.dtype)
             attn_weights = attn_weights + atten_mask
         # softmax (fp32) -> @V
         attn_weights = torch.softmax(attn_weights.float(), dim=-1).to(q.dtype)

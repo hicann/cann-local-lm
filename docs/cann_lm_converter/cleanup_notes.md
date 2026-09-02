@@ -523,7 +523,7 @@ converter venv 装 `torch 2.9.0+cpu` + `torchair`(源码+stubs)+ `torch-delegate
 | 编号 | CLI-012 |
 | 类型 | TODO(bug,待修复) |
 | 背景 | gemma4 PLE(`embed_tokens_per_layer`)被 dopt 量化(`Quant_Embed_MinMax` → QEmbedding int8 per-channel + scale),`host_weights_*.bin` pack `_q`/`_scale`(int8 `[vocab,8960]` + float32 `[vocab]`)。但 `_build_external_extras`(gemma4/export_wrapper.py:273-283)用 `m.embed_tokens_per_layer(input_ids)`(**HF 原始 float**,swap_embeddings_from_dopt 不替换 Embedding 模块),图输入 `per_layer_token_identity` float(**无 scale**),与 embed_tokens 量化处理(int8+scale 作图输入 + 图 dequant)不对称 |
-| 状态 | **TODO(待修复)** |
+| 状态 | **已修复(2026-09-02)** |
 | 发现日期 | 2026-08-31 |
 
 ### 证据
@@ -571,11 +571,30 @@ token_identity = m.embed_tokens_per_layer(input_ids).reshape(...).detach()   # H
 
 ### 行动项
 
-- [ ] `_build_external_extras` 加 quant 分支(从 `_quant_embeddings` 取 PLE int8+scale,gather)
-- [ ] forward 加 `per_layer_token_identity_scale` 参数 + dequant 逻辑
-- [ ] get_sample_inputs(quant)传 `ple_q`+`ple_scale`
-- [ ] host 推理脚本适配 PLE int8+scale(读 host_weights_info `_q`/`_scale`)
-- [ ] 验证:case 4(gemma4 场景1)PLE 数值一致(导出 trace vs host 推理)
+- [x] ~~`_build_external_extras` 加 quant 分支~~ → 实现在 `get_sample_inputs(quant)` 直接从 `_quant_embeddings` gather `ple_q`+`ple_scale`(`gemma4/export_wrapper.py:258-269`),不调 `_build_external_extras`(后者保持非 quant float 分支)
+- [x] forward 加 `per_layer_token_identity_scale` 参数 + dequant 逻辑(`gemma4/export_wrapper.py:61,70-72`,`int8*scale→float`,scale `[b,s]` broadcast over `[num_layers,hidden_per_layer_input]`)
+- [x] get_sample_inputs(quant) 传 `ple_q`+`ple_scale`(`:258-269`);非 quant/图内分支加 `None` ple_scale 保持 11 元素返回顺序(`:275,281`)
+- [x] host 推理脚本适配 PLE int8+scale → `verify_gemma4_epair_quant.py`(epair 回环验证,读 dopt 产物 + `swap_embeddings_from_dopt` + `set_quant_embeddings`,host 不需手动 gather — `get_sample_inputs` 已 gather)
+- [x] 验证:case 4(gemma4 场景1)epair 导出跑通(`n_quantized=277,weights 1484.6 MB,host_weights 2753.6 MB`,含 PLE `_q`/`_scale`)+ `verify_gemma4_epair_quant.py` ep.module(traced) vs wrapper(eager) `max_diff=0`(PLE dequant 在 trace 中正确)
+
+### 修复(2026-09-02)
+
+**PLE quant 适配 epair 路径**(3 处代码 + 1 验证脚本):
+
+1. **`cann_lm/models/gemma4/export_wrapper.py`**:
+   - `forward`(:49-72)加 `per_layer_token_identity_scale` 参数 + PLE dequant(`per_layer_token_identity(int8) * per_layer_token_identity_scale → float`,仿 `embeddings/embeddings_scale`)
+   - `get_sample_inputs(quant)`(:246-269)从 `_quant_embeddings` 取 PLE int8+scale,gather `input_ids`→`ple_q`+`ple_scale`;非 quant/图内分支加 `None` ple_scale 保持 11 元素返回顺序
+2. **`cann_lm/models/fused_ops/fused_infer_attention_score.py` `_fa_cpu`**(:92-100):兼容 gemma4 mask 方阵 `[b,1,kv_max,kv_max]` bool(截前 seq_len 行匹配 `attn_weights [b,heads,seq_len,kv_max]` + bool→float `True→-inf`);非方阵 float mask(qwen3 等)不受影响
+3. **`examples/.../debug_gemma4/verify_gemma4_epair_quant.py`**(新,97 行):epair 回环验证(load+dopt+set_quant_embeddings+export+ep.module vs wrapper logits 一致+PLE dequant sanity)
+
+**验证结果**(`verify_gemma4_epair_quant.py --hf-path gemma-4-E2B-it --quant-path /tmp/opencode/gemma4_quant_output`):
+- PLE quantized=True(`embed_tokens`+`embed_tokens_per_layer` 均 int8+scale)
+- `ple_q (1,128,35,256) int8, ple_scale (1,128) f32`(gemma4 35 层 × 256 hidden_per_layer)
+- **ep.module(traced) vs wrapper(eager) logits max_diff=0.000000e+00** → forward 的 PLE dequant 在 torch.export trace 中正确保留,host 传 ple_q+ple_scale 时图内 dequant 与 eager 一致
+- PLE dequant: min=-0.4219 max=0.4980 mean=0.0001 nan=False inf=False(数值合理)
+- `[PASS] gemma4 quant PLE epair 回环一致`
+
+> OM verify 路径(`run_gemma4_gen.py`,fakequant float PLE)未适配(OM 算子不支持 + 用 fakequant 非 int8),不在 CLI-012 范围。生产 epair host 推理脚本(用 `epair_model_loader` C++)的 PLE 适配由 C++ 按 ep_json 输入顺序自动读 `per_layer_token_identity_scale`(待生产 host 脚本落地确认)。
 
 ### 关联
 

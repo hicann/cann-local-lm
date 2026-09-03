@@ -57,3 +57,4 @@ cann_lm/converter/quant/calibration.json
 # Packaging build artifacts
 *.egg-info/
 dist/
+examples/test_converter/export_kirin_ops_net/

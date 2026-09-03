@@ -97,6 +97,15 @@ int main(int argc, char *argv[]) {
   const char *soc_env = std::getenv("SOC_VERSION");
   const std::string soc_version = (soc_env != nullptr) ? std::string(soc_env) : std::string("Ascend950DT");
   std::map<ge::AscendString, ge::AscendString> init_options = GlobalOptionsWithSoc(soc_version);
+  // 权值分离: ge.externalWeightDir 走 init_options (全局 context, build 期经 GetThreadLocalContext 读到);
+  // 放 build_options 会被拒 (50331649 options illegal). 指定权值落盘到 output 同目录 weight/,
+  // 避免 mobile 路径用 tmp_weight_<pid>/ 临时目录后被清 → .omc 引用丢失权重.
+  if (const char *w = std::getenv("GE_EXTERNAL_WEIGHT"); w != nullptr && w[0] != '0') {
+    std::filesystem::path weight_dir = std::filesystem::path(output_name).parent_path() / "weight";
+    std::filesystem::create_directories(weight_dir);
+    init_options.emplace(ge::AscendString("ge.externalWeightDir"), ge::AscendString(weight_dir.string().c_str()));
+    std::cout << "[INFO] ge.externalWeightDir=" << weight_dir.string() << std::endl;
+  }
   ge::graphStatus init_status = aclgrphBuildInitialize(init_options);
   if (init_status != ge::GRAPH_SUCCESS) {
     std::cerr << "[ERROR] aclgrphBuildInitialize failed, status: " << init_status << std::endl;
@@ -116,6 +125,26 @@ int main(int argc, char *argv[]) {
     return -1;
   }
   std::cout << "[PASS] GE Graph extracted successfully" << std::endl;
+
+  // 可选: 保存编译前 GE 图为 .air (ge::Graph::SaveToFile, 二进制 protobuf).
+  // env SAVE_AIR_FILE=<path> 触发; 若仅设 SAVE_AIR=1 则用 <output_name>.air.
+  if (const char *air_env = std::getenv("SAVE_AIR_FILE"); air_env != nullptr && air_env[0] != '\0') {
+    const std::string air_path = air_env;
+    const ge::graphStatus save_status = graph.SaveToFile(air_path.c_str());
+    if (save_status == ge::GRAPH_SUCCESS) {
+      std::cout << "[PASS] graph.SaveToFile saved: " << air_path << std::endl;
+    } else {
+      std::cerr << "[WARN] graph.SaveToFile failed: " << save_status << std::endl;
+    }
+  } else if (const char *air = std::getenv("SAVE_AIR"); air != nullptr && air[0] == '1') {
+    const std::string air_path = output_name + ".air";
+    const ge::graphStatus save_status = graph.SaveToFile(air_path.c_str());
+    if (save_status == ge::GRAPH_SUCCESS) {
+      std::cout << "[PASS] graph.SaveToFile saved: " << air_path << std::endl;
+    } else {
+      std::cerr << "[WARN] graph.SaveToFile failed: " << save_status << std::endl;
+    }
+  }
 
   // [3/3] Compile graph
   PrintStage(3, kTotalStages, "Compile graph");
@@ -150,7 +179,7 @@ int main(int argc, char *argv[]) {
     std::cout << "[INFO] Set _no_need_dynamic_shape_partition=true (skip dynamic shape partition)" << std::endl;
   }
   // 权值分离: GE_EXTERNAL_WEIGHT=0(内嵌,默认)/1(每个权值分文件)/2(全合一 .bin)
-  // =2 时 .om 变小, 权值存到 output_name 同目录的 .bin (Om2PackageHelper 自动重定位)
+  // ge.externalWeight 走 build_options; ge.externalWeightDir 走 init_options (见上)
   if (const char *v = std::getenv("GE_EXTERNAL_WEIGHT")) {
     build_options.emplace(ge::AscendString("ge.externalWeight"), ge::AscendString(v));
     std::cout << "[INFO] ge.externalWeight=" << v << " (0=内嵌/1=分文件/2=全合一)" << std::endl;
@@ -161,22 +190,30 @@ int main(int argc, char *argv[]) {
     ge::aclgrphBuildFinalize();
     return -1;
   }
-  std::cout << "[PASS] aclgrphBuildModel succeeded, model size: " << model.length << " bytes" << std::endl;
+  std::cout << "[PASS] aclgrphBuildModel succeeded" << std::endl;
 
-  // 权值分离: GE MoveFilePath 把权值移到 <output 目录>/weight/, 但不 mkdir → 预建
-  if (std::getenv("GE_EXTERNAL_WEIGHT")) {
-    std::filesystem::path weight_dir = std::filesystem::path(output_name).parent_path() / "weight";
-    std::filesystem::create_directories(weight_dir);
-    std::cout << "[INFO] pre-created external weight dir: " << weight_dir.string() << std::endl;
+  // Mobile model path (kirinx90/HarmonyOS): aclgrphBuildModel via mobile_model_helper
+  // 把模型直接写到 CWD 的 "onlinec", 不填 ModelBufferData.data (kirinx90 上 model.length
+  // 还会被堆损坏成垃圾值) → aclgrphSaveModel 的 null-data 校验失败。检测 "onlinec"
+  // 改名为目标, 跳过多余的 SaveModel, size 取实际文件大小 (非垃圾的 model.length)。
+  // (Ascend 走标准路径, 不产生 onlinec, model.length 正常。)
+  const std::string mobile_tmp = "onlinec";
+  if (std::filesystem::exists(mobile_tmp)) {
+    const std::string out_ext = (soc_version.rfind("Kirin", 0) == 0) ? ".omc" : ".om";
+    const std::string dst = output_name + out_ext;
+    std::filesystem::rename(mobile_tmp, dst);
+    std::cout << "[PASS] mobile model path: renamed " << mobile_tmp << " -> " << dst
+              << " (size: " << std::filesystem::file_size(dst) << " bytes)" << std::endl;
+  } else {
+    std::cout << "[INFO] model size: " << model.length << " bytes" << std::endl;
+    ge::graphStatus save_status = ge::aclgrphSaveModel(output_name.c_str(), model);
+    if (save_status != ge::GRAPH_SUCCESS) {
+      std::cerr << "[ERROR] aclgrphSaveModel failed, status: " << save_status << std::endl;
+      ge::aclgrphBuildFinalize();
+      return -1;
+    }
+    std::cout << "[PASS] aclgrphSaveModel succeeded, " << output_name << ".om generated" << std::endl;
   }
-
-  ge::graphStatus save_status = ge::aclgrphSaveModel(output_name.c_str(), model);
-  if (save_status != ge::GRAPH_SUCCESS) {
-    std::cerr << "[ERROR] aclgrphSaveModel failed, status: " << save_status << std::endl;
-    ge::aclgrphBuildFinalize();
-    return -1;
-  }
-  std::cout << "[PASS] aclgrphSaveModel succeeded, " << output_name << ".om generated" << std::endl;
 
   ge::aclgrphBuildFinalize();
   std::cout << "[PASS] aclgrphBuildFinalize succeeded" << std::endl;

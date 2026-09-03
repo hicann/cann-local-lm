@@ -27,30 +27,15 @@ std::map<ge::AscendString, ge::AscendString> GlobalOptionsWithSoc(const std::str
   if (!soc_version.empty()) {
     opts.emplace(ge::AscendString("ge.socVersion"), ge::AscendString(soc_version.c_str()));
   }
-  // fusion switch 文件 (ge.fusionSwitchFile): 关/开指定 GraphFusion/UBFusion pass。
-  // env GE_FUSION_SWITCH_FILE=/path/cfg; cfg 格式见 CANN 图融合文档 (Switch.GraphFusion.ALL=off 等)。
   if (const char *v = std::getenv("GE_FUSION_SWITCH_FILE")) {
     opts.emplace(ge::AscendString("ge.fusionSwitchFile"), ge::AscendString(v));
   }
-  // 在线编译模式 (全局 init option): GE_JIT_COMPILE=0(二进制优先)/1(在线,默认)/2(静态在线+动态二进制)
-  // =2 对具体 shape 在线编译产静态 kernel, 可减少 _is_op_dynamic_impl 动态算子
   if (const char *v = std::getenv("GE_JIT_COMPILE")) {
     opts.emplace(ge::AscendString("ge.jit_compile"), ge::AscendString(v));
-  }
-  // AutoTune 调优算子库 (全局): GE_OP_BANK_PATH=<dir>
-  if (const char *v = std::getenv("GE_OP_BANK_PATH")) {
-    opts.emplace(ge::AscendString("ge.op_bank_path"), ge::AscendString(v));
   }
   return opts;
 }
 
-// Derive output OM name from model_json_path when the caller doesn't pass one.
-// Strips the "_ep_json_with_ascend_ir.json" suffix from the filename.
-//   prefill_ep_json_with_ascend_ir.json -> "prefill"
-//   decode_ep_json_with_ascend_ir.json  -> "decode"
-//   ep_json_with_ascend_ir.json         -> "model"
-// Falls back to the filename sans ".json", or "model" if that's empty.
-// 算子注册参考/mnt/workspace/ge/tests/framework/ge_running_env/include/ge_running_env/op_reg.h 和/mnt/workspace/torchair-full/build/dist/torchair/_ge_concrete_graph/auto_generated_ge_raw_ops.py
 std::string DeriveOutputName(const std::string &model_json_path) {
   std::string filename = model_json_path;
   size_t last_sep = filename.find_last_of('/');
@@ -92,14 +77,11 @@ int main(int argc, char *argv[]) {
   std::cout << "  model_json:   " << model_json_path << std::endl;
   std::cout << "  weights_index:" << weights_index_path << std::endl;
   std::cout << "  output_name: " << output_name << std::endl;
-  // SOC version: 本机芯片 Ascend910_9362 (npu-smi 显示), CANN platform_config 有 Ascend910_9362.ini
-  // 用环境变量 SOC_VERSION 覆盖 (默认 Ascend910_9362)
+
   const char *soc_env = std::getenv("SOC_VERSION");
-  const std::string soc_version = (soc_env != nullptr) ? std::string(soc_env) : std::string("Ascend950DT");
+  const std::string soc_version = (soc_env != nullptr) ? std::string(soc_env) : std::string("KirinX90");
   std::map<ge::AscendString, ge::AscendString> init_options = GlobalOptionsWithSoc(soc_version);
-  // 权值分离: ge.externalWeightDir 走 init_options (全局 context, build 期经 GetThreadLocalContext 读到);
-  // 放 build_options 会被拒 (50331649 options illegal). 指定权值落盘到 output 同目录 weight/,
-  // 避免 mobile 路径用 tmp_weight_<pid>/ 临时目录后被清 → .omc 引用丢失权重.
+
   if (const char *w = std::getenv("GE_EXTERNAL_WEIGHT"); w != nullptr && w[0] != '0') {
     std::filesystem::path weight_dir = std::filesystem::path(output_name).parent_path() / "weight";
     std::filesystem::create_directories(weight_dir);
@@ -149,14 +131,11 @@ int main(int argc, char *argv[]) {
   // [3/3] Compile graph
   PrintStage(3, kTotalStages, "Compile graph");
 
-
   std::cout << "[PASS] aclgrphBuildInitialize succeeded" << std::endl;
 
   ge::ModelBufferData model;
   std::map<ge::AscendString, ge::AscendString> build_options;
   build_options.emplace(ge::AscendString("input_format"), ge::AscendString("ND"));
-  // env 开关 (免重编即可调图优化): GE_BUFFER_OPT=off_optimize/l1_optimize/l2_optimize,
-  // GE_OO_LEVEL=O1/O3, GE_OPT_SWITCH="pass:off;..."。便于实验 AutomaticBufferFusionOp 等融合开关。
   if (const char *v = std::getenv("GE_BUFFER_OPT")) {
     build_options.emplace(ge::AscendString("ge.bufferOptimize"), ge::AscendString(v));
   }
@@ -166,20 +145,6 @@ int main(int argc, char *argv[]) {
   if (const char *v = std::getenv("GE_OPT_SWITCH")) {
     build_options.emplace(ge::AscendString("ge.optimizationSwitch"), ge::AscendString(v));
   }
-  // ge.graphRunMode: PREDICTION=0 (推理/静态) / TRAIN=1 (训练/动态). 设 0 可能避免动态 shape 分区.
-  if (const char *v = std::getenv("GE_RUN_MODE")) {
-    build_options.emplace(ge::AscendString("ge.graphRunMode"), ge::AscendString(v));
-    std::cout << "[INFO] ge.graphRunMode=" << v << std::endl;
-  }
-  // 跳过动态 shape 分区 (设 graph 属性 _no_need_dynamic_shape_partition=true, 避免 PartitionedCall)
-  if (const char *v = std::getenv("GE_SKIP_DSP"); v != nullptr && v[0] == '1') {
-    ge::AttrValue attr_val;
-    attr_val.SetAttrValue(true);
-    graph.SetAttr(ge::AscendString("_no_need_dynamic_shape_partition"), attr_val);
-    std::cout << "[INFO] Set _no_need_dynamic_shape_partition=true (skip dynamic shape partition)" << std::endl;
-  }
-  // 权值分离: GE_EXTERNAL_WEIGHT=0(内嵌,默认)/1(每个权值分文件)/2(全合一 .bin)
-  // ge.externalWeight 走 build_options; ge.externalWeightDir 走 init_options (见上)
   if (const char *v = std::getenv("GE_EXTERNAL_WEIGHT")) {
     build_options.emplace(ge::AscendString("ge.externalWeight"), ge::AscendString(v));
     std::cout << "[INFO] ge.externalWeight=" << v << " (0=内嵌/1=分文件/2=全合一)" << std::endl;
@@ -192,11 +157,7 @@ int main(int argc, char *argv[]) {
   }
   std::cout << "[PASS] aclgrphBuildModel succeeded" << std::endl;
 
-  // Mobile model path (kirinx90/HarmonyOS): aclgrphBuildModel via mobile_model_helper
-  // 把模型直接写到 CWD 的 "onlinec", 不填 ModelBufferData.data (kirinx90 上 model.length
-  // 还会被堆损坏成垃圾值) → aclgrphSaveModel 的 null-data 校验失败。检测 "onlinec"
-  // 改名为目标, 跳过多余的 SaveModel, size 取实际文件大小 (非垃圾的 model.length)。
-  // (Ascend 走标准路径, 不产生 onlinec, model.length 正常。)
+  // kirinx90里面调用aclgrphSaveModel流程里面自己调用的SaveToOmModel流程
   const std::string mobile_tmp = "onlinec";
   if (std::filesystem::exists(mobile_tmp)) {
     const std::string out_ext = (soc_version.rfind("Kirin", 0) == 0) ? ".omc" : ".om";

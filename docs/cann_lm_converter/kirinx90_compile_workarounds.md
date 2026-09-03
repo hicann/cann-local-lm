@@ -195,6 +195,31 @@ SAVE_AIR=1 ./build_kx/cann_lm_compile <epair>/ep_json_with_ascend_ir.json <epair
 | T5 | 把 MatMul/BatchMatMul 挪回 aicore：monkeypatch `aten.mm`/`aten.bmm` converter，用 `torchair.ge.custom_op("MatMulV3"/"BatchMatMulV3",...)` 手建 V3 节点（须先验 converter stub 环境 `get_registered_ir_def("MatMulV3")` 放行）；SoftmaxV2→`MaskedSoftmaxWithRelPosBias`（可调用，需 rel_pos_bias） | `examples/.../kirin_ops_net.py` + `compile_to_epair` | ⬜ 待办（aicore_only_net.py 已规避，此项为补回 matmul） |
 | T6 | 权重分离：`compile_main.cc` 设 `ge.externalWeightDir`（走 init_options 非 build_options）→ =2 出权重分离 .omc（.omc + `weight/delegate_graph_weight_combined` + meta.json） | `cann_lm/converter/export/csrc/tools/compile_main.cc` | ✅ 已落地（=2 验证有效；=1 仍失败 per-file 不支持） |
 
+## 遗留 bug：mobile 路径 `aclgrphBuildModel` 不填 `ModelBufferData` 且硬编码输出文件名
+
+**问题**：`aclgrphBuildModel` 在 mobile（kirinx90）路径下走 `MobileModelHelper::SaveToOmModel`（`mobile_model_helper.cc:681`），该方法：
+1. **`model` 参数被 `(void)model` 忽略**（line 684）——不填充 `ModelBufferData.data`（留 null），导致后续 `aclgrphSaveModel` 的 `model.data == nullptr` 校验失败（"model is illegal"）。
+2. **硬编码输出文件名 `"onlinec"`**——`output_file` 用 GE 内部默认值 `"online"`（因为 `output_name` 只传给 `aclgrphSaveModel`，不传给 `aclgrphBuildModel`），文件名 = `"online" + "c"` = `"onlinec"`，不反映用户指定的 output_name。
+
+**影响**：
+- `aclgrphSaveModel` 必然失败（红鲱鱼报错 `50331649 "model is illegal"`），但模型文件 `onlinec` 已落盘。
+- 产物文件名不直观（`onlinec` 而非 `{output_name}.omc`），需外部 rename。
+- `ModelBufferData.length` 在 mobile 路径下是垃圾值（堆损坏/未初始化），打印的 "model size" 不可信。
+
+**根因**：`MobileModelHelper` 的设计是 mobile 场景编译完直接落盘（`SaveCompiledModelToFile` 写磁盘），绕过内存 buffer；但 `output_file` 用了 GE 内部默认值 `"online"` 而非用户的 `output_name`（`aclgrphBuildModel` 的签名不接收 output_file 参数）。
+
+**临时规避**（已落地，T1）：`compile_main.cc` 检测 `onlinec` 存在后 rename → `{output_name}.omc`，跳过 `aclgrphSaveModel`。
+
+**正确修法（GE 侧）**：
+- 方案 A：`aclgrphBuildModel` 接收 `output_file` 参数，传给 `MobileModelHelper`，让 mobile 路径直接写 `{output_name}.omc`（避免硬编码 `onlinec`）。
+- 方案 B：`MobileModelHelper::SaveToOmModel` 填充 `ModelBufferData`（写完文件后回填 data/length），让 `aclgrphSaveModel` 正常工作（但 mobile 场景避免大内存拷贝的设计意图与此矛盾）。
+- 方案 C：GE 在 `aclgrphBuildModel` 返回后，若检测到 mobile 路径（model.data==null 但 onlinec 文件存在），自动 rename + 返回 success（而不是让 `aclgrphSaveModel` 报错）。
+
+**涉及 GE 源码**：
+- `base/common/helper/mobile_model_helper.cc:681-718`（`SaveToOmModel`，`(void)model` + 硬编码 `onlinec`）
+- `base/common/helper/mobile_model_helper.cc:706-711`（`output_weight_dir` 从 `output_file` 目录部分推导，`output_file="online"` 无目录 → 空）
+- `compiler/api/aclgrph/ge_ir_build.cc:1640-1655`（`aclgrphSaveModelInner`，`model.data==nullptr` 校验）
+
 ## 涉及文件/产物
 
 | 路径 | 说明 |

@@ -115,8 +115,9 @@ if [[ $SKIP_NPU -eq 1 ]]; then ok "skip ③ (--skip-npu)"; else
     DECODE_OM="$OUTPUT_DIR/decode/decode.om"
     [[ -f "$PREFILL_OM" && -f "$DECODE_OM" ]] || die "③ 缺 OM (先跑 ② 或 --skip-npu): $PREFILL_OM / $DECODE_OM"
     (
-      unset LD_LIBRARY_PATH
+      unset LD_LIBRARY_PATH ASCEND_VISIBLE_DEVICES ASCEND_HOME_PATH
       source "$PROJECT_ROOT/scripts/set_env_cann.sh" --npu >/dev/null 2>&1
+      export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}:${ASCEND_HOME_PATH}/aarch64-linux/lib64:${ASCEND_HOME_PATH}/aarch64-linux/devlib"
       export PREFILL_OM DECODE_OM
       export HF="$HF_PATH"
       export PYTHONPATH="${ASCEND_HOME_PATH}/python/site-packages:${PYTHONPATH:-}"   # acl python

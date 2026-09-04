@@ -21,7 +21,7 @@ import torch.nn.functional as F
 
 PREFILL_OM = os.environ.get("PREFILL_OM", "/tmp/opencode/gemma4_pd/prefill.om")
 DECODE_OM = os.environ.get("DECODE_OM", "/tmp/opencode/gemma4_pd/decode.om")
-E2B = "/mnt/workspace/data/models/gemma-4-E2B-it"
+E2B = os.environ.get("HF", "/mnt/workspace/models/unsloth/gemma-4-E2B-it")
 KV_MAX = 2048; DEV = 0; MAX_NEW = 30; PREFILL_SEQ = 128
 sys.path.insert(0, "/mnt/workspace/project/CANN-LM_5883")
 
@@ -159,11 +159,11 @@ def build_prefill(chunk_ids, chunk_real_len, start_pos, kv_prev):
     s[6] = real_emb(chunk_ids)                                               # embeddings
     s[8] = real_ple(chunk_ids)                                               # PLE
     s[7] = torch.tensor([chunk_real_len - 1], dtype=torch.int32)             # output_pos (块内最后真实位)
-    _, mf, ms, pos, _, npos, emb, opos, ple, _ = s
+    _, mf, ms, pos, _, npos, emb, opos, ple, _, _ = s
     if kv_prev is not None:
         kv = kv_prev
     else:
-        _, _, _, _, pkv, _, _, _, _, _ = wrapper.get_sample_inputs(seq_len=PREFILL_SEQ, use_embeddings=True)
+        _, _, _, _, pkv, _, _, _, _, _, _ = wrapper.get_sample_inputs(seq_len=PREFILL_SEQ, use_embeddings=True)
         kv = [t for pair in pkv for t in pair]
     by_name = {"mask_full": mf, "mask_sliding": ms, "position_ids": pos, "new_kv_cache_pos": npos,
                "embeddings": emb, "output_pos": opos, "per_layer_token_identity": ple}

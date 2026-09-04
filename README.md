@@ -20,7 +20,7 @@ CANN-LM_5883/
 │   └── models/               # 模型定义 (gemma4/qwen3/qwen3_5 + fused_ops 算子)
 ├── docs/                     # 设计文档 (cli/export/quant 三模块)
 ├── examples/                 # 端到端用例 (OM 编译 + NPU 出字验证)
-├── scripts/                  # 辅助脚本 (set_env_<env>.sh 各 env 直 source)
+├── scripts/                  # 环境脚本 (set_env_*.sh + build.conf) + 顶层构建 build.sh
 ├── tests/                    # 单元测试
 ├── ci/                       # CI/CD
 └── cmake/                    # CMake 公共模块
@@ -35,20 +35,22 @@ CANN-LM_5883/
 | **cann_lm/models/**　　　　　| 三个模型定义 + 自定义算子　| `gemma4/`(Gemma4ForCausalLM + export_wrapper) / `qwen3/` / `qwen3_5/` / `fused_ops/`(cann_lm:: + npu:: 算子 schema+fake-meta)　　　　　　　　　　　　　　　　　　　　　|
 | **docs/cann_lm_converter/**　| converter 设计文档　　　　 | `cli/cli_design.md` / `export/export_design.md` / `quant/quant_design.md` / `converter_design.md`(总览)　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　|
 | **examples/test_converter/** | 端到端测试用例　　　　　　 | `export_llm_model/`(C++ OM 编译 + om_npu_verify 出字验证) / `cann_lm_cli_export/run_pd6_cases.sh`(6 用例)　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　|
-| **scripts/**　　　　　　　　 | 辅助脚本　　　　　　　　　 | `set_env_{export,compile,generate,npu}.sh`(各 env 直 source) / `_env_common.sh`(公共) / `cann_lm_compile/build_cpp.sh`(② C++ 统一构建) / `cann_lm_{converter,engine}/build_wheel.sh`(① whl 打包)　 |
-| **tests/**　　　　　　　　　 | 单元测试　　　　　　　　　 | `c++/`(C++ 测试; 跑: `bash scripts/cann_lm_compile/build_cpp.sh --asan && ctest --test-dir build`)　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　 |
+| **scripts/**　　　　　　　　 | 辅助脚本　　　　　　　　　 | `set_env_{export,cann}.sh`(两基底 ①②③) / `build.sh`(顶层 deps/cpp/wheel/om/package/all/check) / `build.conf`(版本+路径默认) / `_env_common.sh`(公共) / `cann_lm_compile/build_cpp.sh`(② C++ 统一构建) / `cann_lm_{converter,engine}/build_wheel.sh`(① whl 打包)　 |
+| **tests/**　　　　　　　　　 | 单元测试　　　　　　　　　 | `c++/`(C++ 测试; 跑: `bash scripts/build.sh cpp --asan && ctest --test-dir build`)　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　 |
 | **ci/**　　　　　　　　　　　| CI/CD　　　　　　　　　　　| 流水线定义、构建脚本、镜像配置　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　 |
 | **cmake/**　　　　　　　　　 | CMake 共享　　　　　　　　 | `DELEGATE_COMMON_FLAGS`(编译/链接选项统一管理)　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　 |
 
 ## 环境要求
 
-三套独立环境，互不叠加：
+两套 runtime env 基底（互不叠加；版本/路径默认值集中 `scripts/build.conf`）：
 
 ```bash
-source scripts/set_env_export.sh   # ① 导出 epair (CPU venv + torchair stubs)
-source scripts/set_env_npu.sh         # ② GPTQ 量化 / NPU 出字 (系统 Python + torch_npu)
-source scripts/set_env_compile.sh          # ③ OM 编译 (C++ 二进制 + SOC + fusion switch)
+source scripts/set_env_export.sh        # ① 导出 epair + 量化 (P1 CPU venv + torchair stubs, 不装 torch_npu)
+source scripts/set_env_cann.sh          # ② OM 编译 (真 CANN, 无 python/torch; 带 SOC/GE_FUSION/GE_EXTERNAL flag)
+source scripts/set_env_cann.sh --npu    # ③ NPU verify-runtime (真 CANN + DEVICE=npu; dopt GPTQ / NPU 出字 / OM 验证)
 ```
+
+端到端构建用顶层 `bash scripts/build.sh <subcommand>`（`deps`/`cpp`/`wheel`/`om`/`package`/`all`/`check`），各 subcommand 自动 source 对应 env（详见 `bash scripts/build.sh help`）。
 
 ## 快速开始
 
@@ -86,13 +88,13 @@ python cann_lm/converter/cann_lm_converter.py \
 ### 4. OM 编译 + NPU 出字
 
 ```bash
-# OM 编译 (③ 环境)
-source scripts/set_env_compile.sh
+# OM 编译 (② 环境)
+source scripts/set_env_cann.sh
 ./examples/test_converter/export_llm_model/build/cann_lm_compile \
     output/prefill_ep_json_with_ascend_ir.json output/weight_info.json output/prefill
 
-# NPU 出字 (② 环境)
-source scripts/set_env_npu.sh
+# NPU 出字 (③ 环境)
+source scripts/set_env_cann.sh --npu
 python examples/test_converter/export_llm_model/om_npu_verify/run_qwen3_5_gen_emb.py "Hello, my name is"
 ```
 

@@ -21,7 +21,7 @@ import torch
 
 PREFILL_OM = os.environ.get("PREFILL_OM", "/tmp/opencode/qwen3_5_pd/prefill.om")
 DECODE_OM = os.environ.get("DECODE_OM", "/tmp/opencode/qwen3_5_pd/decode.om")
-HF = "/mnt/workspace/data/models/Qwen3.5-0.8B"
+HF = os.environ.get("HF", "/mnt/workspace/models/Qwen/Qwen3.5-0.8B")
 KV_MAX = 2048; DEV = 0; MAX_NEW = 20; PREFILL_SEQ = 8
 sys.path.insert(0, "/mnt/workspace/project/CANN-LM_5883")
 os.environ.setdefault("TORCH_DEVICE_BACKEND_AUTOLOAD", "0")

@@ -75,7 +75,7 @@ mkdir -p "$(dirname "$LOG")" "$(dirname "$OUTPUT")"
 [[ -f "$WEIGHTS" ]]    || { echo "ERROR: weights_index 不存在: $WEIGHTS" >&2; exit 1; }
 
 # source compile env (设 ASCEND_HOME_PATH / LD_LIBRARY_PATH / SOC_VERSION 等)
-source "$REPO/scripts/set_env_compile.sh" >/dev/null
+source "$REPO/scripts/set_env_cann.sh" >/dev/null
 export LD_LIBRARY_PATH="$ASCEND_HOME_PATH/aarch64-linux/lib64:$ASCEND_HOME_PATH/aarch64-linux/devlib:${LD_LIBRARY_PATH:-}"
 
 # build (除非 --no-build)

@@ -3,7 +3,7 @@
 # build.sh — cann_lm_compile 前置环境准备 (+ 构建)
 #
 # 职责: 校验前置依赖 (CANN / converter venv / torch cmake / third_party) →
-#       source set_env_compile.sh → (bash 执行时) 跑 build_cpp.sh
+#       source set_env_cann.sh → (bash 执行时) 跑 build_cpp.sh
 #
 # 用法:
 #   bash scripts/cann_lm_compile/build.sh              # 校验 + env + 构建 (全树)
@@ -48,8 +48,8 @@ fi
 
 # ── 2. source compile env ──
 echo ""
-echo "=== [2/3] source set_env_compile.sh ==="
-source "$REPO/scripts/set_env_compile.sh"
+echo "=== [2/3] source set_env_cann.sh ==="
+source "$REPO/scripts/set_env_cann.sh"
 
 # ── 3. 构建 ──
 CHECK_ONLY=0

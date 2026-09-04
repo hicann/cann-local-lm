@@ -71,7 +71,7 @@ setup_converter_env() {
 }
 
 setup_dopt_env() {
-  source "$PROJECT_ROOT/scripts/set_env_npu.sh"
+  source "$PROJECT_ROOT/scripts/set_env_cann.sh" --npu
   export PYTHONPATH="$QD:${PYTHONPATH:-}"
 }
 

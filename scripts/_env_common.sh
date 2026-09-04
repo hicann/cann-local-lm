@@ -1,14 +1,13 @@
 # _env_common.sh — set_env 公共部分 (由各 set_env_<env>.sh source, 不直接 source)
 #
-# 提供: source CANN set_env.sh (若 ASCEND_HOME_PATH 未设) + PROJECT_ROOT/PYTHONPATH +
-#        通用变量默认值 (TORCHAIR_ROOT / TORCH_DELEGATE_HOME / DOPT_PYTHON, 均可被环境变量覆盖)
+# 提供: source build.conf (版本 + 路径默认) + source CANN set_env.sh (若 ASCEND_HOME_PATH 未设) +
+#        PYTHONPATH + TORCH_DEVICE_BACKEND_AUTOLOAD=0 + DOPT_PYTHON (export)
 set -u
 
-CANN_SET_ENV="${CANN_SET_ENV:-/home/developer/Ascend/cann/set_env.sh}"
-PROJECT_ROOT="${PROJECT_ROOT:-/mnt/workspace/project/CANN-LM_5883}"
-TORCHAIR_ROOT="${TORCHAIR_ROOT:-/mnt/workspace/torchair}"
-TORCH_DELEGATE_HOME="${TORCH_DELEGATE_HOME:-/mnt/workspace/torch-delegate-harmony}"
-DOPT_PYTHON="${DOPT_PYTHON:-/opt/buildtools/Python-3.11.4/bin/python3}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# 版本 + 路径默认值 (单一来源 build.conf; 环境变量优先)
+source "${SCRIPT_DIR}/build.conf"
 
 # source CANN set_env.sh (若 ASCEND_HOME_PATH 未设)
 if [[ -z "${ASCEND_HOME_PATH:-}" ]]; then

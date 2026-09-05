@@ -145,6 +145,62 @@ TORCH_DEVICE_BACKEND_AUTOLOAD=0 /mnt/workspace/torch-delegate-harmony/.venv/bin/
  - **API 漂移**：cann_lm 演进导致 test 失败时，**只改 test 代码**对齐新签名/行为（如多值返回解包、参数重命名、materialize clamp 范围），不动 cann_lm/；commit message 注明漂移点。
  - **环境**：测试依赖 venv 的 torch/torchair/torch_delegate + `TORCH_DEVICE_BACKEND_AUTOLOAD=0`；CI 用 `bash scripts/build.sh deps` 装 venv 后跑 `pytest tests/llm_models/ tests/converter/`。
 
+## C++ 测试 (tests/c++/epair_archive/)
+
+测 `cann_lm/converter/export/csrc/` 的 C++ backend（epair 加载/解析/权重打包/aten 映射/value registry）。GTest + CMake，link `torch_delegate_backend` + CANN，**ASAN 强制**。
+
+### 架构
+
+```
+tests/c++/epair_archive/
+├── CMakeLists.txt              # 顶层 CMakeLists add_subdirectory (BUILD_TESTS=ON 默认); helper add_cann_lm_test
+├── gen_fixtures.py             # 生成 .epair fixtures (test_consolidated_weights/epair_archive/epair_model_parser 用)
+├── test_consolidated_weights.cc  # 需 fixtures: GeWeightLoader 权重加载/索引/meta
+├── test_epair_archive.cc         # 需 fixtures: epair 目录结构 (model.json/weights.bin/weight_info)
+├── test_epair_model_parser.cc    # 需 fixtures: EpairModelParser 注解解析 (symint/value refs/tensor meta)
+├── test_base64.cc                # 纯单测: base64 解码 (空串/二进制/非法/长度)
+├── test_value_registry.cc        # 纯单测: ValueRegistry placeholder/producer/alias/重复/未知
+├── test_aten_schema_resolver.cc  # 纯单测: AtenSchemaResolver aten/自定义命名空间/inplace/默认 overload
+└── test_aten_tensor_desc_mapper.cc  # 纯单测: aten→GE dtype/layout 映射 (float/half/int64/bool/unsupported)
+```
+
+- **顶层 `CMakeLists.txt`** 第 31-34 行 `if(BUILD_TESTS) add_subdirectory(tests/c++/epair_archive) endif()`，默认 ON。
+- `add_cann_lm_test(name src [NEEDS_FIXTURES])` helper：建 exe + include csrc + link backend+CANN+GTest + `delegate_apply_common_flags`（走 `DELEGATE_COMMON_FLAGS`，`-Wall -Wextra -Werror`）+ rpath-link + 注册 ctest（`LD_LIBRARY_PATH=CANN_LIB_DIRS`）。
+- fixtures 由 `gen_fixtures.py`（custom target `generate_fixtures`）产到 `${BINARY_DIR}/fixtures`，3 个 NEEDS_FIXTURES 测试 add_dependencies 它；`FIXTURES_DIR` 宏注入。
+
+### 覆盖矩阵（62 用例 / 7 exe，全 ASAN PASS）
+
+| csrc 模块 | 测试文件 | 用例数 | 覆盖要点 |
+|---|---|---|---|
+| `AtenSchemaResolver` | test_aten_schema_resolver.cc | 10 | aten/自定义命名空间解析、inplace op、默认 overload→空、无点 target 拒绝、MakeFallbackOpType |
+| `aten_tensor_desc_mapper` | test_aten_tensor_desc_mapper.cc | 18 | pt2→GE dtype（float/half/int64/bool/unsupported）、layout（strided/unsupported）、GE dtype string（float/int64/bool）、layout string（ND/NCHW/NHWC） |
+| `base64` | test_base64.cc | 6 | 解码纯串/二进制、空串、padding、非法 payload/长度拒绝 |
+| `GeWeightLoader`（consolidated weights） | test_consolidated_weights.cc | 9 | tensor holder 加载、缺 name/meta/index 报错、binary values、is_parameter、record offset/size、GetTensorMeta、HasTensor |
+| `EpairArchiveDirectory` | test_epair_archive.cc | 5 | model.json/weights.bin/weight_info 存在+非空、缺目录 fail |
+| `EpairModelParser` | test_epair_model_parser.cc | 7 | 注解 fixture 解析、symint user input、value refs 标量类型、拒绝 auto_functionalized v1 节点、tensor meta as-expr、scalar value maps、scalar fallback 节点 inputs |
+| `ValueRegistry` | test_value_registry.cc | 7 | placeholder/producer output 注册解析、重复 key 拒绝、alias（含自动补 port0）、未知返 null、链式 alias |
+
+### 环境与运行
+
+- **② 真 CANN env**（`source scripts/set_env_cann.sh`，无 stubs），需 `ASCEND_HOME_PATH` + `build/libtorch_delegate_backend.so`。
+- **ASAN 强制**（兑现 AGENTS.md）：`bash scripts/build.sh cpp --asan`（= `build_cpp.sh --asan`，重配 build/ `ENABLE_ASAN=ON` + 编 backend/cann_lm_compile/tests 全部）→ `ctest --test-dir build`。
+- 零警告：`-Wall -Wextra -Werror`（经 `DELEGATE_COMMON_FLAGS`，`delegate_apply_common_flags`），PR 不许引入新警告；GE 头 `ge_error_codes.h` deprecated 提示属 CANN 侧，非本仓。
+- 裸跑（ctest 无需 LD_PRELOAD，ASAN flags 含 `-static-libasan`）。
+
+### 已知限制（C++）
+
+1. **fixtures 依赖**：3 个 NEEDS_FIXTURES 测试需 `gen_fixtures.py` 产 .epair（纯 Python + torchair，converter venv 跑）；缺 fixtures 则这 3 个失败，4 个纯单测仍可跑。
+2. **CANN 重库依赖**：link graph/metadef/ascendcl 等，需 ② 真 CANN env（非 stubs）；与 Python UT（converter venv + stubs）env 互斥，分开跑。
+3. **不测 OM 编译/运行**：epair→OM 编译（`cann_lm_compile`）+ NPU acl 运行归 e2e（`examples/test_converter/export_llm_model/run_e2e_pipeline.sh`），UT 只测 csrc 的 epair 加载/解析/映射层。
+
+## 提交前 C++ 本地验证（强制）
+
+修改 `cann_lm/converter/export/csrc/`（或 `tests/c++/epair_archive/`）后，commit 前必须：
+```bash
+bash scripts/build.sh cpp --asan && ctest --test-dir build --output-on-failure
+```
+全 7 exe PASS + ASAN 无内存错误才提交；失败只改 test/csrc（csrc 改动需授权），禁带错提交。
+
 ## 用例级设计（per-case）
 
 每个测试函数的设计：场景/输入要点 + 期望断言 + 边界·原理。parametrize 变体合并为一行（标注 case 数）。

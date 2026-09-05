@@ -1,14 +1,17 @@
-# UT 设计：cann_lm/models 单元测试 (tests/llm_models/)
+# UT 设计：cann_lm 单元测试 (tests/llm_models/ + tests/converter/)
 
-> 状态: 已落地 | 最后核对: 2026-09-05 | 全套 99 passed (converter venv, 无 torch_npu)
+> 状态: 已落地 | 最后核对: 2026-09-05 | 全套 192 passed (llm_models 99 + converter 93, converter venv, 无 torch_npu)
 
 ## 背景
 
-`cann_lm/models/` 下三模型（gemma4 / qwen3 / qwen3_5）+ 融合算子（fused_ops/）+ 注册表 + 基类 wrapper 是 converter 导出与 NPU 推理的数值基础。此前单元测试散落在 `examples/test_converter/llm_models_run_on_cpu/debug_*/verify_*.py` 的 `--test-only` 模式里（与 e2e 推理耦合，自定义 `check()` runner 不抛异常导致 pytest 假 PASS），且 fused_ops / model_registry / 基类 wrapper 无任何测试。
+`cann_lm/` 分两大测试域：
+- **`cann_lm/models/`**（三模型 gemma4/qwen3/qwen3_5 + 融合算子 fused_ops + 注册表 + 基类 wrapper）— converter 导出与 NPU 推理的数值基础。此前单元测试散落在 `examples/test_converter/llm_models_run_on_cpu/debug_*/verify_*.py` 的 `--test-only` 模式里（与 e2e 耦合，自定义 `check()` runner 不抛异常导致 pytest 假 PASS），fused_ops/registry/基类 wrapper 无测试。
+- **`cann_lm/converter/`**（loader/saver/swap/quant_swap materialize/epair_utils/CLI + quant/dopt_lm）— 导出工具链。`tests/dopt_lm/` 已覆盖 dopt_lm/* + swap/dopt_wrapper，但 loader/saver/epair_utils/quant_swap/CLI 无测试。
 
-本设计把单元测试统一抽到 `tests/llm_models/`，参考 `tests/dopt_lm/` 范式（pytest 风格 + `@pytest.mark.parametrize` + `assert`），实现 `cann_lm/models/` **全覆盖**，CI/本地均可 `pytest` 直接跑。
+本设计把单元测试统一抽到 `tests/llm_models/` + `tests/converter/`，参考 `tests/dopt_lm/` 范式（pytest + `@pytest.mark.parametrize` + `assert` + `tmp_path`），实现 `cann_lm/` **全覆盖**（torchair/GE/真实权重/网络依赖的函数跳过 + 注释，归 e2e）。
 
-## 测试架构
+## 测试架构 (tests/llm_models/)
+
 
 ```
 tests/llm_models/
@@ -69,32 +72,75 @@ tests/llm_models/
 
 > `_library.py` / `ops.py` 是注册基础设施（定义 namespace + `safe_define` + `register_cpu_impl` helper），由上述算子 import 触发注册，不单独写测试（文件顶部注释说明）。
 
+## converter 测试 (tests/converter/)
+
+```
+tests/converter/
+├── conftest.py            # sys.path→REPO_ROOT; import cann_lm.converter.* 无需手动 source env
+├── test_materialize.py    # quant_swap/materialize.py int4/int8 权重量化 (15 项, 纯 tensor ops)
+├── test_epair_utils.py    # export/epair_utils.py 权重打包/切分/落盘/ep_json 后处理 (21 项)
+├── test_loader.py         # loader.py ModelArtifact/build_config/collect_tokenizer_files (12 项)
+├── test_swap.py           # swap.py _resolve_parent/_infer_group_size/_read_dopt_quant_meta/_read_quant_param_map (22 项)
+├── test_saver.py          # saver.py save_model_config/copy_tokenizer_files (7 项)
+└── test_cli.py            # cann_lm_converter.py CLI argparse (16 项)
+```
+
+`tests/dopt_lm/` 已覆盖 `quant/dopt_lm/*`（vendored dopt 包）+ `swap.swap` + `quant/dopt_wrapper.py`，不重复；`tests/converter/` 补齐 converter 其余可测函数。
+
+### 覆盖矩阵
+
+| cann_lm/converter 文件 | 测试文件 | 项数 | 覆盖 | 跳过（归 e2e/需重依赖） |
+|---|---|---|---|---|
+| `export/quant_swap/materialize.py` | test_materialize.py | 15 | transdata↔restore_scale round-trip（mantissa 低 13bit 清零）/ pack_int4 nibble 布局+round-trip / int4 per-group 量化（shape+clamp(-7,7)+fakequant 精确重建）/ int8 per-channel（shape+dequant allclose+dopt fakequant 精确）/ 错误处理 | — |
+| `export/epair_utils.py` | test_epair_utils.py | 21 | ConsolidatedWeights / `_pack_weights_to_dir`（单文件+按 max_file_size 切分+bf16→int16+weight_scale→int64 transdata）/ `consolidated_weights_save` 落盘结构 / `_strip_none_input_descs` 清理 / `inline_fused_attn_seq_constants`+`inline_weight_scale_dtype` 原地改写 | 需真实 ExportedProgram/torchair（用 `_FakeContents` stub 绕开） |
+| `loader.py` | test_loader.py | 12 | ModelArtifact 字段 / `build_config`（qwen3/gemma4/qwen3_5 嵌套 text_config + post_init + fallback）/ `collect_tokenizer_files`（有/缺标准/legacy 回退/空目录） | `load_model` 全流程（需真实 HF 权重+safetensors） |
+| `swap.py` | test_swap.py | 22 | `_resolve_parent`（深层树/单段/索引）/ `_infer_group_size`（pergroup/perchannel/拒绝 pertensor/非整除）/ `_read_dopt_quant_meta`+`_read_quant_param_map`（tmp_path 造假 dopt 产物解析）/ `load_dopt_state_dict`（.pth/safetensors/剥离 language_model.） | `swap_from_dopt` 全流程（需完整 dopt artifacts + 真实 model） |
+| `saver.py` | test_saver.py | 7 | `save_model_config`（to_dict/dataclass asdict/__dict__ 三路 + use_embeddings/quant_embeddings/quant_info）/ `copy_tokenizer_files`（复制全部/空列表） | `save_epair`/`save_epair_prefill_decode`（需 torch.export wrapper/ep_module + torchair GE） |
+| `cann_lm_converter.py` | test_cli.py | 16 | `parse_args` --help/缺 required/非法 choices（dtype/mode/quant-method）/quant-path∩quant-method 互斥/合法 Namespace+默认值 | `convert()` 全流程（需真实 HF + torchair GE） |
+| `quant/dopt_lm/*` + `quant/dopt_wrapper.py` + `swap.swap` | tests/dopt_lm/（既有） | — | dopt 量化全链路 | — |
+
+### 已知限制（converter）
+
+1. **torchair/GE 依赖**：`saver.save_epair*`（torch.export+GE 转换）、`ge_converters/*`（FX→GE）、`cann_lm_converter.convert()` 全流程需 torchair stubs + 真实导出，归 `examples/test_converter/export_llm_model/run_e2e_pipeline.sh` e2e 验证，不进 UT。
+2. **真实 HF 权重**：`loader.load_model` 全流程、`swap.swap_from_dopt` 全流程需 safetensors/完整 dopt artifacts，UT 只测其**解析子函数**（build_config/collect_tokenizer_files/_read_dopt_*）。
+3. **网络**：`quant/download_dataset.py` 需联网，不测。
+4. **NPU/dopt subprocess**：`quant/auto_quant.py` spawn dopt GPTQ subprocess 需 NPU，不测（归 `examples/test_converter/dopt_quantization_st/`）。
+5. **stub 绕开**：epair_utils 测试用 `_FakeEP`/`_FakeGraphSignature`/`_FakeContents` stub 绕开真实 ExportedProgram（符合 converter 设备无关约定，CPU 可跑）。
+6. **int4 clamp 范围**：`materialize` 用 `clamp(-qmax, qmax)=clamp(-7,7)`（对称量化排除 -8 边界），测试据此断言（非 [-8,7]）。
+
 ## 运行方式
 
 ```bash
 # 全套 (converter venv):
+TORCH_DEVICE_BACKEND_AUTOLOAD=0 /mnt/workspace/torch-delegate-harmony/.venv/bin/python -m pytest tests/llm_models/ tests/converter/ -q
+
+# llm_models 全套:
 TORCH_DEVICE_BACKEND_AUTOLOAD=0 /mnt/workspace/torch-delegate-harmony/.venv/bin/python -m pytest tests/llm_models/ -q
 
+# converter 全套:
+TORCH_DEVICE_BACKEND_AUTOLOAD=0 /mnt/workspace/torch-delegate-harmony/.venv/bin/python -m pytest tests/converter/ -q
+
 # 单文件:
-TORCH_DEVICE_BACKEND_AUTOLOAD=0 /mnt/workspace/torch-delegate-harmony/.venv/bin/python -m pytest tests/llm_models/test_fused_ops.py -q
+TORCH_DEVICE_BACKEND_AUTOLOAD=0 /mnt/workspace/torch-delegate-harmony/.venv/bin/python -m pytest tests/converter/test_materialize.py -q
 
 # 单用例:
-TORCH_DEVICE_BACKEND_AUTOLOAD=0 /mnt/workspace/torch-delegate-harmony/.venv/bin/python -m pytest tests/llm_models/test_model_registry.py::test_get_entry_resolves_aliases -q
+TORCH_DEVICE_BACKEND_AUTOLOAD=0 /mnt/workspace/torch-delegate-harmony/.venv/bin/python -m pytest tests/converter/test_materialize.py::test_pack_int4_roundtrip -q
 
 # 收集 (不跑, 看项数):
-TORCH_DEVICE_BACKEND_AUTOLOAD=0 /mnt/workspace/torch-delegate-harmony/.venv/bin/python -m pytest tests/llm_models/ --co -q
+TORCH_DEVICE_BACKEND_AUTOLOAD=0 /mnt/workspace/torch-delegate-harmony/.venv/bin/python -m pytest tests/llm_models/ tests/converter/ --co -q
 ```
 
-## 已知限制
+ ## 已知限制（llm_models）
 
-1. **`fused_infer_attention_score_v2` causal 路径**：CPU impl `_build_sparse_mask` 解包 `b,n,s_q,s_k = q.shape`，BNSD 下 `q=[b,n,s,d]` 使 `s_k=d`、`s_q≠s_k` 命中 early-return `None` → causal mask 被跳过。这是 cann_lm CPU impl 限制（不碰 cann_lm），测试中 causal 用例放宽为 shape+finite；数值精确对齐改由 `extern_mask`（传 bool causal atten_mask）测试覆盖。
-2. **`chunk_gated_delta_rule`**：融合算子数值精确校验难（BHSD↔BSHD 转换 + delta rule 递归），仅测 out/final_state shape + finite；数值由 qwen3.5 modeling（test_modeling_qwen3_5）间接覆盖。
-3. **`ExportWrapper` 基类 forward**：基类 `forward` 调 `self._drive_layers`（子类实现，基类未定义），故 base 测试不测 forward，只测 `__init__`/`set_quant_embeddings`/`_num_layers`；forward 由各模型 wrapper（test_gemma4 `test_wrapper_vs_model` 等）端到端覆盖。
-4. **真实权重/出字**：不在 UT 范围（需 HF 模型 + venv/系统 python），归 `examples/test_converter/llm_models_run_on_cpu/`（CPU e2e）+ `examples/test_converter/export_llm_model/`（HF→epair→OM→NPU e2e，`run_e2e_pipeline.sh`）。
+ 1. **`fused_infer_attention_score_v2` causal 路径**：CPU impl `_build_sparse_mask` 解包 `b,n,s_q,s_k = q.shape`，BNSD 下 `q=[b,n,s,d]` 使 `s_k=d`、`s_q≠s_k` 命中 early-return `None` → causal mask 被跳过。这是 cann_lm CPU impl 限制（不碰 cann_lm），测试中 causal 用例放宽为 shape+finite；数值精确对齐改由 `extern_mask`（传 bool causal atten_mask）测试覆盖。
+ 2. **`chunk_gated_delta_rule`**：融合算子数值精确校验难（BHSD↔BSHD 转换 + delta rule 递归），仅测 out/final_state shape + finite；数值由 qwen3.5 modeling（test_modeling_qwen3_5）间接覆盖。
+ 3. **`ExportWrapper` 基类 forward**：基类 `forward` 调 `self._drive_layers`（子类实现，基类未定义），故 base 测试不测 forward，只测 `__init__`/`set_quant_embeddings`/`_num_layers`；forward 由各模型 wrapper（test_gemma4 `test_wrapper_vs_model` 等）端到端覆盖。
+ 4. **真实权重/出字**：不在 UT 范围（需 HF 模型 + venv/系统 python），归 `examples/test_converter/llm_models_run_on_cpu/`（CPU e2e）+ `examples/test_converter/export_llm_model/`（HF→epair→OM→NPU e2e，`run_e2e_pipeline.sh`）。
 
-## 维护指南
+ ## 维护指南
 
-- **新增模型**：在 `cann_lm/models/<new>/` 加 modeling/configuration/export_wrapper 后，于 `model_registry.py` REGISTRY 注册；测试侧加 `tests/llm_models/test_<new>.py`（仿 test_gemma4.py：config fixture + 各组件 test_*），并在 `test_model_registry.py` 补 entry 字段 + alias parametrize。
-- **新增融合算子**：在 `cann_lm/models/fused_ops/<op>.py` 加 schema+fake+CPU impl 后，于 `test_fused_ops.py` 加 `test_<op>_*`（shape + 数值 vs 手算 allclose，或难对齐则 shape+finite + 注释）。
-- **API 漂移**：cann_lm modeling 演进导致 test 失败时，**只改 test 代码**对齐新签名（如多值返回解包、参数重命名），不动 cann_lm/；commit message 注明漂移点。
-- **环境**：测试依赖 venv 的 torch/torchair/torch_delegate + `TORCH_DEVICE_BACKEND_AUTOLOAD=0`；CI 用 `bash scripts/build.sh deps` 装 venv 后跑 `pytest tests/llm_models/`。
+ - **新增模型**：在 `cann_lm/models/<new>/` 加 modeling/configuration/export_wrapper 后，于 `model_registry.py` REGISTRY 注册；测试侧加 `tests/llm_models/test_<new>.py`（仿 test_gemma4.py：config fixture + 各组件 test_*），并在 `test_model_registry.py` 补 entry 字段 + alias parametrize。
+ - **新增融合算子**：在 `cann_lm/models/fused_ops/<op>.py` 加 schema+fake+CPU impl 后，于 `test_fused_ops.py` 加 `test_<op>_*`（shape + 数值 vs 手算 allclose，或难对齐则 shape+finite + 注释）。
+ - **新增 converter 函数**：在 `cann_lm/converter/<x>.py` 加纯逻辑/解析/打包函数后，于 `tests/converter/test_<x>.py` 补测（纯 tensor ops 数值 allclose、解析函数用 tmp_path 造假产物、CLI argparse）；需 torchair/GE/真实权重/网络的函数跳过 + 注释（归 e2e）。
+ - **API 漂移**：cann_lm 演进导致 test 失败时，**只改 test 代码**对齐新签名/行为（如多值返回解包、参数重命名、materialize clamp 范围），不动 cann_lm/；commit message 注明漂移点。
+ - **环境**：测试依赖 venv 的 torch/torchair/torch_delegate + `TORCH_DEVICE_BACKEND_AUTOLOAD=0`；CI 用 `bash scripts/build.sh deps` 装 venv 后跑 `pytest tests/llm_models/ tests/converter/`。

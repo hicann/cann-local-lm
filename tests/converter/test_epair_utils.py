@@ -79,8 +79,8 @@ def test_pack_weights_to_dir_single_file(tmp_path):
     assert (tmp_path / "weights_0.bin").exists()
     # a.weight: 4*4*4=64 bytes @ offset 0; b.weight: 2*2*4=16 bytes @ offset 64
     assert index["weights_0.bin"] == [
-        {"name": "a.weight", "offset": 0, "size": 64},
-        {"name": "b.weight", "offset": 64, "size": 16},
+        {"name": "a.weight", "offset": 0, "size": 64, "format": "ND"},
+        {"name": "b.weight", "offset": 64, "size": 16, "format": "ND"},
     ]
     assert (tmp_path / "weights_0.bin").stat().st_size == 80
 
@@ -98,8 +98,8 @@ def test_pack_weights_to_dir_splits_on_max_file_size(tmp_path):
     assert sorted(index) == ["weights_0.bin", "weights_1.bin"]
     assert (tmp_path / "weights_0.bin").stat().st_size == 64
     assert (tmp_path / "weights_1.bin").stat().st_size == 16
-    assert index["weights_0.bin"][0] == {"name": "a.weight", "offset": 0, "size": 64}
-    assert index["weights_1.bin"][0] == {"name": "b.weight", "offset": 0, "size": 16}
+    assert index["weights_0.bin"][0] == {"name": "a.weight", "offset": 0, "size": 64, "format": "ND"}
+    assert index["weights_1.bin"][0] == {"name": "b.weight", "offset": 0, "size": 16, "format": "ND"}
 
 
 def test_pack_weights_to_dir_single_tensor_exceeds_limit_not_split(tmp_path):

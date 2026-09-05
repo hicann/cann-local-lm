@@ -382,3 +382,178 @@ def test_npu_fused_infer_attention_score_v2_extern_mask():
     attn = attn + fmask
     expected = torch.softmax(attn.float(), dim=-1).to(q.dtype) @ v
     torch.testing.assert_close(out, expected, rtol=1e-4, atol=1e-4)
+
+
+def test_fa_v2_sparse_mode3_causal_square():
+    # sparse_mode=3 (causal) with s_q==s_k: q=[b,h,s,s] so seq==head_dim ->
+    # _build_sparse_mask builds lower-triangular causal mask (vs None when s_q!=s_k).
+    torch.manual_seed(0)
+    b, h, s = 1, 2, 4  # s is both seq_len and head_dim -> s_q==s_k
+    q = torch.randn(b, h, s, s, dtype=torch.float32)
+    k = torch.randn(b, h, s, s, dtype=torch.float32)
+    v = torch.randn(b, h, s, s, dtype=torch.float32)
+    scale = 0.5
+
+    out, lse = torch.ops.npu.npu_fused_infer_attention_score_v2(
+        q, k, v, num_query_heads=h, num_key_value_heads=h,
+        softmax_scale=scale, input_layout="BNSD", sparse_mode=3,
+    )
+
+    assert out.shape == q.shape
+    assert lse.numel() == 0
+    assert torch.isfinite(out).all()
+    # manual causal SDPA: positions j>i masked out (-inf)
+    attn = (q @ k.transpose(-1, -2)) * scale
+    upper = torch.triu(torch.ones(s, s, dtype=torch.bool), diagonal=1)
+    attn = attn.masked_fill(upper, float("-inf"))
+    expected = torch.softmax(attn.float(), dim=-1).to(q.dtype) @ v
+    torch.testing.assert_close(out, expected, rtol=1e-4, atol=1e-4)
+
+
+def test_fa_v2_sparse_mode4_sliding_square():
+    # sparse_mode=4 (sliding_window) with s_q==s_k: diff=q_pos-k_pos in [0, pre_tokens-1].
+    torch.manual_seed(0)
+    b, h, s = 1, 2, 6
+    pre_tokens = 3  # window: attend kv where 0 <= i-j <= pre_tokens-1
+    q = torch.randn(b, h, s, s, dtype=torch.float32)
+    k = torch.randn(b, h, s, s, dtype=torch.float32)
+    v = torch.randn(b, h, s, s, dtype=torch.float32)
+    scale = 0.4
+
+    out, _ = torch.ops.npu.npu_fused_infer_attention_score_v2(
+        q, k, v, num_query_heads=h, num_key_value_heads=h,
+        softmax_scale=scale, pre_tokens=pre_tokens, next_tokens=0,
+        input_layout="BNSD", sparse_mode=4,
+    )
+
+    assert out.shape == q.shape
+    assert torch.isfinite(out).all()
+    # manual sliding-window mask: attend where 0 <= i-j <= pre_tokens-1
+    q_pos = torch.arange(s).unsqueeze(1)  # [s,1]
+    k_pos = torch.arange(s).unsqueeze(0)  # [1,s]
+    diff = q_pos - k_pos
+    attend = (diff >= 0) & (diff <= pre_tokens - 1)
+    attn = (q @ k.transpose(-1, -2)) * scale
+    attn = attn.masked_fill(~attend, float("-inf"))
+    expected = torch.softmax(attn.float(), dim=-1).to(q.dtype) @ v
+    torch.testing.assert_close(out, expected, rtol=1e-4, atol=1e-4)
+
+
+def test_fa_v2_tnd_layout():
+    # TND [t,n,d] -> _to_bnsd unsqueeze(0) -> [1,n,t,d]; _from_bnsd squeeze(0) back.
+    torch.manual_seed(0)
+    t, n, d = 5, 2, 8
+    q = torch.randn(t, n, d, dtype=torch.float32)
+    k = torch.randn(t, n, d, dtype=torch.float32)
+    v = torch.randn(t, n, d, dtype=torch.float32)
+    scale = 0.5
+
+    out, lse = torch.ops.npu.npu_fused_infer_attention_score_v2(
+        q, k, v, num_query_heads=n, num_key_value_heads=n,
+        softmax_scale=scale, input_layout="TND", sparse_mode=0,
+    )
+
+    assert out.shape == q.shape
+    assert lse.numel() == 0
+    assert torch.isfinite(out).all()
+    qb = q.unsqueeze(0)  # [1,n,t,d]
+    attn = (qb @ k.unsqueeze(0).transpose(-1, -2)) * scale
+    expected = torch.softmax(attn.float(), dim=-1).to(q.dtype) @ v.unsqueeze(0)
+    torch.testing.assert_close(out, expected.squeeze(0), rtol=1e-4, atol=1e-4)
+
+
+def test_fa_v2_bsnd_layout():
+    # BSND [b,s,n,d] -> _to_bnsd transpose(1,2) -> [b,n,s,d]; _from_bnsd transpose back.
+    torch.manual_seed(0)
+    b, s, n, d = 2, 5, 3, 8
+    q = torch.randn(b, s, n, d, dtype=torch.float32)
+    k = torch.randn(b, s, n, d, dtype=torch.float32)
+    v = torch.randn(b, s, n, d, dtype=torch.float32)
+    scale = 0.3
+
+    out, _ = torch.ops.npu.npu_fused_infer_attention_score_v2(
+        q, k, v, num_query_heads=n, num_key_value_heads=n,
+        softmax_scale=scale, input_layout="BSND", sparse_mode=0,
+    )
+
+    assert out.shape == q.shape
+    assert torch.isfinite(out).all()
+    qb = q.transpose(1, 2)  # [b,n,s,d]
+    attn = (qb @ k.transpose(1, 2).transpose(-1, -2)) * scale
+    expected = (torch.softmax(attn.float(), dim=-1).to(q.dtype) @ v.transpose(1, 2))
+    torch.testing.assert_close(out, expected.transpose(1, 2), rtol=1e-4, atol=1e-4)
+
+
+def test_fa_v2_default_kv_heads_equals_query_heads():
+    # num_key_value_heads=0 (schema default) -> CPU impl sets kv_heads = query_heads (MHA).
+    torch.manual_seed(0)
+    b, h, s, d = 1, 4, 6, 8
+    q = torch.randn(b, h, s, d, dtype=torch.float32)
+    k = torch.randn(b, h, s, d, dtype=torch.float32)
+    v = torch.randn(b, h, s, d, dtype=torch.float32)
+    scale = 0.25
+
+    # omit num_key_value_heads -> default 0 -> line 78 sets it to num_query_heads
+    out, _ = torch.ops.npu.npu_fused_infer_attention_score_v2(
+        q, k, v, num_query_heads=h, softmax_scale=scale,
+        input_layout="BNSD", sparse_mode=0,
+    )
+
+    assert out.shape == q.shape
+    assert torch.isfinite(out).all()
+    attn = (q @ k.transpose(-1, -2)) * scale
+    expected = torch.softmax(attn.float(), dim=-1).to(q.dtype) @ v
+    torch.testing.assert_close(out, expected, rtol=1e-4, atol=1e-4)
+
+
+def test_fa_v2_float_non_square_extern_mask_sliced():
+    # float (non-bool) atten_mask with q-dim > attn_weights q-dim -> line 97 slices mask.
+    # q has seq=5, k/v have kv_max=8 (cache buffer); attn_weights=[b,h,5,8]; mask=[b,1,8,8]
+    # sliced to [:,:,:5,:] -> [b,1,5,8] matches attn_weights.
+    torch.manual_seed(0)
+    b, h, s, d, kv_max = 1, 2, 5, 8, 8
+    q = torch.randn(b, h, s, d, dtype=torch.float32)
+    k = torch.randn(b, h, kv_max, d, dtype=torch.float32)  # kv buffer (kv_max entries)
+    v = torch.randn(b, h, kv_max, d, dtype=torch.float32)
+    # float mask [b,1,kv_max,kv_max]: 0 attend (k<=q, causal), -inf mask out (k>q)
+    min_val = torch.finfo(q.dtype).min
+    q_pos = torch.arange(kv_max).unsqueeze(1)  # [kv_max,1]
+    k_pos = torch.arange(kv_max).unsqueeze(0)  # [1,kv_max]
+    causal = k_pos <= q_pos  # [kv_max,kv_max]
+    mask = torch.where(causal, 0.0, min_val).view(b, 1, kv_max, kv_max)
+    scale = 0.5
+
+    out, _ = torch.ops.npu.npu_fused_infer_attention_score_v2(
+        q, k, v, atten_mask=mask, num_query_heads=h, num_key_value_heads=h,
+        softmax_scale=scale, input_layout="BNSD", sparse_mode=0,
+    )
+
+    assert out.shape == q.shape
+    assert torch.isfinite(out).all()
+    attn = (q @ k.transpose(-1, -2)) * scale  # [b,h,s,kv_max]
+    sliced = mask[:, :, :s, :]  # what the CPU impl slices to -> [b,1,s,kv_max]
+    attn = attn + sliced
+    expected = torch.softmax(attn.float(), dim=-1).to(q.dtype) @ v
+    torch.testing.assert_close(out, expected, rtol=1e-4, atol=1e-4)
+
+
+def test_fa_v2_unknown_sparse_mode_returns_no_mask():
+    # sparse_mode=5 (unrecognized) with s_q==s_k -> _build_sparse_mask else-branch -> None (no mask).
+    torch.manual_seed(0)
+    b, h, s = 1, 2, 4
+    q = torch.randn(b, h, s, s, dtype=torch.float32)
+    k = torch.randn(b, h, s, s, dtype=torch.float32)
+    v = torch.randn(b, h, s, s, dtype=torch.float32)
+    scale = 0.5
+
+    out, _ = torch.ops.npu.npu_fused_infer_attention_score_v2(
+        q, k, v, num_query_heads=h, num_key_value_heads=h,
+        softmax_scale=scale, input_layout="BNSD", sparse_mode=5,
+    )
+
+    assert out.shape == q.shape
+    assert torch.isfinite(out).all()
+    # no mask applied -> plain SDPA
+    attn = (q @ k.transpose(-1, -2)) * scale
+    expected = torch.softmax(attn.float(), dim=-1).to(q.dtype) @ v
+    torch.testing.assert_close(out, expected, rtol=1e-4, atol=1e-4)

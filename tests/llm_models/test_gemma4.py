@@ -7,7 +7,7 @@ pytest 风格: 顶层 test_* 函数, check() 失败即 raise (pytest 捕获).
 import torch
 import pytest
 
-from cann_lm.models.gemma4.configuration_gemma4 import Gemma4TextConfig
+from cann_lm.models.gemma4.configuration_gemma4 import Gemma4TextConfig, Gemma4Config, Gemma4VisionConfig
 from cann_lm.models.gemma4.modeling_gemma4 import (
     Gemma4ForCausalLM,
     Gemma4TextModel,
@@ -19,6 +19,7 @@ from cann_lm.models.gemma4.modeling_gemma4 import (
     apply_rotary_pos_emb,
     repeat_kv,
     rotate_half,
+    eager_attention_forward,
 )
 from cann_lm.models.gemma4.export_wrapper import Gemma4ExportWrapper
 
@@ -37,6 +38,19 @@ def make_small_config() -> Gemma4TextConfig:
                              num_attention_heads=4, num_key_value_heads=2,
                              head_dim=32, global_head_dim=32,
                              vocab_size=1000, num_kv_shared_layers=0)
+    config.__post_init__()
+    return config
+
+
+def make_wrapper_config() -> Gemma4TextConfig:
+    """Small config for export-wrapper tests: tiny PLE + small sliding_window."""
+    config = Gemma4TextConfig(num_hidden_layers=4, hidden_size=128, intermediate_size=512,
+                             num_attention_heads=4, num_key_value_heads=2,
+                             head_dim=32, global_head_dim=32,
+                             vocab_size=1000, num_kv_shared_layers=0,
+                             vocab_size_per_layer_input=1000,
+                             hidden_size_per_layer_input=16,
+                             sliding_window=4)
     config.__post_init__()
     return config
 
@@ -306,3 +320,261 @@ def test_wrapper_vs_model(config: Gemma4TextConfig):
             kv_match = False
     check(f"wrapper KV cache match (max_diff={max_kv_diff:.6e})", kv_match)
     info(f"  wrapper vs model: logits diff={diff:.6e}, KV diff={max_kv_diff:.6e}")
+
+
+# ── export wrapper helpers (pure logic: mask builders / sample inputs / names) ──
+
+def test_wrapper_build_mask_sliding_true_branch():
+    """kv_max > sliding_window -> real window-mask construction (lines 220-226)."""
+    config = make_wrapper_config()  # sliding_window=4
+    model = Gemma4ForCausalLM(config)
+    wrapper = Gemma4ExportWrapper(model, kv_cache_max_len=16, batch=1).eval()
+    dtype = next(model.parameters()).dtype
+    seq, kv_max = 2, 8  # kv_max(8) > sliding_window(4) -> true branch
+    new_pos = torch.arange(seq, dtype=torch.int64)
+
+    mask = wrapper._build_mask_sliding(seq, kv_max, dtype, new_pos)
+
+    assert mask.shape == (1, 1, kv_max, kv_max)
+    assert mask.dtype == torch.bool
+    # first seq row (q_abs=0): attend only kv[0] (diff=0 <= w-1=3, diff>=0)
+    row0 = mask[0, 0, 0]
+    assert row0[0].item() is False  # attend (False=attend)
+    assert row0[1].item() is True  # masked out
+    # padding rows (seq..kv_max) all True (masked out)
+    assert mask[0, 0, seq].all().item() is True
+
+
+def test_wrapper_build_mask_sliding_degenerate_to_full():
+    """kv_max <= sliding_window -> degenerates to _build_mask_full (causal)."""
+    config = make_wrapper_config()  # sliding_window=4
+    model = Gemma4ForCausalLM(config)
+    wrapper = Gemma4ExportWrapper(model, kv_cache_max_len=16, batch=1).eval()
+    dtype = next(model.parameters()).dtype
+    seq, kv_max = 4, 4  # kv_max(4) <= sliding_window(4) -> degenerate
+    new_pos = torch.arange(seq, dtype=torch.int64)
+
+    full = wrapper._build_mask_full(seq, kv_max, dtype, new_pos)
+    sliding = wrapper._build_mask_sliding(seq, kv_max, dtype, new_pos)
+
+    assert torch.equal(sliding, full)
+
+
+def test_wrapper_get_sample_inputs_input_ids_mode():
+    config = make_wrapper_config()
+    model = Gemma4ForCausalLM(config)
+    wrapper = Gemma4ExportWrapper(model, kv_cache_max_len=16, batch=1).eval()
+    seq = 4
+
+    inputs = wrapper.get_sample_inputs(seq_len=seq, use_embeddings=False)
+    # (input_ids, mask_full, mask_sliding, pos_ids, past_kv, new_kv_pos, emb, out_pos, ple, e_scale, ple_scale)
+    assert inputs[0] is not None and inputs[0].shape == (1, seq)
+    assert inputs[1].shape == (1, 1, 16, 16)  # mask_full [b,1,kv_max,kv_max]
+    assert inputs[2].shape == (1, 1, 16, 16)  # mask_sliding
+    assert inputs[5].shape == (seq,)           # new_kv_cache_pos
+    assert len(inputs[4]) == config.num_hidden_layers  # past_kv list
+    # per-layer head dim: full layers use global_head_dim(32), sliding use head_dim(32)
+    hd = wrapper._get_layer_head_dim(0)
+    assert inputs[4][0][0].shape[-1] == hd
+
+
+def test_wrapper_get_sample_inputs_embeddings_mode():
+    config = make_wrapper_config()
+    model = Gemma4ForCausalLM(config)
+    wrapper = Gemma4ExportWrapper(model, kv_cache_max_len=16, batch=1).eval()
+    seq = 4
+
+    inputs = wrapper.get_sample_inputs(seq_len=seq, use_embeddings=True, quant_embeddings=False)
+    # input_ids is None placeholder; embeddings provided; ple provided (PLE enabled)
+    assert inputs[0] is None
+    assert inputs[6] is not None and inputs[6].shape == (1, seq, config.hidden_size)
+    assert inputs[8] is not None  # per_layer_token_identity
+
+
+def test_wrapper_get_sample_inputs_quant_embeddings_mode():
+    config = make_wrapper_config()
+    model = Gemma4ForCausalLM(config)
+    wrapper = Gemma4ExportWrapper(model, kv_cache_max_len=16, batch=1).eval()
+    wrapper.set_quant_embeddings({
+        "model.model.embed_tokens.weight": (
+            torch.zeros(config.vocab_size, config.hidden_size, dtype=torch.int8),
+            torch.ones(config.vocab_size, dtype=torch.float32),
+        )
+    })
+    seq = 4
+
+    inputs = wrapper.get_sample_inputs(seq_len=seq, use_embeddings=True, quant_embeddings=True)
+    assert inputs[0] is None
+    assert inputs[6].dtype == torch.int8 and inputs[6].shape == (1, seq, config.hidden_size)
+    assert inputs[9].shape == (1, seq)  # embeddings_scale
+
+
+def test_wrapper_onnx_helpers():
+    config = make_wrapper_config()
+    model = Gemma4ForCausalLM(config)
+    wrapper = Gemma4ExportWrapper(model, kv_cache_max_len=16, batch=1).eval()
+
+    si = wrapper.make_sample_inputs(seq_len=4)
+    # (input_ids, mask_full, mask_sliding, pos_ids, past_kv, new_kv_pos, None, None, None, None)
+    assert si[0].shape == (1, 4)
+    assert si[1].shape == (1, 1, 16, 16)  # mask_full [b,1,kv_max,kv_max]
+    assert si[2].shape == (1, 1, 16, 16)  # mask_sliding
+    assert si[7] is None and si[8] is None and si[9] is None
+
+    in_names, out_names = wrapper.make_input_output_names()
+    n = config.num_hidden_layers
+    assert in_names[0] == "input_ids"
+    assert in_names[1] == "mask_full" and in_names[2] == "mask_sliding"
+    assert len(in_names) == 5 + 2 * n  # 5 scalars + 2 per layer
+    assert out_names[0] == "logits"
+    assert len(out_names) == 1 + 2 * n
+
+
+def test_wrapper_host_names_and_detach():
+    config = make_wrapper_config()
+    model = Gemma4ForCausalLM(config)
+    wrapper = Gemma4ExportWrapper(model, kv_cache_max_len=16, batch=1).eval()
+
+    names = wrapper.host_side_weight_names()
+    assert "model.model.embed_tokens.weight" in names
+    assert "model.model.embed_tokens_per_layer.weight" in names
+
+    tm = model.model
+    assert hasattr(tm, "embed_tokens") and hasattr(tm, "embed_tokens_per_layer")
+    wrapper.detach_externalized_lookups()
+    assert not hasattr(tm, "embed_tokens")
+    assert not hasattr(tm, "embed_tokens_per_layer")
+
+
+def test_wrapper_forward_with_output_pos_and_embeddings():
+    """forward output_pos index_select + embeddings dequant (lines 66-67, 86)."""
+    config = make_wrapper_config()
+    model = Gemma4ForCausalLM(config).eval()
+    wrapper = Gemma4ExportWrapper(model, kv_cache_max_len=16, batch=1).eval()
+    dtype = next(model.parameters()).dtype
+    b, s = 1, 4
+    input_ids = torch.randint(0, config.vocab_size, (b, s))
+    new_kv_pos = torch.arange(s, dtype=torch.int64)
+    mask_full = wrapper._build_mask_full(s, s, dtype, new_kv_pos)
+    mask_sliding = wrapper._build_mask_sliding(s, s, dtype, new_kv_pos)
+    pos_ids = torch.arange(s, dtype=torch.long).unsqueeze(0)
+    output_pos = torch.tensor([s - 1], dtype=torch.int32)
+    embeddings = model.model.embed_tokens(input_ids).detach()
+    embeddings_scale = torch.ones(b, s, dtype=dtype)
+
+    with torch.no_grad():
+        logits, *_ = wrapper(
+            input_ids, mask_full, mask_sliding, pos_ids, None, new_kv_pos,
+            embeddings, output_pos, None, embeddings_scale, None,
+        )
+    assert logits.shape == (b, 1, config.vocab_size)
+
+
+# ── modeling edge branches (eager_attention_forward softcap/scaling; KV scatter; mask) ──
+
+class _AttnStub:
+    """Minimal module for eager_attention_forward (head_dim/num_key_value_groups/training)."""
+    head_dim = 32
+    num_key_value_groups = 2
+    training = False
+
+
+def test_eager_attention_forward_scaling_none_and_softcap():
+    """scaling=None -> head_dim**-0.5 (190-191); softcap tanh path (196-201)."""
+    b, h, s, d = 1, 4, 4, 32
+    q = torch.randn(b, h, s, d, dtype=torch.float32)
+    k = torch.randn(b, 2, s, d, dtype=torch.float32)  # 2 kv heads -> repeat 2x
+    v = torch.randn(b, 2, s, d, dtype=torch.float32)
+    stub = _AttnStub()
+
+    # scaling=None -> uses head_dim ** -0.5
+    out_none, _ = eager_attention_forward(stub, q, k, v, None, scaling=None)
+    assert out_none.shape == (b, s, h, d)
+    assert torch.isfinite(out_none).all()
+
+    # softcap path: tanh scaling
+    out_sc, aw = eager_attention_forward(stub, q, k, v, None, scaling=0.25, softcap=30.0)
+    assert out_sc.shape == (b, s, h, d)
+    assert torch.isfinite(out_sc).all()
+    # attn_weights bounded by softcap (tanh range)
+    assert aw.abs().max().item() <= 30.0 + 1e-3
+
+
+def test_text_model_scatter_write_cache(config: Gemma4TextConfig):
+    """new_kv_cache_pos + pre-allocated buffer -> scatter-write branch (558-571).
+
+    Uses the export wrapper (pre-builds [b,1,kv_max,kv_max] bool masks compatible with
+    the fixed kv_max buffer); eager TextModel.forward computes past_len from cache.shape[2]
+    which mismatches a pre-allocated buffer, so the wrapper path is the right harness.
+    """
+    model = Gemma4ForCausalLM(config).eval()
+    wrapper = Gemma4ExportWrapper(model, kv_cache_max_len=16, batch=1).eval()
+    b, s = 1, 4
+    # get pre-allocated KV buffers (right per-layer head_dim) + host-built masks
+    inputs = wrapper.get_sample_inputs(seq_len=s, use_embeddings=False)
+    input_ids, mask_full, mask_sliding, pos_ids, past_kv, new_kv_pos, *_ = inputs
+
+    with torch.no_grad():
+        logits, *kv_flat = wrapper(
+            input_ids, mask_full, mask_sliding, pos_ids, past_kv, new_kv_pos, None, None,
+        )
+    check("scatter-write logits shape", logits.shape == (b, s, config.vocab_size))
+    # scatter-write keeps kv_max fixed (buffer not grown via torch.cat)
+    check("kv buffer stays kv_max", kv_flat[0].shape[2] == 16)
+
+
+def test_prepare_causal_mask_4d_sliding_window():
+    """4D mask + sliding_attention + kv_len > sliding_window -> window restriction (797-805)."""
+    config = make_wrapper_config()  # sliding_window=4
+    model = Gemma4TextModel(config)
+    b, s, d = 1, 4, config.hidden_size
+    inputs_embeds = torch.randn(b, s, d, dtype=torch.float32)
+    kv_len = 8  # > sliding_window(4)
+    min_val = torch.finfo(torch.float32).min
+    mask4d = torch.zeros(b, 1, s, kv_len, dtype=torch.float32)
+    new_pos = torch.arange(s, dtype=torch.int64)
+
+    out = model._prepare_causal_mask(
+        inputs_embeds, mask4d, "sliding_attention",
+        new_kv_cache_pos=new_pos, past_len=0,
+    )
+    assert out.shape == (b, 1, s, kv_len)
+    # window restriction masks out far kv positions -> some -inf present
+    assert (out == min_val).any()
+
+
+def test_prepare_causal_mask_2d_padding():
+    """2D attention_mask -> bool key_valid + causal (qwen3-style, 765-785)."""
+    config = make_small_config()
+    model = Gemma4TextModel(config)
+    b, s, d = 1, 6, config.hidden_size
+    inputs_embeds = torch.randn(b, s, d, dtype=torch.float32)
+    mask2d = torch.ones(b, s)
+    mask2d[0, -2:] = 0  # last 2 tokens padded
+    min_val = torch.finfo(torch.float32).min
+
+    out = model._prepare_causal_mask(inputs_embeds, mask2d, "full_attention", past_len=0)
+    assert out.shape == (b, 1, s, s)
+    # padded key positions get -inf
+    assert (out[0, 0, :, -2] == min_val).all()
+
+
+def test_config_to_dict_and_gemma4_config():
+    """to_dict (109) + Gemma4Config __post_init__ dict/None (171-184) + to_dict (187)."""
+    config = make_small_config()
+    d = config.to_dict()
+    assert d["model_type"] == "gemma4_text"
+    assert not any(k.startswith("_") for k in d)
+
+    # Gemma4Config: all None -> defaults created
+    gc = Gemma4Config()
+    assert isinstance(gc.text_config, Gemma4TextConfig)
+    assert isinstance(gc.vision_config, Gemma4VisionConfig)
+
+    # dict text_config -> converted to dataclass
+    gc2 = Gemma4Config(text_config={"vocab_size": 100})
+    assert isinstance(gc2.text_config, Gemma4TextConfig)
+    assert gc2.text_config.vocab_size == 100
+
+    gd = gc.to_dict()
+    assert gd["model_type"] == "gemma4"

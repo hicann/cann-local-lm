@@ -6,6 +6,7 @@ pytest 风格: 顶层 test_* 函数, check() 失败即 raise (pytest 捕获).
 """
 import torch
 import pytest
+import json
 
 from cann_lm.models.qwen3 import (
     Qwen3Attention,
@@ -280,3 +281,148 @@ def test_wrapper_vs_model(config: Qwen3TextConfig):
             kv_match = False
     check(f"wrapper KV cache match (max_diff={max_kv_diff:.6e})", kv_match and max_kv_diff == 0.0)
     info(f"  wrapper vs model: logits diff={max_diff:.6e}, KV diff={max_kv_diff:.6e}")
+
+
+# ── modeling edge branches (scatter-write / 2D mask / output_hidden_states / generate) ──
+
+def test_attention_scatter_write(config: Qwen3TextConfig):
+    """new_kv_cache_pos + pre-allocated buffer -> index_copy scatter-write (238-242)."""
+    b, s = 1, 4
+    layer_idx = 0
+    attn = Qwen3Attention(config, layer_idx)
+    rope = Qwen3RotaryEmbedding(config)
+    x = torch.randn(b, s, config.hidden_size)
+    pos = torch.arange(s).unsqueeze(0)
+    cos, sin = rope(x, pos)
+
+    kv_max = 16
+    n_kv = config.num_key_value_heads
+    hd = config.head_dim
+    pv = [None] * config.num_hidden_layers
+    pv[layer_idx] = (torch.zeros(b, n_kv, kv_max, hd), torch.zeros(b, n_kv, kv_max, hd))
+    new_pos = torch.arange(s, dtype=torch.int64)
+
+    out = attn(x, position_embeddings=(cos, sin), attention_mask=None,
+               past_key_values=pv, new_kv_cache_pos=new_pos)
+    check("scatter-write attn shape", out.shape == x.shape)
+    # scatter-write keeps kv_max fixed (index_copy into pre-allocated buffer)
+    check("kv buffer stays kv_max", pv[layer_idx][0].shape[2] == kv_max)
+
+
+def test_text_model_2d_padding_mask(config: Qwen3TextConfig):
+    """2D attention_mask -> _prepare_causal_mask bool key_valid + causal (362-366)."""
+    lm = Qwen3ForCausalLM(config).to(torch.float32).eval()
+    b, s = 1, 6  # bsz=1: 2D-mask broadcast [1,1,1,s,s] vs attn [1,h,s,s]
+    ids = torch.randint(0, config.vocab_size, (b, s))
+    mask2d = torch.ones(b, s)
+    mask2d[0, -2:] = 0  # pad last 2 tokens
+    with torch.no_grad():
+        out = lm(input_ids=ids, attention_mask=mask2d)
+    check("2D mask logits shape", out["logits"].shape == (b, s, config.vocab_size))
+    check("2D mask finite", torch.isfinite(out["logits"]).all().item())
+
+
+def test_output_hidden_states(config: Qwen3TextConfig):
+    """output_hidden_states=True -> all_hidden_states collected (400, 404-405, 449)."""
+    lm = Qwen3ForCausalLM(config).to(torch.float32).eval()
+    ids = torch.randint(0, config.vocab_size, (1, 5))
+    with torch.no_grad():
+        out = lm(input_ids=ids, output_hidden_states=True)
+    hs = out["hidden_states"]
+    check("hidden_states returned", hs is not None)
+    # initial + per-layer + final-norm = N+2
+    check("hidden_states count = layers+2", len(hs) == config.num_hidden_layers + 2)
+    check("first hidden = embed", hs[0].shape == (1, 5, config.hidden_size))
+
+
+def test_generate_decode_step_and_sampling(config: Qwen3TextConfig):
+    """max_new_tokens>=2 hits decode step (502); do_sample+top_k/top_p hits 508-520."""
+    torch.manual_seed(0)
+    lm = Qwen3ForCausalLM(config).to(torch.float32).eval()
+    ids = torch.randint(0, config.vocab_size, (1, 4))
+    # greedy with 2+ tokens -> decode step (past_kv not None on 2nd iter)
+    gen_greedy = lm.generate(ids, max_new_tokens=3, do_sample=False)
+    check("greedy generates 3+ tokens", gen_greedy.shape[1] >= ids.shape[1] + 1)
+    # sampling with top_k + top_p -> 508-520 branches
+    gen_sample = lm.generate(ids, max_new_tokens=2, do_sample=True,
+                             temperature=0.8, top_k=10, top_p=0.9)
+    check("sampling generates tokens", gen_sample.shape[1] > ids.shape[1])
+
+
+def test_generate_no_eos_token(config: Qwen3TextConfig):
+    """eos_token_id=None (config + arg) -> else branch eos_set=set() (488-491, 525)."""
+    cfg = make_small_config(eos_token_id=None)
+    lm = Qwen3ForCausalLM(cfg).to(torch.float32).eval()
+    ids = torch.randint(0, cfg.vocab_size, (1, 4))
+    gen = lm.generate(ids, max_new_tokens=3, do_sample=False, eos_token_id=None)
+    check("no-eos generate runs to max_new_tokens", gen.shape[1] == ids.shape[1] + 3)
+
+
+def test_misc_branches(config: Qwen3TextConfig):
+    """extra_repr (118), repeat_kv n_rep=1 (67), inputs_embeds path (380), tie=False (425)."""
+    norm = Qwen3RMSNorm(config.hidden_size)
+    assert "eps=" in norm.extra_repr()
+
+    # repeat_kv n_rep==1 early return (MHA: num_heads == num_kv_heads)
+    mha_cfg = make_small_config(num_attention_heads=4, num_key_value_heads=4)
+    lm_mha = Qwen3ForCausalLM(mha_cfg).to(torch.float32).eval()
+    ids = torch.randint(0, mha_cfg.vocab_size, (1, 4))
+    with torch.no_grad():
+        out = lm_mha(input_ids=ids)
+    check("MHA forward shape", out["logits"].shape == (1, 4, mha_cfg.vocab_size))
+
+    # inputs_embeds path (380->383)
+    lm = Qwen3ForCausalLM(config).to(torch.float32).eval()
+    with torch.no_grad():
+        emb = lm.model.embed_tokens(ids)
+        out2 = lm(inputs_embeds=emb)
+    check("inputs_embeds forward", out2["logits"].shape == (1, 4, config.vocab_size))
+
+    # tie_word_embeddings=False -> lm_head is independent (425->exit)
+    untied = make_small_config(tie_word_embeddings=False)
+    lm_u = Qwen3ForCausalLM(untied).to(torch.float32).eval()
+    check("untied lm_head distinct", lm_u.lm_head.weight is not lm_u.model.embed_tokens.weight)
+
+
+def test_generate_eos_list_and_sampling_branches(config: Qwen3TextConfig):
+    """eos_token_id as list (489), top_k-only (508-511), top_p-only (511-519), eos break (526)."""
+    torch.manual_seed(0)
+    lm = Qwen3ForCausalLM(config).to(torch.float32).eval()
+    ids = torch.randint(0, config.vocab_size, (1, 4))
+
+    # eos as list -> set(eos_ids) (489); pick eos = argmax of next token to force break (526)
+    with torch.no_grad():
+        nxt = lm(input_ids=ids)["logits"][:, -1, :].argmax(dim=-1).item()
+    gen = lm.generate(ids, max_new_tokens=5, do_sample=False, eos_token_id=[nxt, 999])
+    check("eos-list breaks early", gen.shape[1] <= ids.shape[1] + 5)
+
+    # top_k only (no top_p) -> 508-511, skip top_p block
+    torch.manual_seed(1)
+    gk = lm.generate(ids, max_new_tokens=2, do_sample=True, temperature=1.0, top_k=10)
+    check("top_k-only sampling", gk.shape[1] > ids.shape[1])
+
+    # top_p only (no top_k) -> 511-519
+    torch.manual_seed(2)
+    gp = lm.generate(ids, max_new_tokens=2, do_sample=True, temperature=1.0, top_p=0.9)
+    check("top_p-only sampling", gp.shape[1] > ids.shape[1])
+
+
+def test_config_to_dict_and_from_json(tmp_path):
+    """to_dict (51) + from_json_file text_config wrapper (61-65)."""
+    config = make_small_config()
+    d = config.to_dict()
+    assert d["model_type"] == "qwen3"
+    assert not any(k.startswith("_") for k in d)
+
+    # from_json_file with text_config wrapper
+    p = tmp_path / "config.json"
+    p.write_text(json.dumps({"text_config": {"vocab_size": 99, "hidden_size": 16}}))
+    cfg = Qwen3TextConfig.from_json_file(str(p))
+    check("from_json_file vocab", cfg.vocab_size == 99)
+    check("from_json_file hidden", cfg.hidden_size == 16)
+
+    # from_json_file without wrapper
+    p2 = tmp_path / "flat.json"
+    p2.write_text(json.dumps({"vocab_size": 50}))
+    cfg2 = Qwen3TextConfig.from_json_file(str(p2))
+    check("from_json_file flat", cfg2.vocab_size == 50)

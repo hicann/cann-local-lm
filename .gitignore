@@ -10,6 +10,7 @@ __pycache__/
 
 # Build artifacts
 build/
+build_kx*/
 .cache/
 *.o
 *.so
@@ -26,6 +27,7 @@ kernel_meta/
 kernel_meta_*/
 kernel_meta_temp_*/
 ge_check_op.json
+ge_proto_*.txt
 buildPidInfo.json
 task_pid_*.txt
 

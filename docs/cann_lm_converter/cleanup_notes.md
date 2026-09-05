@@ -25,6 +25,7 @@
 - [CLI-016 TODO:epair 权重与 const 分离](#cli-016-todoepair-权重与-const-分离)
 - [CLI-017 TODO:torch-delegate 支持 torchair 打桩后整体整理安装脚本](#cli-017-todotorch-delegate-支持-torchair-打桩后整体整理安装脚本)
 - [CLI-018 TODO:参考 mlx-lm 环境处理简化 cann-lm 多套环境](#cli-018-todo参考-mlx-lm-环境处理简化-cann-lm-多套环境)
+- [CLI-019 TODO:导出 epair 时区分 p_/c_/b_ 三类数据](#cli-019-todo导出-epair-时区分-p_cb-三类数据)
 
 ---
 
@@ -241,7 +242,7 @@ saver 作为底层 API 原默认 `use_embeddings=False`(图内查表,自包含),
 | 字段 | 值 |
 |------|-----|
 | 编号 | CLI-006 |
-| 位置 | `auto_quant.py`(删 `_build_layer_strategy` + `generate_dopt_config` + `_LINEAR/_EMBED_STRATEGY` + 未用 `import json`/`import torch`)、`dopt_wrapper.py`(`_build_layer_strategy` → `build_layer_strategy`,L31 定义 + L67 调用)、`examples/.../run_pd6_cases.sh:gen_dopt_config`(内联)、`tests/dopt_lm/test_strategy_generation.py`(改单份)、文档(`quant_design.md` / `quant/INDEX.md` / `cli_design.md` / `adr/0001` / `dopt_design.md`) |
+| 位置 | `auto_quant.py`(删 `_build_layer_strategy` + `generate_dopt_config` + `_LINEAR/_EMBED_STRATEGY` + 未用 `import json`/`import torch`)、`dopt_wrapper.py`(`_build_layer_strategy` → `build_layer_strategy`,L31 定义 + L67 调用)、`examples/.../run_pd6_cases.sh:gen_dopt_config`(内联)、`tests/py/dopt_lm/test_strategy_generation.py`(改单份)、文档(`quant_design.md` / `quant/INDEX.md` / `cli_design.md` / `adr/0001` / `dopt_design.md`) |
 | 背景 | `generate_dopt_config`(场景1 离线辅助)只被 `run_pd6_cases.sh` 用例用;`_build_layer_strategy` 在 `auto_quant` + `dopt_wrapper` 两份重复(dopt_lm `generate_config_file` 是全 float 模板,逻辑不同不替代)。用户选路径2:删 `generate_dopt_config` + 用例内联 + 改公开名消除重复 |
 | 违反约定 | 无(用户主动清理 + 消除重复) |
 | 发现日期 | 2026-08-31 |
@@ -257,16 +258,16 @@ saver 作为底层 API 原默认 `use_embeddings=False`(图内查表,自包含),
   - `auto_quant.py`:删 `_LINEAR_STRATEGY`/`_EMBED_STRATEGY` + `_build_layer_strategy` + `generate_dopt_config` + 未用 `import json`/`import torch`
   - `dopt_wrapper.py`:`_build_layer_strategy` → `build_layer_strategy`(L31 定义 + L67 调用)
   - `examples/.../run_pd6_cases.sh`:`gen_dopt_config` 内联(删 `from auto_quant import generate_dopt_config`,改 `from dopt_wrapper import build_layer_strategy` + `tempfile`/`os.fdopen`/`json.dump`)
-  - `tests/dopt_lm/test_strategy_generation.py`:删 `auto_quant` import,测试改单份(只测 `dopt_wrapper.build_layer_strategy`)
+  - `tests/py/dopt_lm/test_strategy_generation.py`:删 `auto_quant` import,测试改单份(只测 `dopt_wrapper.build_layer_strategy`)
 - **文档**:`quant_design.md`(L236/335/341-342/368/489-490/502/818 + replaceAll `_build_layer_strategy`→`build_layer_strategy`)、`quant/INDEX.md`(L21 删 generate_dopt_config + L22/26 改名)、`cli_design.md`(L173 计划改造段重写删 generate_dopt_config + 合并计划 + L192 改名)、`adr/0001` L44(~~删除线~~ + 已落地标注)、`dopt_design.md` L103
 
 ### 验证
 
-`py_compile auto_quant/dopt_wrapper/cann_lm_converter` 通过;`pytest tests/dopt_lm/test_strategy_generation.py` 2 passed;`grep generate_dopt_config|_build_layer_strategy|auto_quant.build_layer_strategy` 在 docs 仅余 cleanup_notes 记录 + adr 历史标注。
+`py_compile auto_quant/dopt_wrapper/cann_lm_converter` 通过;`pytest tests/py/dopt_lm/test_strategy_generation.py` 2 passed;`grep generate_dopt_config|_build_layer_strategy|auto_quant.build_layer_strategy` 在 docs 仅余 cleanup_notes 记录 + adr 历史标注。
 
 ### 关联
 
-- 源码文件:`cann_lm/converter/quant/auto_quant.py`、`dopt_wrapper.py`、`examples/.../run_pd6_cases.sh`、`tests/dopt_lm/test_strategy_generation.py`
+- 源码文件:`cann_lm/converter/quant/auto_quant.py`、`dopt_wrapper.py`、`examples/.../run_pd6_cases.sh`、`tests/py/dopt_lm/test_strategy_generation.py`
 - 设计文档:[cli_design.md](./cli/cli_design.md)「完整调用链」、[quant_design.md](./quant/quant_design.md)「`auto_quant.py`/`dopt_wrapper.py` 签名表」
 - 历史决策:[adr/0001](../adr/0001-load-model-cpu-quant-subprocess-device.md) L44(状态变更 2026-08-31)
 
@@ -685,7 +686,7 @@ token_identity = m.embed_tokens_per_layer(input_ids).reshape(...).detach()   # H
 | 现状 | `save_epair_prefill_decode` 假设 prefill/decode 两图 state_dict 相同(同一模型),只 prefill 存权重(`consolidated_weights_save(prefill_epair, save_weights=True)` 写 `weights_*.bin` + `weight_info.json`),decode `save_weights=False`(只写 `decode_ep_json_with_ascend_ir.json`,权重丢弃) |
 | 违反约定 | 无(设计假设,非偏离) |
 | 发现日期 | 2026-09-01 |
-| 状态 | **TODO(遗留问题,待评估)** |
+| 状态 | **TODO(待决策方案+待实现;2026-09-05 补解法分析)** |
 
 ### 设计假设(当前)
 
@@ -706,20 +707,39 @@ token_identity = m.embed_tokens_per_layer(input_ids).reshape(...).detach()   # H
 
 仅当 prefill 与 decode **同一模型、同 state_dict**(权重组完全一致)时,decode 复用 prefill 权重安全。这是当前 `--mode prefill-decode` 的隐含约束,`run_pd6_cases.sh` 各 case 均同一模型导出 PD 两图,满足此约束。
 
-### 待解决方向
+### 关键修正:C++ 已按图编译(原方向 2 已就绪)
 
-1. **PD 分别存权重**:decode 也 `save_weights=True`,分文件(`weights_prefill_*.bin` / `weights_decode_*.bin`)+ 分别 `weight_info_prefill.json` / `weight_info_decode.json`,C++ 加载 decode 时读 decode 权重
-2. **C++ 加载侧适配**:`GeWeightLoader` / `epair_model_loader` 支持 per-graph 权重索引(decode graph 关联 decode weight_info)
-3. **一致性校验**:export 时 assert prefill/decode state_dict 一致(默认场景),不一致则报错或走分文件路径
-4. **产物布局**:`model_config.json` 需记录 PD 权重是否分离(标记 `pd_weight_split: true/false`),C++ 按标记加载
+`run_compile.sh:8-9` + `compile_main.cc:61-73`:编译按图分别调用——每次 `cann_lm_compile <model_json> <weights_index>` 处理一张图,`EpairModelLoader` 接收 per-graph 的 `weights_index`。故原「待解决方向 2:C++ 加载侧 per-graph 权重索引」**已满足**。当前 decode 能编译,是 `run_compile.sh` 让 decode 复用 prefill 的 `weight_info.json`(PD 同名命中)。**缺口纯在 Python 侧**(`save_epair_prefill_decode` decode `save_weights=False` 丢权重),非 C++ 不支持。
+
+且**单 artifact API 下 PD 权重必然相同**(同一模型仅 seq_len 不同 trace)→ 当前 dedup 是**正确的,非 bug**。「不一致」只源于下方场景。
+
+### 场景(PD 权重真不一致的触发)
+
+| 场景 | 权重是否真不同 | 触发 |
+|------|--------------|------|
+| ① disaggregated 部署 | 相同值,两台机器各需自包含一份 | 部署模式(非导出不一致) |
+| ② PD 不同量化(prefill W8A8/decode W4A8) | 真不同值 | 需双 artifact API(当前单 artifact 产不出) |
+| ③ 层名前缀差异(不同 wrapping) | 同值异名 | 同②,需双 artifact |
+
+### 解法
+
+**A. 务实(Python-only,推荐先做)**:`consolidated_weights_save`/`_pack_weights_to_dir` 加 `weights_prefix` 参数 + `save_epair_prefill_decode` 加 `pd_split_weights` 开关(或自动判定)。关=现状(PD 同,decode `save_weights=False` 复用,零开销);开=prefill 写 `weight_info_prefill.json`+`weights_prefill_*.bin`,decode `save_weights=True` 写 `weight_info_decode.json`+`weights_decode_*.bin`(两图自包含)。`model_config.json` 记 `pd_weight_split`。**C++ 零改动**;`run_compile.sh` 已支持显式 `<model_json> <weights_index>`(:9),split 时给 decode 传 `weight_info_decode.json`。覆盖①②③。
+
+**B. hash 去重(进阶,长期)**:仿 GE `FileConstant`(`external_weight.md`)——统一 `weights_*.bin` 按 content hash 去重 + `weight_info.json` 改两级索引(`blobs:{hash:{offset,size,format,kind}}` + `graphs:{prefill:{name→hash},decode:{name→hash}}`)。PD 同值→共一 hash(自动 dedup);异值→两 hash;部分共享(共享 embed+不同 Linear)→共享 dedup、不同各存。缺点:两级索引 + C++ `GeWeightLoader` 改读 `graphs[G][name]→hash→blobs[hash]`,改动大。仅「部分共享 PD」成真才值得。
+
+**C. 双 artifact API(场景②③必需)**:`save_epair_prefill_decode(prefill_artifact, decode_artifact=None, ...)`——decode 传独立 artifact 产真不同权重 PD;`None` 回退现状。与 A 组合(split 开关+双 artifact)。
+
+**D. 一致性 assert(安全网)**:单 artifact dedup 路径加 `assert prefill_sd == decode_sd`(name/shape/dtype/bytes),违反 fail-fast(而非静默产坏 epair)。零成本护现状假设。
+
+**推荐**:先 A+D(A 复用已就绪的 per-graph 编译,无 C++ 改动;D 护栏);C 留给②③真出现;B 仅长期部分共享场景。与 CLI-015(`format` ND/NZ)+ CLI-019(`kind` p_/c_/b_)协同:split 后的 per-graph `weight_info_{prefill,decode}.json` 条目同载二字段,三 TODO 一起落地最省。
 
 ### 行动项
 
-- [ ] 评估 PD 权重分离场景的实际需求(PD disaggregated 部署 / PD 不同量化)
-- [ ] 设计 PD 分别存权重的产物布局(`weights_prefill_*.bin` / `weights_decode_*.bin` + per-graph weight_info)
-- [ ] C++ 加载侧(`GeWeightLoader` / `epair_model_loader`)支持 per-graph 权重索引
-- [ ] export 时 PD 权重一致性校验(默认一致场景报错保护)
-- [ ] 文档:[export_design.md](./export/export_design.md):936 补「PD 权重分离场景」说明(当前只写共享假设)
+- [ ] **A**:`consolidated_weights_save`/`_pack_weights_to_dir` 加 `weights_prefix`;`save_epair_prefill_decode` 加 `pd_split_weights` 开关;`model_config.json` 记 `pd_weight_split`;`run_compile.sh` auto-find 加 `weight_info_decode` fallback(或显式传)
+- [ ] **D**:单 artifact 路径加 PD state_dict 一致性 assert(fail-fast)
+- [ ] **C**(场景②③):`save_epair_prefill_decode` 扩展可选 `decode_artifact`
+- [ ] **B**(长期,部分共享 PD 才做):hash 去重 + 两级索引 + C++ `GeWeightLoader` 改读
+- [ ] 文档:[export_design.md](./export/export_design.md):936 补「PD 权重分离场景」+「C++ 已 per-graph 编译」说明(当前只写共享假设)
 
 ### 关联
 
@@ -735,7 +755,7 @@ token_identity = m.embed_tokens_per_layer(input_ids).reshape(...).detach()   # H
 |------|-----|
 | 编号 | CLI-015 |
 | 类型 | TODO(遗留问题/待实现,非偏离) |
-| 位置 | 设计:[weight_format_design.md](./export/weight_format_design.md);代码待实现:`cann_lm/converter/export/weight_format/`(`transforms.py` `nd2nz` + `rules.py` `resolve_format`)+ `weight_format_rules.json` + `epair_utils._pack_weights_to_dir` 集成 + `inline_weight_layout` + C++ `aten_tensor_desc_mapper.cc:112` `MapGeLayoutString` / `ge_weight_loader.cc:115` `Pt2LayoutFromGeString` |
+| 位置 | 设计:[weight_format_design.md](./export/weight_format_design.md);代码待实现:`cann_lm/converter/export/weight_format/`(`layout.py` `nd2nz` + `rules.py` `resolve_format`)+ `weight_format_rules.json` + `epair_utils._pack_weights_to_dir` 集成 + `inline_weight_layout` + C++ `aten_tensor_desc_mapper.cc:112` `MapGeLayoutString` / `ge_weight_loader.cc:115` `Pt2LayoutFromGeString` |
 | 背景 | `weight_format_design.md` 设计了权重落盘从 ND(行主序)转 NZ(FractNZ 16×16 块主序),让 Ascend cube 计算权重 Const 直接以 `FORMAT_FRACTAL_NZ` 进 GE 图,避免 OM 编译/运行期 transdata。Stage 1(fp16 `MatMul` Linear 权重 `*_proj`)已设计,但 `weight_format/` 包 + `weight_format_rules.json` **0 实现**(`ls` 确认 NOT implemented) |
 | 违反约定 | 无(待实现) |
 | 发现日期 | 2026-09-01 |
@@ -743,10 +763,11 @@ token_identity = m.embed_tokens_per_layer(input_ids).reshape(...).detach()   # H
 
 ### 设计已就绪(Stage 1,weight_format_design.md)
 
-- `weight_format/transforms.py`:`nd2nz(tensor, block=16, pad=True)` [M,K] ND → [ceil(M/b),ceil(K/b),b,b] 块主序(非 b 倍数维内部补零)
+- `weight_format/layout.py`:`nd2nz(tensor, block=16, pad=True)` [M,K] ND → [ceil(M/b),ceil(K/b),b,b] 块主序(非 b 倍数维内部补零)
 - `weight_format/rules.py`:`load_rules`(读 shipped `weight_format_rules.json`)+ `resolve_format(name, is_quantized)`(按 `name_pattern` + `op_type` 分流 MatMul/QuantBatchMatmulV4)
 - `weight_format_rules.json`:默认配置(`*_proj.weight` → NZ;`QuantBatchMatmulV4` → ND Stage 2 待研究)
 - `epair_utils._pack_weights_to_dir` 集成:插 `resolve_format` + `nd2nz`(仿 `transdata_scale` 先例),`weight_info.json` 条目加 `"format"` 字段
+- **环境变量总开关** `CANN_LM_ENABLE_WEIGHT_TRANS`（默认关闭，`1` 启用）：env 未设 → packer 跳过 `resolve_format` + `is_quantized` 探测，全 ND 落盘，代码 dormant 零风险；仅 Python 导出侧，C++ 由 ep_json layout 字符串驱动无 env
 - `inline_weight_layout`:ep_json `tensor_values.layout` + `ascend_ir.desc.layout` ND→NZ
 - C++ `MapGeLayoutString`/`Pt2LayoutFromGeString` 加 `"NZ"` case
 
@@ -761,11 +782,11 @@ token_identity = m.embed_tokens_per_layer(input_ids).reshape(...).detach()   # H
 
 ### 行动项
 
-- [ ] 实现 `cann_lm/converter/export/weight_format/`(`transforms.py` `nd2nz` + `rules.py` `resolve_format`/`load_rules`)+ `weight_format_rules.json`
-- [ ] `epair_utils._pack_weights_to_dir` 集成 `resolve_format` + `nd2nz` + `weight_info.json` 加 `"format"` 字段
+- [ ] 实现 `cann_lm/converter/export/weight_format/`(`layout.py` `nd2nz` + `rules.py` `resolve_format`/`load_rules`)+ `weight_format_rules.json`
+- [ ] `epair_utils._pack_weights_to_dir` 集成 `resolve_format` + `nd2nz` + `weight_info.json` 加 `"format"` 字段（env-gated：`CANN_LM_ENABLE_WEIGHT_TRANS=1` 才启用）
 - [ ] 新增 `inline_weight_layout`(ep_json layout 标注)
 - [ ] C++ `aten_tensor_desc_mapper.cc:112` / `ge_weight_loader.cc:115` 加 `"NZ"` case
-- [ ] 最小 qwen3-0.6B NZ 导出 + OM 编译验证(MatMul NZ 接受性 + shape 语义)
+- [ ] 最小 qwen3-0.6B NZ 导出(`CANN_LM_ENABLE_WEIGHT_TRANS=1`) + OM 编译验证(MatMul NZ 接受性 + shape 语义)
 
 ### 关联
 
@@ -911,3 +932,43 @@ converter env = torch-delegate venv + torchair stubs,搭建分散:
 - 相关 cann-lm:`scripts/set_env_*.sh` + `_env_common.sh` + AGENTS.md「运行环境设置(converter)」
 - 相关遗留:**CLI-017**(torchair 打桩集成 + 安装脚本整理,本条的环境简化依赖 CLI-017)
 - 调研文档:[side_tools_survey.md](./side_tools_survey.md) mlx-lm 章节 + 环境处理对比
+
+---
+
+## CLI-019 TODO:导出 epair 时区分 p_/c_/b_ 三类数据
+
+| 字段 | 值 |
+|------|-----|
+| 编号 | CLI-019 |
+| 类型 | TODO(待决策+待实现) |
+| 位置 | `cann_lm/converter/export/epair_utils.py`(`_pack_weights_to_dir`:三类混合落盘,虽已遍历 `graph_signature` 的 `inputs_to_parameters`/`inputs_to_buffers`/`inputs_to_lifted_tensor_constants` 但未记录类别)+ `weight_info.json`(条目无类别字段)+ C++ `ge_weight_loader.cc`/`ge_graph_builder.cc:CreateConstNode`(三类统一建 Const) |
+| 背景 | epair 导出时 `_pack_weights_to_dir` 把 parameter/const/buffer 三类数据混合写进同一 `weights_*.bin` + `weight_info.json`(条目仅 `{name,offset,size,format}`,**无类别标识**)。三类在 ep_json `tensor_values` 按前缀区分:`p_*`(parameter,模型权重)、`c_*`(const,lifted tensor 常量)、`b_*`(buffer,非持久状态);权威源是 `graph_signature`(pack 时已遍历但未持久化类别)。需在导出时区分,因为:(1) NZ 格式转换(CLI-015)只应作用于 `p_*` 的 `*_proj.weight`,不应碰 `c_*`/`b_*`;(2) C++ 加载侧对三类语义不同(parameter 可 NZ/外置,const 保持 ND/可共享,buffer 非持久);(3) 与 CLI-016 粒度直接相关 |
+| 违反约定 | 无(待决策) |
+| 发现日期 | 2026-09-05 |
+| 状态 | **TODO(待决策方案+待实现)** |
+
+### 两种解法
+
+| 方案 | 产物布局 | 索引 | C++ 加载侧 |
+|------|---------|------|-----------|
+| ① 分开文件保存 | `weights_*.bin`(p_)+ `consts_*.bin`(c_)+ `buffers_*.bin`(b_)分文件 | `weight_info.json`/`const_info.json`/`buffer_info.json` 分索引 | `GeWeightLoader` 按文件天然分流 |
+| ② weight_info 加字段 | 同一 `weights_*.bin` 混合 | `weight_info.json` 条目加 `"kind": "parameter"\|"const"\|"buffer"` | `GeWeightLoader` 读 `kind` 分流 |
+
+### 决策考量
+
+- 方案①边界清晰(物理分离),但改产物布局(3 套 bin+index)+ C++ 加载分流,改动面大;prefill/decode 共享权重(p_)仍只存一份
+- 方案②改动小(加 1 字段,pack 时按 `graph_signature` 判定类别),C++ 按 `kind` 走不同路径(NZ 只对 parameter kind);仍混合 bin
+- 与 CLI-015 协同:NZ(`weight_info.format`)只作用于 `kind=="parameter"` 的 `*_proj.weight`,const/buffer 保持 ND
+- 与 CLI-016 关系:CLI-016 是「权重 vs const」2-way,本条细化为「p_/c_/b_」3-way(把 CLI-016 的「权重」拆成 parameter+buffer)。**解决本条即解决 CLI-016 的「待澄清 1/2」(const 范围 + 粒度)**,建议两条合并决策
+
+### 行动项
+
+- [ ] 决策方案①(分文件)还是②(加 kind 字段)
+- [ ] 若②:`_pack_weights_to_dir` 按 `graph_signature` 给条目加 `"kind"`(parameter/buffer/lifted_tensor_constant)
+- [ ] C++ `GeWeightLoader`/`CreateConstNode` 按 `kind` 分流(NZ 只对 parameter)
+- [ ] 与 CLI-015(NZ format)、CLI-016(权重/const 分离)协同
+
+### 关联
+
+- 源码:`cann_lm/converter/export/epair_utils.py`(`_pack_weights_to_dir`)+ C++ `ge_weight_loader.cc`/`ge_graph_builder.cc:CreateConstNode`
+- 相关:**CLI-015**(NZ 格式,只作用于 parameter)、**CLI-016**(权重与 const 分离,本条细化其粒度)

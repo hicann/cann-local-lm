@@ -2,7 +2,7 @@
 
 ## 1. 文档信息
 
-- 被测对象：`cann_lm/converter/`（不含 `quant/dopt_lm/` 与 `quant/dopt_wrapper.py`，二者归 `tests/dopt_lm/`）
+- 被测对象：`cann_lm/converter/`（不含 `quant/dopt_lm/` 与 `quant/dopt_wrapper.py`，二者归 `tests/py/dopt_lm/`）
 - 测试归档目录：`tests/converter`
 - 测试框架：`pytest`
 - 基准环境：Python 3.11、converter venv（torch 2.9.0+cpu + torchair + torch-delegate，不装 `torch_npu`），`TORCH_DEVICE_BACKEND_AUTOLOAD=0`
@@ -32,7 +32,7 @@
 - `loader.load_model` 全流程（需真实 HF 权重 + safetensors + model_cls 实例化）
 - `swap.swap_from_dopt` 全流程需完整 dopt artifacts + 真实 model（UT 只测其解析子函数）
 - `quant/auto_quant.py`（spawn dopt GPTQ subprocess 需 NPU）、`quant/download_dataset.py`（需联网）、`quant_entry.py`、`cann_lm_converter.convert()` 全流程
-- `quant/dopt_lm/*` 与 `quant/dopt_wrapper.py`（已由 `tests/dopt_lm/` 覆盖，不重复）
+- `quant/dopt_lm/*` 与 `quant/dopt_wrapper.py`（已由 `tests/py/dopt_lm/` 覆盖，不重复）
 
 ## 3. 代码分析结论
 
@@ -237,7 +237,7 @@
 ## 6. 计划目录
 
 ```text
-tests/converter/
+tests/py/converter/
 ├── UT_DESIGN.md
 ├── conftest.py
 ├── test_materialize.py
@@ -259,8 +259,8 @@ TORCH_DEVICE_BACKEND_AUTOLOAD=0 /mnt/workspace/torch-delegate-harmony/.venv/bin/
 单文件 / 单用例：
 
 ```bash
-TORCH_DEVICE_BACKEND_AUTOLOAD=0 /mnt/workspace/torch-delegate-harmony/.venv/bin/python -m pytest tests/converter/test_materialize.py -q
-TORCH_DEVICE_BACKEND_AUTOLOAD=0 /mnt/workspace/torch-delegate-harmony/.venv/bin/python -m pytest tests/converter/test_materialize.py::test_pack_int4_roundtrip -q
+TORCH_DEVICE_BACKEND_AUTOLOAD=0 /mnt/workspace/torch-delegate-harmony/.venv/bin/python -m pytest tests/py/converter/test_materialize.py -q
+TORCH_DEVICE_BACKEND_AUTOLOAD=0 /mnt/workspace/torch-delegate-harmony/.venv/bin/python -m pytest tests/py/converter/test_materialize.py::test_pack_int4_roundtrip -q
 ```
 
 覆盖率：
@@ -323,7 +323,7 @@ TORCH_DEVICE_BACKEND_AUTOLOAD=0 /mnt/workspace/torch-delegate-harmony/.venv/bin/
 | `saver.py` | 25% |
 | `cann_lm_converter.py` | 28% |
 
-e2e 排除模块（按设计归集成测试，0% 非 UT 缺陷）：`export/ge_converters/*`（7 文件，FX→GE 需 torchair）、`quant/auto_quant.py`（NPU subprocess）、`quant/dopt_wrapper.py`（由 `tests/dopt_lm/` 覆盖）、`quant/download_dataset.py`（联网）、`quant_entry.py`、`__main__.py`。
+e2e 排除模块（按设计归集成测试，0% 非 UT 缺陷）：`export/ge_converters/*`（7 文件，FX→GE 需 torchair）、`quant/auto_quant.py`（NPU subprocess）、`quant/dopt_wrapper.py`（由 `tests/py/dopt_lm/` 覆盖）、`quant/download_dataset.py`（联网）、`quant_entry.py`、`__main__.py`。
 
 剩余未覆盖代码主要位于 `saver.py` 的 `save_epair`/`save_epair_prefill_decode`（需 `torch.export` wrapper/ep_module + torchair GE 转换）、`cann_lm_converter.py` 的 `convert()` 全流程（需真实 HF + torchair GE）、`epair_utils.py` 的真实 `ExportedProgram` 路径（UT 用 stub 绕开）。真实权重加载、GE 算子转换、端到端导出/出字需要实际模型语义与设备，留给集成测试，避免通过过度 mock 获得失真的覆盖率。
 

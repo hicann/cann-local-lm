@@ -38,7 +38,7 @@
 
 ### 3.1 架构与调用关系
 
-`conftest.py` 把 `REPO_ROOT` 加 `sys.path`（仿 `tests/dopt_lm/conftest.py`），所有 `from cann_lm.* import ...` 无需手动 source 基底脚本。`config` fixture 由 `make_small_config()` + `@pytest.fixture` 提供，零参 test 自建 config。`check(name, condition)` 失败即 `assert condition`，pytest 捕获并报位置。
+`conftest.py` 把 `REPO_ROOT` 加 `sys.path`（仿 `tests/py/dopt_lm/conftest.py`），所有 `from cann_lm.* import ...` 无需手动 source 基底脚本。`config` fixture 由 `make_small_config()` + `@pytest.fixture` 提供，零参 test 自建 config。`check(name, condition)` 失败即 `assert condition`，pytest 捕获并报位置。
 
 三模型 modeling 按 `configuration → RMSNorm/RoPE/apply_rotary_pos_emb/repeat_kv/rotate_half → Attention → MLP → DecoderLayer → TextModel → ForCausalLM(generate)` 分层组织；`fused_ops/_library.py` 把 `npu::` 和 `cann_lm::` 算子注册到 `torch.library`（schema + `register_fake` meta + `register_cpu_impl`），converter venv 无 torch_npu 时 CPU impl 直接由 `_library.py` 提供；`model_registry.py` 维护模型名→entry 映射表 + alias 解析；`export_wrapper.py` 基类提供 `__init__`/`set_quant_embeddings`/`_num_layers`，`forward` 调子类 `_drive_layers`（抽象）。
 
@@ -218,7 +218,7 @@
 ## 6. 计划目录
 
 ```text
-tests/llm_models/
+tests/py/llm_models/
 ├── UT_DESIGN.md
 ├── conftest.py
 ├── test_gemma4.py
@@ -233,19 +233,19 @@ tests/llm_models/
 
 ```bash
 # 全套 (converter venv):
-TORCH_DEVICE_BACKEND_AUTOLOAD=0 /mnt/workspace/torch-delegate-harmony/.venv/bin/python -m pytest tests/llm_models/ -q
+TORCH_DEVICE_BACKEND_AUTOLOAD=0 /mnt/workspace/torch-delegate-harmony/.venv/bin/python -m pytest tests/py/llm_models/ -q
 
 # 单文件:
-TORCH_DEVICE_BACKEND_AUTOLOAD=0 /mnt/workspace/torch-delegate-harmony/.venv/bin/python -m pytest tests/llm_models/test_gemma4.py -q
+TORCH_DEVICE_BACKEND_AUTOLOAD=0 /mnt/workspace/torch-delegate-harmony/.venv/bin/python -m pytest tests/py/llm_models/test_gemma4.py -q
 
 # 单用例:
-TORCH_DEVICE_BACKEND_AUTOLOAD=0 /mnt/workspace/torch-delegate-harmony/.venv/bin/python -m pytest tests/llm_models/test_gemma4.py::test_config -q
+TORCH_DEVICE_BACKEND_AUTOLOAD=0 /mnt/workspace/torch-delegate-harmony/.venv/bin/python -m pytest tests/py/llm_models/test_gemma4.py::test_config -q
 
 # 收集 (不跑, 看项数):
-TORCH_DEVICE_BACKEND_AUTOLOAD=0 /mnt/workspace/torch-delegate-harmony/.venv/bin/python -m pytest tests/llm_models/ --co -q
+TORCH_DEVICE_BACKEND_AUTOLOAD=0 /mnt/workspace/torch-delegate-harmony/.venv/bin/python -m pytest tests/py/llm_models/ --co -q
 
 # 覆盖率:
-TORCH_DEVICE_BACKEND_AUTOLOAD=0 /mnt/workspace/torch-delegate-harmony/.venv/bin/python -m pytest tests/llm_models/ --cov=cann_lm/models --cov-report=term-missing -q
+TORCH_DEVICE_BACKEND_AUTOLOAD=0 /mnt/workspace/torch-delegate-harmony/.venv/bin/python -m pytest tests/py/llm_models/ --cov=cann_lm/models --cov-report=term-missing -q
 ```
 
 ## 8. 准入与遗留风险
@@ -283,7 +283,7 @@ pytest exit code: 0
 ```bash
 TORCH_DEVICE_BACKEND_AUTOLOAD=0 \
   /mnt/workspace/torch-delegate-harmony/.venv/bin/python \
-  -m pytest tests/llm_models/ --cov=cann_lm/models --cov-report=term-missing -q
+  -m pytest tests/py/llm_models/ --cov=cann_lm/models --cov-report=term-missing -q
 ```
 
 整体行覆盖率为 **84%（2422 statements，304 missed，602 branch，93 partial）**，达到不低于 80% 的准入目标。核心模块覆盖情况：

@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+REPO_ROOT = Path(__file__).resolve().parents[3]
 DOPT_PARENT = REPO_ROOT / "cann_lm" / "converter" / "quant"
 
 # dopt_lm resolves its device and absolute imports at import time.

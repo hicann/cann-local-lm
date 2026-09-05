@@ -144,3 +144,193 @@ TORCH_DEVICE_BACKEND_AUTOLOAD=0 /mnt/workspace/torch-delegate-harmony/.venv/bin/
  - **新增 converter 函数**：在 `cann_lm/converter/<x>.py` 加纯逻辑/解析/打包函数后，于 `tests/converter/test_<x>.py` 补测（纯 tensor ops 数值 allclose、解析函数用 tmp_path 造假产物、CLI argparse）；需 torchair/GE/真实权重/网络的函数跳过 + 注释（归 e2e）。
  - **API 漂移**：cann_lm 演进导致 test 失败时，**只改 test 代码**对齐新签名/行为（如多值返回解包、参数重命名、materialize clamp 范围），不动 cann_lm/；commit message 注明漂移点。
  - **环境**：测试依赖 venv 的 torch/torchair/torch_delegate + `TORCH_DEVICE_BACKEND_AUTOLOAD=0`；CI 用 `bash scripts/build.sh deps` 装 venv 后跑 `pytest tests/llm_models/ tests/converter/`。
+
+## 用例级设计（per-case）
+
+每个测试函数的设计：场景/输入要点 + 期望断言 + 边界·原理。parametrize 变体合并为一行（标注 case 数）。
+
+### llm_models
+
+#### test_gemma4.py（gemma4 modeling, 10 项）
+
+| 测试函数 | 场景/输入 | 期望断言 | 边界·原理 |
+|---|---|---|---|
+| test_config | 30 层默认 config + small 4 层 + tiny 2 层 | layer_types 长度/末层 full/sliding 5:1/rope 两类型/global_head_dim512/head_dim256 | 验 config 默认值 + 层数→layer_types 生成规则 |
+| test_components | RMSNorm/RoPE/apply_rotary/repeat_kv/rotate_half 小张量 | shape 一致 + RoPE cos 维=缓存 buffer + rotate_half 数值精确 | RoPE full 返回部分 rotary_dim（cos≠global_head_dim），用缓存 buffer 对齐 |
+| test_attention | 各 layer_type 首层 attn：无 cache + 存 KV + 单 token cached | shape 一致 + KV cache store 非 None + cached shape | 验 sliding/full 两类 + prefill/decode 两阶段 |
+| test_mlp | 前 2 层 MLP | out.shape==x.shape | 组件 smoke |
+| test_decoder_layer | 首层 DecoderLayer | out.shape==x.shape | 组件 smoke |
+| test_text_model | TextModel prefill（无 cache/2D mask） | hs.shape + past_key_values 长度 + masked shape | 验 attention_mask=None/2D 两路（None 走 _prepare_causal_mask past_len 分支） |
+| test_causal_lm | ForCausalLM logits/loss/softcap/generate(sampling) | logits shape + loss 标量 + generate 更长 | 验 final_logit_softcapping + greedy/sampling |
+| test_kv_sharing | 6 层后 3 共享 KV | hs shape + shared_kv_states 非空 + 共享层 is_kv_shared + 无 k_proj | 验 KV sharing 配置生效（共享层无 k/v proj） |
+| test_truncation | 2/4/8 层截断 | logits vocab 维=1000 + 参数量 | 验 --num-layers 截断 forward |
+| test_wrapper_vs_model | wrapper 单步 vs 原始 model（mask_full+sliding） | logits max_diff=0 + KV max_diff=0 | wrapper 是 model 薄封装；mask 用 _build_mask_full/sliding helper 预构 |
+
+#### test_qwen3.py（qwen3 modeling, 13 项）
+
+| 测试函数 | 场景/输入 | 期望断言 | 边界·原理 |
+|---|---|---|---|
+| test_config | 默认 config | layer_types/字段默认 | config smoke |
+| test_rmsnorm | RMSNorm | 数值 vs 手算 | 组件 |
+| test_rope | RoPE | cos/sin shape + 数值 | 组件 |
+| test_mlp | MLP | shape | 组件 |
+| test_attention_and_layer | attn + DecoderLayer | shape | 组件 |
+| test_forward_shape_and_tie | forward + tie_word_embeddings | logits shape + tie 生效 | 验 weight tying |
+| test_determinism | 两次 forward | logits allclose | 确定性（无随机） |
+| test_causal_invariance | 打乱 prompt 顺序 | 各 token logits 不受后续影响 | 验 causal mask |
+| test_kv_cache_consistency | prefill+decode 用 KV | cached vs 非cached 一致 | 验 KV cache 复用 |
+| test_greedy_equals_argmax | greedy 首 token | == argmax(forward[:,-1]) | 验 greedy 等价 argmax |
+| test_loss | labels | loss 标量 + 有限 | loss 计算 |
+| test_truncation | 截断层数 | forward shape | 截断 smoke |
+| test_wrapper_vs_model | wrapper vs model | max_diff=0 | 薄封装一致性 |
+
+#### test_modeling_qwen3_5.py（qwen3.5 modeling, 25 项）
+
+| 测试函数 | 场景/输入 | 期望断言 | 边界·原理 |
+|---|---|---|---|
+| test_rms_norm / _gated | RMSNorm / GatedRMSNorm | shape + not_nan + 数值 | 组件（gated 多一个 gate） |
+| test_rotary_embedding | mrope cos/sin | shape + 数值 | qwen3.5 mrope |
+| test_rotate_half | rotate_half([-1..-4,1..4]) | ==[-3,-4,1,2] | 精确数值 |
+| test_apply_rotary_pos_emb | apply_rotary | q/k shape + not_nan | 验 RoPE 应用 |
+| test_repeat_kv | repeat_kv | shape + n_rep=1 same | GQA repeat |
+| test_eager_attention_forward | eager attn | shape + not_nan | attention 组件 |
+| test_apply_mask_to_padding_states | mask | 无 mask 不变 + 零 mask 清零 | padding 处理 |
+| test_l2norm | l2norm | unit norm + 数值 | 组件 |
+| test_causal_conv1d_update | conv1d update（3D weight） | shape + not_nan + state 更新 | 修了 weight 2D→3D API 漂移 |
+| test_chunk_gated_delta_rule | chunk kernel | out/final_state shape + not_nan | 融合算子 shape-only |
+| test_recurrent_gated_delta_rule | recurrent kernel | shape + not_nan | 递归路径 |
+| test_simple_kv_cache | SimpleKVCache | 首次 same + 二次 cat(12) | KV cache |
+| test_simple_delta_net_cache | DeltaNetCache | has_state + conv 更新 | delta cache |
+| test_gated_delta_net | GatedDeltaNet（无/有 cache） | output shape（解 3-tuple 返回） | 修了多值返回 API 漂移 |
+| test_attention / _mlp / _decoder_layer | full attn + mlp + layer | shape | 组件（DecoderLayer 解 3-tuple） |
+| test_text_model | TextModel（无/有 cache） | hidden + kv/delta cache 非空 | 全模型 forward |
+| test_causal_lm | ForCausalLM | logits + loss + generate | LM smoke |
+| test_generate / _with_eos | greedy + EOS | 长度 + EOS 停 | 生成 + 提前停 |
+| test_model_with_inputs_embeds | inputs_embeds | logits shape | embeddings 入口 |
+| test_incremental_decode | prefill+decode（delta_states） | 增量 logits shape | 修了 delta_cache→delta_states 漂移 |
+| test_error_conditions | 无 input_ids/inputs_embeds | ValueError | fail-fast |
+
+#### test_fused_ops.py（fused_ops CPU impl, 21 项）
+
+| 测试函数 | 场景/输入 | 期望断言 | 边界·原理 |
+|---|---|---|---|
+| test_npu_rms_norm（×3 shape + 默认eps） | rms_norm(x, gamma, eps) | y.shape + rstd shape/>0 + vs 手算 allclose | 数值对齐 `x*rsqrt(mean(x²)+eps)*gamma` |
+| test_npu_rms_norm_default_eps | 默认 epsilon=1e-6 | 数值 | 默认参数 |
+| test_npu_rotary_mul_half（×2 d）/ _default_mode | rotary_mul(self,r1,r2,half) | shape + vs 手算 `self*r1+cat(-x2,x1)*r2` | half 模式数值对齐 CPU impl |
+| test_cann_lm_l2norm_unit_norm_and_values（×3 dim） | cann_lm::l2norm | 沿 dim L2=1 + vs 手算 | cann_lm 命名空间 + 多 dim |
+| test_npu_dynamic_quant_shape_dtype_and_roundtrip | dynamic_quant(input) | y(int8)/scale(fp32,>0) + y*scale allclose | vs `amax/127` scale + clamp(round)；反量化 round-trip |
+| test_npu_scatter_nd_update_1d/2d_indices | scatter_nd_update | out.shape + vs 手算 index_copy/逐坐标 + 原 cache 不污染 | KV scatter-write，1d/2d 两路 |
+| test_npu_quant_matmul_group1/grouped_pertoken | quant_matmul（3 配置） | out shape + finite + vs `x1@(w*scale_exp)+bias` | group1/grouped+bias/pertoken 三量化路径 |
+| test_npu_chunk_gated_delta_rule_shape_finite | chunk_gated_delta_rule | out+final_state shape + finite | 数值难对齐，shape-only（qwen3.5 间接覆盖） |
+| test_npu_fused_infer_attention_score_v2_bnsd_full / _causal_shape_finite / _gqa_bsh / _extern_mask | fused attn（4 配置） | out shape + finite；full/extern_mask vs 手算 SDPA allclose | causal 放宽（CPU impl _build_sparse_mask 限制），数值靠 extern_mask |
+
+#### test_model_registry.py（model_registry, 23 项）
+
+| 测试函数 | 场景/输入 | 期望断言 | 边界·原理 |
+|---|---|---|---|
+| test_available_models_covers_three_models | available_models | =={gemma4,qwen3,qwen3_5} | 注册表完整性 |
+| test_get_entry_resolves_aliases（9 case） | gemma4/gemma-4/大小写、qwen3/qwen-3、qwen3_5/qwen3.5 | == REGISTRY[expected] | _ALIASES + 大小写不敏感 |
+| test_get_entry_unknown_raises（5 case） | unknown/llama/""/gemma5/qwen4 | ValueError | 未知模型 fail-fast |
+| test_entry_fields（3 模型） | 各 entry | config_cls/model_cls/wrapper_cls/config_json_key + load_weights_fn callable | 字段正确性（gemma4/qwen3_5 text_config，qwen3 None） |
+| test_detect_model_type_from_hf_config（3 case） | {"model_type":gemma4/qwen3/qwen3_5} | == REGISTRY[key] | 真实 HF config 顶层 model_type |
+| test_detect_model_type_missing_field_raises | {} | ValueError | 缺 model_type |
+| test_detect_model_type_unknown_raises | {"model_type":"llama"} | ValueError | 未知 |
+
+#### test_export_wrapper_base.py（基类, 7 项）
+
+| 测试函数 | 场景/输入 | 期望断言 | 边界·原理 |
+|---|---|---|---|
+| test_init_attributes_defaults | ExportWrapper(stub, 2048, 1) | kv_cache_max_len/batch/_model_dtype(fp32)/_quant_embeddings={} | 默认属性 |
+| test_init_custom_kwargs | bf16 stub, 512, 4 | 自定义值 + dtype=bf16 | 自定义 kwargs |
+| test_num_layers_matches_stub（1/3/8） | _num_layers | == stub 层数 | 层数读取（parametrize 1/3/8） |
+| test_set_quant_embeddings_stores_dict | set_quant_embeddings | dict 存储 + int8/scale shape | quant-embeddings 注入 |
+| test_set_quant_embeddings_is_copy_not_ref | 改原 dict | wrapper 不受影响 | set 时 dict() 复制（隔离） |
+
+### converter
+
+#### test_materialize.py（quant_swap, 15 项）
+
+| 测试函数 | 场景/输入 | 期望断言 | 边界·原理 |
+|---|---|---|---|
+| test_transdata_scale_dtype_shape | transdata_scale(s) | int64 + 同 shape | dtype/shape |
+| test_transdata_restore_roundtrip_zeroes_mantissa_low13 | restore(transdata(s)) | 低 13 mantissa bit=0 + allclose | round-trip 清低 13 位（存储格式） |
+| test_transdata_scale_masks_high32_of_int64 | transdata | 高 32 bit=0 + mask 外位=0 | int64 高位清零 |
+| test_pack_int4_layout_known_values | [1,-1,7,-8] | byte0=0xF1, byte1=0x87（&0xFF） | nibble 布局（int8 有符号，用 &0FF 比无符号） |
+| test_pack_int4_roundtrip | 随机 int4 | unpack==原 | pack/unpack 互逆（4-bit 符号扩展） |
+| test_pack_int4_odd_last_dim_raises | 奇数末维 | ValueError | 偶数约束 |
+| test_materialize_int4_shape_unpacked_and_packed | w+s（packed 开/关） | q shape [out,in]/[out,in//2] | packed vs unpacked |
+| test_materialize_int4_quant_dequant_exact_fakequant | w=q0*s（q0∈[-7,7]） | q==q0 + dequant==w | fakequant 精确重建（无 clamp） |
+| test_materialize_int4_clamp_beyond_range | w/s 超 7 | clamp(-7,7) | 对称量化排除 -8 边界 |
+| test_materialize_int4_errors（2 case） | in 不整除/shape 不符 | ValueError | 参数校验 |
+| test_materialize_int8_shape_and_range | int8 量化 | shape + [-128,127] | 范围 |
+| test_materialize_int8_dequant_allclose | 随机 w | dequant allclose | 量化误差 |
+| test_materialize_int8_dopt_fakequant_exact_roundtrip | w=q0*scale | q==q0 | dopt fakequant 精确 |
+| test_materialize_int8_scale_shape_error | scale shape 错 | ValueError | 校验 |
+
+#### test_epair_utils.py（epair_utils, 21 项）
+
+| 测试函数 | 场景/输入 | 期望断言 | 边界·原理 |
+|---|---|---|---|
+| test_consolidated_weights_dataclass_fields | ConsolidatedWeights | 字段 | dataclass |
+| test_pack_weights_to_dir_single_file | 小权重 | 单 weights_0.bin + info | 不切分 |
+| test_pack_weights_to_dir_splits_on_max_file_size | 小 max_file_size | 多分片 + 总大小 | 切分逻辑 |
+| test_pack_weights_to_dir_single_tensor_exceeds_limit_not_split | 单 tensor 超限 | 独立文件不切 | 单 tensor 不可切 |
+| test_pack_weights_to_dir_bfloat16_viewed_as_int16 | bf16 权重 | int16 view | bf16→int16 打包 |
+| test_pack_weights_to_dir_weight_scale_transdata_to_int64 | weight_scale | int64 transdata | scale 存储格式 |
+| test_consolidated_weights_save_writes_all_files | save（tmp_path） | weights_*.bin+info+ep_json | 落盘结构 |
+| test_consolidated_weights_save_skip_weights_only_ep_json | save_weights=False | 仅 ep_json | 跳权重 |
+| test_consolidated_weights_save_strips_none_input_descs_in_ep_json | save 联动 strip | None desc 清理 | save+strip 联动 |
+| test_strip_none_input_descs_removes_none_dtype_and_empty_ref | ep_json | 删 None dtype+空 ref | 清理 |
+| test_strip_none_input_descs_keeps_nonempty_ref_even_if_dtype_none | ep_json | 保留非空 ref | 不误删 |
+| test_strip_none_input_descs_ignores_non_quant_ops | 非 QuantBatchMatmulV4 | 跳过 | 仅清量化 op |
+| test_strip_none_input_descs_skips_when_length_mismatch | 长度不符 | 跳过 | 防越界 |
+| test_pack_weights_writes_to_cwd_and_returns_none | 遗留 pack_weights | 写 cwd + 返 None | 遗留函数 |
+| test_pack_weights_splits_on_max_file_size | 遗留 + 切分 | 切分 | — |
+| test_inline_fused_attn_seq_constants_inlines_qlen_and_kvlen | ep_json（tmp） | 内联 qlen+kvlen | 常量内联 |
+| test_inline_fused_attn_seq_constants_skips_empty_kvlen | 空 kvlen | 跳过 | 边界 |
+| test_inline_fused_attn_seq_constants_skips_op_without_qlen | 无 qlen | 整体跳 | 边界 |
+| test_inline_fused_attn_seq_constants_kvlen_defaults_to_qlen | 无 kvlen | =qlen | 默认 |
+| test_inline_weight_scale_dtype_relabeled_int64 | dtype7→5 | relabel | dtype 标注 |
+| test_inline_weight_scale_dtype_no_tensor_values | 无 tensor_values | 跳过 | 边界 |
+
+#### test_loader.py（loader, 12 项）
+
+| 测试函数 | 场景/输入 | 期望断言 | 边界·原理 |
+|---|---|---|---|
+| test_model_artifact_fields / _quant_info_defaults_none | ModelArtifact | 字段 + quant_info 默认 None | dataclass |
+| test_build_config_qwen3_filters_unknown_keys | qwen3 hf_config | 过滤未知 key | 字段过滤 |
+| test_build_config_qwen3_uses_defaults_for_missing | 缺字段 | 用默认 | 默认值 |
+| test_build_config_gemma4_reads_nested_text_config / _post_init_ran / _falls_back_to_top_level | gemma4 嵌套/缺 key | text_config 读取 + post_init + fallback | 嵌套 config + fallback |
+| test_build_config_qwen3_5_reads_nested_text_config | qwen3.5 嵌套 | text_config | 嵌套 |
+| test_collect_tokenizer_files_with_tokenizer_json / _missing_some_standard / _fallback_to_legacy / _empty_dir | tmp_path 假 HF 目录 | tokenizer 文件列表（有/缺/legacy/空） | 4 路径覆盖 |
+
+#### test_swap.py（swap, 22 项）
+
+| 测试函数 | 场景/输入 | 期望断言 | 边界·原理 |
+|---|---|---|---|
+| test_resolve_parent_returns_parent_and_leaf / _single_segment / _index_path | nn.Module 树 | (parent, leaf) 正确 | 深层/单段/索引路径 |
+| test_infer_group_size_pergroup / _perchannel | scale 1D | group_size | 两模式 |
+| test_infer_group_size_rejects_pertensor / _non_1d / _not_divisible_by_out / _in_not_divisible_by_group / _numel_below_out | 非法 | ValueError | 5 种错误路径 |
+| test_read_dopt_quant_meta_fallback_when_buffers_absent / _reads_buffers_and_reshapes_offset | tmp dopt | fallback/读取+reshape | dopt meta 解析 |
+| test_read_quant_param_map_none / _dir_without_config / _unknown_strategy / _invalid_suffix / _layer_field_overrides | tmp dopt | 空/跳过/覆盖 | param map 解析 + 边缘 |
+| test_load_dopt_state_dict_pth / _strips_language_model_prefix / _dir_resolves_model_safetensors / _missing_raises / _not_found_raises | .pth/safetensors/dir | 加载/剥离前缀/解析/报错 | 5 路径 |
+
+#### test_saver.py（saver, 7 项）
+
+| 测试函数 | 场景/输入 | 期望断言 | 边界·原理 |
+|---|---|---|---|
+| test_save_model_config_uses_to_dict / _dataclass_asdict / _dict_fallback | stub artifact（3 config 路径） | model_config.json 内容 | 3 config 序列化路径 |
+| test_save_model_config_use_embeddings_flag | use_embeddings | flag 写入 | flag 传递 |
+| test_save_model_config_writes_quant_info_when_present | quant_info | 写入 | 量化信息 |
+| test_copy_tokenizer_files_copies_all / _empty_list_no_error | tmp 文件列表 | 复制全部/空不报错 | 文件复制 |
+
+#### test_cli.py（cann_lm_converter CLI, 16 项）
+
+| 测试函数 | 场景/输入 | 期望断言 | 边界·原理 |
+|---|---|---|---|
+| test_help_exits_zero_and_lists_key_args | --help | exit 0 + 含关键参数 | help smoke |
+| test_missing_required_hf_path/output_dir_exits_nonzero | 缺 required | exit 2 | required 校验 |
+| test_invalid_dtype/mode/quant_method_exits_nonzero | 非法 choices | exit 2 | choices 校验 |
+| test_quant_path_and_quant_method_mutually_exclusive | 两都给 | exit 2 | 互斥组 |
+| test_valid_minimal_args_namespace_and_defaults | 合法最小 | Namespace + 默认值 | 解析正确 |
+| test_valid_dtype_choices / _no_use_embeddings / _num_layers / _single_mode / _quant_path_alone / _quant_method_gptq_alone | 各参数单用 | 解析 | choices/flag/类型/单用 |

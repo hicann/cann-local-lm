@@ -48,6 +48,10 @@ examples/test_converter/export_llm_model/e2e_*/
 examples/test_converter/export_llm_model/output/
 examples/test_converter/export_llm_model/build/
 examples/test_converter/export_llm_model/*.export.log
+examples/test_converter/export_chunk_gated_delta_rule_single_op/
+examples/test_converter/export_kirin_ops_net/
+examples/test_converter/export_quant_matmul_single_op/
+examples/test_converter/run_gemma4_npu/
 
 # local file
 AGENTS.md

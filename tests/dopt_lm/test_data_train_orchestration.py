@@ -155,6 +155,7 @@ def test_get_processed_dataset_normalizes_single_filename(monkeypatch):
 
 
 def test_custom_model_generation_passes_cpu_dispatch_contract(monkeypatch):
+    pytest.importorskip("accelerate")  # 缺 accelerate 时跳过 (非 dopt 核心依赖, 系统环境可选)
     import accelerate
     import accelerate.utils
 

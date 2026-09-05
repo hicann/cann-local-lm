@@ -4,11 +4,9 @@
 prefill OM (seq=8) 处理 prompt → logits + 12 KV(full_attn) + 36 delta;
 decode OM (seq=1) 逐 token 生成, KV + delta 累积传递.
 用法:
-  source /home/developer/Ascend/cann/set_env.sh
-  export PYTHONPATH=/mnt/workspace/project/CANN-LM_5883:${PYTHONPATH:-}
-  export TORCH_DEVICE_BACKEND_AUTOLOAD=0
+  source scripts/set_env_cann.sh --npu   # ③ NPU verify-runtime
   cd examples/test_converter/export_llm_model/om_npu_verify
-  /opt/buildtools/Python-3.11.4/bin/python3 run_qwen3_5_gen.py "Hello, my name is"
+  HF=<hf_model_dir> $DOPT_PYTHON run_qwen3_5_gen.py "Hello, my name is"
 """
 import os, sys, dataclasses, json
 import torch
@@ -17,9 +15,8 @@ import torch
 # 重新导出+编译 prefill/decode 两图). embeddings 入图单 OM 验证用 run_qwen3_5_om_emb.py.
 PREFILL_OM = os.environ.get("PREFILL_OM", "/tmp/opencode/qwen3_5_pd/prefill.om")
 DECODE_OM = os.environ.get("DECODE_OM", "/tmp/opencode/qwen3_5_pd/decode.om")
-HF = "/mnt/workspace/data/models/Qwen3.5-0.8B"
+HF = os.environ["HF"]
 KV_MAX = 2048; DEV = 0; MAX_NEW = 20; PREFILL_SEQ = 8
-sys.path.insert(0, "/mnt/workspace/project/CANN-LM_5883")
 os.environ.setdefault("TORCH_DEVICE_BACKEND_AUTOLOAD", "0")
 
 from cann_lm.models.qwen3_5 import Qwen3_5ForCausalLM, Qwen3_5TextConfig, load_qwen3_5_weights

@@ -17,13 +17,13 @@ CONVERTER="${PROJECT_ROOT}/cann_lm/converter/cann_lm_converter.py"
 
 source "$PROJECT_ROOT/scripts/set_env_export.sh"
 
-PYTHON="${CONVERTER_PYTHON:-${TORCH_DELEGATE_HOME:-/mnt/workspace/torch-delegate-harmony}/.venv/bin/python3}"
+PYTHON="${CONVERTER_PYTHON}"
 
-# model -> HF path 映射 (本地已下载)
+# model -> HF path 映射 (由调用方 export 必填; 无机器默认)
 declare -A HF_PATHS=(
-  [gemma4]="/mnt/workspace/data/models/gemma-4-E2B-it"
-  [qwen3]="/mnt/workspace/data/models/qwen3-0.6B"
-  [qwen3_5]="/mnt/workspace/data/models/Qwen3.5-0.8B"
+  [gemma4]="${GEMMA4_HF_PATH:?请 export GEMMA4_HF_PATH=<gemma4 model dir>}"
+  [qwen3]="${QWEN3_HF_PATH:?请 export QWEN3_HF_PATH=<qwen3 model dir>}"
+  [qwen3_5]="${QWEN3_5_HF_PATH:?请 export QWEN3_5_HF_PATH=<qwen3.5 model dir>}"
 )
 
 MODE="${MODE:-single}"

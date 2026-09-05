@@ -15,9 +15,8 @@ import os, sys, dataclasses
 import torch
 
 OM = os.environ.get("QWEN3_OM", "/tmp/opencode/qwen3_calib/qwen3_full.om")
-HF = "/mnt/workspace/data/models/qwen3-0.6B"
+HF = os.environ["HF"]
 SEQ = 8; KV_MAX = 2048; DEV = 0
-sys.path.insert(0, "/mnt/workspace/project/CANN-LM_5883")
 
 from cann_lm.models.qwen3 import Qwen3ForCausalLM, Qwen3TextConfig, load_qwen3_weights
 from cann_lm.models.qwen3.export_wrapper import Qwen3ExportWrapper

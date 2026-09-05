@@ -1092,7 +1092,7 @@ python cann_lm/converter/cann_lm_converter.py \
 
 ### gemma4 export decode bug 修复 (2026-07-25)
 
-`examples/test_converter/export_llm_model/llm_engine_on_cpu/debug_gemma4/compare_hf_vs_ep.py` 之前 EP（wrapper scatter 模式）decode 退化重复（"my name is my name is" / "人工智能人工智能"），而 CLM（cat 模式 `model.generate`）== HF。根因 + 修复：
+`examples/test_converter/llm_models_run_on_cpu/debug_gemma4/compare_hf_vs_ep.py` 之前 EP（wrapper scatter 模式）decode 退化重复（"my name is my name is" / "人工智能人工智能"），而 CLM（cat 模式 `model.generate`）== HF。根因 + 修复：
 
 1. **`_prepare_causal_mask` 4D sliding window decode bug**（根因，`modeling_gemma4.py`）：4D mask 路径对 sliding_attention 层套 window 时用 `q_range=arange(q_len)` 算 q 位置。decode 时 `q_len=1` → `arange(1)=[0]`，但 decode token 在序列中真实位置是 6（非 0），window 算出"只 k_pos=0 可见"，屏蔽所有其他 K → sliding 层只看第一个 prefill token → 退化。修复：`_prepare_causal_mask` 加 `new_kv_cache_pos` 参数，4D sliding 用 `new_kv_cache_pos`（q 在 buffer 的真实写入位置，与 k_pos 同基准）算 window，decode 时正确。两处调用（text_model forward 内）传 `new_kv_cache_pos`。
 2. **`Gemma4ExportWrapper._drive_layers` `shared_kv_states` 持久化**（`models/gemma4/export_wrapper.py`）：wrapper 丢弃 model 返回的 `shared_kv_states`（每次 forward 新建空 dict），而 `model.generate`（`modeling_gemma4.py` line 800）正确跨步持久。修复：wrapper 存 `self._shared_kv_states`，跨 prefill/decode 调用持久（对齐 generate）。非退化根因（store 层 decode 覆盖 shared dict），但更稳健。

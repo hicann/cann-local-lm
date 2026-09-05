@@ -24,31 +24,30 @@ om_npu_verify/                  # main.cpp + CMakeLists + reg_register.h 已上�
 
 ## 环境
 
+导出 epair 用 ① converter 基底, OM 编译/NPU 出字用 ②③ 真 CANN 基底 (互不叠加, 见 `scripts/`):
+
 ```bash
-source /home/developer/Ascend/cann/set_env.sh
-export LD_LIBRARY_PATH=/mnt/workspace/torchair/build/stubs:${ASCEND_HOME_PATH}/lib64:${LD_LIBRARY_PATH:-}
-export PYTHONPATH=/mnt/workspace/project/CANN-LM_5883:${PYTHONPATH:-}
-export TORCH_DEVICE_BACKEND_AUTOLOAD=0
-export TORCH_DELEGATE_ENABLE_FALLBACK_CODEGEN=0
-export TORCH_DELEGATE_HOME=/mnt/workspace/torch-delegate-harmony
-export SOC_VERSION=Ascend910_9362
-export ASCEND_TOOLKIT_HOME=${ASCEND_HOME_PATH}
-VENV=/mnt/workspace/torch-delegate-harmony/.venv
+# ① 导出 epair (converter venv + torchair stubs, CPU-only; 自动设 CONVERTER_PYTHON / PYTHONPATH / stubs LD / DOPT_PYTHON)
+source $PROJECT_ROOT/scripts/set_env_export.sh
+# ② OM 编译 (真 CANN, CPU 侧; 自动设 SOC_VERSION + 关 AUB + 权值分离 flag)
+source $PROJECT_ROOT/scripts/set_env_cann.sh
+# ③ NPU 出字 (真 CANN + DEVICE=npu; 用 $DOPT_PYTHON 跑 run_*_gen.py)
+source $PROJECT_ROOT/scripts/set_env_cann.sh --npu
 ```
-> 导出用 converter venv(torchair stubs,CPU-only);OM 编译用真 CANN(aarch64,本机 Ascend910)。
+> HF 模型路径由调用方必填 export: `GEMMA4_HF_PATH` / `QWEN3_HF_PATH` / `QWEN3_5_HF_PATH`. `check_env.sh` 一次性检查三套子流程前置.
 
 ## 使用流程
 
 ### 1. 构建 C++ 编译器(一次性; 工具已并入 csrc)
 ```bash
-source scripts/set_env_compile.sh
-bash scripts/cann_lm_compile/build_cpp.sh   # 产 build/cann_lm_compile
+source $PROJECT_ROOT/scripts/set_env_cann.sh   # ② OM 编译基底
+bash scripts/build.sh cpp                       # 产 build/cann_lm_compile
 ```
 
 ### 2. 导出 epair(用 CLI `cann_lm_converter.py`, 唯一导出入口)
 ```bash
-$VENV/bin/python3 /mnt/workspace/project/CANN-LM_5883/cann_lm/converter/cann_lm_converter.py \
-  --hf-path /mnt/workspace/data/models/gemma-4-E2B-it \
+$CONVERTER_PYTHON $PROJECT_ROOT/cann_lm/converter/cann_lm_converter.py \
+  --hf-path "$GEMMA4_HF_PATH" \
   --output-dir epair_gemma4 \
   --dtype bfloat16 --seq-len 8 --mode single          # --use-embeddings 默认 True (纯 embeddings, 图外查表)
 ```
@@ -205,11 +204,10 @@ export GE_FUSION_SWITCH_FILE=/tmp/fusion_autoub_off.cfg   # 见上 "3. 编译" �
 ### 环境
 
 ```bash
-source /home/developer/Ascend/cann/set_env.sh
-export PYTHONPATH=/home/developer/Ascend/cann-9.2.0/python.site-packages:/mnt/workspace/project/CANN-LM_5883:${PYTHONPATH:-}
+source $PROJECT_ROOT/scripts/set_env_cann.sh --npu   # ③ NPU 基底 (真 CANN + DEVICE=npu; 设 DOPT_PYTHON / PYTHONPATH)
 ```
 
-用系统 Python(`/opt/buildtools/Python-3.11.4/bin/python3`),含 `acl` + `torch_npu` + `transformers`。
+用 `$DOPT_PYTHON`(系统 Python, 含 `acl` + `torch_npu` + `transformers`)。HF 模型路径经 `HF`/`GEMMA4_HF_PATH` 等 env 传入 (见各脚本)。
 
 ### run_gemma4_om.py — 单 OM vs eager 验证
 
@@ -217,7 +215,7 @@ export PYTHONPATH=/home/developer/Ascend/cann-9.2.0/python.site-packages:/mnt/wo
 
 ```bash
 cd examples/test_converter/export_llm_model/om_npu_verify
-/opt/buildtools/Python-3.11.4/bin/python3 run_gemma4_om.py
+GEMMA4_OM=<om_path> HF="$GEMMA4_HF_PATH" $DOPT_PYTHON run_gemma4_om.py
 ```
 
 - OM logits vs eager logits maxdiff < 1.0 → MATCH(运行机制正确)
@@ -230,8 +228,8 @@ cd examples/test_converter/export_llm_model/om_npu_verify
 
 ```bash
 cd examples/test_converter/export_llm_model/om_npu_verify
-/opt/buildtools/Python-3.11.4/bin/python3 run_gemma4_gen.py "Hello, my name is"
-/opt/buildtools/Python-3.11.4/bin/python3 run_gemma4_gen.py "Please explain the theory of relativity in detail."
+PREFILL_OM=<prefill.om> DECODE_OM=<decode.om> HF="$GEMMA4_HF_PATH" $DOPT_PYTHON run_gemma4_gen.py "Hello, my name is"
+$DOPT_PYTHON run_gemma4_gen.py "Please explain the theory of relativity in detail."
 ```
 
 **prompt 自动套 chat template**(`tok.apply_chat_template`),确保模型正常对话生成(裸 prompt 会退化成重复输出)。

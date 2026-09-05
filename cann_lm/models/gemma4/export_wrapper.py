@@ -91,7 +91,7 @@ class Gemma4ExportWrapper(ExportWrapper):
         input_ids: torch.Tensor | None,
         mask_full: torch.Tensor | None,
         mask_sliding: torch.Tensor | None,
-        position_ids: torch.Tensor,
+        position_ids: torch.Tensor | None,
         past_key_values,
         new_kv_cache_pos: torch.Tensor,
         embeddings: torch.Tensor | None = None,
@@ -114,6 +114,26 @@ class Gemma4ExportWrapper(ExportWrapper):
         else:
             inputs_embeds = tm.embed_tokens(input_ids)
 
+        # 1a. KV cache list 重建 (None→[None]*N / list[(k,v)] clone / flat 展平→重建)
+        #     先归一化为 list[(k,v)|None], 供 position_ids/rope/层驱动统一用.
+        num_layers = self._num_layers()
+        if past_key_values is None:
+            kv_list = [None] * num_layers
+        elif isinstance(past_key_values, list) and len(past_key_values) > 0 and isinstance(
+            past_key_values[0], (tuple, list)
+        ):
+            kv_list = [(k, v) for k, v in past_key_values]
+        else:
+            kv_list = [
+                (past_key_values[i], past_key_values[i + 1])
+                for i in range(0, len(past_key_values), 2)
+            ]
+
+        # 1b. position_ids auto-prepare (镜像 TextModel.forward; None 时按 past_len 算).
+        #     export 路径 position_ids 是图输入 (非 None), 不走此分支; 仅 eager 补.
+        if position_ids is None:
+            position_ids = tm._prepare_position_ids(inputs_embeds, kv_list)
+
         # 2. PLE project (复刻 _project_per_layer_inputs; token_identity 由 host 给或图内查表)
         per_layer_inputs = None
         if self._ple_enabled:
@@ -132,19 +152,7 @@ class Gemma4ExportWrapper(ExportWrapper):
         # 3. RoPE (per layer_type, 复用 model 子模块)
         rope_embs = tm._build_rope_embeddings_for_layers(inputs_embeds, position_ids)
 
-        # 4. KV cache list 重建 (None→[None]*N / list[(k,v)] clone / flat 展平→重建)
-        num_layers = self._num_layers()
-        if past_key_values is None:
-            kv_list = [None] * num_layers
-        elif isinstance(past_key_values, list) and len(past_key_values) > 0 and isinstance(
-            past_key_values[0], (tuple, list)
-        ):
-            kv_list = [(k, v) for k, v in past_key_values]
-        else:
-            kv_list = [
-                (past_key_values[i], past_key_values[i + 1])
-                for i in range(0, len(past_key_values), 2)
-            ]
+        # 4. (KV cache 已在 1a 归一化为 kv_list)
 
         shared_kv_states: dict = {}
 

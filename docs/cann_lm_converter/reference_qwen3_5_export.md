@@ -929,5 +929,5 @@ if batch_size > 1:
 
 - [`converter_design.md`](./converter_design.md) — converter 全流程设计（本文档抽取自其中 qwen3.5 相关片段）
 - [`fused_ops.md`](../cann_lm_models/fused_ops/fused_ops.md) — 融合算子参考（合并自 support_ops + compositte_op：算子总表/定义溯源/GE 映射/逐模型 modeling 替换 + OM 验证，含 qwen3.5 线性注意力算子 P0 落地）
-- [`examples/test_converter/export_llm_model/llm_engine_on_cpu/debug_qwen3_5/README.md`](../../examples/test_converter/export_llm_model/llm_engine_on_cpu/debug_qwen3_5/README.md) — qwen3.5 调试与验证脚本集
+- [`examples/test_converter/llm_models_run_on_cpu/debug_qwen3_5/README.md`](../../examples/test_converter/llm_models_run_on_cpu/debug_qwen3_5/README.md) — qwen3.5 调试与验证脚本集
 - [`examples/test_converter/export_llm_model/om_npu_verify/README.md`](../../examples/test_converter/export_llm_model/om_npu_verify/README.md) — gemma4 epair→OM 编译验证（qwen3.5 OM 编译复用此 C++ 框架）

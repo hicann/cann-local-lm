@@ -22,7 +22,7 @@ from cann_lm.models.qwen3_5.modeling_qwen3_5 import SimpleDeltaNetCache
 import torch_delegate
 from cann_lm.converter.export.epair_utils import consolidated_weights_save
 
-HF = "/mnt/workspace/data/models/Qwen3.5-0.8B"
+HF = os.environ["HF"]
 KV_MAX = 2048
 CACHED_LEN = 8
 OUT_DIR = str(Path(__file__).resolve().parent / "epair_qwen3_5_decode")

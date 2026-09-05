@@ -10,20 +10,16 @@
 流程: CPU 模型查表 embeddings → OM (acl NPU) run → 对比 HF logits + top5.
 
 用法:
-  source /home/developer/Ascend/cann/set_env.sh
-  export PYTHONPATH=/home/developer/Ascend/cann-9.2.0/python.site-packages:/mnt/workspace/project/CANN-LM_5883:${PYTHONPATH:-}
-  export TORCH_DEVICE_BACKEND_AUTOLOAD=0
+  source scripts/set_env_cann.sh --npu   # ③ NPU verify-runtime
   cd examples/test_converter/export_llm_model/om_npu_verify
-  /opt/buildtools/Python-3.11.4/bin/python3 run_qwen3_5_om_emb.py
+  HF=<hf_model_dir> QWEN35_OM=<om_path> $DOPT_PYTHON run_qwen3_5_om_emb.py
 """
 import os, sys
 import torch
 
-OM = os.environ.get("QWEN35_OM",
-    "/mnt/workspace/project/CANN-LM_5883/examples/test_converter/export_llm_model/om_npu_verify/qwen3_5_emb.om")
-HF = "/mnt/workspace/data/models/Qwen3.5-0.8B"
+OM = os.environ["QWEN35_OM"]
+HF = os.environ["HF"]
 SEQ = 8; KV_MAX = 2048; DEV = 0
-sys.path.insert(0, "/mnt/workspace/project/CANN-LM_5883")
 os.environ.setdefault("TORCH_DEVICE_BACKEND_AUTOLOAD", "0")
 
 from cann_lm.models.qwen3_5 import Qwen3_5ForCausalLM, Qwen3_5TextConfig, load_qwen3_5_weights
@@ -154,7 +150,7 @@ def main():
     print(f"  has_nan={torch.isnan(logits_om).any().item()}, has_inf={torch.isinf(logits_om).any().item()}")
 
     print("[4/4] compare OM vs HF transformers")
-    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "llm_engine_on_cpu"))
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "llm_models_run_on_cpu"))
     import hf_cpu  # 禁 torch_npu probe (shim)
     from transformers import Qwen3_5ForCausalLM as HFModel
     hf_model = HFModel.from_pretrained(HF, torch_dtype=torch.bfloat16, attn_implementation="eager").eval()

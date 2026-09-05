@@ -7,10 +7,9 @@ decode OM (seq=1) 逐 token 生成。
 不被 all-mask,否则污染 store 层 KV → 共享层输出错误) + 覆盖 embeddings/PLE/output_pos。
 
 用法:
-  source /home/developer/Ascend/cann/set_env.sh
-  export PYTHONPATH=/home/developer/Ascend/cann-9.2.0/python/site-packages:/mnt/workspace/project/CANN-LM_5883:${PYTHONPATH:-}
+  source scripts/set_env_cann.sh --npu   # ③ NPU verify-runtime
   cd examples/test_converter/export_llm_model/om_npu_verify
-  /opt/buildtools/Python-3.11.4/bin/python3 run_gemma4_gen.py "The capital of China is"
+  HF=<hf_model_dir> $DOPT_PYTHON run_gemma4_gen.py "The capital of China is"
 
 OM 产物路径 (prefill.om + decode.om) 在本脚本 PREFILL_OM / DECODE_OM 常量里配置。
 当前指向 /tmp/opencode/gemma4_pd/ (converter --mode prefill-decode 导出 + C++ 编译产物)。
@@ -21,9 +20,8 @@ import torch.nn.functional as F
 
 PREFILL_OM = os.environ.get("PREFILL_OM", "/tmp/opencode/gemma4_pd/prefill.om")
 DECODE_OM = os.environ.get("DECODE_OM", "/tmp/opencode/gemma4_pd/decode.om")
-E2B = os.environ.get("HF", "/mnt/workspace/models/unsloth/gemma-4-E2B-it")
+E2B = os.environ["HF"]
 KV_MAX = 2048; DEV = 0; MAX_NEW = 30; PREFILL_SEQ = 128
-sys.path.insert(0, "/mnt/workspace/project/CANN-LM_5883")
 
 import torch_npu  # noqa (for wrapper eager if needed; mainly for mask helpers)
 from safetensors import safe_open

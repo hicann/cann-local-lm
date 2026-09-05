@@ -10,10 +10,9 @@ import torch
 
 # input_ids 入图 OM (已清除, 需用 CLI `cann_lm_converter.py --no-use-embeddings` 重新导出+编译).
 # embeddings 入图验证用 run_qwen3_5_om_emb.py (推荐, OM=qwen3_5_emb_noaub.om).
-OM = "/mnt/workspace/project/CANN-LM_5883/examples/test_converter/export_llm_model/om_npu_verify/qwen3_5.om"
-HF = "/mnt/workspace/data/models/Qwen3.5-0.8B"
+OM = os.environ["QWEN35_OM"]
+HF = os.environ["HF"]
 SEQ = 8; KV_MAX = 2048; DEV = 0
-sys.path.insert(0, "/mnt/workspace/project/CANN-LM_5883")
 os.environ.setdefault("TORCH_DEVICE_BACKEND_AUTOLOAD", "0")
 
 from cann_lm.models.qwen3_5 import Qwen3_5ForCausalLM, Qwen3_5TextConfig, load_qwen3_5_weights
@@ -149,7 +148,7 @@ def main():
 
     # [3b] OM vs HF transformers (cann_lm vs HF 实现差异, 仅参考)
     print("[3b] compare OM vs HF transformers")
-    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "llm_engine_on_cpu"))
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "llm_models_run_on_cpu"))
     import hf_cpu  # 禁 torch_npu probe (shim)
     from transformers import Qwen3_5ForCausalLM as HFModel
     hf_model = HFModel.from_pretrained(HF, torch_dtype=torch.bfloat16, attn_implementation="eager").eval()

@@ -728,17 +728,26 @@ class Gemma4TextModel(nn.Module):
         attention_mask: torch.Tensor | None = None,
         layer_type: str = "sliding_attention",
         new_kv_cache_pos: torch.Tensor | None = None,
+        past_len: int = 0,
     ) -> torch.Tensor | None:
         batch_size, seq_len = inputs_embeds.shape[:2]
         device = inputs_embeds.device
         dtype = inputs_embeds.dtype
         min_dtype = torch.finfo(dtype).min
 
+        # prefill 默认 (2D 分支用): q=kv=seq_len
         q_pos = torch.arange(seq_len, device=device)
         key_pos = torch.arange(seq_len, device=device)
         causal_mask = key_pos.unsqueeze(0) <= q_pos.unsqueeze(1)
 
         if attention_mask is None:
+            # decode (有 cache) 时 kv_len = past_len + seq_len, 不能用 seq_len (否则 mask kv 维
+            # 与 key.shape[2] 不符, _pad_mask_to_kv_square 维度不匹配). prefill 时 past_len=0 退化为 seq_len.
+            # past_len 由 TextModel.forward 在层循环前算一次 (pre-step 缓存长度, 各层一致), 避免层间污染.
+            kv_len = past_len + seq_len
+            q_pos = torch.arange(past_len, past_len + seq_len, device=device)
+            key_pos = torch.arange(kv_len, device=device)
+            causal_mask = key_pos.unsqueeze(0) <= q_pos.unsqueeze(1)
             if layer_type == "full_attention":
                 full_mask = causal_mask
             elif layer_type == "sliding_attention":
@@ -828,10 +837,18 @@ class Gemma4TextModel(nn.Module):
         if past_key_values is None:
             past_key_values = [None] * len(self.layers)
 
+        # past_len: pre-step 缓存长度 (各层一致), 在层循环前算一次避免层间存储污染.
+        # prefill (全 None) -> 0; decode -> 非共享层的 prev-step 缓存 shape[2].
+        past_len = 0
+        for _pkv in past_key_values:
+            if _pkv is not None:
+                past_len = (_pkv[0] if isinstance(_pkv, (tuple, list)) else _pkv).shape[2]
+                break
+
         if position_ids is None:
             position_ids = self._prepare_position_ids(inputs_embeds, past_key_values)
 
-        causal_mask = self._prepare_causal_mask(inputs_embeds, attention_mask, new_kv_cache_pos=new_kv_cache_pos)
+        causal_mask = self._prepare_causal_mask(inputs_embeds, attention_mask, new_kv_cache_pos=new_kv_cache_pos, past_len=past_len)
         rope_embs = self._build_rope_embeddings_for_layers(inputs_embeds, position_ids)
 
         if shared_kv_states is None:
@@ -848,7 +865,7 @@ class Gemma4TextModel(nn.Module):
             layer_type = self.config.layer_types[i]
             pos_emb = rope_embs[layer_type]
 
-            mask = self._prepare_causal_mask(inputs_embeds, attention_mask, layer_type, new_kv_cache_pos=new_kv_cache_pos)
+            mask = self._prepare_causal_mask(inputs_embeds, attention_mask, layer_type, new_kv_cache_pos=new_kv_cache_pos, past_len=past_len)
 
             per_layer_input = per_layer_inputs[:, :, i, :] if per_layer_inputs is not None else None
             hidden_states = layer(

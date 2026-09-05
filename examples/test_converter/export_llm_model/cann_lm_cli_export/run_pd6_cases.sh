@@ -36,28 +36,31 @@
 #
 set -uo pipefail
 
-PROJECT_ROOT="/mnt/workspace/project/CANN-LM_5883"
-CLI_DIR="$PROJECT_ROOT/examples/test_converter/export_llm_model/cann_lm_cli_export"
-VENV="/mnt/workspace/torch-delegate-harmony/.venv"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "${SCRIPT_DIR}/../../../.." && pwd)"
+CLI_DIR="$SCRIPT_DIR"
 CONV="$PROJECT_ROOT/cann_lm/converter/cann_lm_converter.py"
-DOPT_PY="/opt/buildtools/Python-3.11.4/bin/python3"
 QD="$PROJECT_ROOT/cann_lm/converter/quant"
-WORK_DIR="/tmp/opencode"
+WORK_DIR="${WORK_DIR:-/tmp/opencode}"
 export DOPT_TMP_DIR="$CLI_DIR"   # dopt GPTQ 临时盘(auto_quant tempfile dir,swap 后清理);未设→系统 /tmp
 
-HF_QWEN3_5="/mnt/workspace/models/Qwen/Qwen3.5-0.8B"
-HF_GEMMA4="/mnt/workspace/models/unsloth/gemma-4-E2B-it"
+HF_QWEN3_5="${QWEN3_5_HF_PATH:-}"
+HF_GEMMA4="${GEMMA4_HF_PATH:-}"
+_require_hf() {
+  [[ -n "$HF_QWEN3_5" ]] || { echo "请 export QWEN3_5_HF_PATH=<qwen3.5 model dir>" >&2; exit 1; }
+  [[ -n "$HF_GEMMA4"  ]] || { echo "请 export GEMMA4_HF_PATH=<gemma4 model dir>" >&2; exit 1; }
+}
 
 # ─── 一次性 setup: 确保 converter venv 不装 torch_npu (stub 路径) ───
 setup_torch_npu() {
-  "$VENV/bin/python3" -m pip uninstall -y torch_npu 2>&1 | tail -2
-  local SP="$VENV/lib/python3.11/site-packages"
+  setup_converter_env   # 设 CONVERTER_PYTHON (= $TORCH_DELEGATE_HOME/.venv/bin/python)
+  "$CONVERTER_PYTHON" -m pip uninstall -y torch_npu 2>&1 | tail -2
+  local SP; SP="$("$CONVERTER_PYTHON" -c 'import site;print(site.getsitepackages()[0])')"
   if [[ -d "$SP/torch_npu" && ! -f "$SP/torch_npu/__init__.py" ]]; then
     rm -rf "$SP/torch_npu"; echo "removed leftover torch_npu dir"
   fi
   echo "verify (stub 路径):"
-  setup_converter_env
-  "$VENV/bin/python3" -c "
+  "$CONVERTER_PYTHON" -c "
 import torch; print('torch', torch.__version__)
 try: import torch_npu; print('torch_npu STILL HERE (bad)')
 except ModuleNotFoundError: print('torch_npu: absent (stub path OK)')
@@ -90,7 +93,7 @@ run_conv() {
   local POLLS="${RUN_CONV_POLLS:-150}" SLEEP="${RUN_CONV_SLEEP:-5}"
   rm -rf "$OUT"
   echo "### converter mode=$MODE seq=$SEQ_LEN -> $(basename "$OUT")  $(date +%T)"
-  "$VENV/bin/python3" "$CONV" \
+  "$CONVERTER_PYTHON" "$CONV" \
     --hf-path "$HF" --output-dir "$OUT" --mode "$MODE" --dtype bfloat16 --seq-len "$SEQ_LEN" "$@" \
     >"$OUT.log" 2>&1 &
   local PID=$!
@@ -112,7 +115,7 @@ run_conv() {
 gen_dopt_config() {
   local HF="$1" OUT="$2"
   echo "### generate dopt_config for $(basename "$HF")"
-  "$VENV/bin/python3" - "$HF" "$OUT" <<'PYEOF'
+  "$CONVERTER_PYTHON" - "$HF" "$OUT" <<'PYEOF'
 import json, sys, shutil, os, tempfile, torch
 from cann_lm.converter.loader import load_model
 from cann_lm.converter.quant.dopt_wrapper import build_layer_strategy
@@ -134,7 +137,7 @@ run_dopt() {
   local HF="$1" CFG="$2" OPTCFG="$3" OUT="$4"
   rm -rf "$OUT"; mkdir -p "$OUT"
   echo "### dopt GPTQ -> $(basename "$OUT")  $(date +%T)  (cwd=quant/ 找 calibrate_sets/)"
-  ( cd "$QD" && timeout 1200 "$DOPT_PY" -m dopt_lm.opt_main \
+  ( cd "$QD" && timeout 1200 "$DOPT_PYTHON" -m dopt_lm.opt_main \
       --model-path "$HF" --dopt-config "$CFG" --optimize-config "$OPTCFG" \
       --output-dir "$OUT" --hf_type_save ) 2>&1 | grep -v "Permission\|UserWarning\|warnings.warn" | tail -15
   echo "  -> $OUT  exit=${PIPESTATUS[0]}  $(date +%T)"
@@ -144,7 +147,7 @@ run_dopt() {
 # 无量化产物也适用 (IR 无 quant 算子=False, quant_info 空, weights 大)
 verify_quant() {
   local OUT="$1"
-  "$VENV/bin/python3" - "$OUT" <<'PYEOF' 2>&1 | tail -10
+  "$CONVERTER_PYTHON" - "$OUT" <<'PYEOF' 2>&1 | tail -10
 import json,sys; from pathlib import Path
 d=Path(sys.argv[1])
 eps = list(d.glob("*ep_json_with_ascend_ir.json"))
@@ -205,44 +208,33 @@ case_quant_method() {
 
 # ─── 6 个用例: 无量化 → 场景1 (--quant-path) → 场景2 (--quant-method gptq) ───
 # seq_len: qwen3.5=8 (run_qwen3_5_gen_emb.py PREFILL_SEQ=8), gemma4=128 (run_gemma4_gen.py PREFILL_SEQ=128)
-case_1() { case_no_quant     qwen3_5 "$HF_QWEN3_5" epair_qwen3_5_no_quant      8;   }
-case_2() { case_no_quant     gemma4  "$HF_GEMMA4"  epair_gemma4_no_quant       128; }
-case_3() { case_quant_path   qwen3_5 "$HF_QWEN3_5" epair_qwen3_5_quant_path   8;   }
-case_4() { case_quant_path   gemma4  "$HF_GEMMA4"  epair_gemma4_quant_path    128; }
-case_5() { case_quant_method qwen3_5 "$HF_QWEN3_5" epair_qwen3_5_quant_method 8;   }
-case_6() { case_quant_method gemma4  "$HF_GEMMA4"  epair_gemma4_quant_method  128; }
+case_1() { _require_hf; case_no_quant     qwen3_5 "$HF_QWEN3_5" epair_qwen3_5_no_quant      8;   }
+case_2() { _require_hf; case_no_quant     gemma4  "$HF_GEMMA4"  epair_gemma4_no_quant       128; }
+case_3() { _require_hf; case_quant_path   qwen3_5 "$HF_QWEN3_5" epair_qwen3_5_quant_path   8;   }
+case_4() { _require_hf; case_quant_path   gemma4  "$HF_GEMMA4"  epair_gemma4_quant_path    128; }
+case_5() { _require_hf; case_quant_method qwen3_5 "$HF_QWEN3_5" epair_qwen3_5_quant_method 8;   }
+case_6() { _require_hf; case_quant_method gemma4  "$HF_GEMMA4"  epair_gemma4_quant_method 128; }
 
 # ─── env 打印 ───
 print_env() {
   cat <<'EOF'
 === converter env (① 导出 epair; 不装 torch_npu, 走 stub 路径) ===
-source /home/developer/Ascend/cann/set_env.sh
-export PYTHONPATH=/mnt/workspace/project/CANN-LM_5883:${PYTHONPATH:-}
-export TORCH_DELEGATE_ENABLE_FALLBACK_CODEGEN=0
-export TORCH_DEVICE_BACKEND_AUTOLOAD=0
-export TORCH_DELEGATE_HOME=/mnt/workspace/torch-delegate-harmony
-export LD_LIBRARY_PATH=${ASCEND_HOME_PATH}/lib64:/mnt/workspace/torchair/build/stubs:${LD_LIBRARY_PATH:-}
-# venv: /mnt/workspace/torch-delegate-harmony/.venv (torch 2.9.0+cpu, torch_npu 不装)
+source $PROJECT_ROOT/scripts/set_env_export.sh
+# 设好: CONVERTER_PYTHON(=.venv/bin/python), PYTHONPATH, LD_LIBRARY_PATH(stubs 在前), TORCH_DELEGATE_HOME
+# 本脚本 setup_converter_env() 已 source
 
 === dopt env (Step A GPTQ, 量化前置; 系统 python + 真 torch_npu + NPU) ===
-source /home/developer/Ascend/cann/set_env.sh
-export PYTHONPATH=/mnt/workspace/project/CANN-LM_5883/cann_lm/converter/quant:/mnt/workspace/project/CANN-LM_5883:${PYTHONPATH:-}
-export TORCH_DEVICE_BACKEND_AUTOLOAD=0
-export DEVICE=npu
-export LD_LIBRARY_PATH=${ASCEND_HOME_PATH}/lib64:${LD_LIBRARY_PATH:-}
-# python: /opt/buildtools/Python-3.11.4/bin/python3 -m dopt_lm.opt_main ...
+source $PROJECT_ROOT/scripts/set_env_cann.sh --npu
+export PYTHONPATH=$PROJECT_ROOT/cann_lm/converter/quant:${PYTHONPATH:-}
+# 设好: DOPT_PYTHON(=系统 python), DEVICE=npu, 真 CANN lib64; 本脚本 setup_dopt_env() 已 source
 
-=== OM 编译 env (③, 真 CANN, CPU 侧不需 NPU) ===
-source /home/developer/Ascend/cann/set_env.sh
-export LD_LIBRARY_PATH=${TORCH_PKG_DIR}/lib:${TORCH_PKG_DIR}/../torch.libs:${ASCEND_HOME_PATH}/lib64:${LD_LIBRARY_PATH:-}
-export SOC_VERSION=Ascend910_9362
-export GE_FUSION_SWITCH_FILE=/tmp/fusion_autoub_off.cfg   # {"Switch":{"UBFusion":{"AutomaticUbFusion":"off"}}}
+=== OM 编译 env (②, 真 CANN, CPU 侧不需 NPU) ===
+source $PROJECT_ROOT/scripts/set_env_cann.sh
+# 设好: SOC_VERSION, GE_FUSION_SWITCH_FILE(关 AUB), GE_EXTERNAL_WEIGHT; 用 build/cann_lm_compile
 
-=== NPU 出字 env (④, 系统 python + torch_npu) ===
-source /home/developer/Ascend/cann/set_env.sh
-export PYTHONPATH=/mnt/workspace/project/CANN-LM_5883:${PYTHONPATH:-}
-export TORCH_DEVICE_BACKEND_AUTOLOAD=0
-# /opt/buildtools/Python-3.11.4/bin/python3 run_<model>_gen.py "prompt"
+=== NPU 出字 env (③, 系统 python + torch_npu) ===
+source $PROJECT_ROOT/scripts/set_env_cann.sh --npu
+# 用 $DOPT_PYTHON run_<model>_gen.py "prompt"
 EOF
 }
 

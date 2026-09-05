@@ -7,11 +7,9 @@
 - 其余 (KV cache 6 对 + 36 delta_states 累积传递 + mask/pos) 与 input_ids 版一致
 
 用法:
-  source /home/developer/Ascend/cann/set_env.sh
-  export PYTHONPATH=/mnt/workspace/project/CANN-LM_5883:${PYTHONPATH:-}
-  export TORCH_DEVICE_BACKEND_AUTOLOAD=0
+  source scripts/set_env_cann.sh --npu   # ③ NPU verify-runtime
   cd examples/test_converter/export_llm_model/om_npu_verify
-  /opt/buildtools/Python-3.11.4/bin/python3 run_qwen3_5_gen_emb.py "Hello, my name is"
+  HF=<hf_model_dir> $DOPT_PYTHON run_qwen3_5_gen_emb.py "Hello, my name is"
 
 OM 产物 (prefill.om + decode.om, use-embeddings, converter --mode prefill-decode 默认 use-emb)
 路径在本脚本 PREFILL_OM / DECODE_OM 常量里, 指向 /tmp/opencode/qwen3_5_pd/.
@@ -21,9 +19,8 @@ import torch
 
 PREFILL_OM = os.environ.get("PREFILL_OM", "/tmp/opencode/qwen3_5_pd/prefill.om")
 DECODE_OM = os.environ.get("DECODE_OM", "/tmp/opencode/qwen3_5_pd/decode.om")
-HF = os.environ.get("HF", "/mnt/workspace/models/Qwen/Qwen3.5-0.8B")
+HF = os.environ["HF"]
 KV_MAX = 2048; DEV = 0; MAX_NEW = 20; PREFILL_SEQ = 8
-sys.path.insert(0, "/mnt/workspace/project/CANN-LM_5883")
 os.environ.setdefault("TORCH_DEVICE_BACKEND_AUTOLOAD", "0")
 
 from cann_lm.models.qwen3_5 import Qwen3_5ForCausalLM, Qwen3_5TextConfig, load_qwen3_5_weights

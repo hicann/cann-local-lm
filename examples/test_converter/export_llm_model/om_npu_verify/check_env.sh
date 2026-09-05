@@ -6,29 +6,34 @@
 #   2. OM 编译           — 真 CANN (CPU 侧, 不需 NPU) + cmake + build/cann_lm_compile
 #   3. OM 运行/出字       — 系统 Python + torch_npu + acl + NPU
 #
-# 用法（先 source CANN 环境）:
-#   source /home/developer/Ascend/cann/set_env.sh
+# 环境前置：本脚本 source ① converter 基底 (set_env_export.sh) 拿 CONVERTER_PYTHON /
+#   TORCH_DELEGATE_HOME / stubs / PYTHONPATH / DOPT_PYTHON; ②③ 真 CANN 基底与 ① 的
+#   LD 互斥 (stubs-first ↔ torch_npu), 运行 ②③ 时另 source set_env_cann.sh, 此处仅检查
+#   共用项. HF 模型路径由调用方必填 export (增量, 不与基底冲突).
+#
+# 用法:
+#   export GEMMA4_HF_PATH=<gemma4 model dir>
+#   export QWEN3_HF_PATH=<qwen3 model dir>
+#   export QWEN3_5_HF_PATH=<qwen3.5 model dir>
 #   bash check_env.sh
 #
 set -uo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "${SCRIPT_DIR}/../../../.." && pwd)"          # CANN-LM_5883 (om_npu_verify 上 4 级)
-EXPORT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"                # examples/test_converter/export_llm_model
+SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "${SELF_DIR}/../../../.." && pwd)"   # CANN-LM_5883
+EXPORT_DIR="$(cd "${SELF_DIR}/.." && pwd)"               # examples/test_converter/export_llm_model
 
-# 可被环境变量覆盖
-VENV="${VENV:-/mnt/workspace/torch-delegate-harmony/.venv}"
-TORCHAIR_FULL="${TORCHAIR_FULL:-/mnt/workspace/torchair}"
-TORCH_DELEGATE_HOME="${TORCH_DELEGATE_HOME:-/mnt/workspace/torch-delegate-harmony}"
-SYS_PY="${SYS_PY:-/opt/buildtools/Python-3.11.4/bin/python3}"
-CANN_PY="${CANN_PY:-${ASCEND_HOME_PATH:-/home/developer/Ascend/cann-9.2.0}/python/site-packages}"
+# source ① converter 基底 (设 CONVERTER_PYTHON / TORCH_DELEGATE_HOME / stubs LD / PYTHONPATH / DOPT_PYTHON)
+# 注: 基底脚本内部也定义 SCRIPT_DIR/PROJECT_ROOT, 故本脚本用 SELF_DIR 避免被覆盖
+source "${PROJECT_ROOT}/scripts/set_env_export.sh" >/dev/null 2>&1 || true
+
+# 基底提供的变量 (不再自派生 LD_LIBRARY_PATH / PYTHONPATH)
 CSRC="${PROJECT_ROOT}/cann_lm/converter/export/csrc"
 BACKEND_LIB="${PROJECT_ROOT}/build/libtorch_delegate_backend.so"
 BUILD_BIN="${PROJECT_ROOT}/build/cann_lm_compile"
-STUBS="${TORCHAIR_FULL}/build/stubs"
-HF_GEMMA4="${HF_GEMMA4:-/mnt/workspace/data/models/gemma-4-E2B-it}"
-HF_QWEN3="${HF_QWEN3:-/mnt/workspace/data/models/qwen3-0.6B}"
-HF_QWEN35="${HF_QWEN35:-/mnt/workspace/data/models/Qwen3.5-0.8B}"
+HF_GEMMA4="${GEMMA4_HF_PATH:-}"
+HF_QWEN3="${QWEN3_HF_PATH:-}"
+HF_QWEN35="${QWEN3_5_HF_PATH:-}"
 
 pass=0; warn=0; fail=0
 ok()   { echo "  [✓] $1"; pass=$((pass+1)); }
@@ -40,9 +45,9 @@ echo "################ om_npu_verify 环境检查 ################"
 echo "  PROJECT_ROOT=${PROJECT_ROOT}"
 echo "  EXPORT_DIR=${EXPORT_DIR}"
 
-# ───────────── 公共 ─────────────
-hdr "公共: CANN"
-if [[ -n "${ASCEND_HOME_PATH:-}" ]]; then ok "ASCEND_HOME_PATH=${ASCEND_HOME_PATH}"; else ng "ASCEND_HOME_PATH 未设置 (先 source /home/developer/Ascend/cann/set_env.sh)"; fi
+# ───────────── 公共: CANN (基底已 source) ─────────────
+hdr "公共: CANN (① 基底 set_env_export.sh 已 source)"
+if [[ -n "${ASCEND_HOME_PATH:-}" ]]; then ok "ASCEND_HOME_PATH=${ASCEND_HOME_PATH}"; else ng "ASCEND_HOME_PATH 未设置 (先 source CANN set_env.sh 或检查 set_env_export.sh)"; fi
 [[ -f "${ASCEND_HOME_PATH:-}/lib64/libascendcl.so" ]] && ok "CANN lib64/libascendcl.so" || ng "libascendcl.so 缺失"
 
 hdr "公共: NPU (OM 运行/出字需要; OM 编译不需要)"
@@ -55,28 +60,28 @@ else
 fi
 
 # ───────────── Flow 1: 导出 epair (converter venv + stubs) ─────────────
-hdr "Flow 1: 导出 epair (converter venv + torchair stubs, CPU)"
-if [[ -x "${VENV}/bin/python3" ]]; then ok "venv python: ${VENV}/bin/python3"; else ng "venv python 缺失 (${VENV})"; fi
-"${VENV}/bin/python3" - <<'PY' 2>/dev/null
+hdr "Flow 1: 导出 epair (① 基底: CONVERTER_PYTHON + torchair stubs, CPU)"
+if [[ -x "${CONVERTER_PYTHON:-}" ]]; then ok "CONVERTER_PYTHON: ${CONVERTER_PYTHON}"; else ng "CONVERTER_PYTHON 缺失 (set_env_export.sh 未正确 source)"; fi
+"${CONVERTER_PYTHON:-python3}" - <<'PY' 2>/dev/null
 import torch, importlib.util as u
 print(f"[✓] torch {torch.__version__}")
 for m in ("torchair","torch_delegate"):
     print(f"[{'✓' if u.find_spec(m) else '✗'}] {m}")
 PY
-[[ -d "${STUBS}" ]] && ok "stubs: ${STUBS}" || ng "stubs 目录缺失 (${STUBS}; converter export 会失败)"
+[[ -d "${STUBS_DIR:-${TORCHAIR_ROOT:-}/build/stubs}" ]] && ok "stubs: ${STUBS_DIR:-${TORCHAIR_ROOT:-}/build/stubs}" || ng "stubs 目录缺失 (converter export 会失败)"
 
 # ───────────── Flow 2: OM 编译 (真 CANN + cmake + C++ binary) ─────────────
+# 注: ② 真 CANN 基底 (set_env_cann.sh) 与 ① LD 互斥, 运行 ② 时另 source; 此处检查共用项
 hdr "Flow 2: OM 编译 (真 CANN, CPU 侧, 不需 NPU; 需算子在 CANN 对 Soc 存在)"
 command -v cmake &>/dev/null && ok "cmake $(cmake --version | head -1 | awk '{print $3}')" || ng "cmake 未找到"
-[[ -f "${BACKEND_LIB}" ]] && ok "backend lib: ${BACKEND_LIB##*/}" || ng "backend lib 缺失 (bash scripts/cann_lm_compile/build_cpp.sh --target torch_delegate_backend)"
-_vtorch="$("${VENV}/bin/python3" -c 'import torch,os;print(os.path.dirname(torch.__file__))' 2>/dev/null)"
+[[ -f "${BACKEND_LIB}" ]] && ok "backend lib: ${BACKEND_LIB##*/}" || ng "backend lib 缺失 (bash scripts/build.sh cpp --asan)"
+_vtorch="$("${CONVERTER_PYTHON:-python3}" -c 'import torch,os;print(os.path.dirname(torch.__file__))' 2>/dev/null)"
 [[ -n "${_vtorch}" ]] && ok "TORCH_PKG_DIR=${_vtorch}" || ng "无法从 venv 取 torch 路径"
-if [[ -x "${BUILD_BIN}" ]]; then ok "C++ binary: ${BUILD_BIN}"; else wn "C++ binary 未构建 (bash scripts/cann_lm_compile/build_cpp.sh)"; fi
-if [[ -n "${SOC_VERSION:-}" ]]; then ok "SOC_VERSION=${SOC_VERSION}"; else wn "SOC_VERSION 未设 (默认 Ascend910_9362; 错误 Soc → 算子缺失失败)"; fi
-[[ -f /tmp/fusion_autoub_off.cfg ]] && ok "AUB off cfg: /tmp/fusion_autoub_off.cfg" || wn "fusion_autoub_off.cfg 缺失 (OM 编译需关 AUB)"
+if [[ -x "${BUILD_BIN}" ]]; then ok "C++ binary: ${BUILD_BIN}"; else wn "C++ binary 未构建 (bash scripts/build.sh cpp)"; fi
+if [[ -n "${SOC_VERSION:-}" ]]; then ok "SOC_VERSION=${SOC_VERSION}"; else wn "SOC_VERSION 未设 (② source set_env_cann.sh 后默认 Ascend910_9362; 错误 Soc → 算子缺失失败)"; fi
 echo "  epair 产物 (OM 编译输入):"
 for d in epair_gemma4 epair_gemma4_pd epair_qwen3_5_emb; do
-  _j="${SCRIPT_DIR}/${d}"
+  _j="${SELF_DIR}/${d}"
   if [[ -d "${_j}" ]]; then
     _n=$(find "${_j}" -maxdepth 1 -name '*ep_json_with_ascend_ir.json' | wc -l)
     _w=$(find "${_j}" -maxdepth 1 -name 'weight_info.json' | wc -l)
@@ -87,27 +92,27 @@ for d in epair_gemma4 epair_gemma4_pd epair_qwen3_5_emb; do
 done
 
 # ───────────── Flow 3: OM 运行/出字 (系统 Python + torch_npu + acl + NPU) ─────────────
-hdr "Flow 3: OM 运行/出字 (系统 Python + torch_npu + acl + NPU)"
-if [[ -x "${SYS_PY}" ]]; then ok "系统 python: ${SYS_PY}"; else ng "系统 python 缺失 (${SYS_PY})"; fi
-"${SYS_PY}" - <<'PY' 2>/dev/null
+hdr "Flow 3: OM 运行/出字 (基底 DOPT_PYTHON + torch_npu + acl + NPU)"
+if [[ -x "${DOPT_PYTHON:-}" ]]; then ok "DOPT_PYTHON: ${DOPT_PYTHON}"; else ng "DOPT_PYTHON 缺失 (set_env_export.sh 未正确 source)"; fi
+"${DOPT_PYTHON:-python3}" - <<'PY' 2>/dev/null
 import torch, importlib.util as u
 print(f"[✓] torch {torch.__version__}")
 for m in ("torch_npu","acl"):
     print(f"[{'✓' if u.find_spec(m) else '✗'}] {m}")
 PY
+CANN_PY="${ASCEND_HOME_PATH:-}/python/site-packages"
 [[ -d "${CANN_PY}" ]] && ok "CANN python site-packages: ${CANN_PY}" || ng "CANN_PY 缺失 (${CANN_PY})"
-echo "  OM 文件 (OM 运行/出字输入):"
-for om in /tmp/opencode/gemma4_calib/gemma4_calib_noaub.om /tmp/opencode/gemma4_pd/prefill.om /tmp/opencode/gemma4_pd/decode.om /tmp/opencode/qwen3_calib/qwen3_full.om; do
-  [[ -f "${om}" ]] && ok "${om}" || wn "${om##*/} 缺失"
-done
-echo "  HF 模型 (eager 对比 + host embed gather 用):"
-for m in "${HF_GEMMA4}/config.json" "${HF_QWEN3}/config.json" "${HF_QWEN35}/config.json"; do
-  [[ -f "${m}" ]] && ok "$(dirname ${m})" || wn "$(dirname ${m}) 缺失"
+echo "  OM 文件 (OM 运行/出字输入; 由 run_e2e_pipeline.sh 或 run_*.py 经 env 指定):"
+echo "    PREFILL_OM / DECODE_OM / GEMMA4_OM / QWEN3_OM / QWEN35_OM env 变量"
+echo "  HF 模型 (eager 对比 + host embed gather 用; 必填 env):"
+for kv in "GEMMA4_HF_PATH:${HF_GEMMA4}" "QWEN3_HF_PATH:${HF_QWEN3}" "QWEN3_5_HF_PATH:${HF_QWEN35}"; do
+  _n="${kv%%:*}"; _v="${kv#*:}"
+  [[ -n "${_v}" && -f "${_v}/config.json" ]] && ok "${_n}=${_v}" || wn "${_n} 未设或缺失 (export ${_n}=<model dir>)"
 done
 
 # ───────────── run 脚本 ─────────────
 hdr "run 脚本"
-echo "  $(ls ${SCRIPT_DIR}/run_*.py 2>/dev/null | wc -l) 个: $(ls ${SCRIPT_DIR}/run_*.py 2>/dev/null | xargs -n1 basename 2>/dev/null | tr '\n' ' ')"
+echo "  $(ls ${SELF_DIR}/run_*.py 2>/dev/null | wc -l) 个: $(ls ${SELF_DIR}/run_*.py 2>/dev/null | xargs -n1 basename 2>/dev/null | tr '\n' ' ')"
 
 # ───────────── 汇总 ─────────────
 echo ""

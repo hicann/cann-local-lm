@@ -42,6 +42,10 @@ examples/*/data/
 examples/*/epair_model/
 examples/test_converter/**/epair_*/
 examples/test_converter/dopt_quantization_st/output*/
+examples/test_converter/export_llm_model/e2e_*/
+examples/test_converter/export_llm_model/output/
+examples/test_converter/export_llm_model/build/
+examples/test_converter/export_llm_model/*.export.log
 
 # local file
 AGENTS.md

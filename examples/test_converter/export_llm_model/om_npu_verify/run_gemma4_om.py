@@ -7,10 +7,9 @@
 import os, sys, json, dataclasses
 import torch
 
-OM = os.environ.get("GEMMA4_OM", "/mnt/workspace/project/CANN-LM_5883/examples/test_converter/export_llm_model/om_npu_verify/gemma4_noaub.om")
-E2B = "/mnt/workspace/data/models/gemma-4-E2B-it"
+OM = os.environ["GEMMA4_OM"]
+E2B = os.environ["HF"]
 SEQ = 8; KV_MAX = 2048; DEV = 0
-sys.path.insert(0, "/mnt/workspace/project/CANN-LM_5883")
 
 import torch_npu  # noqa
 from cann_lm.models.gemma4 import Gemma4ForCausalLM, Gemma4TextConfig

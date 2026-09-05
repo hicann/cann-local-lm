@@ -387,7 +387,7 @@ output_dir/
 ### C++ 加载侧
 
 - `GeWeightLoader` 读 `weight_info.json` + `weights_*.bin`(图权重)
-- **不读 `host_weights`**——host 查表在 Python 推理脚本侧(`llm_engine_on_cpu/debug_*` 等)
+- **不读 `host_weights`**——host 查表在 Python 推理脚本侧(`llm_models_run_on_cpu/debug_*` 等)
 - `model_config use_embeddings` 供下游判断图第一输入是 `input_ids` 还是 `embeddings`
 
 ---

@@ -39,7 +39,11 @@ NUM_LAYERS=5 MODE=prefill-decode bash run.sh gemma4
 | `DTYPE` | `bfloat16` | 三模型原生 bfloat16 |
 | `SEQ_LEN` | `8` | single 模式 `--seq-len`;prefill-decode 模式 `--seq-len` |
 | `NUM_LAYERS` | (空=全部) | 只导出前 N 层(`--num-layers`),截断 `model.model.layers`,不改 `config.num_hidden_layers` |
-| `VENV_DIR` | `/mnt/workspace/torch-delegate-harmony/.venv` | converter venv (torch 2.9.0+cpu + torchair + torch_delegate) |
+| `GEMMA4_HF_PATH` | (必填) | gemma4 HF 模型目录;`run.sh` 内映射到 `[gemma4]` |
+| `QWEN3_HF_PATH` | (必填) | qwen3 HF 模型目录 |
+| `QWEN3_5_HF_PATH` | (必填) | qwen3.5 HF 模型目录 |
+
+> `run.sh` 已 `source $PROJECT_ROOT/scripts/set_env_export.sh`(① converter 基底),自动设好 `CONVERTER_PYTHON`(=.venv/bin/python)、`PYTHONPATH`、stubs `LD_LIBRARY_PATH` 等;HF 路径由调用方必填 export。
 
 > `--use-embeddings` 默认 **True**（纯 embeddings，图外查表；CLI 自带，`run.sh` 未暴露开关）。要图内查表直接调 `cann_lm_converter.py ... --no-use-embeddings`。`--mode` 默认 `prefill-decode`（CLI）；`run.sh` 的 `MODE` 默认 `single`（快测）。
 
@@ -128,10 +132,9 @@ epair_<model>/
 ### 编译 + 运行
 
 ```bash
-source scripts/set_env_compile.sh
-bash scripts/cann_lm_compile/build_cpp.sh          # 产 build/cann_lm_compile
+source $PROJECT_ROOT/scripts/set_env_cann.sh        # ② OM 编译基底 (真 CANN; 含 SOC_VERSION + 关 AUB + 权值分离)
+bash scripts/build.sh cpp                            # 产 build/cann_lm_compile
 
-export LD_LIBRARY_PATH="${TORCH_DELEGATE_HOME}/.venv/lib/python3.11/site-packages/torch/lib:${TORCH_DELEGATE_HOME}/.venv/lib/python3.11/site-packages/torch.libs:/mnt/workspace/torchair/build/stubs:${ASCEND_HOME_PATH}/lib64:${ASCEND_HOME_PATH}/aarch64-linux/devlib:build/stub_lib:${LD_LIBRARY_PATH:-}"
 ./build/cann_lm_compile \
   "$(pwd)/examples/test_converter/export_llm_model/cann_lm_cli_export/epair_qwen3/ep_json_with_ascend_ir.json" \
   "$(pwd)/examples/test_converter/export_llm_model/cann_lm_cli_export/epair_qwen3/weight_info.json" \

@@ -206,7 +206,7 @@ def forward(self, x, position_ids, layer_type="full_attention"):
 ### 1. 数值精度验证 (eager)
 wrapper 单步 forward vs 原始 model.forward, 对比 logits maxdiff:
 - 预期 maxdiff=0.00e+00 (三处改造都是恒等数值变换)
-- 脚本: `examples/test_converter/export_llm_model/llm_engine_on_cpu/debug_gemma4/verify_gemma4_wrapper_bypass.py`
+- 脚本: `examples/test_converter/llm_models_run_on_cpu/debug_gemma4/verify_gemma4_wrapper_bypass.py`
 
 ### 2. 算子表验证 (OM dump)
 epair → OM 编译后, dump 算子表确认目标算子消除:
@@ -295,9 +295,8 @@ gemma4 PLE 的 `embed_tokens_per_layer` 查表若留在图内, 是大 embedding 
 | `cann_lm/models/gemma4/export_wrapper.py` | 改造 1 (bypass forward + host mask + PLE 外置) |
 | `cann_lm/models/gemma4/modeling_gemma4.py` `repeat_kv()` | 改造 2 (reshape+cat) |
 | `cann_lm/models/gemma4/modeling_gemma4.py` `Gemma4TextRotaryEmbedding` | 改造 3 (预缓存 + Gather) |
-| `examples/test_converter/export_llm_model/llm_engine_on_cpu/debug_gemma4/verify_gemma4_wrapper_bypass.py` | 数值验证 (wrapper vs 原始) |
-| `examples/test_converter/export_llm_model/llm_engine_on_cpu/debug_gemma4/verify_gemma4_wrapper_export.py` | 导出验证 |
-| `examples/test_converter/export_llm_model/llm_engine_on_cpu/debug_gemma4/verify_gemma4_tiny_epair_om.py` | tiny 模型 e2e (epair→OM) |
+| `examples/test_converter/llm_models_run_on_cpu/debug_gemma4/verify_gemma4_wrapper_bypass.py` | 数值验证 (wrapper vs 原始) |
+| `examples/test_converter/llm_models_run_on_cpu/debug_gemma4/verify_gemma4_wrapper_export.py` | 导出验证 |
 | `examples/test_converter/export_llm_model/om_npu_verify/` | OM 编译 + 推理工具 |
 | `docs/cann_lm_converter/reference_npu_tuned_export_qwen3.md` | npu_tuned 模式参考来源 |
 | `docs/cann_lm_converter/converter_design.md` | converter 全流程设计 |

@@ -82,6 +82,7 @@ tests/converter/
 ├── test_loader.py         # loader.py ModelArtifact/build_config/collect_tokenizer_files (12 项)
 ├── test_swap.py           # swap.py _resolve_parent/_infer_group_size/_read_dopt_quant_meta/_read_quant_param_map (22 项)
 ├── test_saver.py          # saver.py save_model_config/copy_tokenizer_files (7 项)
+├── test_quant_linear.py   # quant_swap/quant_linear.py QuantLinear __init__ buffer/act_quant (5 项; forward 归 e2e)
 └── test_cli.py            # cann_lm_converter.py CLI argparse (16 项)
 ```
 
@@ -390,3 +391,36 @@ bash scripts/build.sh cpp --asan && ctest --test-dir build --output-on-failure
 | test_quant_path_and_quant_method_mutually_exclusive | 两都给 | exit 2 | 互斥组 |
 | test_valid_minimal_args_namespace_and_defaults | 合法最小 | Namespace + 默认值 | 解析正确 |
 | test_valid_dtype_choices / _no_use_embeddings / _num_layers / _single_mode / _quant_path_alone / _quant_method_gptq_alone | 各参数单用 | 解析 | choices/flag/类型/单用 |
+
+## 覆盖率（coverage）
+
+### Python（cann_lm/ models + converter）
+
+- 工具：`pytest-cov`（converter venv 已装）+ `.coveragerc`（omit vendored `dopt_lm/*` + 空 `engine/*` + `__init__` 去噪；branch 覆盖；行级 exclude `__main__`/`NotImplementedError`/`ImportError`）。
+- 跑法：
+  ```bash
+  TORCH_DEVICE_BACKEND_AUTOLOAD=0 /mnt/workspace/torch-delegate-harmony/.venv/bin/python -m pytest tests/llm_models/ tests/converter/ --cov --cov-report=term-missing
+  ```
+- **基线：58%**（3618 语句，1405 missing，branch 966 partial 126）。
+- 覆盖好（UT 甜蜜区）：`model_registry` 100%、`fused_ops` 67–84%、三模型 `modeling` 71–86%、`configuration` 64–86%、`swap` 60%（解析子函数）、`materialize` 96%。
+- 覆盖低（**按设计归 e2e，非 UT 缺陷**）：`export_wrapper` 基类 27% / `gemma4 export_wrapper` 40% / `qwen3_5 export_wrapper` 13%（`forward`/`_drive_layers` 需 torch.export+真实权重）、`saver` 25%（`save_epair*` 需 torch.export+torchair）、`loader.load_model` 全流程（需真实 HF 权重）、`quant_entry`/`auto_quant`/`download_dataset`/`ge_converters` 0%（NPU subprocess / 网络 / torchair GE）。
+
+### C++（cann_lm/converter/export/csrc/）
+
+- 工具：`gcov`（系统）+ `lcov`/`genhtml`（系统）；CMake `option(ENABLE_COVERAGE)`（`cmake/modules/DelegateCommonFlags.cmake`，`delegate_apply_common_flags` 注入 `--coverage` compile+link）；`build_cpp.sh --coverage` flag。
+- 跑法（独立 build 目录，与 ASAN 互斥）：
+  ```bash
+  source scripts/set_env_cann.sh                # ② 真 CANN env
+  BUILD_DIR=build_cov bash scripts/cann_lm_compile/build_cpp.sh --coverage
+  ctest --test-dir build_cov                    # 7/7 PASS + 写 .gcda
+  lcov --capture --directory build_cov --output-file build_cov/coverage.info
+  lcov --extract build_cov/coverage.info "$(pwd)/cann_lm/*" --output-file build_cov/coverage.cann_lm.info
+  lcov --summary build_cov/coverage.cann_lm.info          # 摘要
+  genhtml build_cov/coverage.cann_lm.info --output-directory build_cov/coverage_html  # HTML 报告
+  ```
+- **基线：37.7% 行（774/2054）/ 50.7% 函数（69/136）**。
+- 注意：`--no-external` 会误排除 csrc 源（路径解析），用「全抓 + extract cann_lm」替代；branch 覆盖需 `-fprofile-arcs`（`--coverage` 含，lcov branch 默认不报，需 `--rc lcov_branch_coverage=1`）；低覆盖部分（ge_graph_builder/compile_main 的 OM 编译路径）归 e2e（`run_e2e_pipeline.sh`）。
+
+### 提交前覆盖率（可选）
+
+UT 提交前验证（pytest/ctest 全过）是**强制**；覆盖率报告是**可选**自检（看新增代码是否被测、回归是否掉覆盖），不阻断提交。基线供回归对比。

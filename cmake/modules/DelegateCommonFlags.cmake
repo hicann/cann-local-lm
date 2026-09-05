@@ -18,6 +18,10 @@ set(DELEGATE_COMMON_FLAGS -Wall -Wextra -Werror CACHE STRING
 
 option(ENABLE_ASAN "Enable AddressSanitizer (C++ tests 强制)" OFF)
 
+# gcov 代码覆盖率 (compile + link --coverage → .gcno/.gcda, lcov 收集).
+# 与 ASAN 互斥 (同插桩冲突); 用独立 build 目录: BUILD_DIR=build_cov cmake -DENABLE_COVERAGE=ON ...
+option(ENABLE_COVERAGE "Enable gcov code coverage (独立 build 目录, 与 ASAN 互斥)" OFF)
+
 # ASAN 专用 flags (compile + link)，仅在 ENABLE_ASAN=ON 时生效。
 # -static-libasan: 静态链入 libasan, 免 LD_PRELOAD (否则 "ASan runtime does not come
 #   first in initial library list" → ctest 裸跑失败)。加后 ctest --test-dir build 可直接跑 ASAN 二进制。
@@ -32,5 +36,9 @@ function(delegate_apply_common_flags TARGET)
     if(ENABLE_ASAN)
         target_compile_options(${TARGET} PRIVATE ${DELEGATE_ASAN_FLAGS})
         target_link_options(${TARGET} PRIVATE -fsanitize=address -static-libasan)
+    endif()
+    if(ENABLE_COVERAGE)
+        target_compile_options(${TARGET} PRIVATE --coverage)
+        target_link_options(${TARGET} PRIVATE --coverage)
     endif()
 endfunction()

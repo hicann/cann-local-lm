@@ -40,6 +40,7 @@ ASCEND_INSTALL_PATH="${ASCEND_HOME_PATH}/aarch64-linux"
 # ── 参数 (每次显式传 -D 值, 覆盖 cache, 避免 sticky: 如 --no-tests 一次后 BUILD_TESTS 黏 OFF) ──
 BUILD_TYPE="Release"
 ASAN_VAL="OFF"
+COVERAGE_VAL="OFF"
 BUILD_TESTS_VAL="ON"
 BUILD_COMPILE_TOOL_VAL="ON"
 BUILD_BACKEND_VAL="ON"
@@ -48,6 +49,7 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --debug)      BUILD_TYPE="Debug"; shift;;
         --asan)       ASAN_VAL="ON"; shift;;
+        --coverage)   COVERAGE_VAL="ON"; shift;;   # gcov 覆盖率 (独立 build 目录, 与 ASAN 互斥)
         --no-tests)        BUILD_TESTS_VAL="OFF"; shift;;
         --no-compile-tool) BUILD_COMPILE_TOOL_VAL="OFF"; shift;;
         --no-om)           BUILD_COMPILE_TOOL_VAL="OFF"; shift;;   # 别名 (旧 --no-om)
@@ -66,6 +68,7 @@ echo "  BUILD_TYPE:          $BUILD_TYPE"
 echo "  ASCEND_INSTALL_PATH: $ASCEND_INSTALL_PATH"
 echo "  third_party:         ${THIRD_PARTY} (nlohmann_json + GTest)"
 echo "  ASAN:                $ASAN_VAL"
+echo "  COVERAGE:            $COVERAGE_VAL"
 echo "  JOBS:                $JOBS"
 echo ""
 
@@ -78,7 +81,8 @@ cmake -S "$REPO" -B "$BUILD_DIR" \
     -DBUILD_BACKEND=$BUILD_BACKEND_VAL \
     -DBUILD_COMPILE_TOOL=$BUILD_COMPILE_TOOL_VAL \
     -DBUILD_TESTS=$BUILD_TESTS_VAL \
-    -DENABLE_ASAN=$ASAN_VAL
+    -DENABLE_ASAN=$ASAN_VAL \
+    -DENABLE_COVERAGE=$COVERAGE_VAL
 
 if [[ -n "$TARGET" ]]; then
     cmake --build "$BUILD_DIR" -j"$JOBS" --target "$TARGET"

@@ -11,6 +11,7 @@ __pycache__/
 # Build artifacts
 build/
 build_kx*/
+build_cov/
 .cache/
 *.o
 *.so

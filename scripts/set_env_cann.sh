@@ -11,6 +11,16 @@
 #
 # 注: source 不带显式参时会继承父 shell 的 $1; 仅当 $1=="--npu" 才走 ③, 其余皆 ②.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# ② OM 编译用 0715 CANN: 0828 的 9e36de07b(2026-07-16) 给 ChunkGatedDeltaRule op_info 加了 fp32
+# initial_state 选项, GE 在 910 (op_select_format null) 把 bf16 promote 成 fp32, 910 kernel 拒绝→编译失败;
+# 即使 must_keep 强制 bf16, 0715→0828 kernel/编译器行为变化致输出乱码. 0715 op_info 只 bf16, 正常编译+出字(已验证).
+# ③ NPU 运行仍用 0828 (系统 torch_npu 依赖; 0715 编的 OM 在 0828 runtime 跑正常).
+if [[ "${1:-}" != "--npu" ]]; then
+    export CANN_SET_ENV="${CANN_SET_ENV_COMPILE:-/home/developer/Ascend/cann-9.2.0-0715/cann/set_env.sh}"
+    unset ASCEND_HOME_PATH 2>/dev/null || true   # 强制 _env_common.sh (重新) source 0715
+fi
+
 source "${SCRIPT_DIR}/_env_common.sh"
 
 # 真 CANN lib64 在前 (无 stubs; ② 编译 / ③ NPU 共用基底)

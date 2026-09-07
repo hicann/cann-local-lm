@@ -10,6 +10,7 @@
 #include <string>
 #include <type_traits>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -53,6 +54,8 @@ struct GraphBuildContext {
   std::unique_ptr<ge::Graph> graph;
   td::ValueRegistry registry;
   std::vector<DeferredEdge> deferred_edges;
+  std::unordered_set<std::string> deferred_nz_transpose_x2_ops;
+  std::unordered_map<std::string, std::pair<std::string, bool>> nz_transpose_passthrough;
   std::vector<DeferredOutputBinding> deferred_outputs;
 };
 
@@ -475,17 +478,39 @@ std::optional<RegisteredValue> CreateConstNode(ge::Graph &graph, const std::stri
                                                ValidationResult &result, const std::string &context,
                                                ge::Placement placement = ge::kPlacementDevice) {
   const ge::DataType dtype = mapper.MapPt2Dtype(holder.datatype, result, context);
-  const ge::Format format = mapper.MapPt2Layout(holder.format, result, context);
+  const bool is_nz = (holder.format_str == "NZ");
+  const ge::Format format = is_nz
+      ? mapper.MapGeLayoutString("NZ", result, context)
+      : mapper.MapPt2Layout(holder.format, result, context);
   if (!result.ok) {
     return std::nullopt;
   }
   const size_t element_size = ElementSizeForGeDtype(dtype);
-  if (element_size == 0 || holder.ByteSize() != Product(holder.dims) * element_size) {
+  // For NZ, use the 4D FRACTAL_NZ storage shape [ceil(M/16), ceil(K/16), 16, 16] directly.
+  // GE's CheckTensorIsValid checks data_size == Product(shape) * element_size — for non-aligned
+  // shapes, the NZ-padded bytes (41472) differ from logical 2D (33800), so 2D fails the check.
+  // 4D passes (Product(4D) == padded bytes). The 6D issue (TransShapeToFracNz re-applying on 4D)
+  // only occurs with a Transpose op — which we skip for NZ weights (transpose_x2=True instead).
+  std::vector<int64_t> desc_dims = holder.dims;
+  if (is_nz && holder.dims.size() == 2) {
+    constexpr int64_t kBlock = 16;
+    desc_dims = {((holder.dims[0] + kBlock - 1) / kBlock),
+                 ((holder.dims[1] + kBlock - 1) / kBlock), kBlock, kBlock};
+  }
+  if (element_size == 0 || holder.ByteSize() != Product(desc_dims) * element_size) {
     AddError(result, "CONST_SIZE_MISMATCH", "Const payload does not match tensor metadata", context);
     return std::nullopt;
   }
-  ge::TensorDesc desc(ge::Shape(holder.dims), format, dtype);
+  ge::TensorDesc desc(ge::Shape(desc_dims), format, dtype);
   desc.SetPlacement(placement);
+  if (is_nz) {
+    desc.SetOriginShape(ge::Shape(holder.dims));  // logical [M, K] (non-padded)
+    desc.SetOriginFormat(ge::FORMAT_ND);
+    // NOTE: ATTR_NAME_STORAGE_FORMAT / FORMAT_LOCKED would lock the storage format against
+    // FE FormatSelector override, but those symbols live in ge_attr_define.h which the CANN
+    // SDK does not ship. Rely on the consistent (storage [m,k,16,16] + origin [M,K] + FRACTAL_NZ)
+    // representation; if GE still reverts, a GE option or shipped attr path is needed.
+  }
   ge::Tensor tensor(desc);
   const std::vector<uint8_t> data = TensorBytes(holder);
   if (tensor.SetData(data) != ge::GRAPH_SUCCESS) {
@@ -1306,6 +1331,20 @@ bool PreparePlaceholders(GraphBuildContext &ctx, const EpairModelParser &parser,
 bool PlanConverterNode(GraphBuildContext &ctx, const ParsedNode &node, const GraphPlanningDeps &deps,
                        ValidationResult &result) {
   const ParsedAscendIr &ascend_ir = node.ascend_ir.value();
+  // Pre-pass: a Transpose whose data input (input[0]) is an NZ weight must be skipped — its 2D perm
+  // can't match GE's 4D FRACTAL_NZ storage. Instead: pass the NZ Const directly to the downstream
+  // MatMul and set transpose_x2=True (GE MatMul native attr, internal transpose, no Transpose op).
+  // Map: {Transpose output ref -> (Const ref, needs_transpose_x2)}. Stored in ctx (cross-node).
+  for (const auto &pre_op : ascend_ir.ops) {
+    if (pre_op.type != "Transpose" || pre_op.inputs.size() < 2) continue;
+    std::string data_ref = pre_op.inputs[0];
+    const size_t colon = data_ref.rfind(':');
+    if (colon != std::string::npos) data_ref = data_ref.substr(0, colon);
+    const auto *w_info = deps.weight_loader.GetTensorRecordInfo(data_ref);
+    if (w_info != nullptr && w_info->format_str == "NZ") {
+      ctx.nz_transpose_passthrough[pre_op.name + ":0"] = {pre_op.inputs[0], true};
+    }
+  }
   for (const auto &op : ascend_ir.ops) {
     if (op.name.empty() || op.type.empty()) {
       continue;
@@ -1339,6 +1378,18 @@ bool PlanConverterNode(GraphBuildContext &ctx, const ParsedNode &node, const Gra
       }
       continue;
     }
+    // Skip Transpose ops on NZ weights — pass through to the downstream MatMul with transpose_x2=True.
+    if (op.type == "Transpose" && ctx.nz_transpose_passthrough.count(op.name + ":0") > 0) {
+      TDLOGI("[NZ] Skipping Transpose %s on NZ weight — downstream MatMul gets transpose_x2=True", op.name.c_str());
+      // Register the Transpose's output as a pass-through to the Const's output,
+      // so downstream bindings (MatMul input[1] → Transpose:0) resolve to the Const.
+      const auto &passthrough = ctx.nz_transpose_passthrough.at(op.name + ":0");
+      const auto *src_value = ctx.registry.Resolve(passthrough.first);
+      if (src_value != nullptr) {
+        ctx.registry.RegisterProducerOutput(op.name + ":0", *src_value, result);
+      }
+      continue;
+    }
     std::vector<std::pair<std::string, ge::TensorDesc>> inputs;
     std::vector<std::string> input_names;
     std::vector<PlannedEdgeBinding> bindings;
@@ -1366,7 +1417,7 @@ bool PlanConverterNode(GraphBuildContext &ctx, const ParsedNode &node, const Gra
       // Fallback: 对边界输入(FX 张量名)从 tensor_values 取 shape/dtype, 让 GE infershape
       // 能沿 Data 边推断下游 op 的 input (如 Unsqueeze->Conv2D). 内部 GE ref 找不到返回 nullptr.
       const ParsedTensorMeta *input_fallback = deps.parser.FindTensorValue(op.inputs[input_index]);
-      const td::GeTensorDescInfo desc_info =
+      td::GeTensorDescInfo desc_info =
           deps.tensor_desc_mapper.MapAscendIrDesc(desc, input_fallback, result, op.name + ":" + desc->name);
       if (!result.ok) {
         TDLOGE("%s", MakeConverterNodeError(node, &op, "converter input desc mapping error", "", desc->name,
@@ -1374,9 +1425,44 @@ bool PlanConverterNode(GraphBuildContext &ctx, const ParsedNode &node, const Gra
                          .c_str());
         return false;
       }
+      // NZ weight input: if this input refs a weight whose weight_info.format == "NZ", set the input
+      // desc format to FRACTAL_NZ so GE selects the NZ kernel (e.g. MatMulV2_NDNZ_ND) and the
+      // weight Const (FRACTAL_NZ) matches — avoids the format-transfer Transpose (4D-vs-2D perm).
+      // Also: if this input was supposed to come from a skipped NZ-Transpose, bind to the Const
+      // directly and flag transpose_x2=True for the downstream MatMul.
+      bool need_transpose_x2 = false;
+      {
+        // Resolve boundary alias (e.g., 't' → 'Transpose:0') before checking passthrough map.
+        std::string resolved_ref = ResolveBoundaryInputSourceRef(node, op.inputs[input_index]);
+        std::string ref = resolved_ref;
+        // If this input refs a skipped Transpose's output, replace with the Const ref.
+        auto pt_it = ctx.nz_transpose_passthrough.find(ref);
+        if (pt_it != ctx.nz_transpose_passthrough.end()) {
+          ref = pt_it->second.first;  // the Const ref (e.g., "p_q_proj_weight:0")
+          need_transpose_x2 = pt_it->second.second;
+        }
+        const size_t colon = ref.rfind(':');
+        if (colon != std::string::npos) ref = ref.substr(0, colon);
+        const auto *w_info = deps.weight_loader.GetTensorRecordInfo(ref);
+        if (w_info != nullptr && w_info->format_str == "NZ") {
+          desc_info.format = deps.tensor_desc_mapper.MapGeLayoutString("NZ", result, op.name + ":" + desc->name);
+          desc_info.has_format = true;
+          if (!result.ok) {
+            TDLOGE("%s", MakeConverterNodeError(node, &op, "NZ input format override error", "", desc->name,
+                                                op.inputs[input_index])
+                             .c_str());
+            return false;
+          }
+        }
+        // Binding: use the passthrough Const ref if available, else the original resolved ref.
+        const std::string &binding_ref = (pt_it != ctx.nz_transpose_passthrough.end()) ? pt_it->second.first : resolved_ref;
+        bindings.push_back({ResolveBoundaryInputSourceRef(node, binding_ref), desc->name, -1});
+        if (need_transpose_x2) {
+          ctx.deferred_nz_transpose_x2_ops.insert(op.name);
+        }
+      }
       inputs.push_back({desc->name, MakeTensorDesc(desc_info)});
       input_names.push_back(desc->name);
-      bindings.push_back({ResolveBoundaryInputSourceRef(node, op.inputs[input_index]), desc->name, -1});
     }
     std::vector<std::pair<std::string, ge::TensorDesc>> outputs;
     outputs.reserve(op.output_descs.size());
@@ -1408,6 +1494,13 @@ bool PlanConverterNode(GraphBuildContext &ctx, const ParsedNode &node, const Gra
           attrs.push_back({attr_name, parsed.value()});
         }
       }
+    }
+    // Override transpose_x2=True for MatMul ops whose weight input was a skipped NZ-Transpose.
+    if (ctx.deferred_nz_transpose_x2_ops.count(op.name) > 0) {
+      ge::AttrValue tx2_attr;
+      tx2_attr.SetAttrValue(true);
+      attrs.push_back({"transpose_x2", tx2_attr});
+      TDLOGI("[NZ] Set transpose_x2=True on %s (skipped NZ-Transpose passthrough)", op.name.c_str());
     }
     std::unique_ptr<ge::GNode> node_ptr =
         BuildRecoverableNode(*ctx.graph, op.type, op.name, inputs, outputs, attrs, result, op.name);

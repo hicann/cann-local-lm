@@ -182,6 +182,7 @@ struct TensorHolder {
   std::vector<int64_t> dims;
   int64_t datatype = 0;
   int64_t format = 0;
+  std::string format_str;  // "ND"/"NZ" from weight_info (NZ overrides pt2 enum format)
   TensorData value;
   bool requires_grad = false;
 
@@ -212,6 +213,7 @@ struct TensorRecordInfo {
   // Consolidated weights.bin mode: offset + size within the binary
   size_t offset = 0;
   size_t data_size = 0;
+  std::string format_str;  // "ND"/"NZ" from weight_info.json ("format" field)
 };
 
 }  // namespace td

@@ -121,6 +121,9 @@ ge::Format AtenTensorDescMapper::MapGeLayoutString(const std::string &layout, Va
   if (layout == "NHWC") {
     return ge::FORMAT_NHWC;
   }
+  if (layout == "NZ") {
+    return ge::FORMAT_FRACTAL_NZ;  // FractNZ: weight Const pre-converted (CLI-015 CANN_LM_ENABLE_WEIGHT_TRANS)
+  }
   AddError(result, "UNSUPPORTED_GE_LAYOUT", "Unsupported GE layout string", context + ":" + layout);
   return ge::FORMAT_ND;
 }

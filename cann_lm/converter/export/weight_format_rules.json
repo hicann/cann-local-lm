@@ -1,0 +1,19 @@
+{
+  "default": {"format": "ND"},
+  "rules": [
+    {
+      "name_pattern": "*_proj.weight",
+      "op_type": "MatMul",
+      "format": "NZ",
+      "block": 16,
+      "pad": true,
+      "pack": "nd2nz"
+    },
+    {
+      "name_pattern": "*",
+      "op_type": "QuantBatchMatmulV4",
+      "format": "ND",
+      "comment": "Stage 2 待研究门结论: int4-NZ 需专用 pack_int4_nz, 保持 ND"
+    }
+  ]
+}

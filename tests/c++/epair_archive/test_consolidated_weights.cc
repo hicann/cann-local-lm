@@ -194,4 +194,22 @@ TEST(GeWeightLoaderConsolidatedTest, HasTensorReturnsCorrectly) {
   EXPECT_FALSE(loader.HasTensor("does_not_exist"));
 }
 
+TEST(GeWeightLoaderConsolidatedTest, FormatStrReadFromWeightInfoNZ) {
+  // Verify format_str is read from weight_info.json "format" field.
+  // The test fixture doesn't have "format" field → format_str should be empty (default ND).
+  ValidationResult result{true, {}};
+  GeWeightLoader loader = CreateLoader(kConsolidated, result);
+  ASSERT_TRUE(result.ok);
+
+  const TensorRecordInfo *weight_info = loader.GetTensorRecordInfo("p_weight");
+  ASSERT_NE(weight_info, nullptr);
+  // Fixture doesn't have "format" field → empty string (not "NZ")
+  EXPECT_EQ(weight_info->format_str, "");
+
+  // ReadTensorData should propagate format_str to holder
+  TensorHolder holder = loader.ReadTensorData("p_weight", result);
+  ASSERT_TRUE(result.ok);
+  EXPECT_EQ(holder.format_str, "");
+}
+
 }  // namespace td

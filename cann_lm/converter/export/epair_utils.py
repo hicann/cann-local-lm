@@ -260,6 +260,14 @@ def _pack_weights_to_dir(contents, output_dir: Path, max_file_size: int) -> dict
 
     names = [n for n in state_dict if n in spec_names]
 
+    import os
+    trans_enabled = os.environ.get("CANN_LM_ENABLE_WEIGHT_TRANS") == "1"
+    rules = None
+    if trans_enabled:
+        from cann_lm.converter.export.weight_format import load_rules, resolve_format, nd2nz
+        rules = load_rules()
+    is_quantized = bool(trans_enabled and any("weight_scale" in n for n in names))
+
     index: dict[str, list[dict]] = {}
     current_file_name = "weights_0.bin"
     current_file_idx = 0
@@ -274,6 +282,20 @@ def _pack_weights_to_dir(contents, output_dir: Path, max_file_size: int) -> dict
             raw = raw.view(torch.int16)
         elif "weight_scale" in name and raw.dtype == torch.float32:
             raw = transdata_scale(raw)  # fp32->int64; ep_json dtype relabeled to DT_INT64 by inline_weight_scale_dtype
+        # NZ layout transform (orthogonal to the dtype view above; env off -> all ND)
+        entry_format = "ND"
+        if trans_enabled and raw.dim() == 2:
+            rule = resolve_format(name, is_quantized, rules=rules)
+            if rule.get("format") == "NZ":
+                block = rule.get("block", 16)
+                if raw.shape[0] % block != 0 or raw.shape[1] % block != 0:
+                    # Non-aligned shapes can't use NZ in GE graph compilation path:
+                    # CheckTensorIsValid checks data_size == Product(shape) * elem_size,
+                    # which fails for NZ-padded bytes of non-aligned shapes. Skip NZ, keep ND.
+                    pass
+                else:
+                    raw = nd2nz(raw, block=block, pad=rule.get("pad", True))
+                    entry_format = "NZ"
         data = raw.numpy().tobytes()
         del raw
 
@@ -292,6 +314,7 @@ def _pack_weights_to_dir(contents, output_dir: Path, max_file_size: int) -> dict
             "name": name,
             "offset": current_offset,
             "size": len(data),
+            "format": entry_format,
         })
 
         bin_fp.write(data)

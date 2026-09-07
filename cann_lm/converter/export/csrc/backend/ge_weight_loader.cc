@@ -301,6 +301,7 @@ void GeWeightLoader::LoadConsolidated(const std::string &weights_index_path, con
       info.offset = static_cast<size_t>(entry.value("offset", int64_t{0}));
       info.data_size = static_cast<size_t>(entry.value("size", int64_t{0}));
       info.use_pickle = false;
+      info.format_str = entry.value("format", std::string());  // "NZ" => FORMAT_FRACTAL_NZ (CreateConstNode)
 
     const auto param_it = logical_is_parameter.find(info.logical_name);
     if (param_it != logical_is_parameter.end()) {
@@ -385,11 +386,25 @@ TensorHolder GeWeightLoader::ReadTensorData(const std::string &name, ValidationR
              "Tensor range exceeds bin file size", info->logical_name);
     return {};
   }
+  // For NZ weights, the byte count includes 16-alignment padding (ceil(M/16)*ceil(K/16)*16*16*elem_size),
+  // which differs from Product(logical_dims)*elem_size. Use NZ-padded dims for the size check, then
+  // restore the 2D logical dims so CreateConstNode keeps 2D origin + FRACTAL_NZ (not 4D→6D).
+  std::vector<int64_t> check_dims = info->tensor_meta.sizes;
+  const bool is_nz = (info->format_str == "NZ");
+  if (is_nz && info->tensor_meta.sizes.size() == 2) {
+    constexpr int64_t kBlock = 16;
+    check_dims = {((info->tensor_meta.sizes[0] + kBlock - 1) / kBlock) * kBlock,
+                  ((info->tensor_meta.sizes[1] + kBlock - 1) / kBlock) * kBlock};
+  }
   TensorHolder holder = BuildTensorHolder(
-      info->tensor_meta.sizes, info->tensor_meta.dtype, info->tensor_meta.layout,
+      check_dims, info->tensor_meta.dtype, info->tensor_meta.layout,
       bin_data.data() + info->offset, info->data_size,
       result, info->record_path, "WEIGHT_SIZE_MISMATCH");
+  if (is_nz && result.ok) {
+    holder.dims = info->tensor_meta.sizes;  // restore 2D logical dims for CreateConstNode
+  }
   holder.requires_grad = info->tensor_meta.requires_grad;
+  holder.format_str = info->format_str;  // propagate weight_info "format" for CreateConstNode NZ branch
   return holder;
 }
 

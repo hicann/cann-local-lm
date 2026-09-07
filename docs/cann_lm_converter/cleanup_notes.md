@@ -759,7 +759,7 @@ token_identity = m.embed_tokens_per_layer(input_ids).reshape(...).detach()   # H
 | 背景 | `weight_format_design.md` 设计了权重落盘从 ND(行主序)转 NZ(FractNZ 16×16 块主序),让 Ascend cube 计算权重 Const 直接以 `FORMAT_FRACTAL_NZ` 进 GE 图,避免 OM 编译/运行期 transdata。Stage 1(fp16 `MatMul` Linear 权重 `*_proj`)已设计,但 `weight_format/` 包 + `weight_format_rules.json` **0 实现**(`ls` 确认 NOT implemented) |
 | 违反约定 | 无(待实现) |
 | 发现日期 | 2026-09-01 |
-| 状态 | **TODO(待实现,Stage 1 设计已就绪)** |
+| 状态 | **L2 通路跑通(bare-matmul + nn.Linear A3, NPU max_diff=0);L3 整网待验(2026-09-07)** |
 
 ### 设计已就绪(Stage 1,weight_format_design.md)
 
@@ -782,11 +782,14 @@ token_identity = m.embed_tokens_per_layer(input_ids).reshape(...).detach()   # H
 
 ### 行动项
 
-- [ ] 实现 `cann_lm/converter/export/weight_format/`(`layout.py` `nd2nz` + `rules.py` `resolve_format`/`load_rules`)+ `weight_format_rules.json`
-- [ ] `epair_utils._pack_weights_to_dir` 集成 `resolve_format` + `nd2nz` + `weight_info.json` 加 `"format"` 字段（env-gated：`CANN_LM_ENABLE_WEIGHT_TRANS=1` 才启用）
-- [ ] 新增 `inline_weight_layout`(ep_json layout 标注)
-- [ ] C++ `aten_tensor_desc_mapper.cc:112` / `ge_weight_loader.cc:115` 加 `"NZ"` case
-- [ ] 最小 qwen3-0.6B NZ 导出(`CANN_LM_ENABLE_WEIGHT_TRANS=1`) + OM 编译验证(MatMul NZ 接受性 + shape 语义)
+- [x] Python `weight_format/{layout,rules}.py` + `weight_format_rules.json` + `epair_utils._pack_weights_to_dir` env-gated `nd2nz` + `weight_info.format` 字段(13 测试过)
+- [x] C++ `model_types.h`(format_str) + `ge_weight_loader.cc`(读 format) + `aten_tensor_desc_mapper.cc`(`MapGeLayoutString` NZ case) + `ge_graph_builder.cc:CreateConstNode`(2D shape + FRACTAL_NZ, 不 reshape) + input desc NZ 覆盖
+- [x] ~~`inline_weight_layout`~~ 已弃用(ep_json pt2 枚举无 NZ;改走 `weight_info.format` + C++ input 覆盖)
+- [x] L2 bare-matmul 通路跑通(A3):`nd2nz` permute `(2,0,1,3)` + 2D shape + FRACTAL_NZ(不 reshape)+ input NZ 覆盖 → OM 编译过 + NPU max_diff=0(2026-09-07)
+- [x] L2 nn.Linear 通路跑通(A3):skip Transpose + `transpose_x2=True` + `nz_transpose_passthrough` 移到 `GraphBuildContext`(跨节点共享)→ NPU max_diff=0(2026-09-07)
+- [x] L2 非 16 对齐 shape 限制确认(130×130):GE `CheckTensorIsValid` 不认 NZ padding → 非 16 对齐不可行(2026-09-07)
+- [ ] L3 整网(A3)
+- [ ] C++ 回退死路(Transpose perm 预扫 + ① 死路代码)
 
 ### 关联
 

@@ -148,17 +148,19 @@ if [[ $SKIP_EXPORT -eq 1 ]]; then ok "skip ① (--skip-export), 复用 $OUTPUT_D
   ok "① epair: prefill+decode ep_json + weight_info  → $OUTPUT_DIR"
 fi
 
-# ── ② OM 编译 prefill+decode (set_env_cann ②, 真 CANN; 各自子目录隔离权值) ──
+# ── ② OM 编译 prefill+decode (set_env_cann ② = 0715 CANN; 各自子目录隔离权值) ──
 phase ② "OM 编译 prefill+decode (set_env_cann ②)"
 if [[ $SKIP_OM -eq 1 ]]; then ok "skip ② (--skip-om)"; else
   [[ -x "$COMPILE_BIN" ]] || die "② cann_lm_compile 未构建: bash scripts/build.sh cpp"
+  # set_env_cann.sh ② 切到 0715 CANN: 0828 的 9e36de07b 给 ChunkGatedDeltaRule op_info 加 fp32
+  # initial_state 选项, GE 在 910 把 bf16 promote 成 fp32 → 编译失败 + 输出乱码. 0715 只 bf16, 正常.
   (
     unset LD_LIBRARY_PATH
     cd "$OUTPUT_DIR"
     for st in prefill decode; do
       mkdir -p "$st"
       echo "  compile $st → $st/$st.om (via run_compile.sh)"
-      # run_compile.sh 自 source set_env_cann + 加 aarch64 LD (libascend_hal.so) + 处理 GE teardown 崩溃
+      # run_compile.sh 自 source set_env_cann(②→0715) + 加 aarch64 LD (libascend_hal.so) + 处理 GE teardown 崩溃
       bash "$PROJECT_ROOT/scripts/cann_lm_compile/run_compile.sh" --no-build \
           "$OUTPUT_DIR/${st}_ep_json_with_ascend_ir.json" "$OUTPUT_DIR/weight_info.json" "$OUTPUT_DIR/${st}/${st}" \
           >"$st/compile.log" 2>&1 || true

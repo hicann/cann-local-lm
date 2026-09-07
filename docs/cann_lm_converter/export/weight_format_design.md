@@ -88,11 +88,11 @@ shipped 默认 `cann_lm/converter/export/weight_format_rules.json`，converter �
 
 ## 环境变量总开关
 
-NZ 转换默认**关闭**（等价现状，全 ND，零字节变化）。导出时设环境变量 `CANN_LM_ENABLE_WEIGHT_TRANS=1` 才启用整个 `weight_format` 流程：`resolve_format` + `nd2nz` + `inline_weight_layout` + `weight_info.json` 条目的 `format` 字段。未设或非 `1` → packer 跳过 `resolve_format`（含 `is_quantized` 探测），所有权重落 ND，`inline_weight_layout` 无 NZ 名可改，C++ 端永远看不到 `"NZ"` layout——代码 dormant，零风险。
+NZ 转换默认**关闭**（等价现状，全 ND，零字节变化）。导出时设环境变量 `CANN_LM_ENABLE_WEIGHT_TRANS=1` 才启用整个 `weight_format` 流程：`resolve_format` + `nd2nz`（写 NZ 字节）+ `weight_info.json` 条目的 `format` 字段（标 `"NZ"`）。未设或非 `1` → packer 跳过 `resolve_format`（含 `is_quantized` 探测），所有权重落 ND + `format` 全 `"ND"`，C++ 侧 `CreateConstNode` 走 `MapPt2Layout`（现状 ND 路径）——代码 dormant，零风险。
 
 **设计意图**：NZ 是性能优化（避运行期 transdata），非正确性必需（当前 ND 量化 OM 已跑通，见 [Stage 划分](#stage-划分)）。Stage 1 的 MatMul NZ 输入接受性未验证（[待验证](#待验证)），故默认关闭、env 开启，便于代码先 dormant 合入，验证通过后再议默认开启或废弃开关。
 
-**作用范围**：仅 Python 导出侧（`epair_utils._pack_weights_to_dir` + `inline_weight_layout`）；C++ 侧 format 由 ep_json `ascend_ir.desc.layout` 字符串驱动，无 env 读取——env 关闭时 Python 不写 `"NZ"`，C++ 自然不命中 NZ case。
+**作用范围**：Python 导出侧（`epair_utils._pack_weights_to_dir` 写 NZ 字节 + `weight_info.json` 标 `format`）+ C++ 加载侧（`ge_graph_builder.cc:CreateConstNode` 读 `weight_info.json` 的 `format` 字段分流，见 [C++ format 映射](#c-format-映射)）。env 无 C++ 读取——env 关闭时 `weight_info.format` 全 `"ND"`，C++ 走 `MapPt2Layout`（ND）；env 开启时 `format` 为 `"NZ"`，C++ 走 `MapGeLayoutString("NZ")`（待实现）。
 
 **命名约定**：`CANN_LM_ENABLE_WEIGHT_TRANS`（`1` 启用，其他/未设 = 关闭）。沿用 `TORCH_DELEGATE_ENABLE_FALLBACK_CODEGEN` 的 `ENABLE` 布尔开关风格；`CANN_LM_` 前缀因仅作用于 cann_lm converter 导出侧。用 `TRANS`（非 `NZ`）因总开关 gate 整个 `weight_format` 流程——Stage 1 `nd2nz` + Stage 2 `pack_int4_nz` + 未来其他格式转换，非仅 NZ。
 
@@ -150,23 +150,33 @@ for name in names:
 
 ## ep_json layout 标注
 
-新增 `epair_utils.inline_weight_layout(ep_json_path, names_nz)`（仿 `inline_weight_scale_dtype`）：把命中张量的
+> **机制修正（2026-09-05 探明）：原设计假设 NZ 经 `inline_weight_layout` 改 ep_json，此路不通**：
+> - `tensor_values[p_*].layout` 是 **pt2 枚举**（7=kLayoutStrided=ND），pt2 无 NZ 枚举 → 写不进 NZ
+> - 权重是 `tensor_values` 的 Data 节点（`p_*`），**不是 ascend_ir Const 算子**（ascend_ir 的 Const 全是小 inline 常量，最大 4 元素）→ 无 `ascend_ir.desc.layout` 可改
+> - 消费算子 `inputDesc[i].layout`（字符串 "ND"）虽可改 "NZ"，但权重 Const 仍 ND → 反触发 TransData
 
-- `tensor_values[name].layout`（pt2 layout）
-- `ascend_ir.ops[].inputDesc/outputDesc[].layout`（字符串）
-
-从 `"ND"` 改 `"NZ"`。`saver` 在 `consolidated_weights_save` 之后、写 ep_json 后调用（参照 `inline_weight_scale_dtype` 时机）。`weight_info.json` 条目也加 `"format"` 字段供下游辨识。
+**NZ 信号改走 `weight_info.json` 的 `"format":"NZ"` 字符串**（`_pack_weights_to_dir` 已落盘），由 C++ `CreateConstNode`/`GeWeightLoader` 读取 → `MapGeLayoutString`（见 [C++ format 映射](#c-format-映射)）。`inline_weight_layout` 不再实现。
 
 ## C++ format 映射
 
-权重 Const 节点的 format 完全由 ep_json `ascend_ir.desc.layout` 字符串驱动（`ge_graph_builder.cc:407 SetFormat(info.format)` ← `MapAscendIrDesc` ← `MapGeLayoutString`）。两处加 `"NZ"` case：
+> **机制修正（2026-09-05 探明）：原设计写「权重 Const format 由 `ascend_ir.desc.layout` 驱动（`MapGeLayoutString`）」——错函数**。实探 `ge_graph_builder.cc`：
 
-| 文件 | 函数 | 改动 |
-|---|---|---|
-| `aten_tensor_desc_mapper.cc:112` | `MapGeLayoutString` | `if (layout == "NZ") return ge::FORMAT_FRACTAL_NZ;`（权重 Const 主路径） |
-| `ge_weight_loader.cc:115` | `Pt2LayoutFromGeString` | `if (layout == "NZ") return pt2::kLayoutStrided;`（inline const 兜底，pt2 无 NZ 概念，format 由 `MapGeLayoutString` 兜） |
+**权重 Const 路径 = `CreateConstNode`**（`ge_graph_builder.cc:473-509`，在 `:1213-1221` 给 Parameter/Buffer/TensorConstant placeholder 调用）：
+- `:478` `format = mapper.MapPt2Layout(holder.format, ...)`——`holder` 来自 `GeWeightLoader::ReadTensorData`，`holder.format` 是 **pt2 枚举**（来自 ep_json `tensor_values[p_*].layout`=7）
+- `:487` `ge::TensorDesc desc(ge::Shape(holder.dims), format, dtype)` → Const 节点（`--external_weight` 时 GE 编译期 `ConvertConstToFileConst`→FileConstant）
 
-`ge_graph_builder.cc:401 MakeTensorDesc` 已正确透传 `info.format`，无需改。`878/894/1116` 的 `FORMAT_ND` 硬编码是 Scalar/Sym/Data 节点（非权重），无关。
+**`MapPt2Layout`**（`aten_tensor_desc_mapper.cc:67`）只 `kLayoutStrided→FORMAT_ND`，**无 NZ**；pt2 无 NZ 枚举 → 权重 Const 当前表达不了 NZ。
+
+**`MapGeLayoutString`**（`aten_tensor_desc_mapper.cc:119`）只被 `ValidateConstOutputDesc`（`:517`，inline Const 校验）+ `RestoreInlineConstTensor`（inline Const 的 pt2-layout-string 转换）用——**不是权重 Const 路径**。
+
+### NZ C++ 改动（待实现）
+
+| 文件 | 函数 | 改动 | 调用方 |
+|---|---|---|---|
+| `aten_tensor_desc_mapper.cc:119` | `MapGeLayoutString` | 加 `if (layout == "NZ") return ge::FORMAT_FRACTAL_NZ;` | 须被下方权重 Const 路径调到 |
+| `ge_weight_loader.cc`（`TensorRecordInfo`/`TensorHolder`）+ `ge_graph_builder.cc:478`（`CreateConstNode`） | 读 `weight_info.json` 的 `"format"` 字符串 + `CreateConstNode` 据此分流 | `holder`/`TensorRecordInfo` 携带 `format` 字符串；`CreateConstNode` 命中 `"NZ"` → `MapGeLayoutString("NZ")→FORMAT_FRACTAL_NZ`，否则 `MapPt2Layout(holder.format)`（现状 ND） | 权重 Const 主路径（`:1213-1221`） |
+
+注：`ge_graph_builder.cc:401 MakeTensorDesc`（`:407 SetFormat(info.format) ← MapAscendIrDesc`）是 **ascend_ir op desc 路径**（inline Const / 普通算子 inputDesc/outputDesc），**非权重 Const**；权重 Const format 在 `CreateConstNode:487` 直接构造 `TensorDesc(format, dtype)`，不经 MakeTensorDesc。
 
 ## NZ shape 语义
 
@@ -184,8 +194,8 @@ for name in names:
 
 1. `weight_format/layout.py` 加 `nd2nz`
 2. `weight_format/rules.py` 配置加载（`load_rules` 读 shipped 默认配置）+ `resolve_format`
-3. `epair_utils._pack_weights_to_dir` 集成（env-gated，见 [环境变量总开关](#环境变量总开关)）+ 新增 `inline_weight_layout`
-4. C++ 两处 `"NZ"` case
+3. `epair_utils._pack_weights_to_dir` 集成（env-gated，见 [环境变量总开关](#环境变量总开关)）——写 NZ 字节 + `weight_info.json` 标 `format`（`inline_weight_layout` 已弃用，见 [ep_json layout 标注](#ep-json-layout-标注)）
+4. C++ `CreateConstNode`/`GeWeightLoader` 读 `weight_info.format` + `MapGeLayoutString` 加 NZ case（见 [C++ format 映射](#c-format-映射)）
 5. 文档同步（本文档 + export_design.md / quant_design.md 注记 + INDEX.md）
 
 ### Stage 2 — 量化路径（独立后续，含强制研究门）
@@ -201,33 +211,121 @@ for name in names:
 
 ## 待验证
 
-> **重排链（待验证对象）**：export 期 `nd2nz` 写 NZ 字节 + `weight_info.json` 标 `"format":"NZ"` → `inline_weight_layout` 改 ep_json `layout` ND→NZ → C++ `MapGeLayoutString("NZ")→FORMAT_FRACTAL_NZ` → atc 选 NZ kernel 变体。验证 = 确认链路每环生效 + 终端「无运行期 TransData + 输出一致」。
+> **背景修正**:ND→NZ 转换有两种位置——① HOST 侧 `TransData` 算子(OM 里可见);② **kernel 内部**(OM 里无 TransData,但 MatMul kernel 每次执行做 ND→NZ)。无 host TransData ≠ 无开销——可能转进 kernel 内部(per-execution 性能下降)。CLI-015 的目标是避免 kernel 内部转换,前提**成立**。
 >
-> **平台现状**：A3（`ascend910_93`/9362）已确认有 NZ 权重输入 kernel 变体——fp16 `MatMulV2_NDNZ_ND_*` / `BatchMatMulV2_ND_NZ_*`、量化 `QuantBatchMatmulV4_ND_NZ_int8_int4_{bf16,fp16}`（`opp/built-in/op_impl/ai_core/tbe/kernel/ascend910_93/`）。**Kirin 算子当前 CANN-LM 不支持**，Kirin 侧验证延后（Kirin 算子不预置、按需编译，kirinx90/kirin9030 的 NZ kernel 变体未确认）。
+> **CANN 官方 NZ 路径**:CANN 提供 `aclnnTransMatmulWeight`(device ND→NZ)+ `aclnnMatmulWeightNz`(NZ matmul),A3 支持。NZ 4D = `[n1, k1, k0, n0]`(k0=16, n0=16)。nn.Linear 用 view/strides 处理转置(无 Transpose 算子)。这是 **ACLNN runtime 路径**,非 GE 图/OM 编译路径。
+>
+> **torchair 无辜**:plain `aten.mm`/`aten.matmul` converter = `ge.MatMul(self, mat2, None)`——不插 Transpose。Transpose_1 是 **torch.export 分解 `F.linear`** 的产物(nn.Linear → weight.T + mm),非 torchair 主动插。bare-matmul(`x @ weight[K,N]`,无 nn.Linear)→ ep_json 只有 MatMul(无 Transpose_1)。
 
-### L1 单元（CPU，converter venv，无 NPU）
+### L2 验证结果(bare-matmul, A3, 2026-09-07)
 
-- `nd2nz` round-trip：block 对齐 shape（128×128）→ nd2nz → 逆 permute/reshape 还原 → `torch.equal` 原张量；非对齐（130×130）→ 验 pad 区为零、有效区等于原
-- env 门控零回归：`CANN_LM_ENABLE_WEIGHT_TRANS` 未设 → packer 全 ND，`weights_*.bin` 与现状逐字节一致（dormant 不破现状）
-- `resolve_format` 规则匹配：`*_proj.weight`→NZ，`*weight_scale*`/`embed*`→ND，fnmatch 边界
+**✅ 通路跑通!NPU 输出 NZ OM == ND OM,max_diff=0.000000e+00。**
 
-### L2 单算子 demo（A3，OM 编译，关键 de-risk）
+三件套(缺一不可):
 
-最小 GE 图（参数化，放 `examples/`）：weight Const `[128,128]` fp16，`CANN_LM_ENABLE_WEIGHT_TRANS=1` 导出 → atc 编译 OM（`source scripts/set_env_cann.sh`）。
+| # | 组件 | 内容 | 作用 |
+|---|------|------|------|
+| ① | Python `nd2nz` | `[K,N]` → `reshape(k1,16,n1,16)` → **`permute(2,0,1,3)`** → `[n1,k1,k0,n0]` | CANN-correct NZ 字节 |
+| ② | C++ `CreateConstNode` | **2D shape `holder.dims`** + format `FRACTAL_NZ`(**不手动 reshape 4D**) | GE 自己 `TransShapeToFracNz` 算出 4D storage(不撞 6D) |
+| ③ | C++ input desc NZ 覆盖 | MatMul input[1] desc format → `FRACTAL_NZ`(引用 NZ 权重时) | Const NZ + MatMul input NZ 一致 → format refiner 不 revert |
 
-判据：① 编译过 ② `atc --mode=1 --json=/tmp/opencode/x` 解析 `graph[0].op`，**权重→MatMul 间无 `TransData`/`Transpose` 拦留**（NZ 兑现核心）③ NPU 跑输出 vs ND 权重版逐元素一致（容差内）。Stage 2（int4）同理，先过 [Stage 划分](#stage-划分) 逆向门 + 实现 `pack_int4_nz`，验证选 `QuantBatchMatmulV4_ND_NZ_int8_int4` kernel。
+OM 结构(env-on):
+```
+Const p_q_proj_weight  out_layout=FRACTAL_NZ  out_shape=[8,8,16,16]  ← GE 自己算的 4D(非 6D!)
+MatMul MatMul          in_layout=['ND', 'FRACTAL_NZ']                 ← input[1]=NZ,没被 revert
+total=4  TransData=0
+```
 
-### L3 整网（A3）
+### 关键教训(L2 过程中踩的坑)
 
-qwen3-0.6B `--mode single` + `CANN_LM_ENABLE_WEIGHT_TRANS=1` 导出 → OM 编译 → `atc --mode=1` 查 `*_proj` 对应 MatMul 无 TransData → NPU 出字 vs ND 版一致（精度 + TransData 算子数下降的性能收益）。
+1. **不要手动 reshape 成 4D**:设 4D storage `[8,8,16,16]` → GE `TransShapeToFracNz` 当 NCHW `[8,8,16,16]` 再转一次 → 6D `[8,8,1,1,16,16]`(H=16,W=16 → ceil/16=1)→ format_transfer/InferShape/format refiner 三机制全否决。**保持 2D origin + format FRACTAL_NZ** → GE 自己算出正确 4D storage(不撞 6D)。
+2. **nd2nz permute 顺序**:必须匹配 CANN 文档 `[n1,k1,k0,n0]`。`permute(0,2,1,3)` 产出 `[n1,k1,n0,k0]`(内层反了)→ NPU max_diff=41(错)。`permute(0,2,3,1)` 产出 `[k1,n1,n0,k0]`(全反)→ max_diff=39(错)。**`permute(2,0,1,3)`** 产出 `[n1,k1,k0,n0]`(正确)→ max_diff=0。
+3. **input desc NZ 覆盖必须同时设**:仅 Const NZ + MatMul input ND(不覆盖)→ format refiner 改回 ND(no-op)。Const NZ + MatMul input NZ(覆盖)→ 一致 → 保留 → 编译过。
+4. **GE FRACTAL_NZ ≠ CANN API NZ**:GE 的 `FORMAT_FRACTAL_NZ` 是 NCHW-based(`TransShapeToFracNz` 对任意 shape 当 NCHW 处理);CANN API `aclnnMatmulWeightNz` 用 matmul 专用 4D `[n1,k1,k0,n0]`(直接用)。但**保持 2D origin + FRACTAL_NZ → GE 自己算出 4D(与 CANN API 一致)**——关键是不要手动设 4D。
+5. **torchair 不插 Transpose**:Transpose_1 来自 torch.export 分解 `F.linear`(nn.Linear → weight.T + mm)。bare-matmul(`x @ weight[K,N]`)无 F.linear → 无 Transpose_1。
 
-### L4 Kirin（延后）
+### L2 失败路径(L2 过程中排除的方案)
 
-CANN-LM Kirin 算子支持落地后，复 L2/L3 于 kirin9030/kirinx90（hdc 真机 + `kirin_cann_test` 流程）。前置：确认 Kirin 的 matmul/quantmatmul 是否有 NZ 输入 kernel 变体（A3 有 ≠ Kirin 有）。
+| 尝试 | 结果 | 根因 |
+|------|------|------|
+| 4D storage + FRACTAL_NZ(手动 reshape) | ❌ 编译失败 | GE 当 NCHW 再转 → 6D → IsShapeArgValid 4D-vs-6D |
+| 2D + FRACTAL_NZ(无 input 覆盖) | ❌ no-op | Const NZ vs MatMul input ND → format refiner 改回 ND |
+| C++ Transpose perm 覆盖(①) | ❌ 不可调和 | format_transfer 用 6D storage,InferShape 用 4D origin → perm 无法同时满足 |
+| Lock(`ATTR_NAME_STORAGE_FORMAT`/`FORMAT_LOCKED`) | ❌ SDK 不可行 | `ge_attr_define.h`/`AttrUtils` 不在 CANN 0715 公开头 |
+| `inline_weight_layout`(ep_json layout 改写) | ❌ 此路不通 | `tensor_values.layout` 是 pt2 枚举(无 NZ),权重不是 ascend_ir Const 算子 |
 
-### 核心判据
+### L2 成功路径(bare-matmul)
 
-NZ 重排成功 ⟺ OM 算子列表里权重到 MatMul 间**无 TransData** ∧ **输出与 ND 版一致**。L2 单算子 demo 是整网前必须过的关卡。
+**bare-matmul**(`x[K] @ weight[K,N]`,无 nn.Linear)→ ep_json 只有 `ge.MatMul`(无 Transpose_1)→ env-on 导出 → cann_lm_compile → OM 编译过(Const FRACTAL_NZ + MatMul input NZ + 0 TransData)→ NPU 输出 vs ND OM **max_diff=0**。
+
+### L2 验证结果:nn.Linear 场景(Transpose_1, A3, 2026-09-07)
+
+**✅ nn.Linear 也跑通!NPU max_diff=0.000000e+00。**
+
+nn.Linear 的 `F.linear` 被 torch.export 分解为 `Transpose(weight) + mm`——Transpose 算子的 2D perm `[1,0]` 在 NZ 权重 Const 的 4D storage 上撞 `format_transfer_transpose`(4D-vs-2D)+ `TransposeCommonInferShape`(origin 2D,perm 值越界)。**perm 不可调和**(format_transfer 要 4D perm,InferShape 要 2D)。
+
+解法:**跳过 Transpose + 设 MatMul `transpose_x2=True`**——GE MatMul 原生属性,内部转置,无 Transpose op。
+
+四件套(nn.Linear 场景,缺一不可):
+
+| # | 组件 | 内容 | 作用 |
+|---|------|------|------|
+| ① | Python `nd2nz` | `[K,N]` → reshape(k1,16,n1,16) → `permute(2,0,1,3)` → `[n1,k1,k0,n0]` | CANN-correct NZ 字节 |
+| ② | C++ `CreateConstNode` | 2D shape `holder.dims` + `FRACTAL_NZ`(不 reshape) | GE 自己 `TransShapeToFracNz` 算 4D storage |
+| ③ | C++ pre-pass + skip Transpose | Transpose on NZ weight → 跳过 + 注册 pass-through(`Transpose:0 → Const`) | 消除 Transpose 算子(避 2D-perm-on-4D) |
+| ④ | C++ MatMul `transpose_x2=True` + input NZ 覆盖 | binding 到 Const + `transpose_x2=True` + input desc `FRACTAL_NZ` | GE 内部转置 + Const NZ + MatMul input NZ 一致 |
+
+关键实现细节:
+- `nz_transpose_passthrough` 必须放在 `GraphBuildContext`(跨节点共享)——Transpose 在 FX node[0],MatMul 在 node[1],局部变量不跨节点。
+- MatMul 的 input 引用可能是 FX 别名(如 `"t"`),需先 `ResolveBoundaryInputSourceRef` 解析到 GE ref(如 `"Transpose:0"`)再查 passthrough。
+- `transpose_x2=True` 通过 `ge::AttrValue::SetAttrValue(true)` 加到 attrs。
+
+OM 结构(env-on):
+```
+Const p_q_proj_weight  out_layout=FRACTAL_NZ  out_shape=[8,8,16,16]
+MatMul MatMul          in_layout=['ND', 'FRACTAL_NZ']  ← transpose_x2=True, 无 Transpose 算子
+total=4  TransData=0
+```
+
+### L2 通路验证总结
+
+| 场景 | OM 结构 | NPU max_diff | 状态 |
+|------|---------|-------------|------|
+| bare-matmul(`x @ weight[K,N]`,无 nn.Linear) | Const NZ + MatMul input NZ + 0 TransData | **0** | ✅ |
+| nn.Linear(`F.linear`,有 Transpose_1) | Const NZ + MatMul input NZ + 0 TransData + transpose_x2=True | **0** | ✅ |
+| bare-matmul 130×130(非 16 对齐) | — | — | ❌ GE 限制(见下) |
+
+两个场景 **NPU 输出 NZ OM == ND OM,max_diff=0**。NZ 权重预转换在 A3 完整跑通。
+
+### 非对齐 shape 限制(2026-09-07)
+
+**16 对齐是 NZ 的硬约束**。非对齐 shape(如 130×130)在 GE 图编译路径(Const + ge.MatMul)不可行,根因是 GE 两套检查矛盾:
+
+| GE 检查 | 期望 shape | 130×130 结果 |
+|---------|-----------|-------------|
+| `CheckTensorIsValid`(`graph_prepare.cc:2270`) | `data_size == Product(shape) * elem_size` | 2D `[130,130]`:33800 ≠ 41472(NZ padded)→ ❌ |
+| `MatMul InferShape`(`matrix_calculation_matmul.cc:473`) | `dim[0] == input_k`(k-axis 匹配) | 4D `[9,9,16,16]`:k=9 ≠ 130(input k)→ ❌ |
+
+- **2D `[130,130]` + FRACTAL_NZ**:CheckTensorIsValid 失败(NZ padded bytes 41472 ≠ logical 33800)。
+- **4D `[9,9,16,16]` + FRACTAL_NZ**:InferShape 失败(GE 看到 dim[0]=9 作为 k-axis,不认 NZ 块语义)。
+- **padded 2D `[144,144]`**:InferShape 失败(k=144 ≠ input k=130;input 是 runtime Data 不能 pad)。
+- **128×128 能过**:因为 16 对齐 → logical size = NZ padded size(32768=32788),两个检查都满足。
+
+**根因**:GE 的 `CheckTensorIsValid` 不理解 NZ padding(检查 `data_size == Product(logical_shape) * elem_size`,不认 NZ 块 padding)。CANN 官方 `aclnnMatmulWeightNz` 走 ACLNN runtime(4D NZ 直传,不走 GE `CheckTensorIsValid`),所以官方路径能处理非对齐;GE 图编译路径不行。
+
+**当前实现**:16 对齐 shape 用 NZ(已验证);非对齐自动回落 ND(需在 `_pack_weights_to_dir` 加 shape 对齐检查)。LLM 实际权重维度多 16 对齐(qwen3 hidden 1024/2048、intermediate 3072、head_dim 128×n_heads),非对齐极少。
+
+### L3 整网(A3)
+
+qwen3-0.6B `--mode single` + `CANN_LM_ENABLE_WEIGHT_TRANS=1` 导出 → OM 编译 → `atc --mode=1` 查 `*_proj` 对应 MatMul 无 TransData → NPU 出字 vs ND 版一致。
+
+### L4 Kirin(延后)
+
+CANN-LM Kirin 算子支持落地后,复 L2/L3 于 kirin9030/kirinx90(hdc 真机 + `kirin_cann_test` 流程)。Kirin9030 有 ND↔NZ TransData(NZ 概念成立),matmul NZ kernel + GE 行为待验。
+
+### 核心判据(修正)
+
+NZ 重排成功 ⟺ **NPU 输出 NZ OM == ND OM**(max_diff=0)+ OM 里权重 Const `layout=FRACTAL_NZ` + 0 host TransData。TransData 计数不是唯一指标(kernel 内部转换无 TransData 但有开销)。
 
 ## 后续迁移
 

@@ -102,9 +102,16 @@ TEST_F(AtenTensorDescMapperTest, MapGeLayoutStringEmpty) {
 }
 
 TEST_F(AtenTensorDescMapperTest, MapGeLayoutStringUnsupported) {
-  // "NCDHW" 不在支持集 {empty, ND, NCHW, NHWC} 内 → 应报 UNSUPPORTED_GE_LAYOUT
+  // "NCDHW" 不在支持集 {empty, ND, NCHW, NHWC, NZ} 内 → 应报 UNSUPPORTED_GE_LAYOUT
   mapper_.MapGeLayoutString("NCDHW", result_, "test");
   EXPECT_FALSE(result_.ok);
+}
+
+TEST_F(AtenTensorDescMapperTest, MapGeLayoutStringNZ) {
+  // "NZ" → FORMAT_FRACTAL_NZ (权重 NZ 预转换, CLI-015)
+  ge::Format fmt = mapper_.MapGeLayoutString("NZ", result_, "test");
+  EXPECT_TRUE(result_.ok);
+  EXPECT_EQ(fmt, ge::FORMAT_FRACTAL_NZ);
 }
 
 TEST_F(AtenTensorDescMapperTest, MapPt2TensorMetaBasic) {

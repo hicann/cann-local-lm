@@ -25,12 +25,9 @@ os.environ.setdefault("TORCH_DEVICE_BACKEND_AUTOLOAD", "0")
 
 import torch
 
-# 检测 torch_npu 是否可用 (真实 NPU 环境)
-try:
-    import torch_npu  # noqa: F401
-    _HAS_TORCH_NPU = True
-except ImportError:
-    _HAS_TORCH_NPU = False
+# 不 import torch_npu, 避免污染 sys.modules (lite_export_context 要求 torchair/torch_npu 未被导入)
+# 始终注册 npu schema + CPU impl, lite 模式由 torch_delegate 的 fake module 提供 torch_npu
+_HAS_TORCH_NPU = False
 
 # npu 命名空间: FRAGMENT (允许和 torch_npu 的 npu namespace 共存, define cann_lm 自定义 op)
 NPU_LIB = torch.library.Library("npu", "FRAGMENT")

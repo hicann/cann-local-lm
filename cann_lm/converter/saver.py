@@ -57,15 +57,19 @@ def save_epair(
     save_weights: bool = True,
     whitelist_decompositions: set | None = None,
     embed_quant: dict[str, tuple[torch.Tensor, torch.Tensor]] | None = None,
+    target_soc: str = "Ascend910B",
+    allow_hf32: bool = False,
 ) -> None:
     import torch_delegate
-    from torch_delegate import EpairConfig
+    from torch_delegate import EpairConfig, LiteConfig, lite_export_context
     from cann_lm.converter.export.ge_converters import register_ge_converters
 
     output_dir = Path(output_dir).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    register_ge_converters()
+    lite_config = LiteConfig(target_soc=target_soc, allow_hf32=allow_hf32)
+    with lite_export_context(lite_config):
+        register_ge_converters()
 
     if artifact.wrapper_cls is None:
         raise ValueError(
@@ -138,6 +142,8 @@ def save_epair_prefill_decode(
     save_weights: bool = True,
     whitelist_decompositions: set | None = None,
     embed_quant: dict[str, tuple[torch.Tensor, torch.Tensor]] | None = None,
+    target_soc: str = "Ascend910B",
+    allow_hf32: bool = False,
 ) -> None:
     """Prefill/decode split export: emit two graphs (prefill + decode) + shared weights.
 
@@ -155,13 +161,15 @@ def save_epair_prefill_decode(
     Does NOT save .pt2 or input_N.bin (those belong in a verify script).
     """
     import torch_delegate
-    from torch_delegate import EpairConfig
+    from torch_delegate import EpairConfig, LiteConfig, lite_export_context
     from cann_lm.converter.export.ge_converters import register_ge_converters
 
     output_dir = Path(output_dir).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    register_ge_converters()
+    lite_config = LiteConfig(target_soc=target_soc, allow_hf32=allow_hf32)
+    with lite_export_context(lite_config):
+        register_ge_converters()
 
     if artifact.wrapper_cls is None:
         raise ValueError(

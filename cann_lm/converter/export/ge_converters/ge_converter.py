@@ -22,6 +22,11 @@ from cann_lm.models.fused_ops import ops as _backend_ops  # Registers cann_lm op
 
 
 def register_ge_converters() -> None:
+    # lite export 模式: 确保 torchair 从 vendored path 加载 (fake C extension 已安装后).
+    # full 模式: active_config() 为 None, prepare_lite_torchair 直接 return, 无副作用.
+    from torch_delegate.lite_context import prepare_lite_torchair
+    prepare_lite_torchair()
+
     from torchair import register_fx_node_ge_converter
     # Import torchair custom/ first (registers torchair's npu converters); cann_lm converters below override them.
     from torchair._ge_concrete_graph.ge_converter import custom  # noqa: F401

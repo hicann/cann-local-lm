@@ -15,17 +15,17 @@ Usage:
 """
 
 import argparse
+import os
 import sys
 from pathlib import Path
+
+os.environ.setdefault("TORCH_DEVICE_BACKEND_AUTOLOAD", "0")
 
 import torch
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
-
-from cann_lm.converter.loader import load_model
-from cann_lm.converter.saver import save_epair, save_epair_prefill_decode
 
 _DTYPE_MAP = {
     "float32": torch.float32,
@@ -48,6 +48,8 @@ def convert(
     num_layers: int | None = None,
     quant_path: str | None = None,
     quant_method: str | None = None,  # quant algo, currently only "gptq" (auto-spawns dopt); mutually exclusive with quant_path
+    target_soc: str = "Ascend910B",
+    allow_hf32: bool = False,
 ) -> None:
     """Programmatic entry: HF model -> epair.
 
@@ -55,6 +57,8 @@ def convert(
     NPU/GPU/CPU subprocess (--quant-method gptq); --quant-path consumes
     offline dopt output. See quant_design.md for the scene 1/2 split.
     """
+    from cann_lm.converter.loader import load_model
+    from cann_lm.converter.saver import save_epair, save_epair_prefill_decode
     # Scene 2 (--quant-method gptq): spawn dopt subprocess first; don't pre-load cann_lm to avoid 2x peak
     # memory (cann_lm model + subprocess's transformers model). Scene 1 (--quant-path): consume offline output.
     dopt_out_path = None
@@ -108,7 +112,7 @@ def convert(
             print(f"      Cleaned temp dopt output: {dopt_out_path}")
             dopt_out_path = None
 
-    print(f"[2/2] Saving epair to {output_dir}")
+    print(f"[2/2] Saving epair to {output_dir} (target_soc={target_soc}, allow_hf32={allow_hf32})")
     if mode == "prefill-decode":
         print(f"      seq_len={seq_len}, decode_seq_len=1, shared weights")
         save_epair_prefill_decode(
@@ -119,6 +123,8 @@ def convert(
             seq_len=seq_len,
             use_embeddings=use_embeddings,
             embed_quant=embed_quant,
+            target_soc=target_soc,
+            allow_hf32=allow_hf32,
         )
     else:
         print(f"      single graph, seq_len={seq_len}")
@@ -130,6 +136,8 @@ def convert(
             seq_len=seq_len,
             use_embeddings=use_embeddings,
             embed_quant=embed_quant,
+            target_soc=target_soc,
+            allow_hf32=allow_hf32,
         )
 
     print(f"\nDone. Output: {output_dir}")
@@ -172,6 +180,10 @@ def parse_args() -> argparse.Namespace:
     quant_group.add_argument("--quant-method", default=None, choices=["gptq"],
                              help="Quant algo (currently only gptq). Scene 2: converter auto-spawns a dopt subprocess to "
                                   "run GPTQ (NPU/GPU/CPU env; CPU only for small models). Mutually exclusive with --quant-path.")
+    parser.add_argument("--target-soc", default="Ascend910B",
+                        help="Target SoC for epair export (default: Ascend910B)")
+    parser.add_argument("--allow-hf32", action="store_true",
+                        help="Allow HF32 precision in matmul/conv")
     return parser.parse_args()
 
 
@@ -189,6 +201,8 @@ def main() -> None:
         num_layers=args.num_layers,
         quant_path=args.quant_path,
         quant_method=args.quant_method,
+        target_soc=args.target_soc,
+        allow_hf32=args.allow_hf32,
     )
 
 

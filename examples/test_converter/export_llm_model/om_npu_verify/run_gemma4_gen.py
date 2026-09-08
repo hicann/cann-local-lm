@@ -25,9 +25,27 @@ KV_MAX = 2048; DEV = 0; MAX_NEW = 30; PREFILL_SEQ = 128
 
 import torch_npu  # noqa (for wrapper eager if needed; mainly for mask helpers)
 from safetensors import safe_open
-from cann_lm.models.gemma4 import Gemma4ForCausalLM, Gemma4TextConfig
-from cann_lm.models.gemma4.modeling_gemma4 import load_gemma4_weights
-from cann_lm.models.gemma4.export_wrapper import Gemma4ExportWrapper
+
+# cann_lm fused_ops 为无 torch_npu 环境构建 (register_fake npu:: 假算子); ③ 有真 torch_npu 时
+# 这些 op 已由 torch_npu 注册 Meta → cann_lm 再 register_fake 冲突. 包一层跳过已注册的 op,
+# 用 torch_npu 的 (等价 _HAS_TORCH_NPU=True), 避免改 cann_lm/_library.py.
+_rf = torch.library.register_fake
+def _safe_register_fake(*a, **k):
+    _deco = _rf(*a, **k)
+    def _wrap(fn):
+        try:
+            return _deco(fn)
+        except RuntimeError:
+            return fn
+    return _wrap
+torch.library.register_fake = _safe_register_fake
+try:
+    from cann_lm.models.gemma4 import Gemma4ForCausalLM, Gemma4TextConfig
+    from cann_lm.models.gemma4.modeling_gemma4 import load_gemma4_weights
+    from cann_lm.models.gemma4.export_wrapper import Gemma4ExportWrapper
+finally:
+    torch.library.register_fake = _rf
+
 from transformers import AutoTokenizer
 
 DT = torch.bfloat16

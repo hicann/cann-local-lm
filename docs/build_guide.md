@@ -346,7 +346,7 @@ bash scripts/build.sh cpp --asan && ctest --test-dir build
 
 ### run_compile.sh — epair→OM 一键编译
 
-`scripts/cann_lm_compile/run_compile.sh` 自动 source ② env + 构建 + 运行 + 存日志。
+`examples/test_converter/export_llm_model/run_compile.sh` 自动 source ② env + 构建 + 运行 + 存日志。
 
 | 参数 | 说明 |
 |------|------|
@@ -539,7 +539,7 @@ ASAN flags 含 `-static-libasan`，ctest 可裸跑无需 `LD_PRELOAD`。
 - `scripts/set_env_export.sh` — ① converter env（CPU venv + torchair stubs）
 - `scripts/set_env_cann.sh` — ②③ real-CANN env（OM 编译 / NPU verify-runtime）
 - `scripts/cann_lm_compile/build_cpp.sh` — C++ 统一构建（顶层 CMakeLists）
-- `scripts/cann_lm_compile/run_compile.sh` — epair→OM 一键编译
+- `examples/test_converter/export_llm_model/run_compile.sh` — epair→OM 一键编译
 - `scripts/cann_lm_compile/package_run.sh` — 打 `.run` 自解压包
 - `scripts/cann_lm_compile/build.sh` — C++ 前置环境准备（校验 + env）
 - `scripts/cann_lm_converter/build_wheel.sh` — cann_lm whl 打包（converter + models + dopt_lm）

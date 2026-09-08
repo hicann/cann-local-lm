@@ -4,9 +4,9 @@ set -euo pipefail
 # run_compile.sh — 一键式 epair→OM 编译 (source compile env + build + run + 存日志)
 #
 # 用法:
-#   bash scripts/cann_lm_compile/run_compile.sh                       # 默认: qwen3_5_single epair
-#   bash scripts/cann_lm_compile/run_compile.sh <epair_dir>            # 指定 epair 目录 (自动找 ep_json + weight_info)
-#   bash scripts/cann_lm_compile/run_compile.sh <model_json> <weights_index> [output_name]   # 显式路径
+#   bash examples/test_converter/export_llm_model/run_compile.sh                       # 默认: qwen3_5_single epair
+#   bash examples/test_converter/export_llm_model/run_compile.sh <epair_dir>            # 指定 epair 目录 (自动找 ep_json + weight_info)
+#   bash examples/test_converter/export_llm_model/run_compile.sh <model_json> <weights_index> [output_name]   # 显式路径
 #
 # 选项:
 #   --no-build    跳过构建 (用已有 build/cann_lm_compile)
@@ -18,7 +18,7 @@ set -euo pipefail
 # 产物: <output>.om + (权值分离时) <output 目录>/weight/*.bin (默认保留); 日志: /tmp/opencode/cann_lm_compile_run.log
 #=============================================================================
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO="$(cd "$SCRIPT_DIR/../.." && pwd)"
+REPO="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 
 NO_BUILD=0
 KEEP_OM=1

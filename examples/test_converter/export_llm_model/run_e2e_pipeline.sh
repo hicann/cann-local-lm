@@ -161,7 +161,7 @@ if [[ $SKIP_OM -eq 1 ]]; then ok "skip ② (--skip-om)"; else
       mkdir -p "$st"
       echo "  compile $st → $st/$st.om (via run_compile.sh)"
       # run_compile.sh 自 source set_env_cann(②→0715) + 加 aarch64 LD (libascend_hal.so) + 处理 GE teardown 崩溃
-      bash "$PROJECT_ROOT/scripts/cann_lm_compile/run_compile.sh" --no-build \
+      bash "$SCRIPT_DIR/run_compile.sh" --no-build \
           "$OUTPUT_DIR/${st}_ep_json_with_ascend_ir.json" "$OUTPUT_DIR/weight_info.json" "$OUTPUT_DIR/${st}/${st}" \
           >"$st/compile.log" 2>&1 || true
       [[ -f "$st/$st.om" ]] || { ng "$st/$st.om 未产出 (见 $st/compile.log)"; exit 1; }

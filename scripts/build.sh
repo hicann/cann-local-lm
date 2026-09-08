@@ -112,7 +112,7 @@ cmd_wheel() {
 # ── om (②, run_compile 自带 source) ───────────────────────────────────────────
 cmd_om() {
   _log "OM compile (②, delegate run_compile.sh)"
-  bash "${REPO}/scripts/cann_lm_compile/run_compile.sh" "$@"
+  bash "${REPO}/examples/test_converter/export_llm_model/run_compile.sh" "$@"
 }
 
 # ── package (②) ───────────────────────────────────────────────────────────────

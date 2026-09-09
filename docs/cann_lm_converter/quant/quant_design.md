@@ -525,7 +525,7 @@ converter `--quant-method gptq` 一键触发：检测 NPU/GPU/CPU → spawn `dop
 | 4 | bias=None 时 forward 传 None，GE converter 侧塞 dummy zeros[N] | `quant_linear.py` 的 `forward` + `_quant_matmul_converter.py` 的 dummy bias workaround | ✅ |
 | 5 | `npu::npu_quant_matmul`（CANN 原生，取代自研 `quant_matmul_s8s4`） | `cann_lm/converter/export/quant_swap/quant_linear.py` 的 `forward` | ✅ |
 | 6 | `_quant_matmul_converter.py` 映射到 `ge.QuantBatchMatmulV4`（V4 full IR + dummy bias） | `cann_lm/converter/export/ge_converters/_quant_matmul_converter.py` | ✅ |
-| 7 | `reg_register.h` 注册 `QuantBatchMatmulV4` + `DynamicQuant` + `Bitcast`（`QuantMatmulS8S4` 方案 A 遗留仍注册，见下） | `examples/test_converter/export_llm_model/reg_register.h`、`examples/test_converter/export_and_load_epair/reg_register.h`、`examples/test_converter/export_llm_model/om_npu_verify/reg_register.h` | ✅ |
+| 7 | `reg_register.h` 注册 `QuantBatchMatmulV4` + `DynamicQuant` + `Bitcast`（`QuantMatmulS8S4` 方案 A 遗留仍注册，见下） | `examples/test_converter/export_llm_model/reg_register.h`、`examples/test_converter/export_epair_and_compile/reg_register.h`、`examples/test_converter/export_llm_model/om_npu_verify/reg_register.h` | ✅ |
 | 8 | custom op schema + fake-meta + CPU impl 自提供（converter venv 无 torch_npu） | `cann_lm/models/fused_ops/quant_matmul.py`（schema + fake-meta + CPU impl） | ✅ |
 
 custom op 定义在 `cann_lm/models/fused_ops/quant_matmul.py`（schema + fake-meta + CPU PoC impl），GE 转换器 `_quant_matmul_converter.py` 把 `npu::npu_quant_matmul` 映射到 `ge.QuantBatchMatmulV4`。converter venv 不装 torch_npu，由 `_library.py` 自提供 schema+fake-meta（`_HAS_TORCH_NPU=False` 路径），torch.export 能 trace。
@@ -612,10 +612,10 @@ y[b,m,n] = Σ_k ( x1_q[b,m,k] · x1_scale[b,m] ) · ( x2_q[n,k] · x2_scale[n, k
 | 文件路径 | 注册算子 | 状态 |
 |---------|---------|------|
 | `examples/test_converter/export_llm_model/reg_register.h` | 全量（含 `QuantMatmulS8S4` 方案 A 遗留 + `QuantBatchMatmulV3` + `QuantBatchMatmulV4` + `DynamicQuant` + `Bitcast` + 80+ 其他） | ✅ |
-| `examples/test_converter/export_and_load_epair/reg_register.h` | 合并 + IR 校准版（73 个有 IR 定义的算子 + 8 个无 IR 自研算子含 `QuantMatmulS8S4`） | ✅ |
+| `examples/test_converter/export_epair_and_compile/reg_register.h` | 合并 + IR 校准版（73 个有 IR 定义的算子 + 8 个无 IR 自研算子含 `QuantMatmulS8S4`） | ✅ |
 | `examples/test_converter/export_llm_model/om_npu_verify/reg_register.h` | 同上合并版 | ✅ |
 
-> **路径勘误**：早期文档写 `examples/reg_register.h` / `examples/export_llm_model/reg_register.h`（均不存在），实际在 `examples/test_converter/` 下。`export_llm_model/reg_register.h` 是全量主文件（含所有 `REG_OP`）；`export_and_load_epair/` 与 `export_llm_model/om_npu_verify/` 是合并 + IR 校准版（以 `om_npu_verify` 版为基底合并）。
+> **路径勘误**：早期文档写 `examples/reg_register.h` / `examples/export_llm_model/reg_register.h`（均不存在），实际在 `examples/test_converter/` 下。`export_llm_model/reg_register.h` 是全量主文件（含所有 `REG_OP`）；`export_epair_and_compile/` 与 `export_llm_model/om_npu_verify/` 是合并 + IR 校准版（以 `om_npu_verify` 版为基底合并）。
 
 > **方案 A 遗留**：`QuantMatmulS8S4` 在三文件中**仍注册**（方案 A 自研算子，代码已切回 `npu::npu_quant_matmul` 不再使用）。注释标注为"8 个无 IR 的自研算子"之一。当前代码链路实际只用 `QuantBatchMatmulV4` + `DynamicQuant` + `Bitcast`（V4 converter 的 dtype Bitcast 路径）。清理 `QuantMatmulS8S4` 注册是低风险纯删除，但会破坏旧 epair（含 `cann_lm::quant_matmul_s8s4` 节点）的加载，故保留。
 

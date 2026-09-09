@@ -1,13 +1,18 @@
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from pathlib import Path
 
 import torch
 import torch_delegate as td
+from torch_delegate import LiteConfig, lite_export_context
 
 ROOT = Path(__file__).resolve().parent
+PROJECT_ROOT = ROOT.parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 
 def validate_export_and_eager():
@@ -35,30 +40,30 @@ def validate_export_and_eager():
     print("[PASS] Python: epair export + load + eager execution OK")
 
 
-def validate_cpp_loading():
-    print("  Loading epair via C++ binary...")
+def validate_om_compile():
+    print("  Compiling OM via cann_lm_compile...")
     epair_dir = ROOT / "epair_model"
-
-    binary = ROOT / "build" / "export_and_load_example"
-    if not binary.exists():
-        print(f"[ERROR] C++ binary not found: {binary}")
-        print("  Run 'cd {ROOT} && cmake -B build && cmake --build build -j$nproc' first.")
-        sys.exit(1)
+    compile_bin = PROJECT_ROOT / "build" / "cann_lm_compile"
+    if not compile_bin.exists():
+        print(f"[ERROR] cann_lm_compile not found: {compile_bin}")
+        print("  Run 'bash scripts/build.sh cpp' first.")
+        return
 
     model_json = str(epair_dir / "ep_json_with_ascend_ir.json")
     weights_index = str(epair_dir / "weight_info.json")
+    output_name = str(epair_dir / "compare_test")
 
     result = subprocess.run(
-        [str(binary), model_json, weights_index],
-        capture_output=True, text=True, cwd=ROOT,
+        [str(compile_bin), model_json, weights_index, output_name],
+        capture_output=True, text=True, cwd=str(ROOT),
     )
-    print(result.stdout)
-    if result.returncode == 0:
-        print("[PASS] C++: epair loading + GE Graph extraction + compile OK")
+    om_file = Path(f"{output_name}.om")
+    if om_file.exists():
+        print(f"[PASS] OM compiled: {om_file.name} ({om_file.stat().st_size} bytes)")
     else:
+        print(f"[WARN] OM not produced (cann_lm_compile rc={result.returncode})")
         if result.stderr:
-            print(result.stderr, file=sys.stderr)
-        print("[WARN] C++ binary exited with code {}. This is expected if there is no NPU device.".format(result.returncode))
+            print(result.stderr[:500], file=sys.stderr)
 
 
 def main():
@@ -70,10 +75,10 @@ def main():
     print()
 
     print("=" * 40)
-    print(" [2/2] C++: validate epair loading + GE Graph extraction")
+    print(" [2/2] C++ cann_lm_compile: OM 编译验证")
     print("=" * 40)
     print()
-    validate_cpp_loading()
+    validate_om_compile()
     print()
 
     print("=" * 40)

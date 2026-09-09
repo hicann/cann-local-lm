@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -11,13 +12,17 @@ import torch
 from cann_lm.converter.export.epair_utils import consolidated_weights_save
 from cann_lm.converter.export.ge_converters import register_ge_converters
 import torch_delegate
+from torch_delegate import LiteConfig, lite_export_context
 
 from simple_network import SimpleNetwork
 
 
 ROOT = Path(__file__).resolve().parent
 
-register_ge_converters()
+target_soc = os.environ.get("SOC_VERSION", "Ascend910B")
+lite_config = LiteConfig(target_soc=target_soc, allow_hf32=False)
+with lite_export_context(lite_config):
+    register_ge_converters()
 
 torch.manual_seed(43)
 device = torch.device("cpu")
@@ -25,7 +30,8 @@ model = SimpleNetwork(dim=64).eval().to(device)
 sample_inputs = (torch.randn(2, 64, device=device),)
 exported_program = torch.export.export(model, sample_inputs, strict=False)
 
-epair = torch_delegate.export_to_epair(exported_program)
+with lite_export_context(lite_config):
+    epair = torch_delegate.export_to_epair(exported_program)
 output_dir = ROOT / "epair_model"
 consolidated_weights_save(epair, output_dir, save_weights=True)
 

@@ -19,7 +19,7 @@ in one kernel:  x = x1 + x2;  y = x * rsqrt(mean(x^2)+eps) * gamma;
 outputs (y, rstd, x). See `es_nn/es_AddRmsNorm_c.h` and torchair
 `ge.AddRmsNorm`.
 
-This script mirrors export_epair_with_customop.py: it defines an export-only
+This script defines an export-only
 torch op `cann_lm::add_rms_norm`, a torchair GE converter mapping it to
 `ge.AddRmsNorm`, a tiny 2-layer residual+RMSNorm network, and an
 export(.pt2)/compile(.epair) CLI.
@@ -48,7 +48,7 @@ from cann_lm.converter.export.epair_utils import consolidated_weights_save
 # ─────────────────────────────────────────────────────────────────────
 # op schema + fake (export-only, no real kernel needed)
 # ─────────────────────────────────────────────────────────────────────
-_LIBRARY = torch.library.Library("cann_lm", "DEF")
+_LIBRARY = torch.library.Library("cann_lm", "FRAGMENT")
 _LIBRARY.define(
     "add_rms_norm(Tensor x1, Tensor x2, Tensor gamma, *, float epsilon=1e-6) "
     "-> (Tensor y, Tensor rstd, Tensor x)"
@@ -145,7 +145,7 @@ def build_sample_inputs(device: torch.device | str) -> tuple[torch.Tensor, ...]:
 
 
 # ─────────────────────────────────────────────────────────────────────
-# export / compile (mirrors export_epair_with_customop.py)
+# export / compile
 # ─────────────────────────────────────────────────────────────────────
 def select_device(device_name: str) -> torch.device:
     if device_name == "auto":
@@ -189,6 +189,7 @@ def compile_ep_to_epair(
       output_dir/weights_0.bin [, weights_1.bin, ...]
     """
     import torch_delegate
+    from torch_delegate import LiteConfig, lite_export_context
 
     output_dir = Path(output_dir).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -204,8 +205,10 @@ def compile_ep_to_epair(
     if rewrite_only:
         return rewritten_path
 
-    register_ge_converters()
-    epair = torch_delegate.export_to_epair(exported_program)
+    lite_config = LiteConfig(target_soc=os.environ.get("SOC_VERSION", "Ascend910B"), allow_hf32=False)
+    with lite_export_context(lite_config):
+        register_ge_converters()
+        epair = torch_delegate.export_to_epair(exported_program)
     # _assert_tensor_metadata 节点（torchair decomposition 副作用）由 C++ PlanNodes
     # 侧 IsAssertTensorMetadataNode 跳过，无需 Python strip。
     consolidated_weights_save(

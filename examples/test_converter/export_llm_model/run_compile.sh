@@ -1,24 +1,25 @@
 #!/usr/bin/env bash
 set -euo pipefail
 #=============================================================================
-# run_compile.sh — 一键式 epair→OM 编译 (source compile env + build + run + 存日志)
+# run_compile.sh — 一键式 epair→OM 编译 (source 共享 env + build + run + 存日志)
 #
 # 用法:
-#   bash examples/test_converter/export_llm_model/run_compile.sh                       # 默认: qwen3_5_single epair
-#   bash examples/test_converter/export_llm_model/run_compile.sh <epair_dir>            # 指定 epair 目录 (自动找 ep_json + weight_info)
-#   bash examples/test_converter/export_llm_model/run_compile.sh <model_json> <weights_index> [output_name]   # 显式路径
+#   bash run_compile.sh                       # 默认: 当前目录找 ep_json + weight_info
+#   bash run_compile.sh <epair_dir>            # 指定 epair 目录
+#   bash run_compile.sh <model_json> <weights_index> [output_name]   # 显式路径
 #
 # 选项:
 #   --no-build    跳过构建 (用已有 build/cann_lm_compile)
 #   --keep-om     保留 OM 产物 (默认即保留)
-#   --delete-om   跑完删 OM 产物 (默认保留; OM+权值可达数 GB, 占盘时用)
-#   --output <name>  OM 输出名 (默认 build/om_output/<epair名>, 与 CWD 同 fs 兼容权值分离)
+#   --delete-om   跑完删 OM 产物 (OM+权值可达数 GB, 占盘时用)
+#   --output <name>  OM 输出名
 #   --log <path>     日志路径 (默认 /tmp/opencode/cann_lm_compile_run.log)
-#
-# 产物: <output>.om + (权值分离时) <output 目录>/weight/*.bin (默认保留); 日志: /tmp/opencode/cann_lm_compile_run.log
 #=============================================================================
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+REPO="$(cd "$SCRIPT_DIR/../.." && pwd)"
+
+# source 共享 env (NPU 探测+CANN 自动 source+路径派生+ensure 依赖+LD 真 CANN 无 stubs)
+source "$SCRIPT_DIR/../common/check_env.sh"
 
 NO_BUILD=0
 KEEP_OM=1
@@ -63,20 +64,13 @@ if [[ -n "$EPAIR_DIR" ]]; then
     WEIGHTS="$EPAIR_DIR/weight_info.json"
 fi
 
-# 派生 output name (从 epair 目录名); 默认落 build/om_output/ (与 CWD 同 fs, 兼容权值分离)
 if [[ -z "$OUTPUT" ]]; then
     OUTPUT="$REPO/build/om_output/$(basename "${EPAIR_DIR:-${MODEL_JSON%/*}}")"
 fi
 
 mkdir -p "$(dirname "$LOG")" "$(dirname "$OUTPUT")"
-
-# 校验输入
 [[ -f "$MODEL_JSON" ]] || { echo "ERROR: model_json 不存在: $MODEL_JSON" >&2; exit 1; }
 [[ -f "$WEIGHTS" ]]    || { echo "ERROR: weights_index 不存在: $WEIGHTS" >&2; exit 1; }
-
-# source compile env (设 ASCEND_HOME_PATH / LD_LIBRARY_PATH / SOC_VERSION 等)
-source "$REPO/scripts/set_env.sh" >/dev/null
-export LD_LIBRARY_PATH="$ASCEND_HOME_PATH/aarch64-linux/lib64:$ASCEND_HOME_PATH/aarch64-linux/devlib:${LD_LIBRARY_PATH:-}"
 
 # build (除非 --no-build)
 BIN="$REPO/build/cann_lm_compile"
@@ -95,9 +89,6 @@ echo "  weights    : $WEIGHTS"
 echo "  output     : ${OUTPUT}.om"
 echo "  log        : $LOG"
 echo ""
-# 注意: cann_lm_compile 退出时 ge 的 REG_OP 静态注册器 teardown 会触发 glibc
-# "corrupted size vs. prev_size" → Aborted (非零退出), 但 OM 在此前已正常产出。
-# 故用 || true 不让 set -e 中断, 改由 OM 文件存在判定成功。
 "$BIN" "$MODEL_JSON" "$WEIGHTS" "$OUTPUT" 2>&1 | tee "$LOG" || true
 
 # 结果
@@ -105,16 +96,10 @@ echo ""
 echo "### [3/3] result"
 if [[ -f "${OUTPUT}.om" ]]; then
     ls -lh "${OUTPUT}.om" | awk '{print "  OM 产物: "$5, $9}'
-    # 权值分离时 GE 把权值存到 <output 目录>/weight/ (GE_EXTERNAL_WEIGHT=2)
-    WEIGHT_DIR="$(dirname "${OUTPUT}")/weight"
-    if [[ -d "${WEIGHT_DIR}" ]]; then
-        ls -lh "${WEIGHT_DIR}/"* 2>/dev/null | awk '{print "  权值 .bin: "$5, $9}' | head -1
-    fi
     if [[ "$KEEP_OM" -eq 1 ]]; then
         echo "  (OM + 权值已保留, --delete-om 清理)"
     else
         rm -f "${OUTPUT}.om"
-        rm -rf "${WEIGHT_DIR}"
         echo "  (OM + 权值已清理)"
     fi
 else

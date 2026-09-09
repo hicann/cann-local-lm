@@ -83,7 +83,9 @@ CANN-LM **不本仓构建** torchair / torch-delegate，它们是**前置条件*
 | torch-delegate | `torch_delegate` whl（epair 序列化 API）+ 通常顺带建 `.venv`（torch 2.9.0+cpu） | `gitcode.com/shengnan666/torch-delegate.git` |
 | torchair | `torchair` whl（FX→GE IR 转换） | `gitcode.com/Ascend/torchair.git` |
 
-> **关键设计**：converter 用 P1 venv（CPU torch，**不装 torch_npu**）+ 真 CANN lib64（**无 stubs**，本机有 NPU 设备，torchair GE 转换走真 `libge_runner`）。torchair 是含 C++ 扩展的包，**whl 须与 venv 的 torch ABI 匹配**（torch 2.9.0+cpu）。CANN-LM 只复用 venv + 两个 whl；torch-delegate 的 `.so`/`third_party`/`.run` 是副产（CANN-LM 自建三方库 + 自建 backend .so，不复用）。
+> **⚠️ torch-delegate 当前未开源**：torch-delegate 代码仓（`gitcode.com/shengnan666/torch-delegate.git`）暂未公开，拉取代码需**额外申请访问权限**（联系仓库 owner）。torchair（`gitcode.com/Ascend/torchair.git`）为公开仓，可直接 clone。若已有预编 whl（方式二），则无需 clone torch-delegate 源码。
+
+> **关键设计**：converter 用 P1 venv（CPU torch，**不装 torch_npu**）+ 真 CANN lib64（**无 stubs**，`lite_export_context` 绕过 `aclrtSetDevice`）。torchair 是含 C++ 扩展的包，**whl 须与 venv 的 torch ABI 匹配**（torch 2.9.0+cpu）。CANN-LM 只复用 venv + 两个 whl；torch-delegate 的 `.so`/`third_party`/`.run` 是副产（CANN-LM 自建三方库 + 自建 backend .so，不复用）。
 
 ### 方式一：从源码构建安装（clone + build）
 

@@ -10,8 +10,11 @@ __pycache__/
 
 # Build artifacts
 build/
+build_tests/
 build_kx*/
 build_cov/
+output/
+deps/
 .cache/
 *.o
 *.so

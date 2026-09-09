@@ -3,7 +3,7 @@
 # build.sh — cann_lm_compile 前置环境准备 (+ 构建)
 #
 # 职责: 校验前置依赖 (CANN / converter venv / torch cmake / third_party) →
-#       source set_env_cann.sh → (bash 执行时) 跑 build_cpp.sh
+#       source set_env.sh → (bash 执行时) 跑 build_cpp.sh
 #
 # 用法:
 #   bash scripts/cann_lm_compile/build.sh              # 校验 + env + 构建 (全树)
@@ -13,7 +13,7 @@
 #   source scripts/cann_lm_compile/build.sh            # 校验 + env (持久到当前 shell), 不构建
 #   (其余参数透传 build_cpp.sh: --debug / --target ... / --no-compile-tool ...)
 #
-# 路径默认值可由环境变量覆盖: CANN_SET_ENV / TORCH_DELEGATE_HOME
+# 路径默认值可由环境变量覆盖: CANN_SET_ENV / THIRD_PARTY
 # =============================================================================
 
 # 仅 bash 执行 (非 source) 时启用 set -e; source 模式留宽松避免污染交互 shell
@@ -24,8 +24,7 @@ REPO="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 # ── 默认路径 (可覆盖) ──
 CANN_SET_ENV="${CANN_SET_ENV:-/home/developer/Ascend/cann/set_env.sh}"
-TORCH_DELEGATE_HOME="${TORCH_DELEGATE_HOME:-/mnt/workspace/torch-delegate-harmony}"
-THIRD_PARTY="${TORCH_DELEGATE_HOME}/output/third_party"
+THIRD_PARTY="${THIRD_PARTY:-${REPO}/output/third_party}"
 
 # ── 1. 前置校验 ──
 echo "=== [1/3] 前置环境校验 ==="
@@ -42,14 +41,14 @@ if [[ "$FAIL" -eq 1 ]]; then
   echo "" >&2
   echo "前置校验失败, 中止。修复上述 ✗ 项后重试。" >&2
   echo "  CANN 未装: 见 AGENTS.md「环境问题」(下载 cann run 包安装)" >&2
-  echo "  third_party 缺失: 需 torch-delegate-harmony/output/third_party (nlohmann_json + GTest)" >&2
+  echo "  third_party 缺失: bash scripts/build.sh third_party (nlohmann_json + GTest)" >&2
   return 1 2>/dev/null || exit 1
 fi
 
 # ── 2. source compile env ──
 echo ""
-echo "=== [2/3] source set_env_cann.sh ==="
-source "$REPO/scripts/set_env_cann.sh"
+echo "=== [2/3] source set_env.sh ==="
+source "$REPO/scripts/set_env.sh"
 
 # ── 3. 构建 ──
 CHECK_ONLY=0

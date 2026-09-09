@@ -1,6 +1,6 @@
 # CANN-LM 构建指南
 
-本文档描述 CANN-LM 的端到端构建流程，包括环境准备、三套运行环境（① 导出 / ② OM 编译 / ③ NPU 验证）、构建命令、安装包使用和常见问题。
+本文档描述 CANN-LM 的端到端构建流程，包括环境准备、运行环境（converter+compile 统一 env + ③ NPU）、前置条件（CANN / torchair / torch-delegate）、构建命令、安装包使用和常见问题。
 
 CANN-LM 将 HuggingFace 模型导出为 epair 格式，经 C++ 后端加载编译为 OM，最终在 Ascend NPU 上推理。构建链跨 Python（converter/engine whl）与 C++（backend .so + OM 编译工具 + 测试）两侧，依赖上游组件 torchair 与 torch-delegate。
 
@@ -74,124 +74,111 @@ apt install -y cmake build-essential python3 python3-venv python3-pip libasan8 p
 
 驱动与固件的下载和安装操作请参考《CANN软件安装指南》中"准备软件包"和"安装NPU驱动和固件"章节。驱动与固件是运行样例依赖，若仅编译环境（①②），可以不安装。
 
-## 安装上游组件
+## 安装上游组件（前置条件）
 
-CANN-LM 依赖两个上游组件（路径默认值见 `scripts/build.conf`，可由环境变量 `TORCHAIR_ROOT` / `TORCH_DELEGATE_HOME` 覆盖）：
+CANN-LM **不本仓构建** torchair / torch-delegate，它们是**前置条件**（类似 CANN toolkit，用户预先安装）。`bash scripts/build.sh deps` 只构建 cann_lm 本身，前置校验只查「`CONVERTER_PYTHON` 可执行 + torchair/torch_delegate 已装 venv」——兼容下面两种安装方式。
 
-| 组件 | 源码路径 | 作用 |
-|------|---------|------|
-| torchair | `${TORCHAIR_ROOT}`（默认 `/mnt/workspace/torchair`） | torchair GE 转换（FX→GE），编译产出 stubs 供 converter 在 CPU 上跑 |
-| torch-delegate | `${TORCH_DELEGATE_HOME}`（默认 `/mnt/workspace/torch-delegate-harmony`） | 提供 `.venv`（torch 2.9.0+cpu）+ `libtorch_delegate_backend.so` + 三方库（nlohmann_json/GTest/makeself）+ epair 序列化 |
+| 组件 | 作用 | git 源（见 `scripts/build.conf`） |
+|------|------|----------------------------------|
+| torch-delegate | `torch_delegate` whl（epair 序列化 API）+ 通常顺带建 `.venv`（torch 2.9.0+cpu） | `gitcode.com/shengnan666/torch-delegate.git` |
+| torchair | `torchair` whl（FX→GE IR 转换） | `gitcode.com/Ascend/torchair.git` |
 
-**构建顺序**：先 torch-delegate（产出 `.venv` + `third_party`），再 torchair（构建时指定 P1 venv python 为 target，stubs 与 venv 的 torch ABI 匹配）。也可直接用 CANN-LM 顶层 `bash scripts/build.sh deps` 一键串装（幂等，已装则跳），下文展开手动构建细节。
+> **关键设计**：converter 用 P1 venv（CPU torch，**不装 torch_npu**）+ 真 CANN lib64（**无 stubs**，本机有 NPU 设备，torchair GE 转换走真 `libge_runner`）。torchair 是含 C++ 扩展的包，**whl 须与 venv 的 torch ABI 匹配**（torch 2.9.0+cpu）。CANN-LM 只复用 venv + 两个 whl；torch-delegate 的 `.so`/`third_party`/`.run` 是副产（CANN-LM 自建三方库 + 自建 backend .so，不复用）。
 
-> **关键设计**：torchair 须以 `NO_ASCEND_SDK=1` 源码编译，生成的 `build/stubs/`（`libtorch_npu.so`/`libge_runner.so`/`libhccl_stub.so` 等）供 converter 在无 NPU 设备的 CPU 上运行 GE 转换；converter venv **不装 torch_npu**（走 stub 路径，见 [CLI 设计](cann_lm_converter/cli/cli_design.md)「converter 与 torch_npu 的关系」）；torch-delegate 的 `.venv` 提供 CPU torch + torch cmake 配置（C++ 构建链期引用，但 backend .so 不链 libtorch）。
+### 方式一：从源码构建安装（clone + build）
 
-### 安装 torch-delegate
+适用：无预编 whl，或要本地改动。需联网 + 编译。
 
-torch-delegate 的一站式 `build.sh` 自动完成：环境检查 → 创建 `.venv`（torch 2.9.0+cpu）→ 编译三方库（nlohmann_json/GTest/makeself）→ 编译 C++ delegate 库 → 构建 Python whl → 打包 `.run`。
+**构建顺序**：先 torch-delegate（产 `.venv`），再 torchair（`TARGET_PYTHON_PATH` 指向 P1 venv python，ABI 匹配）。
+
+#### 安装 torch-delegate
+
+torch-delegate 的 `build.sh` 一站式完成：环境检查 → 创建 `.venv`（torch 2.9.0+cpu）→ 编译三方库 → 编译 C++ delegate 库 → 构建 whl → 打包 `.run`。
 
 ```bash
 source /home/developer/Ascend/cann/set_env.sh   # 前置：设 ASCEND_HOME_PATH
-cd /mnt/workspace/torch-delegate-harmony
+cd /mnt/workspace/project/CANN-LM_5883          # PROJECT_ROOT
 
-./build.sh                  # 默认 release，自动创建 .venv
-# ./build.sh --debug        # debug 构建
-# ./build.sh --pre_check    # 仅校验环境，不构建
+# clone 到默认 deps/ (或自定义路径, 用 TORCH_DELEGATE_HOME 覆盖)
+git clone https://gitcode.com/shengnan666/torch-delegate.git deps/torch-delegate
+cd deps/torch-delegate
+./build.sh                  # 默认 release, 自动创建 .venv
+# ./build.sh --pre_check    # 仅校验环境, 不构建
 ```
 
-构建完成后产物：
+构建产物（CANN-LM 用到的）：
 
 | 产物 | 路径 | CANN-LM 用途 |
 |------|------|--------------|
-| P1 venv（torch 2.9.0+cpu） | `.venv/` | ① converter 运行环境 + C++ 构建链期 torch cmake 来源 |
-| 三方库 | `output/third_party/{json,gtest,makeself}/` | C++ 测试 + `.run` 打包 |
+| P1 venv（torch 2.9.0+cpu） | `.venv/` | converter 运行环境 + C++ 构建链期 torch cmake 来源 |
 | Python whl | `output/package/torch_delegate-*.whl` | 装进 P1（`torch_delegate` 包，epair 序列化） |
-| `.run` 安装包 | `output/package/torch_delegate-*.run` | 独立部署（可选） |
 
-将 torch_delegate whl 装进 P1 venv（CANN-LM ① env 用）：
+将 torch_delegate whl 装进 P1 venv：
 
 ```bash
 .venv/bin/pip install --force-reinstall --no-deps output/package/torch_delegate-*.whl
 ```
 
-`build.sh` 参数：
+> torch-delegate 的 `.so`/`third_party`/`.run` 是其自建副产，CANN-LM 不复用（CANN-LM 自建 `output/third_party` + 自建 backend .so）。更多细节见 torch-delegate 仓库 `docs/build.md`。
 
-| 参数 | 说明 |
-|------|------|
-| `--debug` / `--release` | 构建类型（默认 release，互斥） |
-| `--skip_third_party` | 跳过三方库编译（已有 `output/third_party` 时用） |
-| `--with_libtorch_npu` | 编译 libtorch_npu（默认 OFF，converter 不需要） |
-| `--system_python` | 使用当前 Python 环境，不创建 `.venv`（适用于 conda/CI） |
-| `--cann_3rd_lib_path=PATH` | 指定三方库路径 |
-| `--output_dir=PATH` | 产物输出路径（默认 `output/package`） |
-| `--pre_check` | 仅校验环境并退出 |
-| `--help` | 帮助信息 |
+#### 安装 torchair
 
-> 更多细节见 torch-delegate 仓库的 `docs/build.md`（`.run` 安装包使用、C++ 项目接入、ABI 兼容性等）。
-
-### 安装 torchair
-
-torchair 须以 `NO_ASCEND_SDK=1` 编译（不依赖真实 NPU SDK），生成 CPU 可用的 whl + stubs。构建时通过 `TARGET_PYTHON_PATH` 指定目标 Python（须指向 torch-delegate 的 P1 venv python，使 stubs 与 venv 的 torch ABI 匹配）。
+torchair 须 `cd` 进其源码根构建（`configure.py` 写相对 CWD 的 `tools/PYTHON_BIN_PATH`），`TARGET_PYTHON_PATH` 指向 P1 venv python。torchair 用 `setup.py bdist_wheel`，须先给 venv 装 `wheel` 包。
 
 ```bash
 source /home/developer/Ascend/cann/set_env.sh   # 前置：torchair cmake 需 CANN 头
-cd /mnt/workspace/torchair
+cd /mnt/workspace/project/CANN-LM_5883
 
-# configure（检测 Python/torch 环境；首次或环境变更时跑）
-TARGET_PYTHON_PATH=/mnt/workspace/torch-delegate-harmony/.venv/bin/python \
-  NO_ASCEND_SDK=1 bash ./configure
+git clone https://gitcode.com/Ascend/torchair.git deps/torchair
+# torchair 用 setup.py bdist_wheel, P1 venv 默认无 wheel 包
+deps/torch-delegate/.venv/bin/pip install wheel
 
-# 编译（CI 模式，NO_ASCEND_SDK=1；-c 仅编译不安装）
-TARGET_PYTHON_PATH=/mnt/workspace/torch-delegate-harmony/.venv/bin/python \
-  bash build.sh -c
+# cd 进 torchair 根构建 (TARGET_PYTHON=P1 venv, ABI 匹配)
+cd deps/torchair
+TARGET_PYTHON_PATH=../torch-delegate/.venv/bin/python bash build.sh -c
 ```
-
-构建完成后产物：
-
-| 产物 | 路径 | CANN-LM 用途 |
-|------|------|--------------|
-| Python whl | `output/torchair-0.1-py3-none-any.whl` | 装进 P1（`torchair` 包，GE 转换） |
-| stubs | `build/stubs/*.so` | ① converter env 的 `LD_LIBRARY_PATH` 前置（`libtorch_npu.so`/`libge_runner.so`/`libhccl_stub.so` 等，给 GE 引擎提供 C 符号） |
 
 将 torchair whl 装进 P1 venv：
 
 ```bash
-/mnt/workspace/torch-delegate-harmony/.venv/bin/pip install --force-reinstall --no-deps \
-  output/torchair-0.1-py3-none-any.whl
+../torch-delegate/.venv/bin/pip install --force-reinstall --no-deps output/torchair-*.whl
 ```
 
-也可用 `bash build.sh -i` 一步完成编译 + 安装（安装到 `TARGET_PYTHON_PATH` 对应环境）。`build.sh` 参数：
+torchair `build.sh` 常用参数：`-c`（CI 编译）、`-i`（编译+安装）、`-j[n]`（线程数）、`-h`（帮助）。
 
-| 参数 | 说明 |
-|------|------|
-| `-c` | CI 模式编译（须配合 `NO_ASCEND_SDK=1`） |
-| `-i` | 编译 + 安装 |
-| `-u` | 运行 C++ 单元测试（需真实 NPU 或 stubs env） |
-| `-s` | 运行系统测试 |
-| `-j[n]` | 编译线程数（默认 8） |
-| `-v` | verbose |
-| `-g PREFIX` | 指定 GCC 工具链前缀（交叉编译） |
-| `-h` | 帮助 |
+### 方式二：用 whl 包安装（无源码编译）
 
-> **stubs 必须用 torchair 编译产出的** `build/stubs`（ABI 匹配）。不要用真实 CANN lib64 替换——会 `initialize_graph_engine → aclrtSetDevice → 107001`（无设备）。只有"torchair + 其自带 stubs"这套组合在 CPU 上可用。
-
-### 一键串装（推荐）
-
-以上两步可由 CANN-LM 顶层脚本一键完成（幂等，已装则跳过）：
+适用：已有兼容 torch 2.9.0+cpu 的 venv + 预编 whl（来源：方式一源码构建产出，或发布包）。不 clone、不编译，直接 pip 装。**torchair whl 须与 venv 的 torch ABI 匹配**（torchair 含 C++ 扩展）。
 
 ```bash
-cd /mnt/workspace/project/CANN-LM_5883
-bash scripts/build.sh deps
+# 1. 准备 venv (torch 2.9.0+cpu) —— 已有兼容 venv 可跳过
+python3 -m venv /path/to/venv
+source /path/to/venv/bin/activate
+pip install torch==2.9.0 --index-url https://download.pytorch.org/whl/cpu
+
+# 2. 装预编 whl (torch_delegate + torchair; 须与 torch 2.9.0+cpu ABI 匹配)
+pip install torch_delegate-0.1.0-py3-none-any.whl
+pip install torchair-0.1-py3-none-any.whl
+
+# 3. 让 CANN-LM 用该 venv (设 CONVERTER_PYTHON 指向其 python)
+export CONVERTER_PYTHON=/path/to/venv/bin/python
+# (可选) 若 venv 命名符合 ${TORCH_DELEGATE_HOME}/.venv 结构, 设 TORCH_DELEGATE_HOME 即可, 无需设 CONVERTER_PYTHON
 ```
 
-`deps` 自动按顺序：构建 torchair（`TARGET_PYTHON_PATH=P1`）→ 安装 whl → 构建 torch-delegate → 安装 whl → 构建 cann_lm/engine whl → 安装。完成后 ① export env 就绪。
+> 方式二不需 `TORCHAIR_ROOT` / `TORCH_DELEGATE_HOME` 源码根目录，只靠 `CONVERTER_PYTHON` 指向装好上游的 venv。`build.sh deps` 前置校验只查「`CONVERTER_PYTHON` 可执行 + torchair/torch_delegate 已装」，源码根 / whl 两种来源皆过。
+
+### 校验前置就绪
+
+```bash
+source /home/developer/Ascend/cann/set_env.sh
+bash scripts/build.sh check    # 校验 CANN/P1 venv/torchair/torch_delegate/cann_lm/third_party 全就绪
+```
 
 ## 快速开始
 
 ### 1. 设置 CANN 环境
 
-根据 CANN 安装路径执行对应的 setup 脚本（由 `scripts/_env_common.sh` 自动 source）：
+根据 CANN 安装路径执行对应的 setup 脚本（**须手动 source**，`_env_common.sh` 不自动 source，只校验 `ASCEND_HOME_PATH` 已设）：
 
 ```bash
 # 普通用户默认路径（本机）
@@ -206,25 +193,28 @@ source ${install_path}/cann/set_env.sh
 
 设置完成后，`ASCEND_HOME_PATH` 环境变量会自动指向 CANN 安装目录。路径默认值集中在 `scripts/build.conf`，可由 `CANN_SET_ENV` 环境变量覆盖。
 
-### 2. 理解三套运行环境
+### 2. 理解运行环境
 
-CANN-LM 有三套互不叠加的 runtime env 基底（公共部分 `scripts/_env_common.sh` 由各脚本 source）：
+CANN-LM 有两套 runtime env（公共部分 `scripts/_env_common.sh` 校验 `ASCEND_HOME_PATH` 外部预置、设 `TORCH_DEVICE_BACKEND_AUTOLOAD=0` / `DOPT_PYTHON`）：
 
 ```bash
-source scripts/set_env_export.sh        # ① 导出 epair + 量化 (P1 CPU venv + torchair stubs, 不装 torch_npu)
-source scripts/set_env_cann.sh          # ② OM 编译 (真 CANN, 无 python/torch; 带 SOC/GE_FUSION/GE_EXTERNAL flag)
-source scripts/set_env_cann.sh --npu    # ③ NPU verify-runtime (真 CANN + DEVICE=npu; dopt GPTQ / NPU 出字 / OM 验证)
+source scripts/set_env.sh              # converter (①) + compile (②) 统一 env (真 CANN, 无 stubs/无 0715)
+source scripts/set_env_cann.sh --npu   # ③ NPU verify-runtime (真 CANN + DEVICE=npu; dopt GPTQ / NPU 出字 / OM 验证)
+# set_env_export.sh 为 back-compat 薄 wrapper (→ set_env.sh)
 ```
 
 | env | LD_LIBRARY_PATH | python/torch | 用途 |
 |-----|-----------------|--------------|------|
-| ① export | stubs 在前，CANN lib64 在后 | P1 venv（torch 2.9.0+cpu，无 torch_npu） | `torch.export` + torchair GE 转换（CPU 上跑，不依赖 NPU 设备） |
-| ② cann（OM 编译） | 真 CANN lib64 在前，无 stubs | 无 python/torch（C++ 编译不需） | `build_cpp.sh` + `cann_lm_compile`（epair→OM） |
-| ③ cann --npu | 真 CANN lib64 在前，无 stubs | 系统 Python（自带 torch_npu） | dopt GPTQ 量化 / NPU 出字 / OM 运行验证 |
+| `set_env.sh`（converter+compile 统一） | 真 CANN lib64（无 stubs，幂等） | P1 venv（torch 2.9.0+cpu，无 torch_npu） | ① `torch.export`+torchair GE 转换（走真 libge_runner，本机有 NPU 设备）；② `build_cpp.sh`+`cann_lm_compile`（epair→OM，带 SOC/GE_FUSION/GE_EXTERNAL flag） |
+| `set_env_cann.sh --npu`（③ NPU） | 真 CANN lib64（无 stubs） | **P2 系统 Python（独立于 P1 venv，自带 torch_npu）** | **dopt GPTQ 量化（需 NPU 加速时）** / NPU 出字 / OM 运行验证 |
 
-> **关键**：① 与 ③ 互斥——stubs-first LD 与装 torch_npu 不能共存。① 用 torchair 自带 stubs（ABI 匹配）给 GE 引擎提供 C 符号，避免真 NPU `aclrtSetDevice → 107001`（无设备）。**不要**用真实 CANN lib64 替换 stubs。
+> converter+compile **复用一套 env**（真 CANN，去 stubs、去 0715 pin）：converter 用 P1 venv（CPU torch，不装 torch_npu）+ 真 CANN lib64，torchair GE 转换走真 `libge_runner`（本机有 910 设备）。`set_env.sh` 还反查 cann_lm 装位置自定位注入 PYTHONPATH（不硬编码 repo 根）。
+>
+> **torch_npu（③ P2 系统 python）是可选的**：仅当**量化（dopt GPTQ）需要 NPU 加速**时才需要。converter 导出（①）+ OM 编译（②）**不依赖 torch_npu**——它们用 P1 venv（CPU torch，无 torch_npu）+ 真 CANN lib64。无 NPU 设备或仅做导出/编译时无需装 torch_npu。
+>
+> **⚠️ torch_npu 与 converter 的 P1 venv 冲突，必须装在独立的 python 环境**：torch_npu 不能装进 converter 的 CPU-torch venv（torch_npu 需配对带 NPU 支持的 torch，且其 import 会触发 NPU 设备初始化 `aclrtSetDevice`，与 converter 的 CPU torch + CPU 运行路径互斥）。故 CANN-LM 用**两个独立 python 环境**：P1 venv（`CONVERTER_PYTHON`，CPU torch 2.9.0+cpu，无 torch_npu，跑 converter）+ P2 系统 python（`DOPT_PYTHON`，装 torch_npu，跑 dopt GPTQ 量化 NPU 加速）。dopt 以 subprocess 形式经 `DOPT_PYTHON` 调起，与 converter 隔离。
 
-`build.sh` 各 subcommand 会自动 source 对应 env，无需手动 source。
+`build.sh` 各 subcommand 自动 source `set_env.sh`（converter+compile 用），无需手动 source。
 
 ### 3. 一键端到端构建
 
@@ -232,7 +222,7 @@ source scripts/set_env_cann.sh --npu    # ③ NPU verify-runtime (真 CANN + DEV
 bash scripts/build.sh all
 ```
 
-`all` 串联 `deps → cpp → wheel → om`，完成从上游依赖到 OM 产物的全流程。
+`all` 串联 `deps → third_party → cpp → wheel`（torchair+torch-delegate 须前置就绪），完成从 cann_lm 安装到 C++ 库 + 发布 whl 的全流程。OM 编译不在 `all`（属测试/示例，见下文）。
 
 ### 4. 校验基底（不构建）
 
@@ -240,7 +230,7 @@ bash scripts/build.sh all
 bash scripts/build.sh check
 ```
 
-校验 CANN / P1 venv（torch/torchair/torch_delegate/cann_lm）/ stubs / P2 python（torch_npu）/ third_party 是否就绪，输出各项 ✓/✗ 状态。
+校验基底：**必需项**（CANN / P1 venv / torch+torchair+torch_delegate+cann_lm / third_party）缺则报"缺 N 项必需项"；**可选项**（P2 系统 python + torch_npu）仅量化 NPU 加速时需要，converter/compile 不依赖，✗ 不计入失败。
 
 ## 构建命令
 
@@ -248,16 +238,19 @@ bash scripts/build.sh check
 
 | subcommand | env | 说明 |
 |-----------|-----|------|
-| `check` | ② | 校验基底（CANN / P1 / P2 / stubs / third_party），不构建 |
-| `deps` | ② | L1：构建 torchair + torch-delegate + cann_lm/engine wheel 装进 P1（① 就绪，幂等：已装则跳） |
-| `cpp [flags]` | ② | delegate `build_cpp.sh`（`libtorch_delegate_backend.so` + `cann_lm_compile` + tests） |
+| `check` | set_env | 校验基底（必需：CANN / P1 venv / torchair / torch_delegate / cann_lm / third_party；**可选**：P2 python + torch_npu，仅量化 NPU 加速需），不构建 |
+| `deps` | set_env | 装 cann_lm/engine wheels 进 P1 venv（torchair+torch-delegate 为前置条件，见上节；幂等：已装则跳） |
+| `third_party` | 无 | 自带 C++ 三方库（nlohmann_json + GTest + makeself）→ `output/third_party` |
+| `cpp [flags]` | set_env | delegate `build_cpp.sh`（`libtorch_delegate_backend.so` + `cann_lm_compile`，**不含测试**） |
+| `tests [flags]` | set_env | delegate `build_test.sh`（ASAN，独立 `build_tests/` 树 + 构建 + ctest；兑现 ASAN 强制） |
 | `wheel` | 无 | delegate `build_wheel.sh`（P1 venv pip 纯打包，不需 CANN） |
-| `om [args]` | ② | delegate `run_compile.sh`（epair → OM，自带 source） |
-| `package` | ② | delegate `package_run.sh`（打 `.run` 自解压包） |
-| `all` | ② | deps → cpp → wheel → om |
+| `package` | set_env | delegate `package_run.sh`（打 `.run` 自解压包） |
+| `all` | set_env | deps → third_party → cpp → wheel |
 | `-h\|--help\|help` | — | 帮助信息 |
 
-env 映射规则：`check`/`deps`/`cpp`/`om`/`package` → ② cann（构建/编译要真 CANN，非 stubs）；`wheel` 不需 env（P1 venv pip 纯打包）。① export 仅供日常 `source` 跑 converter。
+env 映射：`check`/`deps`/`cpp`/`tests`/`package` 均 source `set_env.sh`（converter+compile 统一 env，需先 source CANN set_env.sh 设 `ASCEND_HOME_PATH`）；`wheel`/`third_party` 不需 env。③ NPU 运行用 `source scripts/set_env_cann.sh --npu`。
+
+> **OM 编译（epair→OM）属测试/示例，不在 build.sh 构建流程**：用 `cpp` 产出的 `cann_lm_compile` 工具编译具体模型。直接跑 `examples/test_converter/export_llm_model/run_compile.sh`（自带 source set_env.sh + 构建+运行+存日志）。
 
 示例：
 
@@ -265,7 +258,7 @@ env 映射规则：`check`/`deps`/`cpp`/`om`/`package` → ② cann（构建/编
 # 校验基底
 bash scripts/build.sh check
 
-# 安装上游依赖（幂等）
+# 装 cann_lm wheels 进 P1 venv（幂等；torchair+torch-delegate 须前置就绪）
 bash scripts/build.sh deps
 
 # C++ 构建（默认 release，全树）
@@ -378,14 +371,14 @@ TORCH_VERSION=2.9.0
 TORCHAIR_VERSION=0.1
 CANN_VERSION=9.2.0
 
-# 路径默认值（可被环境变量覆盖）
-PROJECT_ROOT=/mnt/workspace/project/CANN-LM_5883
-TORCHAIR_ROOT=/mnt/workspace/torchair
-TORCH_DELEGATE_HOME=/mnt/workspace/torch-delegate-harmony
-CANN_SET_ENV=/home/developer/Ascend/cann/set_env.sh
+# 路径默认值（可被环境变量覆盖; PROJECT_ROOT 自定位, 上游仓默认 deps/）
+PROJECT_ROOT=/mnt/workspace/project/CANN-LM_5883   # 自定位 (build.conf 从 scripts 位置推)
+DEPS_DIR=${PROJECT_ROOT}/deps
+TORCHAIR_ROOT=${DEPS_DIR}/torchair                  # 前置条件, 见「安装上游组件」
+TORCH_DELEGATE_HOME=${DEPS_DIR}/torch-delegate      # 前置条件, 含 .venv (P1)
+CANN_SET_ENV=/home/developer/Ascend/cann/set_env.sh # hint (CANN 外部预置)
 CONVERTER_PYTHON=${TORCH_DELEGATE_HOME}/.venv/bin/python   # P1 venv
-DOPT_PYTHON=/opt/buildtools/Python-3.11.4/bin/python3      # P2 系统 Python
-STUBS_DIR=${TORCHAIR_ROOT}/build/stubs
+DOPT_PYTHON=/opt/buildtools/Python-3.11.4/bin/python3      # P2 系统 Python (③ NPU 用)
 SOC_VERSION=Ascend910_9362
 ```
 
@@ -444,8 +437,8 @@ dist/                                     ← 发布产物
 ├── cann_lm_engine-*.whl                  ← cann_lm.engine
 └── cann_lm_compile-<ver>-<arch>.run      ← 自解压安装包
 
-${TORCH_DELEGATE_HOME}/output/third_party/  ← 三方库（nlohmann_json + GTest + makeself）
-${TORCHAIR_ROOT}/build/stubs/             ← torchair stubs（converter CPU 运行所需）
+${TORCH_DELEGATE_HOME}/.venv/                 ← P1 venv（torch 2.9.0+cpu + torchair + torch_delegate + cann_lm），前置条件产
+output/third_party/                         ← CANN-LM 自建三方库（nlohmann_json + GTest + makeself）
 ```
 
 ## 常见问题
@@ -462,27 +455,28 @@ source /home/developer/Ascend/cann/set_env.sh
 
 或由环境变量指定：`export CANN_SET_ENV=/path/to/Ascend/cann/set_env.sh`。
 
-### Q2: stubs 目录缺失或 aclrtSetDevice → 107001
+### Q2: ASCEND_HOME_PATH 未设 / aclrtSetDevice 报错
 
-**原因**：converter（① env）需 torchair 编译产出的 stubs，缺失时会用真实 CANN lib64 触发 `aclrtSetDevice → 107001`（无设备）。
+**原因**：未先 source CANN set_env.sh（`set_env.sh` 不自动 source CANN，要求外部预置 `ASCEND_HOME_PATH`）。
 
 **解决方案**：
 
 ```bash
-bash scripts/build.sh deps   # 构建并安装 torchair（含 stubs）
+source /home/developer/Ascend/cann/set_env.sh   # 设 ASCEND_HOME_PATH
+source scripts/set_env.sh                       # 再 source 统一 env
 ```
 
-stubs 必须用 **torchair 编译生成的** `${TORCHAIR_ROOT}/build/stubs`（ABI 匹配），不要用真实 CANN lib64 替换。
+> converter+compile 现复用一套 env（真 CANN，无 stubs）。本机有 NPU 设备时 torchair GE 转换走真 `libge_runner`；若纯 CPU 无设备，需另行装 torch_npu 或恢复 stubs 方案（见 git 历史）。
 
-### Q3: torchair / torch_delegate / cann_lm 未安装
+### Q3: torchair / torch_delegate 未安装
 
-**原因**：P1 venv 缺上游依赖。
+**原因**：前置条件未就绪（torchair+torch-delegate 不由 build.sh 构建，须手动安装）。
 
-**解决方案**：
+**解决方案**：见上文「安装上游组件」节，按顺序装 torch-delegate（产 `.venv`）→ torchair，然后：
 
 ```bash
-bash scripts/build.sh deps   # 幂等：已装则跳过
-bash scripts/build.sh check  # 校验状态
+bash scripts/build.sh deps    # 装 cann_lm wheels 进 P1 venv (幂等)
+bash scripts/build.sh check   # 校验全基底
 ```
 
 ### Q4: C++ 测试 ASAN 失败或内存错误
@@ -513,31 +507,163 @@ ASAN flags 含 `-static-libasan`，ctest 可裸跑无需 `LD_PRELOAD`。
 2. 没有则从[master 下载链接](https://ascend.devcloud.huaweicloud.com/artifactory/cann-run-mirror/software/master)下载
 3. 安装并建立符号链接：`ln -s cann-9.2.0 cann`
 
-## 环境变量速查
+## 参数说明
+
+### build.conf 配置项（`scripts/build.conf`，单一来源，环境变量优先覆盖）
+
+| 变量 | 默认 | 说明 |
+|------|------|------|
+| `PROJECT_ROOT` | 自定位（scripts 父目录） | CANN-LM 仓根；build.conf 自定位注入，任何 source 它的脚本都拿到 |
+| `TORCH_DELEGATE_VERSION` | `0.1.0` | torch-delegate 版本（信息性，对齐校验） |
+| `TORCH_VERSION` | `2.9.0` | torch 版本（信息性） |
+| `TORCHAIR_VERSION` | `0.1` | torchair 版本 |
+| `CANN_VERSION` | `9.2.0` | CANN 版本（信息性） |
+| `TORCHAIR_GIT_URL` | `gitcode.com/Ascend/torchair.git` | torchair git 源（前置安装参考，见「安装上游组件」） |
+| `TORCHAIR_GIT_TAG` | 空 | torchair git tag（空=默认分支） |
+| `TORCH_DELEGATE_GIT_URL` | `gitcode.com/shengnan666/torch-delegate.git` | torch-delegate git 源 |
+| `TORCH_DELEGATE_GIT_TAG` | 空 | torch-delegate git tag |
+| `NLOHMANN_JSON_VERSION` / `GTEST_VERSION` / `MAKESELF_VERSION` | `3.11.3` / `1.14.0` / `2.5.0-patch1` | 自建三方库版本（build_third_party.sh 下载编译） |
+| `DEPS_DIR` | `${PROJECT_ROOT}/deps` | 上游仓 clone + 构建根（gitignored） |
+| `TORCHAIR_ROOT` | `${DEPS_DIR}/torchair` | torchair 根（前置条件，源码装） |
+| `TORCH_DELEGATE_HOME` | `${DEPS_DIR}/torch-delegate` | torch-delegate 根（前置条件，含 `.venv`） |
+| `CONVERTER_PYTHON` | `${TORCH_DELEGATE_HOME}/.venv/bin/python` | P1 venv python（converter 用；尊重外部预置，whl 模式可指向自建 venv） |
+| `SOC_VERSION` | `Ascend910_9362` | OM 编译目标 SOC。**NPU 机用 910_9362；CPU-only + 950DT CANN 机用 `Ascend950DT_9575` 交叉编译**（env 覆盖） |
+| `CANN_SET_ENV` | `/home/developer/Ascend/cann/set_env.sh` | CANN set_env.sh 路径（hint；用户须先 source 它设 `ASCEND_HOME_PATH`） |
+| `DOPT_PYTHON` | `/opt/buildtools/Python-3.11.4/bin/python3` | P2 系统 python（③ 量化 NPU 加速用，**独立于 P1 venv**，torch_npu 与 converter CPU-torch 冲突须隔离） |
+
+### 运行时环境变量（set_env.sh / _env_common.sh 导出 + 外部预置）
 
 | 环境变量 | 说明 | 由谁设置 |
 |---------|------|---------|
-| `ASCEND_HOME_PATH` | CANN 安装目录 | `_env_common.sh` source CANN `set_env.sh` |
-| `LD_LIBRARY_PATH` | 动态库搜索路径（① stubs 在前 / ②③ CANN lib64 在前） | `set_env_export.sh` / `set_env_cann.sh` |
-| `PYTHONPATH` | 追加 `PROJECT_ROOT`（converter/NPU 都需） | `_env_common.sh` |
+| `ASCEND_HOME_PATH` | CANN 安装目录（**外部预置**，不自动 source） | 用户 source CANN `set_env.sh` |
+| `ASCEND_OPP_PATH` | CANN opp 目录（GE 找 ops/kernel 用） | CANN `set_env.sh` |
+| `LD_LIBRARY_PATH` | 动态库搜索路径（真 CANN lib64 + devlib [libascend_hal.so]，无 stubs，幂等 prepend） | `set_env.sh` / `set_env_cann.sh` |
+| `PYTHONPATH` | cann_lm 装位置（反查 venv site-packages 自定位，不硬编码 repo 根） | `set_env.sh` |
 | `TORCH_DEVICE_BACKEND_AUTOLOAD` | `0`，阻止 torch autoload npu backend | `_env_common.sh` |
-| `CONVERTER_PYTHON` | P1 venv python（① converter 用） | `set_env_export.sh` |
-| `DOPT_PYTHON` | P2 系统 python（③ dopt/出字 subprocess 用） | `_env_common.sh` |
-| `TORCH_DELEGATE_HOME` | torch-delegate 源码根（含 .venv + third_party） | `build.conf` |
-| `TORCHAIR_ROOT` | torchair 源码根（含 stubs） | `build.conf` |
-| `SOC_VERSION` | 编译目标 SOC（② 如 `Ascend910_9362`） | `set_env_cann.sh` |
-| `GE_EXTERNAL_WEIGHT` | `2`，OM 权值分离（② 编译） | `set_env_cann.sh` |
-| `GE_FUSION_SWITCH_FILE` | fusion 开关配置（② 关 AUB fusion） | `set_env_cann.sh` |
+| `CONVERTER_PYTHON` | P1 venv python（converter 用；尊重外部预置） | `set_env.sh` |
+| `DOPT_PYTHON` | P2 系统 python（独立于 P1 venv；装 torch_npu，跑 dopt GPTQ 量化 NPU 加速） | `_env_common.sh` |
+| `TORCH_DELEGATE_HOME` | torch-delegate 根（前置条件，含 `.venv`） | `build.conf` / `set_env.sh` |
+| `TORCHAIR_ROOT` | torchair 根（前置条件） | `build.conf` |
+| `SOC_VERSION` | OM 编译目标 SOC（`Ascend910_9362` 默认；950DT 机用 `Ascend950DT_9575`，env 覆盖） | `set_env.sh` |
+| `GE_EXTERNAL_WEIGHT` | `2`，OM 权值分离（编译期，权值落 `<output>/weight/*.bin`） | `set_env.sh` |
+| `GE_FUSION_SWITCH_FILE` | fusion 开关配置（关 AUB + AddRmsNorm/InplaceAddRmsNorm fusion） | `set_env.sh` |
+| `ASCEND_SLOG_PRINT_TO_STDOUT` | `1`，GE 详细日志到 stdout（定位 not registered 等） | `set_env.sh` |
+| `TORCH_DELEGATE_ENABLE_FALLBACK_CODEGEN` | `0`，不走 fallback codegen | `set_env.sh` |
 | `DEVICE` | `npu`（③ NPU verify-runtime） | `set_env_cann.sh --npu` |
-| `TORCH_DELEGATE_ENABLE_FALLBACK_CODEGEN` | `0`，不走 fallback codegen（①） | `set_env_export.sh` |
+
+### build.sh subcommand flags
+
+| subcommand | flags | 说明 |
+|-----------|-------|------|
+| `cpp` | `--debug` / `--release`(默认) / `--asan` / `--coverage` / `--tests` / `--no-tests`(默认) / `--no-compile-tool`(`--no-om` 别名) / `--no-backend` / `--target <name>` / `-h` | 构建 `libtorch_delegate_backend.so` + `cann_lm_compile`（默认不含测试，测试用 `tests`）；`--coverage` 需独立 build 目录，与 `--asan` 互斥 |
+| `tests` | `--no-asan` / `--skip-run` / `-h` | ASAN 构建（独立 `build_tests/` 树）+ ctest；默认 ASAN ON + 跑测试；`--skip-run` 仅构建不跑 |
+| `third_party` | `--third_party_path=PATH` / `--build_type=TYPE` / `--jobs=N` / `--help` | 自建 nlohmann_json + GTest + makeself → `output/third_party` |
+| `deps` | （无） | 装 cann_lm/engine wheels 进 P1 venv（幂等；torchair+torch-delegate 须前置就绪） |
+| `wheel` | （无） | cann_lm + cann_lm_engine whl → `dist/`（P1 venv pip 纯打包，不需 CANN） |
+| `package` | （透传 `package_run.sh`） | 打 `cann_lm_compile-*.run` 自解压包 |
+| `check` | （无） | 校验基底（必需项 + 可选项 P2/torch_npu），不构建 |
+| `all` | （透传） | deps → third_party → cpp → wheel |
+| e2e `run_e2e_pipeline.sh` | `--hf-path <dir>` / `--model-type qwen3_5\|gemma4` / `--seq-len N` / `--dtype` / `--prompt <text>` / `--output-dir <dir>` / `--skip-export` / `--skip-om` / `--skip-npu` / `--check-env` | 端到端 ① 导出 epair + ② OM 编译 + ③ NPU 出字。gemma4 需 `--seq-len 128`；无 NPU 用 `--skip-npu` |
+
+## 用例：HF → epair → OM 端到端（gemma4）
+
+以 `gemma-4-E2B-it` 为例，串通 ① HF 模型导出 epair + ② epair 编译 OM。前置：CANN + torchair/torch-delegate（P1 venv）已就绪（见「安装上游组件」），`bash scripts/build.sh cpp` 已产出 `build/cann_lm_compile`。
+
+### 0. 准备 env
+
+```bash
+source /home/developer/Ascend/cann/set_env.sh        # 设 ASCEND_HOME_PATH + 完整 CANN LD (含 plugins/opp)
+source scripts/set_env.sh                            # converter+compile 统一 env (真 CANN, 无 stubs)
+# ② OM 编译目标 SOC: NPU 机用默认 Ascend910_9362; CPU-only + 950DT CANN 机交叉编译:
+export SOC_VERSION=Ascend950DT_9575                  # 仅 950DT CANN 机需; 910 NPU 机省略
+```
+
+### ① HF → epair（cli_export 导出 prefill+decode）
+
+converter 把 HF 模型经 `torch.export` + torchair GE 转换，产出 prefill/decode 两段 epair（含 ascend_ir 注解的 EP JSON + 权重索引）。
+
+```bash
+CONVERTER="$PWD/cann_lm/converter/cann_lm_converter.py"
+OUT="$PWD/examples/test_converter/export_llm_model/output/e2e_gemma4"
+mkdir -p "$OUT"
+
+# --mode prefill-decode: 同时导出 prefill + decode 两段; gemma4 需 --seq-len 128 (run_gemma4_gen.py PREFILL_SEQ=128)
+"$CONVERTER_PYTHON" "$CONVERTER" \
+    --hf-path /mnt/workspace/data/models/gemma-4-E2B-it \
+    --output-dir "$OUT" \
+    --mode prefill-decode --seq-len 128 --dtype bfloat16
+```
+
+产物（`$OUT/`）：
+
+| 文件 | 说明 |
+|------|------|
+| `prefill_ep_json_with_ascend_ir.json` | prefill 段 EP JSON（含 ascend_ir 注解，GE opdef） |
+| `decode_ep_json_with_ascend_ir.json` | decode 段 EP JSON |
+| `weight_info.json` | 权重索引（cann_lm_compile 加载权重用） |
+| `model_config.json` / `tokenizer.json` | 模型配置 + tokenizer（③ NPU 出字用） |
+
+> converter 后台跑会在 GE finalize 处挂起（已知），产物此前已落盘；`run_e2e_pipeline.sh` 用后台+轮询+kill 绕过。
+
+### ② epair → OM（cann_lm_compile 编译 prefill+decode）
+
+`cann_lm_compile` 加载 epair（ep_json + weight_info）→ 构建 GE Graph → `aclgrphBuildModel` 编译 OM（权值分离时落 `<output>/weight/*.bin`）。各段独立子目录以隔离权值。
+
+```bash
+BIN="$PWD/build/cann_lm_compile"
+cd "$OUT"
+for st in prefill decode; do
+  mkdir -p "$st"
+  "$BIN" "${st}_ep_json_with_ascend_ir.json" weight_info.json "${st}/${st}"
+  # → ${st}/${st}.om (+ ${st}/weight/*.bin 权值分离)
+done
+```
+
+产物：
+
+| 文件 | 说明 |
+|------|------|
+| `prefill/prefill.om` | prefill 段 OM（编译后模型，部署到 NPU 跑） |
+| `decode/decode.om` | decode 段 OM |
+| `prefill|decode/weight/*.bin` | 权值分离时外置权值（`GE_EXTERNAL_WEIGHT=2`） |
+
+> cann_lm_compile 退出时 GE REG_OP 静态注册器 teardown 会触发 glibc abort（非零退出），OM 在此前已正常产出——以 `.om` 文件存在判定成功（`run_compile.sh` 已用 `|| true` 处理）。
+
+### ③（可选）NPU 出字验证
+
+需 NPU 设备 + torch_npu（P2 系统 python，独立 env）：
+
+```bash
+source scripts/set_env_cann.sh --npu
+"$DOPT_PYTHON" examples/test_converter/export_llm_model/om_npu_verify/run_gemma4_gen.py "Hello, my name is"
+```
+
+无 NPU/未装 torch_npu 则跳过 ③（①② 仍完成）。
+
+### 一键跑（推荐）
+
+`examples/test_converter/export_llm_model/run_e2e_pipeline.sh` 串通 ①②③，自动处理后台挂起/GE teardown/SOC env：
+
+```bash
+source /home/developer/Ascend/cann/set_env.sh
+export SOC_VERSION=Ascend950DT_9575   # 950DT 机; 910 NPU 机省略
+bash examples/test_converter/export_llm_model/run_e2e_pipeline.sh \
+    --model-type gemma4 --hf-path /mnt/workspace/data/models/gemma-4-E2B-it \
+    --seq-len 128 --skip-npu          # 无 NPU 跳过 ③
+# 复用已有 epair 只跑 ②: 加 --skip-export
+# 只验 env 不跑: --check-env
+```
+
+qwen3.5 同理（`--model-type qwen3_5 --hf-path <Qwen3.5-0.8B> --seq-len 8`）；注意 0828 CANN 上 qwen3.5 的 ChunkGatedDeltaRule op_info 回归（gemma4 不受影响）。
 
 ## 相关文件
 
 - `scripts/build.sh` — 顶层端到端构建入口（subcommand 调度）
-- `scripts/build.conf` — 版本号 + 路径默认值集中点
-- `scripts/_env_common.sh` — set_env 公共部分（CANN/PYTHONPATH/通用变量）
-- `scripts/set_env_export.sh` — ① converter env（CPU venv + torchair stubs）
-- `scripts/set_env_cann.sh` — ②③ real-CANN env（OM 编译 / NPU verify-runtime）
+- `scripts/build.conf` — 版本号 + git 源 + 自定位派生路径（PROJECT_ROOT 自定位）
+- `scripts/_env_common.sh` — set_env 公共部分（校验 ASCEND_HOME_PATH / 通用变量）
+- `scripts/set_env.sh` — converter+compile 统一 env（真 CANN，无 stubs/无 0715）
+- `scripts/set_env_cann.sh` — ③ NPU verify-runtime env
+- `scripts/set_env_export.sh` — back-compat 薄 wrapper（→ `set_env.sh`）
 - `scripts/cann_lm_compile/build_cpp.sh` — C++ 统一构建（顶层 CMakeLists）
 - `examples/test_converter/export_llm_model/run_compile.sh` — epair→OM 一键编译
 - `scripts/cann_lm_compile/package_run.sh` — 打 `.run` 自解压包

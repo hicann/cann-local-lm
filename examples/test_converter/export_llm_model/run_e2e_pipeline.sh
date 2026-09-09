@@ -18,7 +18,7 @@
 #
 # gemma4 注意: run_gemma4_gen.py PREFILL_SEQ=128, 故导出需 --seq-len 128 (qwen3.5 用默认 8).
 #
-# 每步在子 shell 内 unset LD_LIBRARY_PATH 隔离, 防 ① stubs-first 污染 ② 真 CANN.
+# 每步在子 shell 内跑; 统一 env (set_env.sh, 无 stubs) 后 ①② 共用同一 LD, 无需 unset 隔离.
 # =============================================================================
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -77,14 +77,12 @@ check_env() {
   echo "  PROJECT_ROOT=$PROJECT_ROOT"
   echo "  MODEL_TYPE=$MODEL_TYPE  RUNNER=$(basename "$RUNNER")"
 
-  # ① 导出 epair (converter venv + torchair stubs; 子 shell source set_env_export 避免污染 ②③)
-  echo ""; echo "== ① 导出 epair (converter venv + torchair stubs, CPU) =="
+  # ① 导出 epair (converter venv, 统一 env set_env.sh; 继承外部已 source 的 CANN 完整 LD)
+  echo ""; echo "== ① 导出 epair (converter venv, 统一 env, CPU) =="
   local venv_py
-  venv_py=$( ( unset LD_LIBRARY_PATH; source "$PROJECT_ROOT/scripts/set_env_export.sh" >/dev/null 2>&1; echo "$CONVERTER_PYTHON" ) )
+  venv_py=$( ( source "$PROJECT_ROOT/scripts/set_env_export.sh" >/dev/null 2>&1; echo "$CONVERTER_PYTHON" ) )
   if [[ -x "$venv_py" ]]; then _ok "CONVERTER_PYTHON=$venv_py"; else _ng "CONVERTER_PYTHON 缺失 (set_env_export.sh)"; fi
-  ( unset LD_LIBRARY_PATH; source "$PROJECT_ROOT/scripts/set_env_export.sh" >/dev/null 2>&1; "$CONVERTER_PYTHON" -c "import torch,torchair,torch_delegate" ) 2>/dev/null && _ok "venv: torch+torchair+torch_delegate" || _ng "venv import 失败"
-  local stubs; stubs=$( ( unset LD_LIBRARY_PATH; source "$PROJECT_ROOT/scripts/set_env_export.sh" >/dev/null 2>&1; echo "${STUBS_DIR:-${TORCHAIR_ROOT:-}/build/stubs}" ) )
-  [[ -d "$stubs" ]] && _ok "stubs: $stubs" || _ng "stubs 缺失"
+  ( source "$PROJECT_ROOT/scripts/set_env_export.sh" >/dev/null 2>&1; "$CONVERTER_PYTHON" -c "import torch,torchair,torch_delegate" ) 2>/dev/null && _ok "venv: torch+torchair+torch_delegate" || _ng "venv import 失败"
   [[ -f "$CONVERTER" ]] && _ok "cann_lm_converter.py" || _ng "converter 入口缺失"
 
   # ② OM 编译 (真 CANN + cann_lm_compile; 只查文件/命令, 不 import)
@@ -123,12 +121,11 @@ check_env() {
 
 if [[ $CHECK_ENV -eq 1 ]]; then check_env; exit 0; fi
 
-# ── ① 导出 epair (cli_export, set_env_export ①, P1+stubs; 后台+轮询+kill 绕过 GE finalize 挂起) ──
-phase ① "导出 epair (cli_export, set_env_export ①)"
+# ── ① 导出 epair (cli_export, set_env.sh 统一 env, P1 venv; 后台+轮询+kill 绕过 GE finalize 挂起) ──
+phase ① "导出 epair (cli_export, set_env.sh 统一 env)"
 if [[ $SKIP_EXPORT -eq 1 ]]; then ok "skip ① (--skip-export), 复用 $OUTPUT_DIR"; else
   (
-    unset LD_LIBRARY_PATH
-    source "$PROJECT_ROOT/scripts/set_env_export.sh" >/dev/null 2>&1
+    source "$PROJECT_ROOT/scripts/set_env_export.sh" >/dev/null 2>&1   # 统一 env (=set_env.sh); 继承外部已 source 的 CANN 完整 LD
     rm -rf "$OUTPUT_DIR"; mkdir -p "$OUTPUT_DIR"
     echo "  converter: --mode prefill-decode --seq-len $SEQ_LEN --dtype $DTYPE"
     "$CONVERTER_PYTHON" "$CONVERTER" --hf-path "$HF_PATH" --output-dir "$OUTPUT_DIR" \
@@ -148,19 +145,17 @@ if [[ $SKIP_EXPORT -eq 1 ]]; then ok "skip ① (--skip-export), 复用 $OUTPUT_D
   ok "① epair: prefill+decode ep_json + weight_info  → $OUTPUT_DIR"
 fi
 
-# ── ② OM 编译 prefill+decode (set_env_cann ② = 0715 CANN; 各自子目录隔离权值) ──
-phase ② "OM 编译 prefill+decode (set_env_cann ②)"
+# ── ② OM 编译 prefill+decode (set_env.sh 统一 env, 真 CANN 0828; 各自子目录隔离权值) ──
+phase ② "OM 编译 prefill+decode (set_env.sh 统一 env)"
 if [[ $SKIP_OM -eq 1 ]]; then ok "skip ② (--skip-om)"; else
   [[ -x "$COMPILE_BIN" ]] || die "② cann_lm_compile 未构建: bash scripts/build.sh cpp"
-  # set_env_cann.sh ② 切到 0715 CANN: 0828 的 9e36de07b 给 ChunkGatedDeltaRule op_info 加 fp32
-  # initial_state 选项, GE 在 910 把 bf16 promote 成 fp32 → 编译失败 + 输出乱码. 0715 只 bf16, 正常.
+  # 统一 env 用装好的 CANN (0828, 无 0715 pin): qwen3.5 的 ChunkGatedDeltaRule op_info 回归需注意, gemma4 不受影响
   (
-    unset LD_LIBRARY_PATH
     cd "$OUTPUT_DIR"
     for st in prefill decode; do
       mkdir -p "$st"
       echo "  compile $st → $st/$st.om (via run_compile.sh)"
-      # run_compile.sh 自 source set_env_cann(②→0715) + 加 aarch64 LD (libascend_hal.so) + 处理 GE teardown 崩溃
+      # run_compile.sh 自 source set_env.sh(统一 env, 真 CANN 0828) + 处理 GE teardown 崩溃
       bash "$SCRIPT_DIR/run_compile.sh" --no-build \
           "$OUTPUT_DIR/${st}_ep_json_with_ascend_ir.json" "$OUTPUT_DIR/weight_info.json" "$OUTPUT_DIR/${st}/${st}" \
           >"$st/compile.log" 2>&1 || true

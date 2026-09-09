@@ -10,7 +10,7 @@ set -euo pipefail
 # 运行: source /opt/cann-lm/set_env.sh (需先 source CANN set_env.sh) → /opt/cann-lm/cann_lm_compile ...
 # 注: 工具不依赖 torch/venv, 安装机只需 CANN
 #
-# 环境覆盖: VERSION / ARCH / TORCH_DELEGATE_HOME
+# 环境覆盖: VERSION / ARCH / THIRD_PARTY
 #=============================================================================
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$SCRIPT_DIR/../.." && pwd)"
@@ -19,6 +19,8 @@ ARCH="${ARCH:-$(uname -m)}"
 PKG_NAME="cann_lm_compile-${VERSION}-${ARCH}"
 STAGE="$REPO/build/package_stage/$PKG_NAME"
 DIST="$REPO/dist"
+THIRD_PARTY="${THIRD_PARTY:-$REPO/output/third_party}"
+MAKESELF="${THIRD_PARTY}/makeself/makeself.sh"
 
 # ── 1. build (cann_lm_compile + .so, 跳 tests) ──
 echo "### [1/4] build (build_cpp.sh --no-tests --target cann_lm_compile)"
@@ -63,9 +65,25 @@ fi
 # ── 4. makeself → .run ──
 echo "### [4/4] makeself → $DIST/$PKG_NAME.run"
 mkdir -p "$DIST"
-makeself --notemp "$STAGE" "$DIST/$PKG_NAME.run" \
-    "cann_lm_compile $VERSION (CANN-only, no torch)" \
-    ./set_env.sh
+# 优先用自带 makeself.sh (build_third_party 产出); 缺失则回退 PATH 上的 makeself
+MAKESELF_BIN=""
+if [[ -f "$MAKESELF" ]]; then
+    MAKESELF_BIN="$MAKESELF"
+    MAKESELF_HDR="${THIRD_PARTY}/makeself/makeself-header.sh"
+elif command -v makeself >/dev/null; then
+    MAKESELF_BIN="makeself"
+else
+    echo "ERROR: makeself 未找到 (自带: $MAKESELF 或 PATH)" >&2
+    echo "  先构建: bash scripts/build.sh third_party" >&2
+    exit 1
+fi
+if [[ "$MAKESELF_BIN" == "$MAKESELF" ]]; then
+    bash "$MAKESELF_BIN" --header "$MAKESELF_HDR" --notemp "$STAGE" "$DIST/$PKG_NAME.run" \
+        "cann_lm_compile $VERSION (CANN-only, no torch)" ./set_env.sh
+else
+    "$MAKESELF_BIN" --notemp "$STAGE" "$DIST/$PKG_NAME.run" \
+        "cann_lm_compile $VERSION (CANN-only, no torch)" ./set_env.sh
+fi
 
 echo ""
 echo "=== package ==="

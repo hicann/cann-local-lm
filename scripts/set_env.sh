@@ -24,13 +24,12 @@ export SOC_VERSION="${SOC_VERSION:-Ascend910_9362}"
 export GE_FUSION_SWITCH_FILE="${GE_FUSION_SWITCH_FILE:-${PROJECT_ROOT}/cann_lm/converter/export/csrc/tools/fusion_autoub_off.cfg}"
 export GE_EXTERNAL_WEIGHT="${GE_EXTERNAL_WEIGHT:-2}"
 
-# ── 统一 LD: 真 CANN lib64 + devlib (libascend_hal.so 在 devlib, torchair _torchair.so 需), 无 stubs, 幂等 ──
-for _cann_d in "${ASCEND_HOME_PATH}/lib64" "${ASCEND_HOME_PATH}/devlib"; do
-    if [[ ":${LD_LIBRARY_PATH:-}:" != *":${_cann_d}:"* ]]; then
-        export LD_LIBRARY_PATH="${_cann_d}:${LD_LIBRARY_PATH:-}"
-    fi
-done
-unset _cann_d
+# ── 统一 LD: 真 CANN lib64 优先 (liberror_manager 取 host 版, 避免 devlib/aarch64 device 版干扰;
+#   _torchair 闭包 libge_runner/libascendcl/libhccl/libruntime_common 均 NEEDED liberror_manager,
+#   不需 devlib 的 libascend_hal.so — 后者只被 libacl_dvpp_mpi/libascend_dump/libascend_trace 等 DVPP/dump/ml 库引用).
+#   cann set_env.sh 先设 devlib:lib64 (devlib 在前致 device 版 liberror_manager 被解析), 此处强制 lib64 到最前覆盖.
+#   无 stubs, 幂等 (重复 lib64 无害, 最前者优先). ──
+export LD_LIBRARY_PATH="${ASCEND_HOME_PATH}/lib64:${LD_LIBRARY_PATH:-}"
 
 # ── cann_lm 自定位 PYTHONPATH (反查 P1 venv site-packages; compile 不用 python, 无影响) ──
 _CANN_LM_SITE=""

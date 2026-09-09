@@ -50,15 +50,15 @@ source "${_COMMON_DIR}/ensure_third_party.sh" && ensure_third_party || return 1 
 
 # ── converter 运行 env (通用, 各用例复用) ──
 # lite_export_context (LiteConfig) 绕过 aclrtSetDevice (Python 级 fake torch_npu + _get_device_id=lambda:0),
-# 不需 C 级 stubs; torchair _torchair.so 仍需 CANN lib64+devlib (libascend_hal.so) 加载.
+# 不需 C 级 stubs; torchair _torchair.so 闭包 (libge_runner/libascendcl/libhccl/libruntime_common) 均 NEEDED
+# liberror_manager, 不需 devlib 的 libascend_hal.so (后者只被 DVPP/dump/ml 库引用).
 export TORCH_DEVICE_BACKEND_AUTOLOAD=0
 export TORCH_DELEGATE_ENABLE_FALLBACK_CODEGEN=0
 export ASCEND_SLOG_PRINT_TO_STDOUT=1
 export PYTHONPATH="${PROJECT_ROOT}:${PYTHONPATH:-}"
 
-# ── LD: 真 CANN lib64+devlib (NPU/CPU 通用; lite 模式绕过设备 init, 无 stubs) ──
-for _d in "${ASCEND_HOME_PATH}/lib64" "${ASCEND_HOME_PATH}/devlib"; do
-  [[ ":${LD_LIBRARY_PATH:-}:" != *":${_d}:"* ]] && export LD_LIBRARY_PATH="${_d}:${LD_LIBRARY_PATH:-}"
-done
-unset _d _COMMON_DIR _NPU_NAME _c
+# ── LD: 真 CANN lib64 优先 (liberror_manager 取 host 版, 避免 devlib/aarch64 device 版干扰致
+#   import torchair 失败; cann set_env.sh 先设 devlib:lib64, 此处强制 lib64 到最前覆盖). lite 模式无 stubs. ──
+export LD_LIBRARY_PATH="${ASCEND_HOME_PATH}/lib64:${LD_LIBRARY_PATH:-}"
+unset _COMMON_DIR _NPU_NAME _c
 echo "[env] 就绪 (NPU_MODE=$NPU_MODE, SOC=$SOC_VERSION, lite_export_context 无 stubs)"

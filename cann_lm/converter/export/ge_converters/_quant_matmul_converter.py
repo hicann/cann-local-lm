@@ -28,6 +28,7 @@ import torch
 from torchair._ge_concrete_graph import ge_apis as ge
 from torchair._ge_concrete_graph.ge_converter.converter_utils import GROUP_SIZE_MAX_VALUE
 from torchair.ge._ge_graph import (
+    DataType,
     Tensor,
     TensorSpec,
     torch_dtype_value_to_ge_proto_type,
@@ -59,12 +60,25 @@ def convert_quant_matmul(
     if output_dtype is None:
         output_dtype = 1
     dtype = torch_dtype_value_to_ge_type(output_dtype)
+    # a8w4: x1=FP8 + x2=FP4/FP32; s8s4: x1=int8 + x2=int4 (nibble-packed int8). 两者 per-group 只在 K 维 -> group_size=group_k
+    # (绕过 torch_npu.float4_e2m1fn_x2, 用 x1/x2.dtype 判断; Bitcast 前判断, x2 此时仍是 packed int8=DT_INT8)
+    is_a8w4 = x1.dtype == DataType.DT_FLOAT8_E4M3FN and (
+        x2.dtype in (DataType.DT_FLOAT4_E2M1, DataType.DT_FLOAT)
+    )
+    is_s8s4 = x1.dtype == DataType.DT_INT8 and x2.dtype == DataType.DT_INT8
 
     if x1_dtype is not None and x1 is not None:
         x1 = ge.Bitcast(x1, type=torch_dtype_value_to_ge_type(x1_dtype))
         x1.desc.dtype = torch_dtype_value_to_ge_proto_type(x1_dtype)
     if x2_dtype is not None and x2 is not None:
-        x2 = ge.Bitcast(x2, type=torch_dtype_value_to_ge_type(x2_dtype))
+        x2_type = torch_dtype_value_to_ge_type(x2_dtype)
+        if x2_type == 29:  # DT_INT4 nibble-packed: Bitcast int8->int4 元素数×2, 须 Reshape [k//2,n]->[k,n] 否则 K 维与 x1 不匹配
+            mul = [1] * (x2.rank - 2) + [2, 1]  # K 维(倒数第二) ×2, N 维不变
+            new_shape = ge.Mul(ge.Shape(x2), ge.Const(mul))  # Bitcast 前取原 shape [k//2,n]
+            x2 = ge.Bitcast(x2, type=x2_type)
+            x2 = ge.Reshape(x2, new_shape)
+        else:
+            x2 = ge.Bitcast(x2, type=x2_type)
         x2.desc.dtype = torch_dtype_value_to_ge_proto_type(x2_dtype)
     if pertoken_scale is not None and pertoken_scale_dtype is not None:
         pertoken_scale = ge.Bitcast(
@@ -72,8 +86,10 @@ def convert_quant_matmul(
         )
         pertoken_scale.desc.dtype = torch_dtype_value_to_ge_proto_type(pertoken_scale_dtype)
     if scale_dtype is not None:
-        scale = ge.Bitcast(scale, type=torch_dtype_value_to_ge_type(scale_dtype))
-        scale.desc.dtype = torch_dtype_value_to_ge_proto_type(scale_dtype)
+        # scale_dtype 直接作 CANN DataType 值 (如 DT_UINT64=10); torch 无 uint64 ScalarType,
+        # torch_dtype_value_to_ge_type 会把 10 误解析为 complex128(17), 故直接用值.
+        scale = ge.Bitcast(scale, type=scale_dtype)
+        scale.desc.dtype = scale_dtype
 
     group_size = 0
     if group_sizes is not None and isinstance(group_sizes, List):
@@ -91,7 +107,7 @@ def convert_quant_matmul(
             raise RuntimeError(
                 "group_size can't smaller than 0, actual group_sizes is " + str(group_sizes)
             )
-        group_size = (group_m << 32) + (group_n << 16) + group_k
+        group_size = group_k if (is_a8w4 or is_s8s4) else (group_m << 32) + (group_n << 16) + group_k
 
     # Use ge.QuantBatchMatmulV4 (full IR with all inputs incl None placeholders) so the
     # V4→V3 TBE fusion correctly maps x2_scale to V3's required scale input.

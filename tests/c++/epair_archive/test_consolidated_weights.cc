@@ -19,6 +19,8 @@
 namespace {
 
 const std::string kConsolidated = std::string(FIXTURES_DIR) + "/annotated_consolidated_mm_add";
+const std::string kConsolidatedNoField =
+    std::string(FIXTURES_DIR) + "/annotated_consolidated_mm_add_no_field";  // index without _is_weight (fallback path)
 const std::string kConsolidatedMissingMeta = std::string(FIXTURES_DIR) + "/annotated_consolidated_missing_meta";
 const std::string kConsolidatedNoIndex = std::string(FIXTURES_DIR) + "/annotated_consolidated_no_index";
 
@@ -133,7 +135,12 @@ TEST(GeWeightLoaderConsolidatedTest, TensorBinaryValuesCorrect) {
   EXPECT_FLOAT_EQ((*bias_values)[2], 2.5f);
 }
 
-TEST(GeWeightLoaderConsolidatedTest, IsParameterCorrectForKind) {
+// TensorRecordInfo.is_parameter mirrors weight_info.json "_is_weight": True for
+// nn.Module state (parameters + buffers, shared across prefill/decode), False for
+// lifted tensor constants. This fixture's index carries the _is_weight field, so
+// LoadConsolidated reads it directly (entry-read path). Both p_weight (parameter)
+// and b_bias (buffer) are module state → is_parameter=true.
+TEST(GeWeightLoaderConsolidatedTest, IsWeightFieldReadFromEntry) {
   ValidationResult result{true, {}};
   GeWeightLoader loader = CreateLoader(kConsolidated, result);
   ASSERT_TRUE(result.ok);
@@ -144,7 +151,24 @@ TEST(GeWeightLoaderConsolidatedTest, IsParameterCorrectForKind) {
 
   const TensorRecordInfo *bias_info = loader.GetTensorRecordInfo("b_bias");
   ASSERT_NE(bias_info, nullptr);
-  EXPECT_FALSE(bias_info->is_parameter);
+  EXPECT_TRUE(bias_info->is_parameter);  // buffer is module state → _is_weight=true
+}
+
+// Fallback path: old weight_info.json without _is_weight field. LoadConsolidated
+// derives is_parameter from model.input_specs PlaceholderKind (Parameter/Buffer →
+// true, TensorConstant → false). Back-compat for indices produced by old packer.
+TEST(GeWeightLoaderConsolidatedTest, IsWeightFallbackFromInputSpecsWithoutField) {
+  ValidationResult result{true, {}};
+  GeWeightLoader loader = CreateLoader(kConsolidatedNoField, result);
+  ASSERT_TRUE(result.ok);
+
+  const TensorRecordInfo *weight_info = loader.GetTensorRecordInfo("p_weight");
+  ASSERT_NE(weight_info, nullptr);
+  EXPECT_TRUE(weight_info->is_parameter);  // Parameter → true
+
+  const TensorRecordInfo *bias_info = loader.GetTensorRecordInfo("b_bias");
+  ASSERT_NE(bias_info, nullptr);
+  EXPECT_TRUE(bias_info->is_parameter);  // Buffer → true (module state, same as entry path)
 }
 
 TEST(GeWeightLoaderConsolidatedTest, RecordInfoHasOffsetAndSize) {

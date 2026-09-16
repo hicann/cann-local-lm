@@ -661,7 +661,7 @@ for name, buf in contents.ep.module().named_buffers():
 @dataclasses.dataclass
 class ConsolidatedWeights:
     bin_files: list[bytes]                    # 多个 bin 文件的原始字节列表
-    weights_index: dict[str, list[dict]]      # {bin文件名: [{"name", "offset", "size"}, ...]}
+    weights_index: dict[str, list[dict]]      # {bin文件名: [{"name","offset","size","format","_is_weight"}, ...]}
 ```
 
 `ConsolidatedWeights` 只包含权重数据，不含 EP JSON。由 `pack_weights()` 生成，`consolidated_weights_save()` 写入磁盘。
@@ -708,14 +708,16 @@ weights_1.bin: [tensor_2: 6000B]                   → 6000B (单独文件，超
 ```json
 {
   "weights_0.bin": [
-    {"name": "tensor_0", "offset": 0,  "size": 48},
-    {"name": "tensor_1", "offset": 48, "size": 36}
+    {"name": "tensor_0", "offset": 0,  "size": 48, "format": "ND", "_is_weight": true},
+    {"name": "tensor_1", "offset": 48, "size": 36, "format": "ND", "_is_weight": false}
   ],
   "weights_1.bin": [
-    {"name": "tensor_2", "offset": 0,  "size": 6000}
+    {"name": "tensor_2", "offset": 0,  "size": 6000, "format": "ND", "_is_weight": true}
   ]
 }
 ```
+
+> **`_is_weight` 字段**：区分张量是否属于 `nn.Module` 状态（state_dict 的一部分，prefill/decode 共享）。`true` = 模型权重（parameters + buffers，如 linear weight/bias、rotary cos/sin/inv_freq 缓存表）；`false` = torch.export trace 时从 Python 闭包 lift 进图的常量（`lifted_tensor_constants`，如 StridedSliceV2 索引张量）。C++ `GeWeightLoader.LoadConsolidated` 读此字段填 `TensorRecordInfo.is_parameter`，缺失时 fallback 到 `input_specs` 的 `PlaceholderKind` 推导（Parameter/Buffer → true，TensorConstant → false），向后兼容老 `weight_info.json`。建图时 `CreateConstNode`（`ge_graph_builder.cc`）把 `is_parameter` 作为私有 attr `_is_weight` 注入到 GE Const 节点，dump 图（`ge_proto_*.txt`）里每个 Const 节点可见此 attr，便于调试区分哪些 Const 是模型权重、哪些是图常量。
 
 ### 接口说明
 
@@ -867,13 +869,13 @@ for (const auto &node : parser.Nodes()) {
 | 信息 | model_constants_config.json 来源 | CANN-LM_5883 来源 | 是否已覆盖 |
 |------|---|---|---|
 | 常量数据 | `data/constants/tensor_N` 文件 | `weights_*.bin`（`pack_weights` 已打包） | 已覆盖 |
-| 常量名/类型 | `config` 对象的 key 和 `is_param` | `input_specs` 的 `kind` 和 `name` | 已覆盖 |
+| 常量名/类型 | `config` 对象的 key 和 `is_param` | `input_specs` 的 `kind` 和 `name` + `weight_info.json` 的 `_is_weight` | 已覆盖 |
 | dtype/shape | `tensor_meta.dtype` / `tensor_meta.sizes` | C++ 侧从 `ep_json` 图节点推导 | 已覆盖 |
 | 数据存储位置 | `path_name` → `data/constants/` 目录 | `weight_info.json` 的 `file` + `offset` | 已覆盖 |
 
 **结论**：`model_constants_config.json` 是 PT2 归档格式的冗余元信息文件。CANN-LM_5883 通过以下路径已覆盖其全部信息，**不需要单独解析 `model_constants_config.json`**：
 1. **数据**：`pack_weights` 通过 `gs.inputs_to_lifted_tensor_constants` + `ep.module().named_buffers()` 将常量数据打包到 `weights_*.bin`
-2. **元信息**：C++ 侧 `EpairModelParser` 解析 `input_specs` 获取 kind/name，`GeWeightLoader` 从 `weight_info.json` 获取数据位置
+2. **元信息**：C++ 侧 `EpairModelParser` 解析 `input_specs` 获取 kind/name，`GeWeightLoader` 从 `weight_info.json` 获取数据位置 + `_is_weight`（区分 module state vs trace 常量，fallback `input_specs` 的 `PlaceholderKind`）
 3. **dtype/shape**：C++ 侧从 `ep_json` 的图节点推导张量元信息
 
 ## GE 算子注册两层
@@ -910,7 +912,7 @@ GE 算子注册分两层，互补：
 ```
 output_dir/
 ├── ep_json_with_ascend_ir.json    # torch.export 序列化 + ascend_ir 标注
-├── weight_info.json               # 权重索引 {bin文件名: [{name, offset, size}]}
+├── weight_info.json               # 权重索引 {bin文件名: [{name, offset, size, format, _is_weight}]}
 ├── weights_0.bin                  # 权重数据 (按 max_file_size 切分, 默认 50GB)
 ├── weights_1.bin
 ├── model_config.json              # 自定义 config + HF 元信息 + use_embeddings 标记

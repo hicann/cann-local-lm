@@ -28,20 +28,28 @@ from cann_lm.converter.export.epair_utils import (
 # ── fake EpairContents (无 ExportedProgram, 纯 dict/Module stub) ──
 
 class _FakeGraphSignature:
-    """graph_signature stub: 把每个 logical_name 映射到自身 (placeholder==logical_name)."""
+    """graph_signature stub: 把每个 logical_name 映射到自身 (placeholder==logical_name).
 
-    def __init__(self, names):
-        self.inputs_to_parameters = {n: n for n in names}
-        self.inputs_to_buffers = {}
-        self.inputs_to_lifted_tensor_constants = {}
+    默认把所有 names 归到 inputs_to_parameters (向后兼容旧用例)。可通过 buffer_names /
+    const_names 把部分名字分流到 inputs_to_buffers / inputs_to_lifted_tensor_constants,
+    用于验证 _is_weight 字段的三态区分逻辑。
+    """
+
+    def __init__(self, names, *, buffer_names=None, const_names=None):
+        buf = set(buffer_names or [])
+        cst = set(const_names or [])
+        self.inputs_to_parameters = {n: n for n in names if n not in buf and n not in cst}
+        self.inputs_to_buffers = {n: n for n in names if n in buf}
+        self.inputs_to_lifted_tensor_constants = {n: n for n in names if n in cst}
 
 
 class _FakeEP:
     """ExportedProgram stub: state_dict() 返回 dict, module() 返回空 Module (无额外 buffer)."""
 
-    def __init__(self, sd):
+    def __init__(self, sd, *, buffer_names=None, const_names=None):
         self._sd = sd
-        self.graph_signature = _FakeGraphSignature(list(sd))
+        self.graph_signature = _FakeGraphSignature(list(sd), buffer_names=buffer_names,
+                                                    const_names=const_names)
 
     def state_dict(self):
         return self._sd
@@ -53,8 +61,8 @@ class _FakeEP:
 class _FakeContents:
     """EpairContents stub (ep + ep_json)."""
 
-    def __init__(self, sd, ep_json=None):
-        self.ep = _FakeEP(sd)
+    def __init__(self, sd, ep_json=None, *, buffer_names=None, const_names=None):
+        self.ep = _FakeEP(sd, buffer_names=buffer_names, const_names=const_names)
         self.ep_json = ep_json if ep_json is not None else {}
 
 
@@ -78,11 +86,29 @@ def test_pack_weights_to_dir_single_file(tmp_path):
     assert list(index) == ["weights_0.bin"]
     assert (tmp_path / "weights_0.bin").exists()
     # a.weight: 4*4*4=64 bytes @ offset 0; b.weight: 2*2*4=16 bytes @ offset 64
+    # _is_weight=True: _FakeGraphSignature 把所有 sd key 放进 inputs_to_parameters
     assert index["weights_0.bin"] == [
-        {"name": "a.weight", "offset": 0, "size": 64, "format": "ND"},
-        {"name": "b.weight", "offset": 64, "size": 16, "format": "ND"},
+        {"name": "a.weight", "offset": 0, "size": 64, "format": "ND", "_is_weight": True},
+        {"name": "b.weight", "offset": 64, "size": 16, "format": "ND", "_is_weight": True},
     ]
     assert (tmp_path / "weights_0.bin").stat().st_size == 80
+
+
+def test_pack_weights_to_dir_is_weight_distinguishes_module_state_from_const(tmp_path):
+    # _is_weight: True for parameters + buffers (nn.Module state, shared by prefill/decode),
+    # False for lifted tensor constants (trace-time graph constants).
+    sd = {"layer.weight": torch.zeros(2, dtype=torch.float32),     # parameter -> True
+          "rotary.cos_cached": torch.zeros(2, dtype=torch.float32),  # buffer -> True
+          "layer.lifted_tensor_0": torch.zeros(2, dtype=torch.float32)}  # const -> False
+    contents = _FakeContents(sd, const_names={"layer.lifted_tensor_0"},
+                            buffer_names={"rotary.cos_cached"})
+
+    index = _pack_weights_to_dir(contents, tmp_path, max_file_size=100_000)
+
+    by_name = {e["name"]: e for e in index["weights_0.bin"]}
+    assert by_name["layer.weight"]["_is_weight"] is True
+    assert by_name["rotary.cos_cached"]["_is_weight"] is True
+    assert by_name["layer.lifted_tensor_0"]["_is_weight"] is False
 
 
 # ── _pack_weights_to_dir: 按 max_file_size 切分 ──
@@ -98,8 +124,8 @@ def test_pack_weights_to_dir_splits_on_max_file_size(tmp_path):
     assert sorted(index) == ["weights_0.bin", "weights_1.bin"]
     assert (tmp_path / "weights_0.bin").stat().st_size == 64
     assert (tmp_path / "weights_1.bin").stat().st_size == 16
-    assert index["weights_0.bin"][0] == {"name": "a.weight", "offset": 0, "size": 64, "format": "ND"}
-    assert index["weights_1.bin"][0] == {"name": "b.weight", "offset": 0, "size": 16, "format": "ND"}
+    assert index["weights_0.bin"][0] == {"name": "a.weight", "offset": 0, "size": 64, "format": "ND", "_is_weight": True}
+    assert index["weights_1.bin"][0] == {"name": "b.weight", "offset": 0, "size": 16, "format": "ND", "_is_weight": True}
 
 
 def test_pack_weights_to_dir_single_tensor_exceeds_limit_not_split(tmp_path):

@@ -476,7 +476,8 @@ std::unique_ptr<ge::GNode> BuildRecoverableNode(ge::Graph &graph, const std::str
 std::optional<RegisteredValue> CreateConstNode(ge::Graph &graph, const std::string &node_name,
                                                const TensorHolder &holder, const td::AtenTensorDescMapper &mapper,
                                                ValidationResult &result, const std::string &context,
-                                               ge::Placement placement = ge::kPlacementDevice) {
+                                               ge::Placement placement = ge::kPlacementDevice,
+                                               bool is_weight = false) {
   const ge::DataType dtype = mapper.MapPt2Dtype(holder.datatype, result, context);
   const bool is_nz = (holder.format_str == "NZ");
   const ge::Format format = is_nz
@@ -519,8 +520,17 @@ std::optional<RegisteredValue> CreateConstNode(ge::Graph &graph, const std::stri
   }
   ge::AttrValue value_attr;
   value_attr.SetAttrValue(tensor);
+  // Private attr _is_weight mirrors weight_info.json: true for nn.Module state
+  // (parameters + buffers), false for trace-time lifted constants / inline
+  // scalar consts. Surfaces in GE dump (ge_proto_*.txt) for debugging which
+  // Const nodes are model weights vs graph constants.
+  ge::AttrValue is_weight_attr;
+  is_weight_attr.SetAttrValue(is_weight);
   std::vector<std::pair<std::string, ge::TensorDesc>> outputs = {{"y", desc}};
-  std::vector<std::pair<std::string, ge::AttrValue>> attrs = {{"value", value_attr}};
+  std::vector<std::pair<std::string, ge::AttrValue>> attrs = {
+      {"value", value_attr},
+      {"_is_weight", is_weight_attr},
+  };
   std::unique_ptr<ge::GNode> node =
       BuildRecoverableNode(graph, "Const", node_name, {}, outputs, attrs, result, context);
   if (node == nullptr) {
@@ -1242,8 +1252,16 @@ bool PreparePlaceholders(GraphBuildContext &ctx, const EpairModelParser &parser,
         TDLOGE("PreparePlaceholders failed: load tensor data error, placeholder=%s", input.name.c_str());
         return false;
       }
+      // Propagate _is_weight from weight_info.json (via TensorRecordInfo.is_parameter)
+      // to the GE Const node attr. Parameter/Buffer → true; TensorConstant → false.
+      bool is_weight = false;
+      const auto *rec_info = loader.GetTensorRecordInfo(input.name);
+      if (rec_info != nullptr) {
+        is_weight = rec_info->is_parameter;
+      }
       const std::optional<RegisteredValue> const_value =
-          CreateConstNode(*ctx.graph, input.name, holder, mapper, result, input.name);
+          CreateConstNode(*ctx.graph, input.name, holder, mapper, result, input.name,
+                          ge::kPlacementDevice, is_weight);
       if (!result.ok || !const_value.has_value()) {
         TDLOGE("PreparePlaceholders failed: create const node error, placeholder=%s", input.name.c_str());
         return false;

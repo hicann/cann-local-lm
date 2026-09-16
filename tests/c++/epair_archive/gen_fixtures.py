@@ -156,9 +156,11 @@ def gen_annotated_mm_add():
     w_data = _float_bytes([1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0])
     b_data = _float_bytes([0.5, 1.5, 2.5])
     bin_data = w_data + b_data
+    # _is_weight: True for both parameter (weight) and buffer (bias) — both are
+    # nn.Module state. C++ LoadConsolidated reads this field (entry-read path).
     index = [
-        {"name": "weight", "offset": 0, "size": len(w_data)},
-        {"name": "bias", "offset": len(w_data), "size": len(b_data)},
+        {"name": "weight", "offset": 0, "size": len(w_data), "_is_weight": True},
+        {"name": "bias", "offset": len(w_data), "size": len(b_data), "_is_weight": True},
     ]
     _write_fixture("annotated_mm_add", model_json, bin_data, index)
 
@@ -219,11 +221,20 @@ def gen_annotated_consolidated_mm_add():
     w_data = _float_bytes([1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0])
     b_data = _float_bytes([0.5, 1.5, 2.5])
     bin_data = w_data + b_data
+    # _is_weight: True for both parameter (weight) and buffer (bias) — both are
+    # nn.Module state. C++ LoadConsolidated reads this field (entry-read path).
     index = [
+        {"name": "weight", "offset": 0, "size": len(w_data), "_is_weight": True},
+        {"name": "bias", "offset": len(w_data), "size": len(b_data), "_is_weight": True},
+    ]
+    _write_fixture("annotated_consolidated_mm_add", model_json, bin_data, index)
+    # Same model_json + bin_data but index WITHOUT _is_weight field — exercises
+    # the C++ fallback path (input_specs PlaceholderKind derivation).
+    index_no_field = [
         {"name": "weight", "offset": 0, "size": len(w_data)},
         {"name": "bias", "offset": len(w_data), "size": len(b_data)},
     ]
-    _write_fixture("annotated_consolidated_mm_add", model_json, bin_data, index)
+    _write_fixture("annotated_consolidated_mm_add_no_field", model_json, bin_data, index_no_field)
 
 
 # ---------------------------------------------------------------------------

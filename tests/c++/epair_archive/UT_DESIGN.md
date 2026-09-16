@@ -123,7 +123,8 @@
 | CWL-003 | `GeWeightLoader.Create` | `missing_meta` fixture → `MISSING_TENSOR_META` issue | P0 |
 | CWL-004 | `GeWeightLoader.Create` | `no_index` fixture → `MISSING_WEIGHTS_INDEX` issue | P0 |
 | CWL-005 | `GeWeightLoader.ReadTensorData` | weight float `[1,5,9]` + bias `[0.5,1.5,2.5]` 二进制值精确 | P0 |
-| CWL-006 | `GeWeightLoader.GetTensorRecordInfo` | `p_weight` is_parameter=true、`b_bias`=false | P1 |
+| CWL-006 | `GeWeightLoader.GetTensorRecordInfo` | `_is_weight` 字段读取（entry-read 路径）：`p_weight`(Parameter)=true、`b_bias`(Buffer)=true（buffer 属 module state） | P1 |
+| CWL-006b | `GeWeightLoader.GetTensorRecordInfo` | 无 `_is_weight` 字段 fallback：`input_specs` PlaceholderKind 推导，`p_weight`=true、`b_bias`=true（向后兼容老 index） | P1 |
 | CWL-007 | `GeWeightLoader.GetTensorRecordInfo` | weight offset=0/size=36、bias offset=36/size=12 | P1 |
 | CWL-008 | `GeWeightLoader.GetTensorMeta` | weight{3,3}/dtype7/grad、bias{3}/dtype7/!grad | P1 |
 | CWL-009 | `GeWeightLoader.HasTensor` | weight/bias true、unknown false | P1 |

@@ -67,14 +67,20 @@ def pack_weights(contents, *, max_file_size: int = DEFAULT_SPLIT_SIZE) -> Consol
             if name not in state_dict and isinstance(tensor, torch.Tensor):
                 state_dict[name] = tensor
 
-    spec_names = set()
+    # _is_weight: True for nn.Module state (parameters + buffers, shared by prefill/decode),
+    # False for lifted tensor constants (trace-time graph constants). C++ GeWeightLoader
+    # reads this to populate TensorRecordInfo.is_parameter; fallback to input_specs
+    # derivation when the field is absent (back-compat with old weight_info.json).
+    is_weight_of: dict[str, bool] = {}
     gs = contents.ep.graph_signature
-    for mapping in (gs.inputs_to_parameters, gs.inputs_to_buffers, gs.inputs_to_lifted_tensor_constants):
-        for placeholder, logical_name in mapping.items():
-            if logical_name in state_dict:
-                spec_names.add(logical_name)
+    for logical_name in gs.inputs_to_parameters.values():
+        is_weight_of[logical_name] = True
+    for logical_name in gs.inputs_to_buffers.values():
+        is_weight_of[logical_name] = True
+    for logical_name in gs.inputs_to_lifted_tensor_constants.values():
+        is_weight_of[logical_name] = False
 
-    names = [n for n in state_dict if n in spec_names]
+    names = [n for n in state_dict if n in is_weight_of]
 
     # Direct-to-disk writing (avoid accumulating all weights in memory)
     index: dict[str, list[dict]] = {}
@@ -113,6 +119,7 @@ def pack_weights(contents, *, max_file_size: int = DEFAULT_SPLIT_SIZE) -> Consol
             "name": name,
             "offset": current_offset,
             "size": len(data),
+            "_is_weight": is_weight_of[name],
         })
 
         bin_path.write(data)
@@ -138,7 +145,13 @@ def consolidated_weights_save(contents, output_dir: str | Path, *,
     Writes files directly under ``output_dir`` (no ``data/`` subdirectory):
 
     - ``weights_0.bin``, ``weights_1.bin``, ... — raw concatenated tensor bytes
-    - ``weight_info.json`` — index describing each tensor and its bin file
+    - ``weight_info.json`` — index describing each tensor and its bin file.
+      Each entry has: ``name``/``offset``/``size``/``format``/``_is_weight``.
+      ``_is_weight`` is True for ``nn.Module`` state (parameters + buffers,
+      shared across prefill/decode) and False for lifted tensor constants
+      (trace-time graph constants). The C++ ``GeWeightLoader`` reads this to
+      populate ``TensorRecordInfo.is_parameter``; falls back to
+      ``input_specs`` derivation when absent (back-compat).
     - ``<ep_json_filename>`` — annotated EP JSON (default ``ep_json_with_ascend_ir.json``)
 
     When ``host_side_weights`` is provided (pure-embeddings export: embedding
@@ -250,15 +263,20 @@ def _pack_weights_to_dir(contents, output_dir: Path, max_file_size: int) -> dict
             if name not in state_dict and isinstance(tensor, torch.Tensor):
                 state_dict[name] = tensor
 
-    # Filter to only graph-signature-referenced tensors
-    spec_names = set()
+    # _is_weight: True for nn.Module state (parameters + buffers, shared by prefill/decode),
+    # False for lifted tensor constants (trace-time graph constants). C++ GeWeightLoader
+    # reads this to populate TensorRecordInfo.is_parameter; fallback to input_specs
+    # derivation when the field is absent (back-compat with old weight_info.json).
+    is_weight_of: dict[str, bool] = {}
     gs = contents.ep.graph_signature
-    for mapping in (gs.inputs_to_parameters, gs.inputs_to_buffers, gs.inputs_to_lifted_tensor_constants):
-        for placeholder, logical_name in mapping.items():
-            if logical_name in state_dict:
-                spec_names.add(logical_name)
+    for logical_name in gs.inputs_to_parameters.values():
+        is_weight_of[logical_name] = True
+    for logical_name in gs.inputs_to_buffers.values():
+        is_weight_of[logical_name] = True
+    for logical_name in gs.inputs_to_lifted_tensor_constants.values():
+        is_weight_of[logical_name] = False
 
-    names = [n for n in state_dict if n in spec_names]
+    names = [n for n in state_dict if n in is_weight_of]
 
     import os
     trans_enabled = os.environ.get("CANN_LM_ENABLE_WEIGHT_TRANS") == "1"
@@ -315,6 +333,7 @@ def _pack_weights_to_dir(contents, output_dir: Path, max_file_size: int) -> dict
             "offset": current_offset,
             "size": len(data),
             "format": entry_format,
+            "_is_weight": is_weight_of[name],
         })
 
         bin_fp.write(data)

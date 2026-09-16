@@ -14,6 +14,8 @@
 #   bash run_e2e_pipeline.sh --check-env --model-type gemma4   # 只验 env (不跑全流程)
 #
 # gemma4: --seq-len 128 (run_gemma4_gen.py PREFILL_SEQ=128); qwen3.5 默认 8.
+# --num-layers N: 只导出前 N 层 (slice/debug); 不传 = 全层。
+# dtype 限 float16/float32 (converter _DTYPE_MAP 不含 bfloat16; gemma4/qwen3 原生 bf16 会转 fp16)。
 # =============================================================================
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -25,8 +27,9 @@ MODEL_TYPE="qwen3_5"
 HF_PATH="${HF_PATH:-}"
 PROMPT="Hello, my name is"
 SEQ_LEN=8
-DTYPE="bfloat16"
+DTYPE="float16"
 OUTPUT_DIR=""
+NUM_LAYERS=""
 SKIP_EXPORT=0; SKIP_OM=0; SKIP_NPU=0; CHECK_ENV=0
 
 while [[ $# -gt 0 ]]; do
@@ -37,6 +40,7 @@ while [[ $# -gt 0 ]]; do
     --dtype)      DTYPE="$2"; shift 2;;
     --model-type) MODEL_TYPE="$2"; shift 2;;
     --output-dir) OUTPUT_DIR="$2"; shift 2;;
+    --num-layers) NUM_LAYERS="$2"; shift 2;;
     --skip-export) SKIP_EXPORT=1; shift;;
     --skip-om)    SKIP_OM=1; shift;;
     --skip-npu)   SKIP_NPU=1; shift;;
@@ -98,9 +102,10 @@ phase ① "导出 epair (lite_export_context, 无 stubs)"
 if [[ $SKIP_EXPORT -eq 1 ]]; then ok "skip ① (--skip-export), 复用 $OUTPUT_DIR"; else
   (
     rm -rf "$OUTPUT_DIR"; mkdir -p "$OUTPUT_DIR"
-    echo "  converter: --mode prefill-decode --seq-len $SEQ_LEN --dtype $DTYPE"
+    echo "  converter: --mode prefill-decode --seq-len $SEQ_LEN --dtype $DTYPE${NUM_LAYERS:+ --num-layers $NUM_LAYERS}"
     "$CONVERTER_PYTHON" "$CONVERTER" --hf-path "$HF_PATH" --output-dir "$OUTPUT_DIR" \
-        --mode prefill-decode --seq-len "$SEQ_LEN" --dtype "$DTYPE" >"$OUTPUT_DIR.export.log" 2>&1 &
+        --mode prefill-decode --seq-len "$SEQ_LEN" --dtype "$DTYPE" \
+        ${NUM_LAYERS:+--num-layers "$NUM_LAYERS"} >"$OUTPUT_DIR.export.log" 2>&1 &
     PID=$!
     for _ in $(seq 1 120); do
       sleep 5

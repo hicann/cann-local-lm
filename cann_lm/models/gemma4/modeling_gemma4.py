@@ -60,7 +60,7 @@ def scatter_kv_to_cache(
     b, n, kv_max, d = cache.shape
     seq = kv_pos.shape[0]
     n_grid = torch.tensor(
-        [[i] * kv_max for i in range(n)], device=cache.device, dtype=torch.int64
+        [[i] * kv_max for i in range(n)], device=cache.device, dtype=torch.int32
     )
     col_n = n_grid[:, :seq].reshape(-1)
     col_pos = torch.cat([kv_pos] * n, dim=0)
@@ -211,19 +211,13 @@ def eager_attention_forward(
 
 
 def _pad_mask_to_kv_square(mask: torch.Tensor, kv_len: int) -> torch.Tensor:
-    """pad atten_mask 的 q 维到 kv_len (融合算子要求 [*, kv_len, kv_len] 方阵).
+    """atten_mask bool 矩阵 [*, q_len, kv_len] 直通 (不 pad 到方阵)。
 
-    cann_lm 的 mask 是 [*, q_len, kv_len] (q-kv mask, q 维=q_len). 融合算子要求
-    [*, kv_len, kv_len] (全 KV buffer 因果模板). pad q 维到 kv_len: 前 q_len 行原 mask
-    (bool: False=attend, True=mask out), 后 kv_len-q_len 行 pad True (mask out, 不影响,
-    融合算子用 actual_seq_qlen 只取前 q_len 行).
+    旋钮 D (fia_static_kvmax_investigation.md §5): 矩形 mask [b,1,q_len,kv_len]
+    去掉方阵 padding 行; arch31 tiling 要求 mask 第三维=S1=q_len, 不接受 kv_len。
+    sparse_mode=0 + kvlen=None 下 kernel 纯靠 bool mask, q 维=q_len 即可。
     """
-    q_len = mask.shape[-2]
-    if q_len >= kv_len:
-        return mask.bool()
-    pad_shape = (*mask.shape[:-2], kv_len - q_len, kv_len)
-    pad = torch.full(pad_shape, True, dtype=torch.bool, device=mask.device)
-    return torch.cat([mask.bool(), pad], dim=-2)
+    return mask.bool()
 
 
 def fused_attention_forward(

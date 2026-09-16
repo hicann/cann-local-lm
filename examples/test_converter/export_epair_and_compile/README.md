@@ -49,7 +49,7 @@ python compare_single_op_vs_delegate.py
 - 路径自定位派生（`PROJECT_ROOT` + `deps/torch-delegate/.venv` 等）
 - `ensure_backend`（.so 缺失→`build_cpp.sh`）+ `ensure_third_party`（json/gtest/makeself 缺失→`build_third_party.sh`）
 - LD: 真 CANN lib64+devlib（**无 stubs**，`lite_export_context` 绕过 `aclrtSetDevice`）
-- SOC: NPU→`Ascend910_9362` / CPU-only→`Ascend950DT_9575`（950DT 交叉编译）
+- SOC: NPU→`Ascend910_9362` / CPU-only→`kirinx90`（交叉编译）
 
 converter 导出走 **`lite_export_context`**（`LiteConfig(target_soc=...)`，Python 级 fake torch_npu + `_get_device_id=lambda:0`），不需要 C 级 stubs 也不需 NPU 设备。
 

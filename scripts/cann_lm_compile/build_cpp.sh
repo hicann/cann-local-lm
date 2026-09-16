@@ -40,7 +40,7 @@ if [[ ! -d "${THIRD_PARTY}/json" ]]; then
     echo "  先构建: bash scripts/build.sh third_party" >&2
     exit 1
 fi
-ASCEND_INSTALL_PATH="${ASCEND_HOME_PATH}/aarch64-linux"
+ASCEND_INSTALL_PATH="${ASCEND_HOME_PATH}/$(uname -m)-linux"
 
 # ── 参数 (每次显式传 -D 值, 覆盖 cache, 避免 sticky: 如 --no-tests 一次后 BUILD_TESTS 黏 OFF) ──
 BUILD_TYPE="Release"

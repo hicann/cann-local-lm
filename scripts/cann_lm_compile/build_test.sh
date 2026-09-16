@@ -30,7 +30,7 @@ fi
 if [[ ! -d "${THIRD_PARTY}/json" ]]; then
     echo "ERROR: third_party 缺失: ${THIRD_PARTY}/json (先 bash scripts/build.sh third_party)" >&2; exit 1
 fi
-ASCEND_INSTALL_PATH="${ASCEND_HOME_PATH}/aarch64-linux"
+ASCEND_INSTALL_PATH="${ASCEND_HOME_PATH}/$(uname -m)-linux"
 
 ASAN_VAL="ON"; RUN_TESTS="YES"
 while [[ $# -gt 0 ]]; do

@@ -71,14 +71,7 @@ def convert_quant_matmul(
         x1 = ge.Bitcast(x1, type=torch_dtype_value_to_ge_type(x1_dtype))
         x1.desc.dtype = torch_dtype_value_to_ge_proto_type(x1_dtype)
     if x2_dtype is not None and x2 is not None:
-        x2_type = torch_dtype_value_to_ge_type(x2_dtype)
-        if x2_type == 29:  # DT_INT4 nibble-packed: Bitcast int8->int4 元素数×2, 须 Reshape [k//2,n]->[k,n] 否则 K 维与 x1 不匹配
-            mul = [1] * (x2.rank - 2) + [2, 1]  # K 维(倒数第二) ×2, N 维不变
-            new_shape = ge.Mul(ge.Shape(x2), ge.Const(mul))  # Bitcast 前取原 shape [k//2,n]
-            x2 = ge.Bitcast(x2, type=x2_type)
-            x2 = ge.Reshape(x2, new_shape)
-        else:
-            x2 = ge.Bitcast(x2, type=x2_type)
+        x2 = ge.Bitcast(x2, type=torch_dtype_value_to_ge_type(x2_dtype))
         x2.desc.dtype = torch_dtype_value_to_ge_proto_type(x2_dtype)
     if pertoken_scale is not None and pertoken_scale_dtype is not None:
         pertoken_scale = ge.Bitcast(
@@ -92,22 +85,17 @@ def convert_quant_matmul(
         scale.desc.dtype = scale_dtype
 
     group_size = 0
-    if group_sizes is not None and isinstance(group_sizes, List):
-        if len(group_sizes) != 3:
-            raise RuntimeError(
-                "group_size must be a list with 3 elements, actual group_sizes is " + str(group_sizes)
-            )
-        group_m, group_n, group_k = group_sizes
+    if group_sizes is not None:
+        if isinstance(group_sizes, List):
+            if not group_sizes:
+                raise RuntimeError("group_sizes is empty")
+            group_k = group_sizes[-1]  # 取末元素 (兼容 [1,1,g] / [g] 等任意长度)
+        else:
+            group_k = int(group_sizes)
         group_max = GROUP_SIZE_MAX_VALUE
-        if group_m > group_max or group_n > group_max or group_k > group_max:
-            raise RuntimeError(
-                "group_size can't larger than 65535, actual group_sizes is " + str(group_sizes)
-            )
-        if group_m < 0 or group_n < 0 or group_k < 0:
-            raise RuntimeError(
-                "group_size can't smaller than 0, actual group_sizes is " + str(group_sizes)
-            )
-        group_size = group_k if (is_a8w4 or is_s8s4) else (group_m << 32) + (group_n << 16) + group_k
+        if group_k > group_max or group_k < 0:
+            raise RuntimeError(f"group_k {group_k} out of [0, {group_max}]")
+        group_size = group_k  # 写死 group_k (per-K-group, 不编码 m/n/k)
 
     # Use ge.QuantBatchMatmulV4 (full IR with all inputs incl None placeholders) so the
     # V4→V3 TBE fusion correctly maps x2_scale to V3's required scale input.

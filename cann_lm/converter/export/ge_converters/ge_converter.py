@@ -14,6 +14,7 @@
 
 """Register cann_lm GE converters (torch.export -> epair IR)."""
 
+import os
 from typing import Any
 
 import torch
@@ -73,3 +74,9 @@ def register_ge_converters() -> None:
 
     from ._fused_infer_attention_score_v2_converter import convert_fused_infer_attention_score_v2
     register_fx_node_ge_converter(torch.ops.npu.npu_fused_infer_attention_score_v2.default)(convert_fused_infer_attention_score_v2)
+
+    # KirinX90 converter patches (last-write-wins, override after all above).
+    # 环境变量 KIRINX90_CONVERTER_PATCHES=1 时加载，用等价算子替换 kirinx90 不支持的 op。
+    if os.environ.get("KIRINX90_CONVERTER_PATCHES", "") == "1":
+        from ._kirinx90_converter_patches import register_kirinx90_patches
+        register_kirinx90_patches()

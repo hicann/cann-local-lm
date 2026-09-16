@@ -132,12 +132,12 @@ source /home/developer/Ascend/cann/set_env.sh   # 前置：torchair cmake 需 CA
 cd /mnt/workspace/project/CANN-LM_5883
 
 git clone https://gitcode.com/Ascend/torchair.git deps/torchair
-# torchair 用 setup.py bdist_wheel, P1 venv 默认无 wheel 包
-deps/torch-delegate/.venv/bin/pip install wheel
+# torchair 用 setup.py bdist_wheel, P1 venv 默认无 wheel 包; numpy/protobuf 是 torchair 运行时依赖
+deps/torch-delegate/.venv/bin/pip install wheel numpy protobuf
 
-# cd 进 torchair 根构建 (TARGET_PYTHON=P1 venv, ABI 匹配)
+# cd 进 torchair 根构建 (TARGET_PYTHON=P1 venv, ABI 匹配; 用绝对路径避免 configure.py 写入相对路径致 make 从 build/ 子目录解析失败)
 cd deps/torchair
-TARGET_PYTHON_PATH=../torch-delegate/.venv/bin/python bash build.sh -c
+TARGET_PYTHON_PATH="$(realpath ../torch-delegate/.venv/bin/python)" bash build.sh -c
 ```
 
 将 torchair whl 装进 P1 venv：
@@ -159,6 +159,8 @@ source /path/to/venv/bin/activate
 pip install torch==2.9.0 --index-url https://download.pytorch.org/whl/cpu
 
 # 2. 装预编 whl (torch_delegate + torchair; 须与 torch 2.9.0+cpu ABI 匹配)
+#    numpy/protobuf 是 torchair 运行时依赖 (ge._ge_graph import numpy, ge_ir_pb2 查 protobuf 版本)
+pip install numpy protobuf
 pip install torch_delegate-0.1.0-py3-none-any.whl
 pip install torchair-0.1-py3-none-any.whl
 

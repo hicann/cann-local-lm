@@ -30,7 +30,6 @@ if str(_PROJECT_ROOT) not in sys.path:
 _DTYPE_MAP = {
     "float32": torch.float32,
     "float16": torch.float16,
-    "bfloat16": torch.bfloat16,
 }
 
 _DEFAULT_MAX_FILE_SIZE = 50 * 1024 * 1024 * 1024  # 50GB
@@ -153,7 +152,7 @@ def parse_args() -> argparse.Namespace:
                         help="epair output directory")
     parser.add_argument("--dtype", default="float16",
                         choices=list(_DTYPE_MAP),
-                        help="Weight dtype (default: float16)")
+                        help="Weight dtype: float16 or float32 (default: float16)")
     parser.add_argument("--max-file-size", type=int, default=_DEFAULT_MAX_FILE_SIZE,
                         help="Max bytes per bin file (default: 50GB)")
     parser.add_argument("--kv-cache-max-len", type=int, default=2048,

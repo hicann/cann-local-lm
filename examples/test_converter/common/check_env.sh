@@ -27,7 +27,7 @@ if [[ -z "${ASCEND_HOME_PATH:-}" ]]; then
   for _c in /home/developer/Ascend/cann /usr/local/Ascend/cann "${HOME}/Ascend/cann"; do
     if [[ -f "${_c}/set_env.sh" ]]; then
       echo "[env] source CANN: ${_c}/set_env.sh"
-      source "${_c}/set_env.sh"
+      set +u; source "${_c}/set_env.sh"; set -u   # CANN set_env.sh 用 $VAR 无默认, 临时关 -u 防 unbound
       break
     fi
   done
@@ -42,7 +42,7 @@ export CONVERTER_PYTHON="${CONVERTER_PYTHON:-${TORCH_DELEGATE_HOME}/.venv/bin/py
 export STUBS_DIR="${TORCHAIR_ROOT}/build/stubs"
 export BACKEND_LIB="${PROJECT_ROOT}/build/libtorch_delegate_backend.so"
 export DOPT_PYTHON="${DOPT_PYTHON:-/opt/buildtools/Python-3.11.4/bin/python3}"
-export SOC_VERSION="${SOC_VERSION:-$([[ $NPU_MODE == 1 ]] && echo Ascend910_9362 || echo Ascend950DT_9575)}"
+export SOC_VERSION="${SOC_VERSION:-$([[ $NPU_MODE == 1 ]] && echo Ascend910_9362 || echo kirinx90)}"
 
 # ── ensure 共享依赖 (幂等, 缺失自动建) ──
 source "${_COMMON_DIR}/ensure_backend.sh" && ensure_backend || return 1 2>/dev/null || exit 1
@@ -60,5 +60,17 @@ export PYTHONPATH="${PROJECT_ROOT}:${PYTHONPATH:-}"
 # ── LD: 真 CANN lib64 优先 (liberror_manager 取 host 版, 避免 devlib/aarch64 device 版干扰致
 #   import torchair 失败; cann set_env.sh 先设 devlib:lib64, 此处强制 lib64 到最前覆盖). lite 模式无 stubs. ──
 export LD_LIBRARY_PATH="${ASCEND_HOME_PATH}/lib64:${LD_LIBRARY_PATH:-}"
+
+# A5 修复: source CANN 后 libpython 可能被解析为系统旧版致 _ctypes 符号缺失
+# (_PyErr_SetLocaleString); 前置 converter python 的 LIBDIR (含正确 libpython), 幂等 prepend
+if [[ -x "${CONVERTER_PYTHON:-}" ]]; then
+  _PY_LIBDIR="$("${CONVERTER_PYTHON}" -c "import sysconfig; print(sysconfig.get_config_var('LIBDIR') or '')" 2>/dev/null || true)"
+  if [[ -n "${_PY_LIBDIR}" && -d "${_PY_LIBDIR}" ]]; then
+    export LD_LIBRARY_PATH="${_PY_LIBDIR}:${LD_LIBRARY_PATH}"
+    echo "[env] libpython 前置: ${_PY_LIBDIR} (A5 修复 _ctypes 符号)"
+  fi
+  unset _PY_LIBDIR
+fi
+
 unset _COMMON_DIR _NPU_NAME _c
 echo "[env] 就绪 (NPU_MODE=$NPU_MODE, SOC=$SOC_VERSION, lite_export_context 无 stubs)"

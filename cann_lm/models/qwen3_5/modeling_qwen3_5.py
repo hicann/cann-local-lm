@@ -411,7 +411,7 @@ def scatter_kv_to_cache(
         return cache.index_copy(2, kv_pos, kv_new)
     seq = kv_pos.shape[0]
     n_grid = torch.tensor(
-        [[i] * kv_max for i in range(n)], device=cache.device, dtype=torch.int64
+        [[i] * kv_max for i in range(n)], device=cache.device, dtype=torch.int32
     )
     col_n = n_grid[:, :seq].reshape(-1)
     col_pos = torch.cat([kv_pos] * n, dim=0)
@@ -805,8 +805,8 @@ def _create_causal_mask(
     device = inputs_embeds.device
     min_val = torch.finfo(dtype).min
 
-    q_pos = torch.arange(seq_len, device=device, dtype=torch.long) + past_len  # (seq_len,)
-    k_pos = torch.arange(total_len, device=device, dtype=torch.long)          # (total_len,)
+    q_pos = torch.arange(seq_len, device=device, dtype=torch.int32) + past_len  # (seq_len,)
+    k_pos = torch.arange(total_len, device=device, dtype=torch.int32)          # (total_len,)
     causal = k_pos.unsqueeze(0) <= q_pos.unsqueeze(1)                          # (seq_len, total_len)
     causal_mask = torch.where(causal, torch.tensor(0.0, dtype=dtype, device=device),
                               torch.tensor(min_val, dtype=dtype, device=device))
@@ -876,7 +876,7 @@ class Qwen3_5TextModel(nn.Module):
 
         if position_ids is None:
             past_len = past_key_values.get_seq_length() if past_key_values is not None else 0
-            position_ids = torch.arange(past_len, past_len + seq_len, device=inputs_embeds.device)
+            position_ids = torch.arange(past_len, past_len + seq_len, device=inputs_embeds.device, dtype=torch.int32)
             # mRoPE: 扩 4 维 position (1 text + 3 mrope, 文本模式 4 维相同)
             # cat 替代 expand 消除 BroadcastTo (dim0 1->4; dim1 1->batch_size, batch=1 时无操作)
             position_ids = position_ids.view(1, 1, -1)
@@ -949,6 +949,7 @@ class Qwen3_5ForCausalLM(nn.Module):
         self,
         input_ids: torch.Tensor | None = None,
         attention_mask: torch.Tensor | None = None,
+        position_ids: torch.Tensor | None = None,
         past_key_values: SimpleKVCache | None = None,
         delta_states=None,
         inputs_embeds: torch.Tensor | None = None,
@@ -959,6 +960,7 @@ class Qwen3_5ForCausalLM(nn.Module):
         hidden_states, past_key_values, delta_out = self.model(
             input_ids=input_ids,
             attention_mask=attention_mask,
+            position_ids=position_ids,
             past_key_values=past_key_values,
             delta_states=delta_states,
             inputs_embeds=inputs_embeds,

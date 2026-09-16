@@ -69,7 +69,7 @@ class ExportWrapper(nn.Module):
             delta_states,
         )
         if output_pos is not None:
-            logits = logits.index_select(1, output_pos.to(torch.int64))
+            logits = logits.index_select(1, output_pos)
         return logits, *past_kv_flat, *delta_out_flat
 
     def _drive_layers(
@@ -107,14 +107,14 @@ class ExportWrapper(nn.Module):
         input_ids = torch.randint(0, vocab_size, (self.batch, seq_len), dtype=torch.int64)
 
         # 4D causal mask [batch, 1, seq_len, kv_max] — causal over buffer (scatter-write).
-        min_val = torch.finfo(dtype).min
-        q_pos = torch.arange(seq_len, dtype=dtype).unsqueeze(1)        # [seq_len, 1]
-        k_pos = torch.arange(kv_max, dtype=dtype).unsqueeze(0)        # [1, kv_max]
-        mask = torch.where(k_pos <= q_pos, torch.tensor(0.0, dtype=dtype), min_val)
-        attention_mask = mask.unsqueeze(0).unsqueeze(0).expand(self.batch, 1, seq_len, kv_max)
+        # BOOL mask (False=attend, True=mask out): kirinx90 无 FP16→BOOL Cast kernel, 须直传 BOOL.
+        q_pos = torch.arange(seq_len, dtype=torch.int32).unsqueeze(1)  # [seq_len, 1]
+        k_pos = torch.arange(kv_max, dtype=torch.int32).unsqueeze(0)   # [1, kv_max]
+        mask = k_pos <= q_pos                                           # [seq_len, kv_max] bool (True=attend)
+        attention_mask = (~mask).unsqueeze(0).unsqueeze(0).expand(self.batch, 1, seq_len, kv_max)
 
-        position_ids = torch.arange(seq_len, dtype=torch.int64).unsqueeze(0).repeat(self.batch, 1)
-        new_kv_cache_pos = torch.arange(seq_len, dtype=torch.int64)
+        position_ids = torch.arange(seq_len, dtype=torch.int32).unsqueeze(0).repeat(self.batch, 1)
+        new_kv_cache_pos = torch.arange(seq_len, dtype=torch.int32)
         output_pos = torch.tensor([seq_len - 1], dtype=torch.int32)
 
         past_key_values = []
@@ -205,14 +205,13 @@ class ExportWrapper(nn.Module):
 
         input_ids = torch.randint(0, vocab_size, (self.batch, seq_len), dtype=torch.int64)
 
-        # attention_mask [batch, 1, seq_len, kv_max] — causal over buffer.
-        min_val = torch.finfo(dtype).min
-        q_pos = torch.arange(seq_len, dtype=dtype).unsqueeze(1)
-        k_pos = torch.arange(kv_max, dtype=dtype).unsqueeze(0)
-        mask = torch.where(k_pos <= q_pos, torch.tensor(0.0, dtype=dtype), min_val)
-        attention_mask = mask.unsqueeze(0).unsqueeze(0).expand(self.batch, 1, seq_len, kv_max)
+        # attention_mask [batch, 1, seq_len, kv_max] — causal over buffer (BOOL).
+        q_pos = torch.arange(seq_len, dtype=torch.int32).unsqueeze(1)
+        k_pos = torch.arange(kv_max, dtype=torch.int32).unsqueeze(0)
+        mask = k_pos <= q_pos
+        attention_mask = (~mask).unsqueeze(0).unsqueeze(0).expand(self.batch, 1, seq_len, kv_max)
 
-        position_ids = torch.arange(seq_len, dtype=torch.int64).unsqueeze(0).repeat(self.batch, 1)
+        position_ids = torch.arange(seq_len, dtype=torch.int32).unsqueeze(0).repeat(self.batch, 1)
 
         past_key_values = []
         for i in range(num_layers):
@@ -221,7 +220,7 @@ class ExportWrapper(nn.Module):
             v = torch.zeros(self.batch, num_kv_heads, kv_max, layer_head_dim, dtype=dtype)
             past_key_values.append((k, v))
 
-        new_kv_cache_pos = torch.arange(seq_len, dtype=torch.int64)
+        new_kv_cache_pos = torch.arange(seq_len, dtype=torch.int32)
 
         # embeddings=None (in-graph lookup); output_pos=None (return all logits).
         return (input_ids, attention_mask, position_ids, past_key_values,

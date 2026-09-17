@@ -57,6 +57,98 @@ export PYTHONPATH="<sitecustomize_dir>:${PYTHONPATH:-}"
 # cd 到输出目录跑（onlinec→.omc rename 同目录同设备，见 A6）
 ```
 
+## 算子包源码构建（ops-nn / ops-math / ops-transformer）
+
+> 场景：预编 `.run` 包装机缺失算子（如 l2_normalize 正向 apt 入口，见 T2/B3）或需基于源码改动重建时，从 gitCode 三仓 `build.sh --pkg --soc=kirinx90` 构建，再用 `--upgrade --quiet` 装回 cann-kirinx90。与上文「环境准备」装预编包互补；产物即上文 `--upgrade` 装的 `.run`。
+
+### 源码仓
+
+| 仓 | 路径 | build.sh |
+|----|------|----------|
+| ops-nn | `/mnt/workspace/gitCode/ops-nn` | 含 `norm/l2_normalize` 正向 apt 入口（T2 已落地） |
+| ops-math | `/mnt/workspace/gitCode/ops-math` | — |
+| ops-transformer | `/mnt/workspace/gitCode/ops-transformer` | — |
+
+三仓 build.sh 同框架：`--soc=kirinx90` → `COMPUTE_UNIT_SHORT=kirinx90` → CMake `-DASCEND_COMPUTE_UNIT=kirinx90`；`--pkg` → `build_binary`（ccec 编 kernel）+ `build_pkg`（CPack makeself 打 `.run`）。`build_torch_extension_whl` 无 `build` 模块时优雅跳过（不依赖 torch）。`kirinx90` 在 `SOC_TO_ARCH` 之外但不影响 `--pkg`（该映射仅 `--run_example` 仿真路径用）。
+
+### env（A8 + A5 是关键）
+
+> ⚠️ **A8**：系统 `~/.bashrc` source 旧 CANN 设 `TOOLCHAIN_HOME`（ccec/asc_opc 经它解析 asc 头）→ 不 unset 会用错 CANN 头，`cast` 等 AIV_ONLY kernel 全挂。**必须先 unset（含 `TOOLCHAIN_HOME`；AGENTS.md unset 列表原写 `TOOLKIT_HOME`，实际系统变量是 `TOOLCHAIN_HOME`，两者都 unset 保险）再 source cann-kirinx90**。
+
+```bash
+# kx_env.sh（可复用）
+unset ASCEND_HOME_PATH ASCEND_OPP_PATH ASCEND_TOOLKIT_HOME ASCEND_AICPU_PATH TOOLKIT_HOME TOOLCHAIN_HOME CMAKE_PREFIX_PATH PYTHONPATH SOC_VERSION GE_FUSION_SWITCH_FILE GE_EXTERNAL_WEIGHT ASCEND_VISIBLE_DEVICES DEVICE ASCEND_RUNTIME_OPTIONS
+unset LD_LIBRARY_PATH
+export PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/opt/buildtools/python-3.12.9/bin:/usr/local/cmake/bin
+source /mnt/workspace/cann-kirinx90/cann-9.2.0/set_env.sh
+export SOC_VERSION=KirinX90
+# A5: libpython 前置（修复 _ctypes undefined symbol _PyErr_SetLocaleString）
+export LD_LIBRARY_PATH=/opt/buildtools/python-3.12.9/lib:${ASCEND_HOME_PATH}/lib64:${LD_LIBRARY_PATH:-}
+```
+
+校验：`which ccec` → `/mnt/workspace/cann-kirinx90/cann-9.2.0/bin/ccec`、`TOOLCHAIN_HOME=/mnt/workspace/cann-kirinx90/cann-9.2.0/toolkit`、`python3 -c "import ctypes"` OK。
+
+### 构建（三仓，逐个）
+
+```bash
+source /tmp/opencode/kx_env.sh   # 或内联上节 env
+for pkg in ops-nn ops-math ops-transformer; do
+  cd /mnt/workspace/gitCode/$pkg
+  rm -rf build build_out          # 清旧产物防跨 SOC 污染（cmake_init 也会删 CMakeCache）
+  bash build.sh --pkg --soc=kirinx90 -j16
+done
+# 产物：各仓 build_out/cann-kirinx90-<pkg>_9.1.0_linux-aarch64.run
+```
+
+### 安装（--upgrade --quiet，不能 --full --force）
+
+> ⚠️ 必须用 `--upgrade --quiet`，不能用 `--full --force`：`--full --force` 不覆盖 toolkit 自带的 opp/built-in ops-info（只读）→ ops-info 缺算子；`--upgrade --quiet` 正确覆盖 opp/built-in ops-info + kernel binary（与上文「环境准备」第 ③ 步一致）。
+
+```bash
+source /tmp/opencode/kx_env.sh
+for pkg in ops-nn ops-math ops-transformer; do
+  bash /mnt/workspace/gitCode/$pkg/build_out/cann-kirinx90-${pkg}_9.1.0_linux-aarch64.run \
+    --upgrade --quiet --install-path=/mnt/workspace/cann-kirinx90
+done
+```
+
+> 装前可备份手动 workaround 文件（A3 `scene.info`/`version.info`、B3 手写 `l2_normalize.py`、当前 ops-info json）供回滚。实测 `--upgrade` 不覆盖 opp 级 A3 文件（包只写 `share/info/ops_<pkg>/`，不动 `ops_legacy/` 符号链接目标），B3 `l2_normalize.py` 由新包同名文件正确替换（md5 与手写版一致）。
+
+### 验证（已验证 2026-09-17）
+
+| 项 | 结果 |
+|----|------|
+| 三仓 `.run` | ops-nn 41M / ops-math 19M / ops-transformer 24M，`KIRINX90_OPS-*_RUN_PACKAGE` makeself 标识 ✓ |
+| kernel 落盘 | `tbe/kernel/kirinx90/{ops_nn,ops_math,ops_transformer}/` 共 **647 个 `.o`**（ops_nn 422 / ops_math 180 / ops_transformer 45）✓ |
+| l2_normalize（B3/T2） | **新包已含** `impl/ops_nn/dynamic/l2_normalize.py`（9688B，md5 `821b3bef…` 与原手写 wrapper 字节相同 → 源仓 T2 已落地）+ kernel `L2Normalize_1_high_performance.o`(26KB) + `kernel/config/kirinx90/ops_nn/l2_normalize.json` ✓ |
+| ops-info-nn.json | fresh 229300B（替旧 232183B），dict 120 算子，含 L2Normalize/Gelu/Sigmoid/RmsNorm/ScatterNdUpdate/GatherV2/MatMulV3/BatchMatMulV3/ScaledMaskedSoftmaxV2 ✓ |
+| A3 scene.info/version.info | `--upgrade` 未覆盖 opp 级 workaround，md5 与装机前一致 ✓ |
+| 非致命 | ops-nn 日志 `On [kirinx90], [xxx] not supported`（matmul/conv 变体 kirinx90 不支持，INFO 跳过）；ops-math `gen_esb` 阶段 `... source file does not found`（add/mul/transpose 等 kernel 源不在 ops-math 仓，由 toolkit 内置/其他包提供，build 继续） |
+
+### 端到端打通（simple_network）
+
+装完三包后，用 `examples/test_converter/export_epair_and_compile/simple_network.py`（rmsnorm+matmul+mul+add）验证整链路：
+
+```bash
+# 1. 导出 epair（converter env + KIRINX90_CONVERTER_PATCHES=1，patch MatMul→MatMulV3）
+source /tmp/opencode/kx_env.sh
+export SOC_VERSION=KirinX90 KIRINX90_CONVERTER_PATCHES=1
+cd /mnt/workspace/CANN-LM_5883/examples/test_converter/export_epair_and_compile
+source ../common/check_env.sh               # ASCEND_HOME_PATH 已设则不重 source；CONVERTER_PYTHON=deps/torch-delegate/.venv
+python export_and_save_epair.py             # → epair_model/ep_json_with_ascend_ir.json（含 3× MatMulV3、0× plain MatMul）
+
+# 2. 编译 .omc（build/cann_lm_compile 0715 链 + cann-kirinx90 运行时库覆盖）
+cd epair_model
+export SOC_VERSION=KirinX90; unset GE_FUSION_SWITCH_FILE; export GE_EXTERNAL_WEIGHT=0
+export LD_LIBRARY_PATH=/mnt/workspace/CANN-LM_5883/build:${LD_LIBRARY_PATH:-}
+/mnt/workspace/CANN-LM_5883/build/cann_lm_compile ep_json_with_ascend_ir.json weight_info.json simple
+# → simple.omc（mobile 路径，T1 自动 onlinec→.omc；rc=1 是 GE teardown abort，.omc 已产出，容忍）
+```
+
+`.omc` 验证：`atc --mode=6` → `soc_version[KirinX90]`/`weight_size=36352B` 内嵌；`atc --mode=1` → `graph[1]` SubGraph_0 27 算子含 **2× MatMulV3（aicore）**+ rmsnorm 分解(Square/ReduceMean/Rsqrt/Mul)+ Add，**零 aicpu 算子**。
+
+> 简化发现：① **无需重建 `build_kx`**——`build/cann_lm_compile`（0715 链）+ `LD_LIBRARY_PATH` 覆盖到 cann-kirinx90/lib64，运行时加载新 weekly（≥20260909）libruntime 接受 `rtSetSocVersion(KirinX90)`，0715 二进制与 cann-kirinx90 库 ABI 兼容直接编通；② **无需 A7 sitecustomize**——本机 torch_npu 在 Python 3.11.4，而 GE 嵌入的 libpython 是 3.12.9，不会加载 3.11.4 的 torch_npu，无双重 GE 堆损坏（teardown 的 ASAN leak summary 在 `.omc` 写出之后，良性）。
+
 ## 规避清单
 
 ### A. toolkit/环境层
@@ -232,10 +324,10 @@ SAVE_AIR=1 ./build_kx/cann_lm_compile <epair>/ep_json_with_ascend_ir.json <epair
 | # | 项 | 位置 | 状态 |
 |---|---|---|---|
 | T1 | `compile_main.cc` 适配 mobile 路径：BuildModel 后检测 `onlinec` → 改名 `{output_name}.omc`（Kirin SOC）/`.om`（否则），跳过多余的 `aclgrphSaveModel`，消除红鲱鱼报错 + 自动正确命名 | `cann_lm/converter/export/csrc/tools/compile_main.cc` | ✅ 已落地（`All 3 stages passed`，直接出 `kirin_ops_kirinx90.omc`，无 `onlinec` 残留） |
-| T2 | ops-nn 构建补 l2_normalize 正向 apt 入口打包（`norm/l2_norm` 加 `gelu_src_copy` 同款 CMake target），彻底替代手写 wrapper | `/mnt/workspace/gitCode/ops-nn`（外部仓） | ⬜ 待办 |
+| T2 | ops-nn 构建补 l2_normalize 正向 apt 入口打包（`norm/l2_norm` 加 `gelu_src_copy` 同款 CMake target），彻底替代手写 wrapper | `/mnt/workspace/gitCode/ops-nn`（外部仓） | ✅ 已落地（源仓 `norm/l2_normalize` 含正向 apt 入口；`build.sh --pkg --soc=kirinx90` 产出的 `.run` 含 `impl/ops_nn/dynamic/l2_normalize.py`(9688B，md5 与 B3 手写 wrapper 一致)+ kernel `L2Normalize_1_high_performance.o` + `kernel/config/kirinx90/ops_nn/l2_normalize.json`；`--upgrade` 装回后 ops-info-nn.json 含 L2Normalize。2026-09-17 验证，见「算子包源码构建」章节） |
 | T3 | network 的 `Muls→Mul`、`kv_cache 作输入`、scatter converter monkeypatch 固化为 kirinx90-target 正式改动（或 converter 层按 SOC 条件不发 TensorMove） | `examples/.../kirin_ops_net.py` + `cann_lm/converter/export/ge_converters/_scatter_nd_update_converter.py` | ⬜ 待办 |
 | T4 | 确认 Gelu/L2Normalize 以外的 6 算子 kernel 在 kirinx90 上无 tvm-CCE 类残留问题（均已编过，留复测） | — | ⬜ 待办 |
-| T5 | 把 MatMul/BatchMatMul 挪回 aicore：monkeypatch `aten.mm`/`aten.bmm` converter，用 `torchair.ge.custom_op("MatMulV3"/"BatchMatMulV3",...)` 手建 V3 节点（须先验 converter stub 环境 `get_registered_ir_def("MatMulV3")` 放行）；SoftmaxV2→`MaskedSoftmaxWithRelPosBias`（可调用，需 rel_pos_bias） | `examples/.../kirin_ops_net.py` + `compile_to_epair` | ⬜ 待办（aicore_only_net.py 已规避，此项为补回 matmul） |
+| T5 | 把 MatMul/BatchMatMul 挪回 aicore：monkeypatch `aten.mm`/`aten.bmm` converter，用 `torchair.ge.custom_op("MatMulV3"/"BatchMatMulV3",...)` 手建 V3 节点（须先验 converter stub 环境 `get_registered_ir_def("MatMulV3")` 放行）；SoftmaxV2→`MaskedSoftmaxWithRelPosBias`（可调用，需 rel_pos_bias） | `examples/.../kirin_ops_net.py` + `compile_to_epair` | ✅ MatMulV3 已落地——`KIRINX90_CONVERTER_PATCHES=1` 机制（`_kirinx90_converter_patches.py::_matmul_v3` 用 `ge_op("MatMulV3",...)` 覆盖 `aten.mm`/`matmul`，last-write-wins），2026-09-17 simple_network e2e 验证：ep_json 3× MatMulV3/0× plain MatMul，.omc aicore 零 aicpu；⬜ SoftmaxV2→`MaskedSoftmaxWithRelPosBias` 仍未做（simple_network 未含 softmax，待真实模型层验证） |
 | T6 | 权重分离：`compile_main.cc` 设 `ge.externalWeightDir`（走 init_options 非 build_options）→ =2 出权重分离 .omc（.omc + `weight/delegate_graph_weight_combined` + meta.json） | `cann_lm/converter/export/csrc/tools/compile_main.cc` | ✅ 已落地（=2 验证有效；=1 仍失败 per-file 不支持） |
 | T7 | ~~`cat→ConcatV2`（落 aicpu）~~ **方案废弃**——kirinx90 不支持 AICPU（见背景硬约束），ConcatV2 落 aicpu 同样失败。正确方向：scatter indices 的 int32 cat（`modeling_gemma4.py:68` `[col_b,col_n,col_pos]`）是坐标拼接不进 aicore，在 converter 阶段常量化（seq_len 固定时 b/n/pos 可预算）或用 host 侧算子，不留 aicpu 算子。B4 根因（`get_kernel_type_enum` AIV_ONLY + kirinx90 不在白名单；注释 KERNEL_TYPE 引入 tiling `_pattern`/`dsl_compile_info` 缺失）说明 concat_d apt 本身在 kirinx90 不可用，需绕开 apt 路径 | `cann_lm/converter/export/ge_converters/_kirinx90_converter_patches.py::_kirinx90_aten_cat` + `cann_lm/models/gemma4/modeling_gemma4.py::_scatter_kv_cache` | ⬜ 待办 |
 
@@ -279,8 +371,11 @@ SAVE_AIR=1 ./build_kx/cann_lm_compile <epair>/ep_json_with_ascend_ir.json <epair
 | `/mnt/workspace/cann-kirinx90/cann-9.2.0/opp/.../tbe/impl/ops_math/dynamic/concat_d_apt.py:216` | 硬编码 `arch31/concat_d.cpp`（AIV_ONLY），触发 B4 |
 | `sitecustomize.py` + `PYTHONPATH` | A7 规避：屏蔽 torch_npu（避免 GE 嵌入 python 双重加载 cann-9.0.0 GE） |
 | `/mnt/workspace/cann-kirinx90/` | 隔离 toolkit（toolkit + A3-ops + kirinx90 ops） |
-| `/mnt/workspace/cann-kirinx90/cann-9.2.0/opp/.../tbe/impl/ops_nn/dynamic/l2_normalize.py` | 手写 AscendC-apt wrapper（B3 规避） |
+| `/mnt/workspace/cann-kirinx90/cann-9.2.0/opp/.../tbe/impl/ops_nn/dynamic/l2_normalize.py` | AscendC-apt wrapper（B3；T2 后由 ops-nn 源仓 `norm/l2_normalize` 正式打包，`--upgrade` 装回替换手写版，md5 一致） |
 | `/mnt/workspace/cann-kirinx90/cann-9.2.0/opp/.../tbe/kernel/scene.info` | 手补 `os=linux`（A3 规避） |
 | `examples/.../out/kirin_ops_kirinx90.omc` | 8-op 网络产物（677K，soc=KirinX90，权重内嵌，有 aicpu 算子） |
 | `examples/.../out/aicore_only_kirinx90.omc` | 纯 aicore 网络产物（350K，零 aicpu） |
 | `examples/.../out/aicore_only_kirinx90.omc` + `weight/` | 权重分离产物（=2：.omc 349K + `delegate_graph_weight_combined` 1.5K + meta.json） |
+| `/tmp/opencode/kx_env.sh` | kirinx90 编译 env 脚本（unset 污染 + source cann-kirinx90 + A5 libpython；算子包构建/安装/OM 编译复用） |
+| `/mnt/workspace/gitCode/{ops-nn,ops-math,ops-transformer}/build_out/cann-kirinx90-<pkg>_9.1.0_linux-aarch64.run` | 算子包源码构建产物（`build.sh --pkg --soc=kirinx90 -j16`，见「算子包源码构建」章节） |
+| `examples/test_converter/export_epair_and_compile/epair_model/simple.omc` | simple_network 端到端产物（686K，soc=KirinX90，权重内嵌，2× MatMulV3 aicore 零 aicpu；KIRINX90_CONVERTER_PATCHES=1 导出） |

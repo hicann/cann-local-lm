@@ -633,8 +633,11 @@ std::optional<RegisteredIrDef> QueryRegisteredIrDef(const std::string &op_type, 
   std::vector<std::pair<ge::AscendString, ge::AscendString>> inputs;
   std::vector<std::pair<ge::AscendString, ge::AscendString>> outputs;
   std::vector<std::pair<ge::AscendString, ge::AscendString>> attrs;
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
   if (::GetRegisteredIrDef(op_type.c_str(), inputs, outputs, attrs) != ge::GRAPH_SUCCESS) {
     AddError(result, "REGISTERED_IR_QUERY_FAILED", "GetRegisteredIrDef failed", context + ":" + op_type);
+#pragma GCC diagnostic pop
     return std::nullopt;
   }
   RegisteredIrDef ir_def;

@@ -319,6 +319,114 @@ SAVE_AIR=1 ./build_kx/cann_lm_compile <epair>/ep_json_with_ascend_ir.json <epair
 
 实现：GetGEGraph 后、BuildModel 前，`SAVE_AIR=1` → `aclgrphDumpGraph(graph, "<output>_graph", len)`（`ge_ir_build.h:170`）→ `GraphUtils::DumpGEGrph`(.txt) + `DumpGrphToOnnx`(.pbtxt)，子图也 dump。这是**编译前** GE 图 IR；编译后融合图 IR 已在 `ep_json_with_ascend_ir.json`（JSON）。独立于 OM/权重分离（`GE_EXTERNAL_WEIGHT`/`SOC_VERSION` 等），可同时跑。
 
+## gemma4 真实模型 .omc 编译（2026-09-20 实证）
+
+> 用 gemma4-E2B（5.03B，35 层）前 N 层截断导出 prefill+decode epair，编译 kirinx90 `.omc`。**前 1 层和前 5 层均编译成功（exit=0）**。
+
+### 环境
+
+```bash
+# 导出 env（converter venv, CPU, 无 torch_npu）
+source scripts/set_env.sh
+export KIRINX90_CONVERTER_PATCHES=1   # 触发 6 类算子 converter patch
+# converter --target-soc KirinX90 → dtype fp16（_derive_dtype 派生, 不走 Cast）
+
+# 编译 env（kirinx90 CANN, 非 ASAN build）
+unset ASCEND_HOME_PATH ASCEND_OPP_PATH ASCEND_TOOLKIT_HOME ASCEND_AICPU_PATH TOOLKIT_HOME CMAKE_PREFIX_PATH PYTHONPATH LD_LIBRARY_PATH ASCEND_VISIBLE_DEVICES DEVICE SOC_VERSION GE_FUSION_SWITCH_FILE GE_EXTERNAL_WEIGHT
+source /mnt/workspace/cann-kirinx90/cann-9.2.0/set_env.sh
+export SOC_VERSION=KirinX90 GE_EXTERNAL_WEIGHT=0
+export LD_LIBRARY_PATH="/opt/buildtools/python-3.12.9/lib:${LD_LIBRARY_PATH:-}"
+```
+
+### 导出
+
+```bash
+$CONVERTER_PYTHON cann_lm/converter/cann_lm_converter.py \
+  --hf-path <gemma-4-E2B-it> --output-dir <out> \
+  --mode prefill-decode --seq-len 128 --num-layers <N> \
+  --target-soc KirinX90
+# KIRINX90_CONVERTER_PATCHES=1 在 env 里, converter 读取后自动 patch
+```
+
+patch 效果（epair ascend_ir 验证）：
+
+| 原算子 | patch 后 | kirinx90 原因 |
+|---|---|---|
+| `RotaryMul` | `RotaryPositionEmbedding` | kirinx90 无 RotaryMul kernel, 有 RotaryPositionEmbedding |
+| plain `MatMul` | `MatMulV3` | kirinx90 aicore 只 V3 |
+| `TensorMove` + `ScatterNdUpdate` | 直发 `ScatterNdUpdate` | kirinx90 无 TensorMove kernel |
+| `Muls`（标量乘） | `Mul`（标量转 Const tensor） | kirinx90 无 Muls engine |
+| `StridedSliceV2` | `StridedSlice`（non-V2, int32） | V2 的 forbidden closed 落 host CPU → mobile 失败 |
+| `cat`→`ConcatD` | patch 存在但 **gemma4 场景未触发**（scatter indices 已在 converter 阶段常量化） | B4 的 apt 编译失败未复现 |
+
+### 编译
+
+```bash
+build/cann_lm_compile <out>/prefill_ep_json_with_ascend_ir.json <out>/weight_info.json <prefix>_pf
+build/cann_lm_compile <out>/decode_ep_json_with_ascend_ir.json  <out>/weight_info.json <prefix>_dc
+# mobile 路径直接产 .omc, exit=0（无 ASAN 泄漏, 非 ASAN build）
+```
+
+### 产物
+
+| 模型 | prefill .omc | decode .omc | memory | weight |
+|---|---|---|---|---|
+| 1 层 | 1.03 GB | 1.03 GB | 85.6 MB / 19.0 MB | 1.03 GB |
+| 5 层 | 1.32 GB | 1.32 GB | 95.6 MB / 29.0 MB | 1.31 GB |
+
+> weight_size ~1.03-1.31 GB = embed_tokens(262144×1536 fp16 ~786MB) + lm_head + per_layer_model_projection + 层权重。1 层和 5 层 weight 差 ~280MB = 4 层 × ~70MB/层（gemma4 每层 ~70MB fp16）。
+
+### .omc I/O（1 层 prefill, 13 输入）
+
+| 输入 | dtype | shape |
+|---|---|---|
+| mask_full | BOOL | [1,1,128,2048] |
+| mask_sliding | BOOL | [1,1,128,2048] |
+| position_ids | INT32 | [1,128] |
+| past_key_values_0_0 | FP16 | [1,1,2048,256] |
+| past_key_values_0_1 | FP16 | [1,1,2048,256] |
+| new_kv_cache_pos | INT32 | [128] |ha
+| embeddings | FP16 | [1,128,1536] |
+| output_pos | INT32 | [1] |
+| per_layer_token_identity | FP16 | [1,128,35,256] |
+
+> `per_layer_token_identity` shape `[1,128,35,256]`——35 = 全量 `num_hidden_layers`（截断只改 `model.model.layers[:N]`, 不改 config.num_hidden_layers）。层 0 只取 `[:,:,0:1,:]`, 剩余 34 层 PLE 数据在输入里但模型不访问, **非随机**（权重/KV/PLE 层 0 数据均真实）。
+
+### 关键经验
+
+1. **必须用非 ASAN build 的 cann_lm_compile**：ASAN build（`build.sh cpp --asan`）与 kirinx90 CANN 的 TVM/Python 路径冲突 → ASAN 泄漏 → `aclgrphBuildModel failed`。非 ASAN build（`build.sh cpp`，用 kirinx90 CANN env 构建）→ exit=0。
+2. **cann_lm_compile 必须用 kirinx90 CANN env 构建**（非 0715）：新 GE 的 `libgert.so` 引用 `aclrtHostGetDevicePointerAddrRange`（新 runtime API），0715 的 `libascendcl.so` 无此符号 → 链接失败。用 kirinx90 CANN 构建（GE + runtime 匹配）→ 通过。
+3. **`KIRINX90_CONVERTER_PATCHES=1` 是导出时设的**（不是编译时）：在 converter venv env 里 export, converter 读到后加载 `_kirinx90_converter_patches.py` 覆盖 converter（last-write-wins）。
+4. **`--target-soc KirinX90`** 触发 `_derive_dtype` → fp16（不用 `--dtype float16`，也不支持 `--dtype bfloat16`）。
+5. **gemma4 的 `scatter_kv_to_cache` 用 `torch.cat`**（B4/ConcatD 失败点），但 1 层/5 层场景**未触发** B4——scatter indices 已在 converter 阶段常量化（`inline_fused_attn_seq_constants` 把 lifted 张量按名跨图共享 → GE 不再生成 ConcatD 节点）。
+
+### 新 GE 安装（从 GE 源码仓构建+安装）
+
+GE 源码仓 `/mnt/workspace/gitCode/cann/ge/` 编出的 `.run` 包安装到两套 CANN：
+
+```bash
+# 从 GE 仓 build_out 安装
+bash /mnt/workspace/gitCode/cann/ge/build_out/cann-ge-compiler_9.2.0_linux-aarch64.run --run --quiet --install-path=/mnt/workspace/cann-kirinx90
+bash /mnt/workspace/gitCode/cann/ge/build_out/cann-ge-executor_9.2.0_linux-aarch64.run --run --quiet --install-path=/mnt/workspace/cann-kirinx90
+# 同样装到 0715（如有需要）
+bash /mnt/workspace/gitCode/cann/ge/build_out/cann-ge-compiler_9.2.0_linux-aarch64.run --run --quiet --install-path=/home/developer/Ascend/cann-9.2.0-0715
+bash /mnt/workspace/gitCode/cann/ge/build_out/cann-ge-executor_9.2.0_linux-aarch64.run --run --quiet --install-path=/home/developer/Ascend/cann-9.2.0-0715
+```
+
+注意：新 GE 的 `libgert.so` 引用 `aclrtHostGetDevicePointerAddrRange`，0715 CANN 的 `libascendcl.so` 无此符号 → cann_lm_compile 用 0715 构建会链接失败。**必须用 kirinx90 CANN 构建**（GE + runtime 版本匹配）。
+
+### ge_graph_builder.cc 适配新 GE 头文件
+
+新 GE 头把 `GetRegisteredIrDef` 标记 deprecated（建议 `GetRegisteredIrDefV2`），但 `GetRegisteredIrDefV2` 未在已安装 GE 中实际声明（只在 deprecation message 里提到）。用 `#pragma GCC diagnostic` 抑制：
+
+```cpp
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+  if (::GetRegisteredIrDef(op_type.c_str(), inputs, outputs, attrs) != ge::GRAPH_SUCCESS) {
+    ...
+#pragma GCC diagnostic pop
+```
+
 ## 待办（固化，不影响已出的 .omc）
 
 | # | 项 | 位置 | 状态 |

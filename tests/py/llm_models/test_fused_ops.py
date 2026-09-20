@@ -39,7 +39,7 @@ def test_npu_rms_norm(shape):
     gamma = torch.randn(shape[-1], dtype=torch.float32)
     eps = 1e-6
 
-    y, rstd = torch.ops.npu.npu_rms_norm(x, gamma, eps)
+    y, rstd = torch.ops.cann_lm.rms_norm(x, gamma, eps)
 
     assert y.shape == x.shape
     assert rstd.shape == x.shape[:-1] + (1,)
@@ -56,7 +56,7 @@ def test_npu_rms_norm_default_eps():
     x = torch.randn(3, 6, dtype=torch.float32)
     gamma = torch.randn(6, dtype=torch.float32)
 
-    y, rstd = torch.ops.npu.npu_rms_norm(x, gamma)
+    y, rstd = torch.ops.cann_lm.rms_norm(x, gamma)
 
     ms = x.pow(2).mean(-1, keepdim=True) + 1e-6
     expected = x * torch.rsqrt(ms) * gamma
@@ -77,7 +77,7 @@ def test_npu_rotary_mul_half(d):
     r1 = torch.randn(2, 4, d, dtype=torch.float32)
     r2 = torch.randn(2, 4, d, dtype=torch.float32)
 
-    out = torch.ops.npu.npu_rotary_mul(x, r1, r2, "half")
+    out = torch.ops.cann_lm.rotary_mul(x, r1, r2, "half")
 
     assert out.shape == x.shape
     x1 = x[..., : d // 2]
@@ -93,7 +93,7 @@ def test_npu_rotary_mul_default_mode():
     r1 = torch.randn(2, 8, dtype=torch.float32)
     r2 = torch.randn(2, 8, dtype=torch.float32)
 
-    out = torch.ops.npu.npu_rotary_mul(x, r1, r2)  # default "half"
+    out = torch.ops.cann_lm.rotary_mul(x, r1, r2)  # default "half"
 
     x1, x2 = x[..., :4], x[..., 4:]
     expected = (x * r1) + (torch.cat((-x2, x1), dim=-1) * r2)
@@ -129,7 +129,7 @@ def test_npu_dynamic_quant_shape_dtype_and_roundtrip():
     torch.manual_seed(0)
     x = torch.randn(4, 16, dtype=torch.float32) * 3.0
 
-    y, scale = torch.ops.npu.npu_dynamic_quant(x)
+    y, scale = torch.ops.cann_lm.dynamic_quant(x)
 
     assert y.shape == x.shape
     assert y.dtype == torch.int8
@@ -160,7 +160,7 @@ def test_npu_scatter_nd_update_1d_indices():
     indices = torch.tensor([1, 3], dtype=torch.int64)
     updates = torch.randn(2, 3, 2, 4, dtype=torch.float32)
 
-    out = torch.ops.npu.npu_scatter_nd_update(cache, indices, updates)
+    out = torch.ops.cann_lm.scatter_nd_update(cache, indices, updates)
 
     assert out.shape == cache.shape
     expected = cache.clone()
@@ -180,7 +180,7 @@ def test_npu_scatter_nd_update_2d_indices():
     indices = torch.tensor([[0, 0, 1], [1, 2, 4]], dtype=torch.int64)  # [num, ndim]
     updates = torch.randn(2, 4, dtype=torch.float32)
 
-    out = torch.ops.npu.npu_scatter_nd_update(cache, indices, updates)
+    out = torch.ops.cann_lm.scatter_nd_update(cache, indices, updates)
 
     assert out.shape == cache.shape
     expected = cache.clone()
@@ -205,7 +205,7 @@ def test_npu_quant_matmul_group1_plain_matmul():
     x2 = torch.randn(K, N, dtype=torch.float32)
     scale = torch.ones(1, N, dtype=torch.float32)  # group=1 -> [1, N]
 
-    out = torch.ops.npu.npu_quant_matmul(
+    out = torch.ops.cann_lm.quant_matmul(
         x1, x2, scale, group_sizes=[1, 1, 1], output_dtype=6  # fp32
     )
     out = _maybe_unwrap(out)
@@ -225,7 +225,7 @@ def test_npu_quant_matmul_grouped_scale_and_bias():
     sc = torch.rand(K // group, N, dtype=torch.float32) + 0.1
     bias = torch.randn(N, dtype=torch.float32)
 
-    out = torch.ops.npu.npu_quant_matmul(
+    out = torch.ops.cann_lm.quant_matmul(
         x1, w, sc, bias=bias, group_sizes=[1, 1, group], output_dtype=6
     )
     out = _maybe_unwrap(out)
@@ -245,7 +245,7 @@ def test_npu_quant_matmul_pertoken_scale_dequant():
     scale = torch.ones(1, N, dtype=torch.float32)
     ps = torch.rand(M, 1, dtype=torch.float32) + 0.5  # [M, 1] per-token scale
 
-    out = torch.ops.npu.npu_quant_matmul(
+    out = torch.ops.cann_lm.quant_matmul(
         x1, x2, scale, pertoken_scale=ps, group_sizes=[1, 1, 1], output_dtype=6
     )
     out = _maybe_unwrap(out)
@@ -263,7 +263,7 @@ def test_npu_quant_matmul_pertoken_scale_dequant():
 # ---------------------------------------------------------------------------
 # 7. npu::npu_chunk_gated_delta_rule  (chunk_gated_delta_rule.py)
 #    Note: 仓内实际注册在 npu 命名空间带 npu_ 前缀 (非 cann_lm::), 故调用
-#    torch.ops.npu.npu_chunk_gated_delta_rule.
+#    torch.ops.cann_lm.chunk_gated_delta_rule.
 #    schema: npu_chunk_gated_delta_rule(Tensor query, Tensor key, Tensor value,
 #               *, Tensor? beta, Tensor? initial_state, Tensor? actual_seq_lengths,
 #               float? scale, Tensor? g) -> (Tensor out, Tensor final_state)
@@ -281,7 +281,7 @@ def test_npu_chunk_gated_delta_rule_shape_finite():
     init_state = torch.zeros(B, Nv, Dv, Dk, dtype=torch.float32)
     actual_seq = torch.tensor([T], dtype=torch.int32)
 
-    out, final_state = torch.ops.npu.npu_chunk_gated_delta_rule(
+    out, final_state = torch.ops.cann_lm.chunk_gated_delta_rule(
         q, k, v, beta=beta, initial_state=init_state,
         actual_seq_lengths=actual_seq, scale=1.0, g=g,
     )
@@ -309,7 +309,7 @@ def test_npu_fused_infer_attention_score_v2_bnsd_full():
     v = torch.randn(b, h, s, d, dtype=torch.float32)
     scale = 0.25
 
-    out, lse = torch.ops.npu.npu_fused_infer_attention_score_v2(
+    out, lse = torch.ops.cann_lm.fused_infer_attention_score_v2(
         q, k, v, num_query_heads=h, num_key_value_heads=h,
         softmax_scale=scale, input_layout="BNSD", sparse_mode=0,
     )
@@ -333,7 +333,7 @@ def test_npu_fused_infer_attention_score_v2_causal_shape_finite():
     k = torch.randn(b, h, s, d, dtype=torch.float32)
     v = torch.randn(b, h, s, d, dtype=torch.float32)
 
-    out, lse = torch.ops.npu.npu_fused_infer_attention_score_v2(
+    out, lse = torch.ops.cann_lm.fused_infer_attention_score_v2(
         q, k, v, num_query_heads=h, num_key_value_heads=h,
         softmax_scale=0.25, input_layout="BNSD", sparse_mode=3,
     )
@@ -351,7 +351,7 @@ def test_npu_fused_infer_attention_score_v2_gqa_bsh():
     k = torch.randn(b, s, nkv * d, dtype=torch.float32)
     v = torch.randn(b, s, nkv * d, dtype=torch.float32)
 
-    out, lse = torch.ops.npu.npu_fused_infer_attention_score_v2(
+    out, lse = torch.ops.cann_lm.fused_infer_attention_score_v2(
         q, k, v, num_query_heads=nq, num_key_value_heads=nkv,
         softmax_scale=0.35, input_layout="BSH", sparse_mode=0,
     )
@@ -370,7 +370,7 @@ def test_npu_fused_infer_attention_score_v2_extern_mask():
     # bool mask: True = mask out (-inf); shape [b,1,s,s]
     mask = torch.triu(torch.ones(s, s, dtype=torch.bool), diagonal=1).view(b, 1, s, s)
 
-    out, _ = torch.ops.npu.npu_fused_infer_attention_score_v2(
+    out, _ = torch.ops.cann_lm.fused_infer_attention_score_v2(
         q, k, v, atten_mask=mask, num_query_heads=h, num_key_value_heads=h,
         softmax_scale=0.5, input_layout="BNSD", sparse_mode=0,
     )
@@ -394,7 +394,7 @@ def test_fa_v2_sparse_mode3_causal_square():
     v = torch.randn(b, h, s, s, dtype=torch.float32)
     scale = 0.5
 
-    out, lse = torch.ops.npu.npu_fused_infer_attention_score_v2(
+    out, lse = torch.ops.cann_lm.fused_infer_attention_score_v2(
         q, k, v, num_query_heads=h, num_key_value_heads=h,
         softmax_scale=scale, input_layout="BNSD", sparse_mode=3,
     )
@@ -420,7 +420,7 @@ def test_fa_v2_sparse_mode4_sliding_square():
     v = torch.randn(b, h, s, s, dtype=torch.float32)
     scale = 0.4
 
-    out, _ = torch.ops.npu.npu_fused_infer_attention_score_v2(
+    out, _ = torch.ops.cann_lm.fused_infer_attention_score_v2(
         q, k, v, num_query_heads=h, num_key_value_heads=h,
         softmax_scale=scale, pre_tokens=pre_tokens, next_tokens=0,
         input_layout="BNSD", sparse_mode=4,
@@ -448,7 +448,7 @@ def test_fa_v2_tnd_layout():
     v = torch.randn(t, n, d, dtype=torch.float32)
     scale = 0.5
 
-    out, lse = torch.ops.npu.npu_fused_infer_attention_score_v2(
+    out, lse = torch.ops.cann_lm.fused_infer_attention_score_v2(
         q, k, v, num_query_heads=n, num_key_value_heads=n,
         softmax_scale=scale, input_layout="TND", sparse_mode=0,
     )
@@ -471,7 +471,7 @@ def test_fa_v2_bsnd_layout():
     v = torch.randn(b, s, n, d, dtype=torch.float32)
     scale = 0.3
 
-    out, _ = torch.ops.npu.npu_fused_infer_attention_score_v2(
+    out, _ = torch.ops.cann_lm.fused_infer_attention_score_v2(
         q, k, v, num_query_heads=n, num_key_value_heads=n,
         softmax_scale=scale, input_layout="BSND", sparse_mode=0,
     )
@@ -494,7 +494,7 @@ def test_fa_v2_default_kv_heads_equals_query_heads():
     scale = 0.25
 
     # omit num_key_value_heads -> default 0 -> line 78 sets it to num_query_heads
-    out, _ = torch.ops.npu.npu_fused_infer_attention_score_v2(
+    out, _ = torch.ops.cann_lm.fused_infer_attention_score_v2(
         q, k, v, num_query_heads=h, softmax_scale=scale,
         input_layout="BNSD", sparse_mode=0,
     )
@@ -523,7 +523,7 @@ def test_fa_v2_float_non_square_extern_mask_sliced():
     mask = torch.where(causal, 0.0, min_val).view(b, 1, kv_max, kv_max)
     scale = 0.5
 
-    out, _ = torch.ops.npu.npu_fused_infer_attention_score_v2(
+    out, _ = torch.ops.cann_lm.fused_infer_attention_score_v2(
         q, k, v, atten_mask=mask, num_query_heads=h, num_key_value_heads=h,
         softmax_scale=scale, input_layout="BNSD", sparse_mode=0,
     )
@@ -546,7 +546,7 @@ def test_fa_v2_unknown_sparse_mode_returns_no_mask():
     v = torch.randn(b, h, s, s, dtype=torch.float32)
     scale = 0.5
 
-    out, _ = torch.ops.npu.npu_fused_infer_attention_score_v2(
+    out, _ = torch.ops.cann_lm.fused_infer_attention_score_v2(
         q, k, v, num_query_heads=h, num_key_value_heads=h,
         softmax_scale=scale, input_layout="BNSD", sparse_mode=5,
     )

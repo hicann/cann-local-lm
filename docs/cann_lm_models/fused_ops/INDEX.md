@@ -13,28 +13,28 @@
 
 | 文件 | 职责 |
 |------|------|
-| `_library.py` | `NPU_LIB`（`npu::` FRAGMENT）+ `CANN_LM_LIB`（`cann_lm::` DEF）+ `safe_define` + `register_cpu_impl`（stub env 跳过）|
+| `_library.py` | `NPU_LIB`（`cann_lm::` FRAGMENT）+ `CANN_LM_LIB`（`cann_lm::` DEF）+ `safe_define` + `register_cpu_impl`（stub env 跳过）|
 | `ops.py` | 聚合 import（注册全部 fused ops 的 schema + fake + CPU impl）|
-| `chunk_gated_delta_rule.py` | `npu::npu_chunk_gated_delta_rule`（Qwen3.5 线性注意力核心，解决 export segfault）|
-| `fused_infer_attention_score.py` | `npu::npu_fused_infer_attention_score_v2`（FlashAttention 融合）|
-| `rms_norm.py` | `npu::npu_rms_norm` |
-| `rotary_mul.py` | `npu::npu_rotary_mul` |
-| `scatter_nd_update.py` | `npu::npu_scatter_nd_update` + `_`（KV cache 写入）|
+| `chunk_gated_delta_rule.py` | `cann_lm::chunk_gated_delta_rule`（Qwen3.5 线性注意力核心，解决 export segfault）|
+| `fused_infer_attention_score.py` | `cann_lm::fused_infer_attention_score_v2`（FlashAttention 融合）|
+| `rms_norm.py` | `cann_lm::rms_norm` |
+| `rotary_mul.py` | `cann_lm::rotary_mul` |
+| `scatter_nd_update.py` | `cann_lm::scatter_nd_update` + `_`（KV cache 写入）|
 | `l2_norm.py` | `cann_lm::l2norm` |
-| `dynamic_quant.py` | `npu::npu_dynamic_quant` |
-| `quant_matmul.py` | `npu::npu_quant_matmul` |
+| `dynamic_quant.py` | `cann_lm::dynamic_quant` |
+| `quant_matmul.py` | `cann_lm::quant_matmul` |
 
 ## GE converter（`cann_lm/converter/export/`）
 
 | 文件 | 职责 |
 |------|------|
 | `ge_converter.py` | `register_ge_converters`：cann_lm 自带 converter（quant_matmul / softplus / l2norm / chunk_gated_delta_rule / conv1d / index_copy / scatter_nd_update / index_put / FIA_v2）+ import torchair `custom/`（自动注册 npu_rms_norm / npu_rotary_mul 等）|
-| `_chunk_gated_delta_rule_converter.py` | `npu::npu_chunk_gated_delta_rule` → `ge.ChunkGatedDeltaRule`（torchair 空壳，cann_lm 覆盖）|
-| `_fused_infer_attention_score_v2_converter.py` | `npu::npu_fused_infer_attention_score_v2` → `ge.FusedInferAttentionScore` |
-| `_scatter_nd_update_converter.py` | `npu::npu_scatter_nd_update(_)` → `ge.ScatterNdUpdate` |
+| `_chunk_gated_delta_rule_converter.py` | `cann_lm::chunk_gated_delta_rule` → `ge.ChunkGatedDeltaRule`（torchair 空壳，cann_lm 覆盖）|
+| `_fused_infer_attention_score_v2_converter.py` | `cann_lm::fused_infer_attention_score_v2` → `ge.FusedInferAttentionScore` |
+| `_scatter_nd_update_converter.py` | `cann_lm::scatter_nd_update(_)` → `ge.ScatterNdUpdate` |
 | `_index_copy_converter.py` | `aten::index_copy` → `ge.InplaceUpdate + TransposeD` |
 | `_conv1d_converter.py` | `aten::conv1d` → GE conv1d |
-| `_quant_matmul_converter.py` | `npu::npu_quant_matmul` → `ge.QuantBatchMatmulV4`（详见 [quant/INDEX.md](../../cann_lm_converter/quant/INDEX.md)）|
+| `_quant_matmul_converter.py` | `cann_lm::quant_matmul` → `ge.QuantBatchMatmulV4`（详见 [quant/INDEX.md](../../cann_lm_converter/quant/INDEX.md)）|
 
 ## 关联模块
 

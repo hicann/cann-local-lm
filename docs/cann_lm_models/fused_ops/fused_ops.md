@@ -5,10 +5,10 @@
 > **数据来源**：
 > - 参考实现（CANN 优化版）：Gemma-4 `cann-recipes-infer/models/gemma_4/models/modeling_gemma4.py`；Qwen3.5 `cann-recipes-infer/models/qwen3_5/models/modeling_qwen3_5_moe.py`
 > - 本仓实现：`cann_lm/models/gemma4/modeling_gemma4.py` / `cann_lm/models/qwen3_5/modeling_qwen3_5.py`
-> - 自定义算子：`cann_lm/models/fused_ops/`（`_library.py` 注册 `npu::`/`cann_lm::` schema+fake+CPU impl）+ GE 映射 `cann_lm/converter/export/ge_converters/ge_converter.py` + torchair `custom/`
+> - 自定义算子：`cann_lm/models/fused_ops/`（`_library.py` 用 `Library("cann_lm","FRAGMENT")` 注册 `cann_lm::` schema+fake+CPU impl）+ GE 映射 `cann_lm/converter/export/ge_converters/ge_converter.py`（注册 `cann_lm::` converter，覆盖 torchair `custom/` 的 npu:: converter）
 > - 验证环境：torch_npu 2.7.1.post4（系统 Python，NPU 实机）；converter venv（torchair 源码编译，torch_npu absent，走 `_library.py` stub 路径）。详见 [AGENTS.md](../../../AGENTS.md)「converter 与 torch_npu 的关系」。
 
-参考实现基于 CANN 推理框架（TND/BNSD Paged Attention + MC2 EP + GE Graph），大量使用 `torch_npu` / `torch.ops.npu` 融合算子。本仓 `modeling_*.py` 调用 `torch.ops.npu.*`（+ `torch.ops.cann_lm::l2norm`）融合算子；converter venv 无 torch_npu 时，由 `cann_lm/models/fused_ops/_library.py` 自提供 `npu::` schema+fake-meta（torch.export 能 trace），FX→GE 转换经 `ge_converter.py`（cann_lm 自带 converter）+ torchair `custom/`（自动注册）。NPU 实机走系统 Python 的 torch_npu。
+参考实现基于 CANN 推理框架（TND/BNSD Paged Attention + MC2 EP + GE Graph），大量使用 `torch_npu` / `torch.ops.npu` 融合算子。**本仓已迁移到 `cann_lm::` 命名空间**（避免与 torch_npu 重复注册冲突，见 `_rotary_mul_converter.py:18` 注释「avoid torch_npu duplicate-registration」）：`modeling_*.py` 调用 `torch.ops.cann_lm.*` 融合算子（含 l2norm），`cann_lm/models/fused_ops/_library.py` 用 `Library("cann_lm","FRAGMENT")` 始终注册 `cann_lm::` schema+fake+CPU impl（`_HAS_TORCH_NPU=False` 硬编码，不依赖 torch_npu），FX→GE 转换由 `cann_lm/converter/export/ge_converters/` 自带 converter 完成（注册 `cann_lm::`，覆盖 torchair `custom/` 的 npu:: converter，见 §3）。NPU 加速走 export→OM（GE 转换），eager 走 CPU impl。
 
 ## 目录
 
@@ -89,6 +89,8 @@ Gelu
 
 torch_npu 包 absent；torchair present（`/mnt/workspace/torch-delegate-harmony/.venv/lib/python3.11/site-packages/torchair`）。
 
+> **迁移注脚**：下表为 torchair `custom/` 的 npu:: converter 现状（torchair 自带，描述 torchair 注册的 npu:: schema）。本仓 modeling 已迁 `cann_lm::`（见 §2.3），FX 图命中 `cann_lm::`（非 npu::），故下表 npu:: converter 不命中，由 cann_lm 自带 `ge_converters/` 覆盖（见 §3）。下表保留作 torchair 对照与历史溯源。
+
 | fuse_op                 | venv torchair 定义文件　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　 | 类型　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　 | 是否自包含（不依赖 torch_npu）　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　 |
 | -------------------------| ----------------------------------------------------------------------------------------------------------------------------------------------| --------------------------------------------------------------------------------------------------------| ----------------------------------------------------------------------------------------------------------------------------------------|
 | ChunkGatedDeltaRule     | `_ge_concrete_graph/ge_converter/custom/npu_chunk_gated_delta_rule.py`　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　 | npu:: FX→GE converter　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　| ❌ 引用 `torch.ops.npu.npu_chunk_gated_delta_rule.default`，且函数体直接 `raise RuntimeError("not supported in GE graph mode")`（空壳） |
@@ -100,18 +102,18 @@ torch_npu 包 absent；torchair present（`/mnt/workspace/torch-delegate-harmony
 
 ### 2.3 关键结论
 
-- venv torchair 里 6 个融合算子**只有 FX→GE converter**（`ge_converter/custom/` 下，命中 `torch.ops.npu.*`）。torch_npu 在 venv 中 absent，schema 本会缺失致 converter 无法注册；**但** CANN-LM `_library.py` 用 `NPU_LIB = Library("npu","FRAGMENT")` + `safe_define` 自定义 npu:: schema（见 `rms_norm.py:27`/`rotary_mul.py:27`/`scatter_nd_update.py` 等），`ge_converter.py:23` 先 import cann_lm ops（define schema）再 `:30` import torchair custom/（注册 converter），故 converter **能注册**（schema 由 cann_lm 提供，非 torch_npu）。
+- venv torchair 里 6 个融合算子的 `custom/` converter 注册到 `npu::`（命中 `torch.ops.npu.*`）。**但本仓 modeling 调 `torch.ops.cann_lm.*`（非 npu::），FX 图命中 `cann_lm::`**，故 torchair `custom/` 的 npu:: converter 不命中；由 CANN-LM 自带 `cann_lm/converter/export/ge_converters/` 覆盖（`ge_converter.py:22` import cann_lm ops define `cann_lm::` schema，`:33` import torchair `custom/` 注册 npu:: converter 作 fallback，`:44/54/60/69-70/73/76/82` 用 `register_fx_node_ge_converter(torch.ops.cann_lm.xxx.default)` 注册 cann_lm:: converter）。`_library.py` 用 `NPU_LIB = Library("cann_lm","FRAGMENT")` + `safe_define` 自定义 cann_lm:: schema（见 `rms_norm.py:27`/`rotary_mul.py:27` 等）。
 - **唯一自包含 schema+Meta 的是 FusedInferAttention 的 air:: 版本**（`ops/_npu_fused_infer_attention_score_v2.py` 用 `torch.library.Library("air","FRAGMENT")` + `lib.define`），但其 converter 部分仍 `import torch_npu`。
 - **ChunkGatedDeltaRule** 的 converter 是空壳（`raise RuntimeError`），且 schema 需 torch_npu ≥2.7.1.post8（venv 里两个都缺）。
 - **l2norm** 在 torchair 完全没有定义，只有 GE raw op `L2Normalize`。
-- **根因**：CANN-LM `cann_lm/models/fused_ops/_library.py` 必须在 converter venv 里为这 6 个算子自提供 `npu::`/`cann_lm::` 的 schema+fake-meta，使 `torch.export` 能 trace。详见 [cli_design.md](../../cann_lm_converter/cli/cli_design.md)「converter 与 torch_npu 的关系」。
+- **根因**：CANN-LM `cann_lm/models/fused_ops/_library.py` 始终注册 `cann_lm::` schema+fake+CPU impl（`_HAS_TORCH_NPU=False` 硬编码），使 `torch.export` 能 trace；GE 转换由自带 `ge_converters/` 命中 `cann_lm::`（覆盖 torchair npu:: converter）。详见 [cli_design.md](../../cann_lm_converter/cli/cli_design.md)「converter 与 torch_npu 的关系」。
 
 ---
 
 ## 3. torchair GE converter 映射
 
-> FX→GE 转换由 torchair `python/torchair/_ge_concrete_graph/ge_converter/custom/` 下的 converter 完成（注册到 `npu::` 命名空间，命中 `torch.ops.npu.*`）。下表列出各算子 converter 的注册 schema、converter 函数及产出 GE 算子；converter 文件路径下文简写为 `custom/<file>`。
-> 命中规则：FX 图里 `torch.ops.npu.*` → 走 `custom/` 版本（函数名无后缀）；`torch.ops.air.*` → 走 `torchair/ops/` 版本（函数名带 `_tensor` 后缀，自带 schema+Meta）。
+> **FX→GE 转换现由 CANN-LM 自带 `cann_lm/converter/export/ge_converters/` 完成**（`ge_converter.py` 用 `register_fx_node_ge_converter(torch.ops.cann_lm.xxx.default)` 注册 `cann_lm::` converter，命中 `torch.ops.cann_lm.*`）。torchair `custom/` 的 npu:: converter 仅作 fallback/对照（modeling 不调 npu::，故不命中）。下表列出各算子 converter 的注册 schema、converter 函数及产出 GE 算子；cann_lm 自带 converter 文件简写为 `ge_converters/_<file>`，torchair 对照为 `custom/<file>`。
+> 命中规则：FX 图里 `torch.ops.cann_lm.*` → 走 `ge_converters/` 自带版本（cann_lm::）；`torch.ops.npu.*`/`torch.ops.air.*` → 走 torchair `custom/`/`ops/` 版本（本仓 modeling 不命中）。
 
 ### 3.1 fuse_op
 
@@ -135,7 +137,7 @@ torch_npu 包 absent；torchair present（`/mnt/workspace/torch-delegate-harmony
 
 - **converter 函数名笔误**：torchair 多数 converter 函数名拼写为 `conveter_*`（少一个 r，如 `conveter_npu_rms_norm_default`），系 torchair 历史笔误，非本仓问题，引用时照原拼写。
 - **GE 算子名 vs OM 算子名**：converter 产出的 GE 算子（如 `ge.ScatterNdUpdate`/`ge.RmsNorm`）是 IR 阶段名；OM 编译期经融合优化后算子名会变化（`ScatterNdUpdate`/`InplaceUpdate+TensorMove` → OM `ScatterUpdate`+`MemcpyAddrAsync`；`RmsNorm`+残差 Add → OM `InplaceAddRmsNorm`）。详见 AGENTS.md「查看 OM 模型算子」。
-- **converter venv 命中情况**：converter venv 不装 torch_npu，但 modeling 调 `torch.ops.npu.*`（npu::），FX 图**命中 npu:: converter**（非 air::）。多数 npu:: converter（`npu_rms_norm`/`npu_rotary_mul`/`npu_scatter_nd_update`）**不 import torch_npu**（直接 emit `ge.*` op，见 torchair `custom/npu_rms_norm.py`），能正常注册+转换；少数依赖 torch_npu 的（`npu_chunk_gated_delta_rule` 空壳 `raise RuntimeError`、`quantmatmul` `import torch_npu`）由 cann_lm 自带 converter 覆盖（`_chunk_gated_delta_rule_converter.py`/`_quant_matmul_converter.py`）。schema 由 `_library.py` `safe_define` 提供，故不冲突。
+- **converter venv 命中情况**：converter venv 不装 torch_npu，modeling 调 `torch.ops.cann_lm.*`（cann_lm::），FX 图**命中 cann_lm:: converter**（`ge_converters/` 自带，非 torchair npu::）。cann_lm 自带 converter（`_rms_norm_converter.py`/`_rotary_mul_converter.py`/`_scatter_nd_update_converter.py`/`_chunk_gated_delta_rule_converter.py`/`_quant_matmul_converter.py`/`_fused_infer_attention_score_v2_converter.py`）主体逻辑与 torchair `custom/` 的 npu:: 版本一致（直接 emit `ge.*` op，不 import torch_npu），差异仅在注册命名空间（cann_lm:: vs npu::）与算子名（去 `npu_` 前缀）。schema 由 `_library.py` `Library("cann_lm","FRAGMENT")` + `safe_define` 提供，与 torch_npu 无重复注册冲突。
 
 ---
 
@@ -187,7 +189,7 @@ torch_npu 包 absent；torchair present（`/mnt/workspace/torch-delegate-harmony
 **当前实现**（`Gemma4RMSNorm.forward`，modeling_gemma4.py:301-303，已无 `_norm` 纯 torch 实现）：
 ```python
 def forward(self, x):
-    y, _ = torch.ops.npu.npu_rms_norm(x, self.weight, epsilon=self.eps)
+    y, _ = torch.ops.cann_lm.rms_norm(x, self.weight, epsilon=self.eps)
     return y
 ```
 
@@ -195,7 +197,7 @@ def forward(self, x):
 
 | 算子 | 适用性 | 说明 |
 |------|--------|------|
-| `torch_npu.npu_rms_norm` | ✅ 已落地+已用 | modeling 行 302/311 已调用 `torch.ops.npu.npu_rms_norm`（`Gemma4RMSNorm.forward` / `forward_add`）。`with_scale=False` 时传 ones weight（v_norm/router norm 即如此；本仓 `with_scale=False` 用 `register_buffer("weight", ones)` 预分配，modeling_gemma4.py:299） |
+| `cann_lm::rms_norm` | ✅ 已落地+已用 | modeling 行 302/311 已调用 `torch.ops.cann_lm.rms_norm`（`Gemma4RMSNorm.forward` / `forward_add`）。`with_scale=False` 时传 ones weight（v_norm/router norm 即如此；本仓 `with_scale=False` 用 `register_buffer("weight", ones)` 预分配，modeling_gemma4.py:299） |
 | `torch_npu.npu_add_rms_norm` | ❌ 不采用（设计决策） | 融合 residual add + rms_norm。**本仓显式拆为 add + `npu_rms_norm` 两步**（`forward_add`，modeling_gemma4.py:305-312，注释「原用 fused npu_add_rms_norm，现拆为 add + npu_rms_norm（用户要求）」）。参考实现 `Gemma4DecoderLayer` 用融合版，本仓按设计决策走拆分；下方 §4.2.2 的融合建议已被该决策否决，保留仅作设计分析 |
 
 #### 4.2.2 Residual Add + Norm 拓扑（`forward_add` 拆分实现）
@@ -231,7 +233,7 @@ hidden_states = self.pre_feedforward_layernorm(hidden_states)   # norm(add 结�
 
 | 算子 | 状态 | 说明 |
 |------|------|------|
-| `npu::npu_rotary_mul` | ✅ 已落地+已用 | sliding 层（全旋）单 tensor；full 层 + kv_shared 路径（cat/拆装模拟 partial）。GE converter 在 torchair `custom/npu_rotary_mul.py`→`ge.RotaryMul`。modeling 行 107/114/115/126/127/145 调用 |
+| `cann_lm::rotary_mul` | ✅ 已落地+已用 | sliding 层（全旋）单 tensor；full 层 + kv_shared 路径（cat/拆装模拟 partial）。GE converter 在 cann_lm `_rotary_mul_converter.py`→`ge.RotaryMul`。modeling 行 107/114/115/126/127/145 调用 `torch.ops.cann_lm.rotary_mul` |
 | `torch_npu.npu_apply_rotary_pos_emb`（q+k 配对） | ❌ 未用 | full 层改用 `npu_rotary_mul` + cat/拆装（`_rope_full_pair`），**未调用** `npu_apply_rotary_pos_emb`。原文档「已落地」为 stale |
 
 > ⚠️ `rope_in_place` / `ge.RopeInPlace` **未落地**：`fused_ops/ops.py` 未注册、`ge_converter.py` 无对应 converter，原文档此处为 stale 声明。
@@ -251,7 +253,7 @@ hidden_states = self.pre_feedforward_layernorm(hidden_states)   # norm(add 结�
 
 | 算子 | 状态 | 说明 |
 |------|--------|------|
-| `torch.ops.npu.npu_fused_infer_attention_score_v2` | ✅ 已落地 | cann_lm `fused_ops/fused_infer_attention_score.py` 注册 schema+fake+CPU eager（npu 命名空间）；`ge_converter.py` 注册 converter（调 `ge.FusedInferAttentionScore`，40+ 参数全传，None 给不用）；`reg_register.h` 加 `REG_OP(FusedInferAttentionScore)`（OM 编译注册到 GE OperatorFactory）。消除 `BatchMatMul`/`SoftmaxV2`（归零），`ConcatV2D` 从 14 降到 9（repeat_kv 消除） |
+| `cann_lm::fused_infer_attention_score_v2` | ✅ 已落地 | cann_lm `fused_ops/fused_infer_attention_score.py` 注册 schema+fake+CPU eager（`cann_lm::` 命名空间）；`ge_converters/_fused_infer_attention_score_v2_converter.py` 注册 converter（调 `ge.FusedInferAttentionScore`，40+ 参数全传，None 给不用）；`reg_register.h` 加 `REG_OP(FusedInferAttentionScore)`（OM 编译注册到 GE OperatorFactory）。消除 `BatchMatMul`/`SoftmaxV2`（归零），`ConcatV2D` 从 14 降到 9（repeat_kv 消除） |
 | `cann_lm::fused_infer_attention_score` | ❌ 未采用（文档原提） | 原文档提的 cann_lm 自定义 FA 算子（IR 级 fallback），实际改用 npu 命名空间（与图灵一致），未用 cann_lm 命名空间 |
 
 > softcap 部分：参考实现把 `1/sqrt(d)` 吸收进 q_norm（`scale_fa=1.0`），本仓 `scaling=1.0`
@@ -292,12 +294,12 @@ MC2 dispatch-combine）。
 
 | 优先级 | 融合算子 | 替换目标 | 状态/预期收益 |
 |--------|----------|----------|----------|
-| P0 | `npu::npu_fused_infer_attention_score_v2` | `eager_attention_forward` 全流程 | ✅ **已落地+已用**：modeling:265 调用；消除 repeat_kv+2×matmul+softmax+mask 构造，单层最大 kernel 融合，全模型 N 层 |
-| P0 | `npu::npu_rms_norm` | `Gemma4RMSNorm`（原 `_norm` 纯 torch 已删） | ✅ **已落地+已用**：modeling:302/311 调用；每层 4-6 个 RMSNorm（input/post_attn/pre_ffn/post_ffn + q/k/v_norm），高频 |
+| P0 | `cann_lm::fused_infer_attention_score_v2` | `eager_attention_forward` 全流程 | ✅ **已落地+已用**：modeling:259 调用 `torch.ops.cann_lm.fused_infer_attention_score_v2`；消除 repeat_kv+2×matmul+softmax+mask 构造，单层最大 kernel 融合，全模型 N 层 |
+| P0 | `cann_lm::rms_norm` | `Gemma4RMSNorm`（原 `_norm` 纯 torch 已删） | ✅ **已落地+已用**：modeling:296/305 调用 `torch.ops.cann_lm.rms_norm`；每层 4-6 个 RMSNorm（input/post_attn/pre_ffn/post_ffn + q/k/v_norm），高频 |
 | P1 | `npu_fast_gelu` | `nn.GELU(tanh)` / `F.gelu(tanh)` | ❌ 未落地：modeling 仍用 `nn.GELU`/`F.gelu`（行 438/671）；每层 MLP + per_layer_input 各一次 |
 | P1 | `npu_add_rms_norm` | residual add + 下一 norm | ❌ 不采用（设计决策）：拆为 add + `npu_rms_norm`（modeling_gemma4.py:308「用户要求」） |
-| P2 | `npu::npu_rotary_mul`（已落地） | RoPE 配对 + cat/拆装 | ✅ **已落地+已用**：sliding/full/kv_shared 全走 `npu_rotary_mul`（modeling:107/114/115/126/127/145）；`npu_apply_rotary_pos_emb` 未用 |
-| P2 | `npu::npu_scatter_nd_update_`（已落地） | `index_copy` KV cache 写入 | ✅ **已落地+已用**：modeling 用 `scatter_kv_to_cache`（多维 indices）+ cann_lm `ge.ScatterNdUpdate` converter |
+| P2 | `cann_lm::rotary_mul`（已落地） | RoPE 配对 + cat/拆装 | ✅ **已落地+已用**：sliding/full/kv_shared 全走 `torch.ops.cann_lm.rotary_mul`（modeling:107/114/115/126/127/145）；`npu_apply_rotary_pos_emb` 未用 |
+| P2 | `cann_lm::scatter_nd_update_`（已落地） | `index_copy` KV cache 写入 | ✅ **已落地+已用**：modeling 用 `scatter_kv_to_cache`（多维 indices）+ cann_lm `ge.ScatterNdUpdate` converter |
 
 > 注：本仓当前为纯 PyTorch 参考实现，引入 `torch_npu` 需遵循 AGENTS.md 的 stub 约定
 > （converter 侧 torchair 编译 + lib 层打桩），NPU 实机验证走系统 Python 的 torch_npu。
@@ -449,7 +451,7 @@ Gemma-4 重叠（详见 §4.1，此处只列差异）。
 #### 5.2.1 线性注意力核心（GatedDeltaNet）— **segfault 已解决（chunk_gated_delta_rule 已落地）**
 
 **当前实现**（`Qwen3_5GatedDeltaNet.forward`，modeling_qwen3_5.py）：
-- **active 路径**：prefill + decode **共用** `torch.ops.npu.npu_chunk_gated_delta_rule`（行 621），融合算子已落地（`fused_ops/chunk_gated_delta_rule.py` + `_chunk_gated_delta_rule_converter.py`→`ge.ChunkGatedDeltaRule`，ge_converter.py:55-56）。OM 终态命中 18 个。
+- **active 路径**：prefill + decode **共用** `torch.ops.cann_lm.chunk_gated_delta_rule`（行 621），融合算子已落地（`fused_ops/chunk_gated_delta_rule.py` + `_chunk_gated_delta_rule_converter.py`→`ge.ChunkGatedDeltaRule`，ge_converter.py:59-60）。OM 终态命中 18 个。
 - **fallback（未激活）**：`torch_chunk_gated_delta_rule`（行 264）+ `torch_recurrent_gated_delta_rule`（行 346）为纯 torch 参考实现，保留作对照，不在 export 路径。
 
 | 算子 | 状态 | 说明 |
@@ -457,28 +459,28 @@ Gemma-4 重叠（详见 §4.1，此处只列差异）。
 | `torch_npu.npu_chunk_gated_delta_rule` | ✅ 已落地+已用 | segfault 已解决：`fused_ops/chunk_gated_delta_rule.py` 注册 schema+fake+CPU impl（`npu::` 命名空间）；`_chunk_gated_delta_rule_converter.py`→`ge.ChunkGatedDeltaRule`（ge_converter.py:55-56）；modeling 行 621 调用。OM 终态命中 18 个 |
 | `torch_npu.npu_recurrent_gated_delta_rule` | ❌ 未注册（不需要） | decode **不走 recurrent**：chunk_gated_delta_rule prefill+decode 共用（decode seq=1 时 chunk 内 pad，见 `chunk_gated_delta_rule.py` docstring）。`torch_recurrent_gated_delta_rule`（行 346）仅作纯 torch fallback 保留 |
 | `causal_conv1d_fn` / `causal_conv1d_update` | ✅ aten::conv1d 路径已落地 | modeling `torch_causal_conv1d_update`（行 243-260）用 `F.conv1d`+`F.silu`；`ge_converter.py:58-59` 注册 `aten::conv1d` converter（`_conv1d_converter.py`）。未注册独立 `cann_lm::causal_conv1d`（aten 路径已够） |
-| `FusedRMSNormGated` | ⚠️ 拆解方案已采用（融合版未落地） | modeling `Qwen3_5RMSNormGated`（行 40-42）= `npu_rms_norm` + `F.silu(gate)*x`（拆解，非融合单 kernel）。`npu::npu_rms_norm`→`ge.RmsNorm` 已用；融合 `rms_norm_gated` 未注册 |
+| `FusedRMSNormGated` | ⚠️ 拆解方案已采用（融合版未落地） | modeling `Qwen3_5RMSNormGated`（行 40-42）= `cann_lm::rms_norm` + `F.silu(gate)*x`（拆解，非融合单 kernel）。`cann_lm::rms_norm`→`ge.RmsNorm` 已用；融合 `rms_norm_gated` 未注册 |
 
 > **平台分支**：参考实现 `npu_chunk_gated_delta_rule` 只在非 950（910/A3）启用，950 走纯 torch。
-> 本仓已统一用 `npu::npu_chunk_gated_delta_rule`（910 实机 + export 都走融合算子，segfault 已解决）；
+> 本仓已统一用 `cann_lm::chunk_gated_delta_rule`（910 实机 + export 都走融合算子，segfault 已解决）；
 > 950 仍走纯 torch fallback（950 导出 segfault 问题待 950 专属解）。
 
 #### 5.2.2 RMSNorm → `npu_rms_norm`（已落地+已用）/ `npu_add_rms_norm`（未落地）
 
-**当前实现**：`Qwen3_5RMSNorm.forward`（行 22-28）已调用 `torch.ops.npu.npu_rms_norm`（行 25，`1.0 + weight` 偏置约定）；`Qwen3_5RMSNormGated.forward`（行 40-42）= `npu_rms_norm` + `F.silu(gate)*x`。原文档「纯 torch pow」描述为 stale。
+**当前实现**：`Qwen3_5RMSNorm.forward`（行 22-28）已调用 `torch.ops.cann_lm.rms_norm`（行 25，`1.0 + weight` 偏置约定）；`Qwen3_5RMSNormGated.forward`（行 40-42）= `cann_lm::rms_norm` + `F.silu(gate)*x`。原文档「纯 torch pow」描述为 stale。
 
 | 算子 | 状态 | 说明 |
 |------|------|------|
-| `npu::npu_rms_norm` | ✅ 已落地+已用 | `fused_ops/rms_norm.py` 注册 schema+fake+CPU impl（`npu::` 命名空间，**非** `cann_lm::`）；GE converter 在 torchair `custom/npu_rms_norm.py`（ge_converter.py:30 import 时自动注册）→`ge.RmsNorm`（**非** `ge_converter.py:178`，该行号不存在，文件仅 129 行）。modeling 行 25/41 **已调用** `torch.ops.npu.npu_rms_norm`（原文档「未调用」为 stale） |
-| `npu::npu_add_rms_norm` | ❌ 未落地 | 无 `fused_ops/add_rms_norm.py`、ge_converter.py 无此注册（原文档「已落地」+文件为 stale）。gemma4 已显式拆分为 add + `npu_rms_norm`（modeling_gemma4.py:308 注释「用户要求」），qwen3.5 同设计。若要融合需新建 schema+converter |
+| `cann_lm::rms_norm` | ✅ 已落地+已用 | `fused_ops/rms_norm.py` 注册 schema+fake+CPU impl（`cann_lm::` 命名空间）；GE converter 在 cann_lm `_rms_norm_converter.py`（ge_converter.py:72-73 注册 `torch.ops.cann_lm.rms_norm.default`）→`ge.RmsNorm`。modeling 行 25/41 **已调用** `torch.ops.cann_lm.rms_norm` |
+| `cann_lm::add_rms_norm` | ❌ 未落地 | 无 `fused_ops/add_rms_norm.py`、ge_converter.py 无此注册（原文档「已落地」+文件为 stale）。gemma4 已显式拆分为 add + `cann_lm::rms_norm`（modeling_gemma4.py:308 注释「用户要求」），qwen3.5 同设计。若要融合需新建 schema+converter |
 
 #### 5.2.3 RoPE → `npu_rotary_mul`（已落地）
 
-**当前实现**：`Qwen3_5RotaryEmbedding`（行 68）+ attention 用 `torch.ops.npu.npu_rotary_mul`（行 128/129，`rotary_mode='half'`），非 `apply_rotary_pos_emb`。原文档描述为 stale。
+**当前实现**：`Qwen3_5RotaryEmbedding`（行 68）+ attention 用 `torch.ops.cann_lm.rotary_mul`（行 128/129，`rotary_mode='half'`），非 `apply_rotary_pos_emb`。原文档描述为 stale。
 
 | 算子 | 状态 | 说明 |
 |------|------|------|
-| `npu::npu_rotary_mul` | ✅ 已落地+已用 | `fused_ops/rotary_mul.py` 注册 schema+fake（`npu::` 命名空间）；GE converter 在 torchair `custom/npu_rotary_mul.py`（ge_converter.py:30 import 时自动注册）→`ge.RotaryMul`（**非** `ge_converter.py:202`，该行号不存在）。modeling 行 128/129 **已调用**。与 Gemma-4 共用 |
+| `cann_lm::rotary_mul` | ✅ 已落地+已用 | `fused_ops/rotary_mul.py` 注册 schema+fake（`cann_lm::` 命名空间）；GE converter 在 cann_lm `_rotary_mul_converter.py`（ge_converter.py:75-76 注册 `torch.ops.cann_lm.rotary_mul.default`）→`ge.RotaryMul`/`ge.RotaryPositionEmbedding`（arch35）。modeling 行 128/129 **已调用** `torch.ops.cann_lm.rotary_mul`。与 Gemma-4 共用 |
 
 #### 5.2.4 KV Cache 写入 → `scatter_update_`（已落地，IR 路径通）
 
@@ -490,11 +492,11 @@ Gemma-4 重叠（详见 §4.1，此处只列差异）。
 
 #### 5.2.5 Full Attention → `npu_fused_infer_attention_score_v2`（op 已落地；启用状态待核实）
 
-**当前实现**：`Qwen3_5Attention`（行 520-569）= eager attention（matmul QK^T + softmax + matmul AV + GQA repeat_kv）。modeling 另有 FIA 辅助函数（行 215）调 `npu::npu_fused_infer_attention_score_v2`（带 decode 正确性注释），但 §5.4 qwen3.5 OM 表显示 FIA=0（全 eager，「decode 修复暂搁置」）—— 二者矛盾，export 实际走哪条路径待核实。
+**当前实现**：`Qwen3_5Attention`（行 520-569）= eager attention（matmul QK^T + softmax + matmul AV + GQA repeat_kv）。modeling 另有 FIA 辅助函数（行 215）调 `cann_lm::fused_infer_attention_score_v2`（带 decode 正确性注释），但 §5.4 qwen3.5 OM 表显示 FIA=0（全 eager，「decode 修复暂搁置」）—— 二者矛盾，export 实际走哪条路径待核实。
 
 | 算子 | 状态 | 说明 |
 |------|------|------|
-| `npu::npu_fused_infer_attention_score_v2` | ✅ op 已落地（启用待核实） | `fused_ops/fused_infer_attention_score.py` 注册 schema+fake（`npu::` 命名空间，**非** `cann_lm::`）；`ge_converter.py:71-72`（`_fused_infer_attention_score_v2_converter.py`）→`ge.FusedInferAttentionScore`（**非** `ge_converter.py:82` 该行号不存在）。modeling 行 215 有调用，但 OM 终态 FIA=0（见 §5.4 qwen3.5 表），export 路径待核实 |
+| `cann_lm::fused_infer_attention_score_v2` | ✅ op 已落地（启用待核实） | `fused_ops/fused_infer_attention_score.py` 注册 schema+fake（`cann_lm::` 命名空间）；`ge_converter.py:81-82`（`_fused_infer_attention_score_v2_converter.py`）→`ge.FusedInferAttentionScore`。modeling 行 215 有调用 `torch.ops.cann_lm.fused_infer_attention_score_v2`，但 OM 终态 FIA=0（见 §5.4 qwen3.5 表），export 路径待核实 |
 
 #### 5.2.6 激活 → `npu_swiglu`（未落地）
 
@@ -512,20 +514,20 @@ Gemma-4 重叠（详见 §4.1，此处只列差异）。
 
 | 优先级 | 融合算子　　　　　　　　　　　　　　　　　　　　　　　　　　　　| 替换目标　　　　　　　　　　　　　　　　　　 | 状态/预期收益　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　 |
 | --------| -----------------------------------------------------------------| ----------------------------------------------| ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| **P0** | `npu::npu_chunk_gated_delta_rule`（→ `ge.ChunkGatedDeltaRule`） | `torch_chunk_gated_delta_rule`（prefill）　　| ✅ **已解决**：`fused_ops/chunk_gated_delta_rule.py` + `_chunk_gated_delta_rule_converter.py`（ge_converter.py:55-56）；modeling 行 621 调用；OM 命中 18 个。19418 节点 → 1 算子 |
+| **P0** | `cann_lm::chunk_gated_delta_rule`（→ `ge.ChunkGatedDeltaRule`） | `torch_chunk_gated_delta_rule`（prefill）　　| ✅ **已解决**：`fused_ops/chunk_gated_delta_rule.py` + `_chunk_gated_delta_rule_converter.py`（ge_converter.py:59-60）；modeling 行 621 调用 torch.ops.cann_lm.chunk_gated_delta_rule；OM 命中 18 个。19418 节点 → 1 算子 |
 | **P0** | `npu_recurrent_gated_delta_rule`　　　　　　　　　　　　　　　　| `torch_recurrent_gated_delta_rule`（decode） | ❌ **不需要**：decode 走 chunk_gated_delta_rule 共用（chunk 内 pad）；recurrent 仅作 torch fallback 保留，未注册　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　 |
 | P1　　 | `aten::conv1d`（→ `_conv1d_converter.py`）　　　　　　　　　　　| `torch_causal_conv1d_update`　　　　　　　　 | ✅ **已落地**：ge_converter.py:58-59 注册 `aten::conv1d`；modeling 用 `F.conv1d`+`F.silu`（行 259-260）。未建独立 `cann_lm::causal_conv1d`　　　　　　　　　　　　　　　　　　　 |
 | P1　　 | `FusedRMSNormGated`　　　　　　　　　　　　　　　　　　　　　　 | `Qwen3_5RMSNormGated`　　　　　　　　　　　　| ⚠️ **拆解方案已采用**：modeling 行 40-42 = `npu_rms_norm` + `F.silu(gate)*x`；融合 `rms_norm_gated` 未注册（拆解已可用）　　　　　　　　　　　　　　　　　　　　　　　　　　　　 |
-| P2　　 | `npu::npu_rms_norm`　　　　　　　　　　　　　　　　　　　　　　 | `Qwen3_5RMSNorm` 纯 torch　　　　　　　　　　| ✅ **已落地+已用**：modeling 行 25/41 调用；torchair `custom/npu_rms_norm.py`→`ge.RmsNorm`　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　 |
-| P2　　 | `npu::npu_add_rms_norm`　　　　　　　　　　　　　　　　　　　　 | 残差 add + norm 两步　　　　　　　　　　　　 | ❌ **未落地**：无 add_rms_norm.py/converter；gemma4 显式拆分为 add+`npu_rms_norm`（modeling_gemma4.py:308），qwen3.5 同设计　　　　　　　　　　　　　　　　　　　　　　　　　　　|
-| P3　　 | `npu::npu_fused_infer_attention_score_v2`　　　　　　　　　　　 | full attention eager　　　　　　　　　　　　 | ⚠️ **op 已落地**（ge_converter.py:71-72），modeling 行 215 有调用，但 OM 终态 FIA=0（待核实，见 §5.4）　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　 |
+| P2　　 | `cann_lm::rms_norm`　　　　　　　　　　　　　　　　　　　　　　 | `Qwen3_5RMSNorm` 纯 torch　　　　　　　　　　| ✅ **已落地+已用**：modeling 行 25/41 调用 `torch.ops.cann_lm.rms_norm`；cann_lm `_rms_norm_converter.py`→`ge.RmsNorm`（ge_converter.py:72-73）　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　 |
+| P2　　 | `cann_lm::add_rms_norm`　　　　　　　　　　　　　　　　　　　　 | 残差 add + norm 两步　　　　　　　　　　　　 | ❌ **未落地**：无 add_rms_norm.py/converter；gemma4 显式拆分为 add+`cann_lm::rms_norm`（modeling_gemma4.py:308），qwen3.5 同设计　　　　　　　　　　　　　　　　　　　　　　　　　　　|
+| P3　　 | `cann_lm::fused_infer_attention_score_v2`　　　　　　　　　　　 | full attention eager　　　　　　　　　　　　 | ⚠️ **op 已落地**（ge_converter.py:81-82），modeling 行 215 有调用 `torch.ops.cann_lm.fused_infer_attention_score_v2`，但 OM 终态 FIA=0（待核实，见 §5.4）　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　 |
 | P3　　 | `npu_swiglu`　　　　　　　　　　　　　　　　　　　　　　　　　　| `F.silu(gate) * up`　　　　　　　　　　　　　| ❌ 未落地（纯 torch 分解为 Swish/Sigmoid+Mul 已能导出，OM 命中 Swish=60/Sigmoid=24）　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　 |
 
 > **P0 已解决**：`chunk_gated_delta_rule` 是 Qwen3.5 `export_to_epair` segfault 的解（纯 torch for
 > 循环展开 19418 节点 → GE 图爆炸）。已按 ① `fused_ops/chunk_gated_delta_rule.py` 注册 schema+fake
-> （`npu::` 命名空间）+ CPU impl；② `_chunk_gated_delta_rule_converter.py`→`ge.ChunkGatedDeltaRule`
-> （ge_converter.py:55-56，查 CANN `aic-ascend910_93-ops-info-*.json`）；③ modeling 行 621 调用
-> `torch.ops.npu.npu_chunk_gated_delta_rule`。`recurrent_gated_delta_rule` 未注册（decode 走 chunk 共用）。
+> （`cann_lm::` 命名空间）+ CPU impl；② `_chunk_gated_delta_rule_converter.py`→`ge.ChunkGatedDeltaRule`
+> （ge_converter.py:59-60，查 CANN `aic-ascend910_93-ops-info-*.json`）；③ modeling 行 621 调用
+> `torch.ops.cann_lm.chunk_gated_delta_rule`。`recurrent_gated_delta_rule` 未注册（decode 走 chunk 共用）。
 > 参考 cann-recipes-infer 的 `npu_chunk_gated_delta_rule` 签名（行 1541）对齐参数。
 
 ---
@@ -602,7 +604,7 @@ Gemma-4 重叠（详见 §4.1，此处只列差异）。
 | **950**（Atlas 950） | ❌ 走纯 torch prefill | ✅ 支持 | ✅ 支持 | group_type=0/3 |
 | **910/A3**（非 950） | ✅ 融合算子 | ❌ 不支持 | ❌ A3 不支持 | `fullmesh_v2` |
 
-> 本机 NPU 为 **Ascend910_9362**（非 950），支持 `npu_chunk_gated_delta_rule` 融合算子，
-> 不支持 fp8/mxfp8 量化。**融合算子已落地**：910 实机推理 + export 都走 `npu::npu_chunk_gated_delta_rule`
+> 本机 NPU 为 **Ascend910_9362**（非 950），支持 `npu_chunk_gated_delta_rule` 融合算子（参考实现），
+> 不支持 fp8/mxfp8 量化。**融合算子已落地**：910 实机推理 + export 都走 `cann_lm::chunk_gated_delta_rule`
 > （segfault 已解决，OM 命中 18 个）；950 参考实现走纯 torch fallback，但 950 纯 torch 在导出时
 > 仍会 segfault，需 950 专属解或保持 `ge.ChunkGatedDeltaRule` 映射让 950 也能用 GE 算子。

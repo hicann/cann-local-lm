@@ -23,7 +23,7 @@ Holds the **materialization layer** consumed by the swap orchestrator at
 - materialize_int8_per_channel_symmetric: embed int8 per-channel (host gather)
 - transdata_scale / restore_scale: fp32 <-> int64 bit-pattern (weight_scale storage fmt)
 - pack_int4: nibble-pack signed int4 (stored as int8)
-- QuantLinear: export-path Linear whose forward calls npu::npu_quant_matmul
+- QuantLinear: export-path Linear whose forward calls cann_lm::quant_matmul
   (W4A8 also uses npu_dynamic_quant for act quant)
 
 The swap orchestrator (swap_from_dopt /

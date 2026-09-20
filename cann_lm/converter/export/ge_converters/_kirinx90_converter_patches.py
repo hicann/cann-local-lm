@@ -76,7 +76,7 @@ def register_kirinx90_patches() -> None:
         return _batch_matmul_v3(self, mat2)
 
     # ── 2. RotaryMul -> RotaryPositionEmbedding ────────────────────────
-    @register_fx_node_ge_converter(torch.ops.npu.npu_rotary_mul.default)
+    @register_fx_node_ge_converter(torch.ops.cann_lm.rotary_mul.default)
     def _kirinx90_rotary_mul(
         self: Tensor,
         r1: Tensor,
@@ -114,7 +114,7 @@ def register_kirinx90_patches() -> None:
         return dtype_promote(output, target_dtype=meta_outputs.dtype)
 
     # ── 4. TensorMove -> 跳过 (scatter 直发 ScatterNdUpdate) ──────────
-    @register_fx_node_ge_converter(torch.ops.npu.npu_scatter_nd_update.default)
+    @register_fx_node_ge_converter(torch.ops.cann_lm.scatter_nd_update.default)
     def _kirinx90_scatter_nd_update(
         self: Tensor,
         indices: Tensor,
@@ -252,7 +252,7 @@ def register_kirinx90_patches() -> None:
     #    converter 时无法读 mask shape, 用 env KIRINX90_FIA_SPARSE_MODE_4=1 显式开启 (qwen3.5 用).
     from ._fused_infer_attention_score_v2_converter import convert_fused_infer_attention_score_v2
 
-    @register_fx_node_ge_converter(torch.ops.npu.npu_fused_infer_attention_score_v2.default)
+    @register_fx_node_ge_converter(torch.ops.cann_lm.fused_infer_attention_score_v2.default)
     def _kirinx90_fia_v2(
         query: Tensor,
         key: Tensor,

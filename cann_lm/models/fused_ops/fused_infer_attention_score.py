@@ -12,9 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""npu::npu_fused_infer_attention_score_v2 - fused attention (schema + meta + CPU eager kernel).
+"""cann_lm::fused_infer_attention_score_v2 - fused attention (schema + meta + CPU eager kernel).
 
-注册到 npu 命名空间 (torch.ops.npu.npu_fused_infer_attention_score_v2), torchair custom/
+注册到 npu 命名空间 (torch.ops.cann_lm.fused_infer_attention_score_v2), torchair custom/
 的 fused_infer_attention_score_v2 converter 在 air 命名空间注册 (不适用于 npu 命名空间),
 故 cann_lm 在 ge_converter.py 自己注册 npu 命名空间 converter (调 ge.FusedInferAttentionScore).
 
@@ -32,7 +32,7 @@ import torch
 from ._library import NPU_LIB, safe_define, _HAS_TORCH_NPU, register_cpu_impl
 
 _FA_SCHEMA = (
-    "npu_fused_infer_attention_score_v2(Tensor query, Tensor key, Tensor value, *, "
+    "fused_infer_attention_score_v2(Tensor query, Tensor key, Tensor value, *, "
     "Tensor? atten_mask=None, Tensor? actual_seq_qlen=None, Tensor? actual_seq_kvlen=None, "
     "Tensor? block_table=None, "
     "int num_query_heads=1, int num_key_value_heads=0, float softmax_scale=1.0, "
@@ -46,7 +46,7 @@ if NPU_LIB is not None:
 
 if not _HAS_TORCH_NPU:
 
-    @torch.library.register_fake("npu::npu_fused_infer_attention_score_v2")
+    @torch.library.register_fake("cann_lm::fused_infer_attention_score_v2")
     def _fa_meta(
         query, key, value, *,
         atten_mask=None, actual_seq_qlen=None, actual_seq_kvlen=None, block_table=None,
@@ -59,7 +59,7 @@ if not _HAS_TORCH_NPU:
         lse = torch.empty([0], dtype=torch.float32, device="meta")
         return out, lse
 
-    @register_cpu_impl("npu::npu_fused_infer_attention_score_v2")
+    @register_cpu_impl("cann_lm::fused_infer_attention_score_v2")
     def _fa_cpu(
         query, key, value, *,
         atten_mask=None, actual_seq_qlen=None, actual_seq_kvlen=None, block_table=None,

@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""npu::npu_fused_infer_attention_score_v2 GE converter -> ge.FusedInferAttentionScore.
+"""cann_lm::fused_infer_attention_score_v2 GE converter -> ge.FusedInferAttentionScore.
 
 cann_lm self-registers in the npu namespace (torchair's is in the air namespace, not
 applicable). Simplified: only the params gemma4 uses are passed; quant/antiquant/rope/

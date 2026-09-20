@@ -67,7 +67,7 @@ def scatter_kv_to_cache(
     col_b = col_n * 0
     indices = torch.cat([col_b.view(1, -1), col_n.view(1, -1), col_pos.view(1, -1)], dim=0).transpose(0, 1).reshape(-1, 3)
     updates = kv_new.reshape(-1, d)
-    return torch.ops.npu.npu_scatter_nd_update(cache, indices, updates)
+    return torch.ops.cann_lm.scatter_nd_update(cache, indices, updates)
 
 
 def apply_rotary_pos_emb(
@@ -104,15 +104,15 @@ def apply_rotary_pos_emb_single(
     cos = cos.unsqueeze(2)
     sin = sin.unsqueeze(2)
     if layer_type == "sliding_attention":
-        return torch.ops.npu.npu_rotary_mul(x, cos, sin, rotary_mode="half")
+        return torch.ops.cann_lm.rotary_mul(x, cos, sin, rotary_mode="half")
     return _rope_full_single(x, cos, sin)
 
 
 def _rope_sliding(
     q: torch.Tensor, k: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    q_out = torch.ops.npu.npu_rotary_mul(q, cos, sin, rotary_mode="half")
-    k_out = torch.ops.npu.npu_rotary_mul(k, cos, sin, rotary_mode="half")
+    q_out = torch.ops.cann_lm.rotary_mul(q, cos, sin, rotary_mode="half")
+    k_out = torch.ops.cann_lm.rotary_mul(k, cos, sin, rotary_mode="half")
     return q_out, k_out
 
 
@@ -123,8 +123,8 @@ def _rope_full_pair(
     half_dim = q.shape[-1] // 2
     q_rot = torch.cat([q[..., :pair_dim], q[..., half_dim:half_dim + pair_dim]], dim=-1)
     k_rot = torch.cat([k[..., :pair_dim], k[..., half_dim:half_dim + pair_dim]], dim=-1)
-    q_rot = torch.ops.npu.npu_rotary_mul(q_rot, cos, sin, rotary_mode="half")
-    k_rot = torch.ops.npu.npu_rotary_mul(k_rot, cos, sin, rotary_mode="half")
+    q_rot = torch.ops.cann_lm.rotary_mul(q_rot, cos, sin, rotary_mode="half")
+    k_rot = torch.ops.cann_lm.rotary_mul(k_rot, cos, sin, rotary_mode="half")
     q_out = torch.cat(
         [q_rot[..., :pair_dim], q[..., pair_dim:half_dim],
          q_rot[..., pair_dim:], q[..., half_dim + pair_dim:]], dim=-1,
@@ -142,7 +142,7 @@ def _rope_full_single(
     pair_dim = cos.shape[-1] // 2
     half_dim = x.shape[-1] // 2
     x_rot = torch.cat([x[..., :pair_dim], x[..., half_dim:half_dim + pair_dim]], dim=-1)
-    x_rot = torch.ops.npu.npu_rotary_mul(x_rot, cos, sin, rotary_mode="half")
+    x_rot = torch.ops.cann_lm.rotary_mul(x_rot, cos, sin, rotary_mode="half")
     return torch.cat(
         [x_rot[..., :pair_dim], x[..., pair_dim:half_dim],
          x_rot[..., pair_dim:], x[..., half_dim + pair_dim:]], dim=-1,
@@ -256,7 +256,7 @@ def fused_attention_forward(
     else:
         sparse_mode = 0
         pre_tokens = torch.iinfo(torch.int32).max
-    attn_output, _ = torch.ops.npu.npu_fused_infer_attention_score_v2(
+    attn_output, _ = torch.ops.cann_lm.fused_infer_attention_score_v2(
         query, key, value,
         num_query_heads=module.config.num_attention_heads,
         num_key_value_heads=module.config.num_key_value_heads,
@@ -293,7 +293,7 @@ class Gemma4RMSNorm(nn.Module):
             self.register_buffer("weight", torch.ones(dim), persistent=False)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        y, _ = torch.ops.npu.npu_rms_norm(x, self.weight, epsilon=self.eps)
+        y, _ = torch.ops.cann_lm.rms_norm(x, self.weight, epsilon=self.eps)
         return y
 
     def forward_add(self, x1: torch.Tensor, x2: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
@@ -302,7 +302,7 @@ class Gemma4RMSNorm(nn.Module):
         原用 fused npu_add_rms_norm, 现拆为 add + npu_rms_norm (用户要求).
         """
         residual = x1 + x2
-        y, _ = torch.ops.npu.npu_rms_norm(residual, self.weight, epsilon=self.eps)
+        y, _ = torch.ops.cann_lm.rms_norm(residual, self.weight, epsilon=self.eps)
         return y, residual
 
     def extra_repr(self):

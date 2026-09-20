@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""npu::npu_dynamic_quant - per-token dynamic activation quant op (W4A8 act side).
+"""cann_lm::dynamic_quant - per-token dynamic activation quant op (W4A8 act side).
 
 Mirrors torch_npu.npu_dynamic_quant (schema identical, so real torch_npu provides
 the op on NPU; stubs env defines it). Output: (y:int8, scale:fp32) per-token along
@@ -30,7 +30,7 @@ from ._library import NPU_LIB, safe_define, _HAS_TORCH_NPU, register_cpu_impl
 
 if NPU_LIB is not None:
     safe_define(
-        "npu_dynamic_quant(Tensor input, *, "
+        "dynamic_quant(Tensor input, *, "
         "Tensor? smooth_scales=None, Tensor? group_index=None, "
         "int? dst_type=None, str quant_mode=\"pertoken\", "
         "float dst_type_max=0.) -> (Tensor y, Tensor scale)"
@@ -39,7 +39,7 @@ if NPU_LIB is not None:
 
 if not _HAS_TORCH_NPU:
 
-    @torch.library.register_fake("npu::npu_dynamic_quant")
+    @torch.library.register_fake("cann_lm::dynamic_quant")
     def _npu_dynamic_quant_meta(
         input: torch.Tensor,
         *,
@@ -54,7 +54,7 @@ if not _HAS_TORCH_NPU:
         scale = input.new_empty(input.shape[:-1], dtype=torch.float32)
         return y, scale
 
-    @register_cpu_impl("npu::npu_dynamic_quant")
+    @register_cpu_impl("cann_lm::dynamic_quant")
     def _npu_dynamic_quant_cpu(
         input: torch.Tensor,
         *,

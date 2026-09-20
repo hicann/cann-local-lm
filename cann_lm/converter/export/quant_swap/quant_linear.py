@@ -12,9 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Export-path QuantLinear: forward emits npu::npu_quant_matmul nodes.
+"""Export-path QuantLinear: forward emits cann_lm::quant_matmul nodes.
 
-Replaces nn.Linear so torch.export traces ``torch.ops.npu.npu_quant_matmul``
+Replaces nn.Linear so torch.export traces ``torch.ops.cann_lm.quant_matmul``
 (instead of aten.mm/MatMul), mapped by ``_quant_matmul_converter.py`` to
 ge.QuantBatchMatmulV4. Stores materialized int4 weight (nibble-packed int8
 ``[k//2, n]``) + per-group fp32 scale ``[k//g, n]`` as buffers (graph
@@ -31,7 +31,7 @@ _OUT_DTYPE_CODE = {torch.float16: 5, torch.bfloat16: 7, torch.float32: 6}
 
 
 class QuantLinear(nn.Module):
-    """nn.Linear replacement whose forward calls npu::npu_quant_matmul.
+    """nn.Linear replacement whose forward calls cann_lm::quant_matmul.
 
     Args:
         weight_q: int8 ``[k//2, n]`` — int4 nibble-packed (low nibble = even k
@@ -51,7 +51,7 @@ class QuantLinear(nn.Module):
         super().__init__()
         if not act_quant:
             raise NotImplementedError(
-                "QuantLinear (npu::npu_quant_matmul) supports W4A8 s8s4 only; "
+                "QuantLinear (cann_lm::quant_matmul) supports W4A8 s8s4 only; "
                 "act_quant=False (W4A16) not supported. Use the legacy path or add a W4A16 op."
             )
         self.group_size = group_size
@@ -64,8 +64,8 @@ class QuantLinear(nn.Module):
             self.bias = None
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x_q, x_scale = torch.ops.npu.npu_dynamic_quant(x)  # int8 [..., m, k] + per-token fp32 [..., m]
-        out = torch.ops.npu.npu_quant_matmul(
+        x_q, x_scale = torch.ops.cann_lm.dynamic_quant(x)  # int8 [..., m, k] + per-token fp32 [..., m]
+        out = torch.ops.cann_lm.quant_matmul(
             x_q, self.weight_q, self.weight_scale,
             pertoken_scale=x_scale,               # per-token act scale from npu_dynamic_quant
             bias=self.bias,                       # None when source Linear has no bias; GE converter injects dummy zeros[N]

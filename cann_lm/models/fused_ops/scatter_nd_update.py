@@ -12,9 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""npu::npu_scatter_nd_update - KV cache scatter-write (schema + meta + CPU eager kernel).
+"""cann_lm::scatter_nd_update - KV cache scatter-write (schema + meta + CPU eager kernel).
 
-注册到 npu 命名空间 (torch.ops.npu.npu_scatter_nd_update), 替代 aten.index_copy / aten.index_put
+注册到 npu 命名空间 (torch.ops.cann_lm.scatter_nd_update), 替代 aten.index_copy / aten.index_put
 的 InplaceUpdate + Transpose 方案. GE 转换器 -> ge.ScatterNdUpdate (in-place 版 1 个算子, 无 Transpose; out-of-place 版多 1 个 ge.TensorMove).
 与图灵参考实现 (cann-recipes-infer) 对齐: torch_npu.npu_scatter_nd_update_(cache, slot_mapping, updates).
 
@@ -37,12 +37,12 @@ import torch
 from ._library import NPU_LIB, safe_define, _HAS_TORCH_NPU, register_cpu_impl
 
 _SCATTER_SCHEMA = (
-    "npu_scatter_nd_update(Tensor self, Tensor indices, Tensor updates) -> Tensor out"
+    "scatter_nd_update(Tensor self, Tensor indices, Tensor updates) -> Tensor out"
 )
 
 # in-place 版本 (torchair _optimize_pass 的 re-inplace 会尝试访问, 必须注册)
 _SCATTER_INPLACE_SCHEMA = (
-    "npu_scatter_nd_update_(Tensor(a!) self, Tensor indices, Tensor updates) -> Tensor(a!)"
+    "scatter_nd_update_(Tensor(a!) self, Tensor indices, Tensor updates) -> Tensor(a!)"
 )
 
 if NPU_LIB is not None:
@@ -51,15 +51,15 @@ if NPU_LIB is not None:
 
 if not _HAS_TORCH_NPU:
 
-    @torch.library.register_fake("npu::npu_scatter_nd_update")
+    @torch.library.register_fake("cann_lm::scatter_nd_update")
     def _scatter_meta(self, indices, updates):
         return torch.empty_like(self)
 
-    @torch.library.register_fake("npu::npu_scatter_nd_update_")
+    @torch.library.register_fake("cann_lm::scatter_nd_update_")
     def _scatter_inplace_meta(self, indices, updates):
         return torch.empty_like(self)
 
-    @register_cpu_impl("npu::npu_scatter_nd_update")
+    @register_cpu_impl("cann_lm::scatter_nd_update")
     def _scatter_cpu(self, indices, updates):
         """CPU eager: 用 index_copy 实现 scatter_nd_update (按 indices 坐标写入)."""
         out = self.clone()
@@ -71,7 +71,7 @@ if not _HAS_TORCH_NPU:
                 out[tuple(idx.tolist())] = updates[i]
         return out
 
-    @register_cpu_impl("npu::npu_scatter_nd_update_")
+    @register_cpu_impl("cann_lm::scatter_nd_update_")
     def _scatter_inplace_cpu(self, indices, updates):
         """CPU eager (in-place): 直接修改 self."""
         if indices.dim() == 1:

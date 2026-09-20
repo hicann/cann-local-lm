@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""npu::npu_chunk_gated_delta_rule GE converter -> ge node ChunkGatedDeltaRule.
+"""cann_lm::chunk_gated_delta_rule GE converter -> ge node ChunkGatedDeltaRule.
 
 torchair auto_generated didn't generate this op (its converter raises RuntimeError), so this
 overrides it (manually built, fills output desc). CANN op_info dim convention is THD 3D

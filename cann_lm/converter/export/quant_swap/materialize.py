@@ -17,7 +17,7 @@
 Converts a fp16/bf16/fp32 nn.Linear weight [out, in] into a nibble-packed int4
 payload (stored as int8 [out, in//2], low nibble = even k index, two's-complement
 4-bit signed [-8, 7]) + per-group fp32 scale [out, in//group] (K-axis), offset=0
-(symmetric). Output layout matches the ``npu::npu_quant_matmul`` x2 input.
+(symmetric). Output layout matches the ``cann_lm::quant_matmul`` x2 input.
 """
 
 import torch
@@ -46,7 +46,7 @@ def pack_int4(q: torch.Tensor) -> torch.Tensor:
     Input: ``q`` int8 ``[..., k]`` holding signed int4 values in [-8, 7].
     Output: int8 ``[..., k//2]`` — byte at index i holds int4 for k=2i (low
     nibble) and k=2i+1 (high nibble), two's-complement 4-bit (``value & 0xF``).
-    Matches the ``npu::npu_quant_matmul`` x2 input layout (nibble-packed int4).
+    Matches the ``cann_lm::quant_matmul`` x2 input layout (nibble-packed int4).
     """
     if q.shape[-1] % 2 != 0:
         raise ValueError(f"last dim {q.shape[-1]} must be even for int4 nibble-pack")
@@ -105,7 +105,7 @@ def materialize_int4_per_group_symmetric(
             int range, introducing no zero-point.
         nbits: 4 (int4) default.
         packed: ``True`` -> nibble-packed int8 ``[out, in//2]`` for
-            ``npu::npu_quant_matmul`` x2; ``"int4pack"`` -> CANN int4pack int32
+            ``cann_lm::quant_matmul`` x2; ``"int4pack"`` -> CANN int4pack int32
             ``[in, out//8]`` (=[K, N//8]) for ``npu_weight_quant_batchmatmul``
             (npu_convert_weight_to_int4pack 格式, weight 需转置到 [K,N] 再沿 N 维 pack);
             ``False`` (default) -> unpack ``[out, in]``.

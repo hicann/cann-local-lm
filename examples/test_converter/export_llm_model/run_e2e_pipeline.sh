@@ -15,7 +15,8 @@
 #
 # gemma4: --seq-len 128 (run_gemma4_gen.py PREFILL_SEQ=128); qwen3.5 默认 8.
 # --num-layers N: 只导出前 N 层 (slice/debug); 不传 = 全层。
-# dtype 限 float16/float32 (converter _DTYPE_MAP 不含 bfloat16; gemma4/qwen3 原生 bf16 会转 fp16)。
+# dtype: 不传则 converter 按 --target-soc 派生 (Ascend→bf16, Kirin→fp16); Ascend 需 bf16
+#        (ChunkGatedDeltaRule 在 910 只支持 bf16)。可 DTYPE=float16/float32 覆盖。
 # =============================================================================
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -27,7 +28,7 @@ MODEL_TYPE="qwen3_5"
 HF_PATH="${HF_PATH:-}"
 PROMPT="Hello, my name is"
 SEQ_LEN=8
-DTYPE="float16"
+DTYPE="${DTYPE:-}"   # 空=converter 按 --target-soc 派生 (Ascend→bf16, Kirin→fp16); float16/float32 覆盖
 OUTPUT_DIR=""
 NUM_LAYERS=""
 SKIP_EXPORT=0; SKIP_OM=0; SKIP_NPU=0; CHECK_ENV=0
@@ -102,9 +103,9 @@ phase ① "导出 epair (lite_export_context, 无 stubs)"
 if [[ $SKIP_EXPORT -eq 1 ]]; then ok "skip ① (--skip-export), 复用 $OUTPUT_DIR"; else
   (
     rm -rf "$OUTPUT_DIR"; mkdir -p "$OUTPUT_DIR"
-    echo "  converter: --mode prefill-decode --seq-len $SEQ_LEN --dtype $DTYPE${NUM_LAYERS:+ --num-layers $NUM_LAYERS}"
+    echo "  converter: --mode prefill-decode --seq-len $SEQ_LEN${DTYPE:+ --dtype $DTYPE}${NUM_LAYERS:+ --num-layers $NUM_LAYERS}"
     "$CONVERTER_PYTHON" "$CONVERTER" --hf-path "$HF_PATH" --output-dir "$OUTPUT_DIR" \
-        --mode prefill-decode --seq-len "$SEQ_LEN" --dtype "$DTYPE" \
+        --mode prefill-decode --seq-len "$SEQ_LEN" ${DTYPE:+--dtype "$DTYPE"} \
         ${NUM_LAYERS:+--num-layers "$NUM_LAYERS"} >"$OUTPUT_DIR.export.log" 2>&1 &
     PID=$!
     for _ in $(seq 1 120); do

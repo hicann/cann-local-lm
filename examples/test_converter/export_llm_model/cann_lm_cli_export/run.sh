@@ -6,7 +6,7 @@
 #   bash run.sh                          # 导出全部三模型 (single 模式)
 #   bash run.sh "qwen3 qwen3_5"          # 导出指定模型
 #   MODE=prefill-decode bash run.sh gemma4   # prefill-decode 模式 (prefill+decode 两图)
-#   DTYPE=float16 bash run.sh            # 指定 dtype (默认 bfloat16, 三模型原生)
+#   DTYPE=float16 bash run.sh            # 指定 dtype (默认空=按 target-soc 派生: Ascend→bf16, Kirin→fp16)
 #   SEQ_LEN=128 bash run.sh              # 指定 seq_len (默认 8, 快测)
 #
 set -euo pipefail
@@ -27,7 +27,7 @@ declare -A HF_PATHS=(
 )
 
 MODE="${MODE:-single}"
-DTYPE="${DTYPE:-bfloat16}"
+DTYPE="${DTYPE:-}"   # 空=converter 按 --target-soc 派生 (Ascend→bf16, Kirin→fp16); float16/float32 覆盖
 SEQ_LEN="${SEQ_LEN:-8}"
 NUM_LAYERS="${NUM_LAYERS:-}"
 MODELS="${1:-gemma4 qwen3 qwen3_5}"
@@ -44,7 +44,8 @@ for m in ${MODELS}; do
   echo "========================================"
   out="${ROOT_DIR}/epair_${m}"
   rm -rf "${out}"
-  args=(--hf-path "${HF_PATHS[$m]}" --output-dir "${out}" --dtype "${DTYPE}")
+  args=(--hf-path "${HF_PATHS[$m]}" --output-dir "${out}")
+  [[ -n "${DTYPE:-}" ]] && args+=(--dtype "${DTYPE}")
   if [[ "${MODE}" == "prefill-decode" ]]; then
     args+=(--mode prefill-decode --seq-len "${SEQ_LEN}")
   else

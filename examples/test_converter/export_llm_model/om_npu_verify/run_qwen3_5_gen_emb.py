@@ -16,11 +16,12 @@ OM 产物 (prefill.om + decode.om, use-embeddings, converter --mode prefill-deco
 """
 import os, sys
 import torch
+import torch_npu  # NPU env: 让 torch_npu 的 npu:: 算子先注册, 避免 cann_lm fused_ops stub 先注册后 torch_npu 重复定义崩溃
 
 PREFILL_OM = os.environ.get("PREFILL_OM", "/tmp/opencode/qwen3_5_pd/prefill.om")
 DECODE_OM = os.environ.get("DECODE_OM", "/tmp/opencode/qwen3_5_pd/decode.om")
 HF = os.environ["HF"]
-KV_MAX = 2048; DEV = 0; MAX_NEW = 20; PREFILL_SEQ = 8
+KV_MAX = 2048; DEV = 0; MAX_NEW = 20; PREFILL_SEQ = int(os.environ.get("PREFILL_SEQ", 8))
 os.environ.setdefault("TORCH_DEVICE_BACKEND_AUTOLOAD", "0")
 
 from cann_lm.models.qwen3_5 import Qwen3_5ForCausalLM, Qwen3_5TextConfig, load_qwen3_5_weights
@@ -105,14 +106,14 @@ def flatten_prefill(sample, in_names):
 def build_prefill(model, chunk_ids, real_len, start_pos, kv_prev, delta_prev, wrapper, in_names):
     dtype = torch.bfloat16
     minv = torch.tensor(-1e4, dtype=dtype)
-    q_pos = torch.arange(start_pos, start_pos + PREFILL_SEQ, dtype=dtype).unsqueeze(1)
-    k_pos = torch.arange(KV_MAX, dtype=dtype).unsqueeze(0)
-    mask = torch.where(k_pos <= q_pos, torch.tensor(0.0, dtype=dtype), minv)
+    q_pos = torch.arange(start_pos, start_pos + PREFILL_SEQ, dtype=torch.int32).unsqueeze(1)
+    k_pos = torch.arange(KV_MAX, dtype=torch.int32).unsqueeze(0)
+    mask = k_pos <= q_pos  # BOOL [seq,kv_max], True=attend (causal, 对齐 58b5d1f BOOL mask)
     if real_len < PREFILL_SEQ:
-        mask[real_len:, :] = minv
-    mask = mask.unsqueeze(0).unsqueeze(0).contiguous()
-    pos = torch.arange(start_pos, start_pos + PREFILL_SEQ, dtype=torch.int64).unsqueeze(0)
-    new_kv = torch.arange(start_pos, start_pos + PREFILL_SEQ, dtype=torch.int64)
+        mask[real_len:, :] = False  # pad rows: mask-out
+    mask = (~mask).unsqueeze(0).unsqueeze(0).contiguous()  # BOOL [1,1,seq,kv_max], True=mask-out
+    pos = torch.arange(start_pos, start_pos + PREFILL_SEQ, dtype=torch.int32).unsqueeze(0)
+    new_kv = torch.arange(start_pos, start_pos + PREFILL_SEQ, dtype=torch.int32)
     out_pos = torch.tensor([real_len - 1], dtype=torch.int32)
     if kv_prev is not None:
         past = kv_prev
@@ -219,11 +220,11 @@ def main():
     for step in range(MAX_NEW):
         nt = torch.tensor([[next_tok]], dtype=torch.int64)
         emb = real_emb(model, nt)   # host 查表 [1,1,hidden]
-        mask = torch.zeros(1, 1, 1, KV_MAX, dtype=dtype)
+        mask = torch.zeros(1, 1, 1, KV_MAX, dtype=torch.bool)  # BOOL, False=attend
         if cached_len + 1 < KV_MAX:
-            mask[:, :, :, cached_len + 1:] = minv
-        pos = torch.tensor([[cached_len]], dtype=torch.int64)
-        new_kv = torch.tensor([cached_len], dtype=torch.int64)
+            mask[:, :, :, cached_len + 1:] = True  # mask-out k>cached_len
+        pos = torch.tensor([[cached_len]], dtype=torch.int32)
+        new_kv = torch.tensor([cached_len], dtype=torch.int32)
         out_pos = torch.tensor([0], dtype=torch.int32)
         dc_inputs = flatten_decode(emb, mask, pos, kv_pairs, new_kv, out_pos, delta_flat, runner_dc.in_names)
         dc_outs = runner_dc.run(dc_inputs)

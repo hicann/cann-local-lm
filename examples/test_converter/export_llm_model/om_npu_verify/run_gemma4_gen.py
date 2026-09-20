@@ -21,7 +21,7 @@ import torch.nn.functional as F
 PREFILL_OM = os.environ.get("PREFILL_OM", "/tmp/opencode/gemma4_pd/prefill.om")
 DECODE_OM = os.environ.get("DECODE_OM", "/tmp/opencode/gemma4_pd/decode.om")
 E2B = os.environ["HF"]
-KV_MAX = 2048; DEV = 0; MAX_NEW = 30; PREFILL_SEQ = 128
+KV_MAX = 2048; DEV = 0; MAX_NEW = int(os.environ.get("MAX_NEW", 30)); PREFILL_SEQ = 128
 
 import torch_npu  # noqa (for wrapper eager if needed; mainly for mask helpers)
 from safetensors import safe_open
@@ -125,37 +125,31 @@ def real_ple(input_ids):
     return (F.embedding(input_ids, ple_w) * PLE_SCALE).reshape(*input_ids.shape, N_LAY, PLE_H).to(DT)
 
 def build_mask_full(seq_len, kv_max, start_pos, batch=1):
-    """bool 方阵 [batch,1,kv_max,kv_max], 绝对位 causal。False=attend, True=mask out。
-
-    前 seq_len 行: query@绝对位 (start_pos+q) attend kv[0:start_pos+q+1]
-    后 (kv_max-seq_len) 行: padding 全 True (mask out, 无 query, kernel 用
-    actual_seq_qlen=seq_len 只取前 seq_len 行)。
-    本地构造 (取代 wrapper._build_mask_full), 完全自控 mask 内容。
+    """bool 矩阵 [batch,1,seq_len,kv_max], 绝对位 causal。False=attend, True=mask out。
+    query@绝对位 (start_pos+q) attend kv[0:start_pos+q+1]; 未写位 [actual:kv_max] 被
+    mask(True) 屏蔽。矩形 q_dim=seq_len (对齐 580bff6 wrapper: arch31 tiling 要求 mask
+    第三维=seq_len, 去方阵 padding 行)。本地构造 (取代 wrapper._build_mask_full)。
     """
-    mask = torch.ones(batch, 1, kv_max, kv_max, dtype=torch.bool)
     q_abs = (start_pos + torch.arange(seq_len)).unsqueeze(1)   # [seq, 1] 绝对位
     k = torch.arange(kv_max).unsqueeze(0)                      # [1, kv_max]
     attend = k <= q_abs                                        # [seq, kv_max] True=attend
-    mask[:, :, :seq_len, :] = ~attend                          # False=attend, True=mask out
-    return mask
+    return (~attend).unsqueeze(0).unsqueeze(0).expand(batch, 1, seq_len, kv_max).contiguous()
 
 def build_mask_sliding(seq_len, kv_max, start_pos, sliding_window, batch=1):
-    """bool 方阵 [batch,1,kv_max,kv_max], 绝对位 causal + sliding window。
+    """bool 矩阵 [batch,1,seq_len,kv_max], 绝对位 causal + sliding window。
 
-    前 seq_len 行: query@绝对位 attend kv[max(0, abs-w+1):abs+1] (窗口内+causal)
-    后 (kv_max-seq_len) 行: padding 全 True。
+    query@绝对位 attend kv[max(0, abs-w+1):abs+1] (窗口内+causal); 未写位 [actual:kv_max]
+    被 mask(True) 屏蔽。矩形 q_dim=seq_len (对齐 580bff6 wrapper, 去方阵 padding 行)。
     kv_len <= sliding_window 时 causal 已隐含在窗口内, 退化为 mask_full。
     """
     w = sliding_window
     if not w or w <= 0 or kv_max <= w:
         return build_mask_full(seq_len, kv_max, start_pos, batch)
-    mask = torch.ones(batch, 1, kv_max, kv_max, dtype=torch.bool)
     q_abs = (start_pos + torch.arange(seq_len)).unsqueeze(1)
     k = torch.arange(kv_max).unsqueeze(0)
     diff = q_abs - k
     attend = (diff >= 0) & (diff <= w - 1)
-    mask[:, :, :seq_len, :] = ~attend
-    return mask
+    return (~attend).unsqueeze(0).unsqueeze(0).expand(batch, 1, seq_len, kv_max).contiguous()
 
 def build_prefill(chunk_ids, chunk_real_len, start_pos, kv_prev):
     """用 wrapper mask + 覆盖。支持 chunked prefill (超长 prompt 分块)。
@@ -167,7 +161,7 @@ def build_prefill(chunk_ids, chunk_real_len, start_pos, kv_prev):
         kv_prev: 上一块的 70 kv 输出 (None → 用 wrapper 的零 buffer)。
     """
     s = list(wrapper.get_sample_inputs(seq_len=PREFILL_SEQ, use_embeddings=True))
-    new_pos = torch.arange(start_pos, start_pos + PREFILL_SEQ, dtype=torch.int64)
+    new_pos = torch.arange(start_pos, start_pos + PREFILL_SEQ, dtype=torch.int32)  # 对齐 58b5d1f INT32 pos
     s[1] = build_mask_full(PREFILL_SEQ, KV_MAX, start_pos)
     s[2] = build_mask_sliding(PREFILL_SEQ, KV_MAX, start_pos, wrapper._sliding_window)
     s[3] = new_pos.unsqueeze(0)                                              # position_ids [1,128]
@@ -193,10 +187,10 @@ def build_prefill(chunk_ids, chunk_real_len, start_pos, kv_prev):
 
 def build_decode(next_token, cached_len, kv_prev):
     """用 wrapper mask helpers (seq=1, new_kv_cache_pos=[cached_len]) + 覆盖。"""
-    new_pos = torch.tensor([cached_len], dtype=torch.int64)
+    new_pos = torch.tensor([cached_len], dtype=torch.int32)
     mf = build_mask_full(1, KV_MAX, cached_len)
     ms = build_mask_sliding(1, KV_MAX, cached_len, wrapper._sliding_window)
-    pos = torch.tensor([[cached_len]], dtype=torch.int64)
+    pos = torch.tensor([[cached_len]], dtype=torch.int32)
     opos = torch.tensor([0], dtype=torch.int32)
     emb = real_emb(next_token)       # [1,1,HID]
     ple = real_ple(next_token)       # [1,1,N_LAY,PLE_H]

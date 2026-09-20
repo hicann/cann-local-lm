@@ -252,6 +252,35 @@ $DOPT_PYTHON run_gemma4_gen.py "Please explain the theory of relativity in detai
 - OM 产物路径在脚本常量 `PREFILL_OM`/`DECODE_OM` 里(当前指向 `/tmp/opencode/gemma4_pd/`)
 - 需先导出 prefill+decode OM:`cann_lm_converter.py --mode prefill-decode --use-embeddings` → C++ `main.cpp` 编译两图
 
+## 实测出字用例(gemma4-E2B, 新代码 cann_lm:: + bf16)
+
+> 2026-09-17 实测。环境:③ NPU(`source scripts/set_env_cann.sh --npu`),`$DOPT_PYTHON`(系统 Python + torch_npu + acl);OM 由 `run_e2e_pipeline.sh --model-type gemma4 --hf-path <gemma4-E2B-it> --seq-len 128` 产出(cann_lm:: 域 + 58b5d1f BOOL mask/INT32 + is_weight,dtype 按 target_soc=Ascend910B 派生 bf16)。
+
+### 用例 1:短 prompt 出字
+```bash
+PREFILL_OM=<prefill.om> DECODE_OM=<decode.om> HF="$GEMMA4_HF_PATH" \
+  $DOPT_PYTHON run_gemma4_gen.py "Hello, my name is"
+```
+- prompt 5 token(chat template 后),1 chunk prefill。
+- **生成**:`"Hello! It's nice to meet you. What is your name? 😊"`(chat-template 问候 + 反问 + emoji → EOS)。
+
+### 用例 2:超长 prompt chunked prefill(prompt > 128 token, 自然长文本无重复)
+```bash
+PROMPT='Please explain the theory of relativity in detail. Start with special relativity, covering Einsteins 1905 paper, the two postulates of constancy of the speed of light and the principle of relativity, time dilation, length contraction, the relativity of simultaneity, and the famous equation E equals m c squared. Then explain general relativity from 1915, including the equivalence principle, the curvature of spacetime, Einsteins field equations, and the Schwarzschild solution. Discuss experimental evidence: the Michelson-Morley experiment, the perihelion precession of Mercury, gravitational redshift, gravitational lensing, and the 2015 LIGO detection of gravitational waves from merging black holes. Cover black holes, event horizons, Hawking radiation, and the 2019 Event Horizon Telescope image of M87. Explain GPS satellite time correction as a practical application. Compare relativity to Newtonian mechanics and note where quantum mechanics diverges. Make it comprehensive, well-structured, and accessible.'
+PREFILL_OM=<prefill.om> DECODE_OM=<decode.om> HF="$GEMMA4_HF_PATH" \
+  $DOPT_PYTHON run_gemma4_gen.py "$PROMPT"
+```
+- prompt **204 token** > 128 → **2 chunk prefill**(KV 跨块累积):
+  ```
+  [2/3] prefill (2 chunk(s), seq=128)
+    chunk 0: tokens [0:128]   (real=128) → ok
+    chunk 1: tokens [128:204] (real=76)  → ok   ← 用 chunk 0 的 KV
+  ```
+- 每块 `new_kv_cache_pos`/`position_ids` 按 `start_pos`(0/128)偏移;mask 用 `build_mask_full/sliding`(绝对位 + [seq,kv_max] 矩形,对齐 580bff6 arch31 tiling);KV_MAX=2048(204<2048,无截断)。
+- **生成**:`"## The Theory of Relativity: A Journey Through Spacetime\n\nAlbert Einstein's theory of relativity is one of the most profound and revolutionary achievements in the"`(切题:markdown 标题 + Einstein 引言)→ 证明 chunked prefill KV 跨块累积正确(模型经分块 prefill 看到完整长 prompt)。
+
+> 两用例均 `[✓] ③ npu_verify 出字完成`,① 导出 + ② OM 编译同链路(`run_e2e_pipeline.sh`)。短/长 prompt 出字均切题连贯,验证新代码(cann_lm:: 域迁移 + 58b5d1f BOOL mask/INT32 + is_weight + dtype-from-soc + runner 同步)端到端正确。
+
 ## 注意事项
 
 - **每次编译默认关 AUB**:`export GE_FUSION_SWITCH_FILE=/tmp/fusion_autoub_off.cfg`(`{"Switch":{"UBFusion":{"AutomaticUbFusion":"off"}}}`)后编译,产出 `gemma4_noaub.om`(元素算子独立、图清晰)。不关则 `gemma4.om`(有 141 个 `AutomaticBufferFusionOp`,对比用)。

@@ -975,3 +975,82 @@ converter env = torch-delegate venv + torchair stubs,搭建分散:
 
 - 源码:`cann_lm/converter/export/epair_utils.py`(`_pack_weights_to_dir`)+ C++ `ge_weight_loader.cc`/`ge_graph_builder.cc:CreateConstNode`
 - 相关:**CLI-015**(NZ 格式,只作用于 parameter)、**CLI-016**(权重与 const 分离,本条细化其粒度)
+
+---
+
+## CLI-020 TODO:torch.export 无 output name 参数,saver 需自动设置语义名
+
+| 字段 | 值 |
+|------|-----|
+| 编号 | CLI-020 |
+| 类型 | TODO(待实现) |
+| 位置 | `cann_lm/converter/saver.py`(`save_epair`/`save_epair_prefill_decode`:`torch.export.export` 后未设 output name)+ `cann_lm/models/export_wrapper.py`(`make_input_output_names` 只用于 ONNX,未覆盖 delta_out) |
+| 背景 | `torch.export.export(model, args, strict=False)` **无直接参数**设 output name。输出名从产生该输出的 FX 算子节点名派生(如 `matmul`/`sin`/`cos`/`index_select`),非语义名(如 `logits`/`past_key_0_out`)。返回 dict 时 key 会丢失(torch.export flatten 成 tuple,name 仍从算子名派生)。实测 torch 2.9.0+cpu:`OutputSpec.arg = TensorArgument(name='matmul')` — `name` 字段可后处理改写,改后 `ep.module()` 正常跑 |
+| 违反约定 | 无(待实现) |
+| 发现日期 | 2026-09-16 |
+| 状态 | **TODO(方案已验证,待实现)** |
+
+### 背景:为何需要语义 output name
+
+epair 导出链路 `torch.export → torch_delegate.export_to_epair → ep_json`,ep_json 的 `signature.output_specs` 里每个 output 的 `arg.name` 沿用 FX 算子节点名(如 `matmul_3`/`index_select_1`),无语义。下游消费方(OM runtime/C++ 加载/host 调度)需按位置而非名字识别输出(logits/past_kv_out/delta_out),可读性差、易错位。
+
+### 现状缺口
+
+1. **`ExportWrapper.make_input_output_names()` 已有约定但只用于 ONNX**(`export_wrapper.py:229`):生成 `["logits", "past_key_{i}_out", "past_value_{i}_out"]`,epair 路径未调用
+2. **delta_out 未覆盖**:基类 `make_input_output_names` 只生成 logits + past_kv_out(`2×num_layers`),qwen3.5 `forward` 还返回 `delta_out_flat`(每层 conv+rec,`2×num_layers` 个,`export_wrapper.py:135-140`),names 数量 < output 数量
+3. **saver 未后处理**:`save_epair`/`save_epair_prefill_decode` 在 `torch.export.export()` 后直接 `torch_delegate.export_to_epair(ep, config)`,未改 `ep.graph_signature.output_specs[i].arg.name`
+
+### 方案(已验证 torch 2.9 可行)
+
+**第 1 步**:补全 `make_input_output_names()` 含 delta_out(基类或 qwen3.5 override):
+
+```python
+def make_input_output_names(self) -> tuple[list[str], list[str]]:
+    n = self._num_layers()
+    input_names = ["input_ids", "attention_mask", "position_ids", "new_kv_cache_pos"]
+    for i in range(n):
+        input_names.extend([f"past_key_{i}", f"past_value_{i}"])
+    output_names = ["logits"]
+    for i in range(n):
+        output_names.extend([f"past_key_{i}_out", f"past_value_{i}_out"])
+    if self._has_delta_out():  # 子类 override: qwen3.5 True, qwen3/gemma4 False
+        for i in range(n):
+            output_names.extend([f"delta_conv_{i}_out", f"delta_rec_{i}_out"])
+    return input_names, output_names
+```
+
+**第 2 步**:saver.py 在 `torch.export.export()` 后、`torch_delegate.export_to_epair()` 前后处理 output_specs:
+
+```python
+ep = torch.export.export(wrapper, sample_inputs, strict=False)
+_, output_names = wrapper.make_input_output_names()
+for spec, name in zip(ep.graph_signature.output_specs, output_names):
+    spec.arg.name = name  # TensorArgument.name 可改
+for node in ep.graph.nodes:  # 同步 graph output node name
+    if node.op == "output":
+        for n, name in zip(node.args[0], output_names):
+            n.name = name
+        break
+with lite_export_context(lite_config):
+    epair = torch_delegate.export_to_epair(ep, config)  # ep_json 沿用自定义 name
+```
+
+### 边界处理
+
+- **delta_out 可选**:`forward` 返回 `delta_out_flat` 仅当 `delta_states is not None`(`export_wrapper.py:136`)。`save_epair` 的 sample_inputs 不传 delta_states → delta_out_flat 为空 → output 数量 = `1 + 2×num_layers`。`make_input_output_names` 多出的 delta names 被 `zip` 自动截断,不影响
+- **zip 短板**:names 不足时 fallback 用算子名(避免 mismatch),需加 `if len(names) < len(specs)` 兜底
+- **prefill/decode 共享**:`make_input_output_names` 不依赖 seq_len/prefill/decode,prefill/decode 用同一组 names,无 prefill/decode 差异问题(与 CLI-014 的权重共享无冲突)
+
+### 行动项
+
+- [ ] `ExportWrapper.make_input_output_names()` 补 delta_out names + 加 `_has_delta_out()` hook(qwen3.5 override True)
+- [ ] `saver.py` 加 `_apply_output_names(ep, wrapper)` helper,在 `save_epair`/`save_epair_prefill_decode` 的 `torch.export` 后调用
+- [ ] 验证 ep_json `signature.output_specs` 的 `arg.name` 为语义名(`logits`/`past_key_0_out`/...)
+- [ ] 文档:export_design.md 补 output name 自动设置说明
+
+### 关联
+
+- 源码:`cann_lm/converter/saver.py`(`save_epair`/`save_epair_prefill_decode`)+ `cann_lm/models/export_wrapper.py`(`make_input_output_names`/`forward` 返回 logits+past_kv_flat+delta_out_flat)
+- 相关:**CLI-014**(PD 权重共享,本条的 output name 不影响共享)、**CLI-016/CLI-019**(权重/const 分离,已部分实现 `_is_weight` 字段——见下注)
+- 注:CLI-016/CLI-019 描述的「weight_info.json 加类别字段」已实现为 `_is_weight`(bool,二态:parameter+buffer=true / const=false),`epair_utils.py:_pack_weights_to_dir` 落盘该字段 + C++ `ge_weight_loader.cc:LoadConsolidated` 读取填 `TensorRecordInfo.is_parameter` + `ge_graph_builder.cc:CreateConstNode` 注入 GE Const 节点私有 attr `_is_weight`(dump 图可见,OM 被 GE OptimizeStage1 清理)。CLI-016/CLI-019 的 NZ 按 kind 分流(NZ 只对 parameter)尚未实现,仍为 TODO
+

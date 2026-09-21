@@ -9,6 +9,7 @@ cann_lm 三个模型（gemma4 / qwen3 / qwen3.5）在 **converter stubs 环境�
 ```
 llm_models_run_on_cpu/
 ├── hf_cpu.py                 # 禁 transformers 的 torch_npu probe 的 shim（跑 HF 前先 import）
+├── gen_golden_with_dump.py   # golden 参考数据生成（torch.export + DumpInterpreter 逐算子 dump，供 OM 逐算子精度比对）
 ├── README.md                 # 本文件（总索引）
 ├── skills/                   # 通用技能（跨模型）
 │   ├── cann-lm-epair-export/SKILL.md

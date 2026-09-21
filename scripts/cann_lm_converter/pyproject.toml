@@ -28,6 +28,9 @@ cann-lm-converter = "cann_lm.converter.cann_lm_converter:main"
 packages = [
     "cann_lm.converter",
     "cann_lm.converter.export",
+    "cann_lm.converter.export.ge_converters",
+    "cann_lm.converter.export.quant_swap",
+    "cann_lm.converter.export.weight_format",
     "cann_lm.converter.quant",
     "cann_lm.models",
     "cann_lm.models.gemma4",
@@ -51,3 +54,4 @@ packages = [
 
 [tool.setuptools.package-data]
 "cann_lm.converter.quant" = ["*.yaml", "*.json"]
+"cann_lm.converter.export" = ["*.json"]

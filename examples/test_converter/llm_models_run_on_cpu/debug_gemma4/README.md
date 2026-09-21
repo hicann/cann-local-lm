@@ -26,16 +26,19 @@ export GEMMA4_HF_PATH=<gemma4 model dir>   # 必填
 
 ## 脚本列表
 
-当前 8 个脚本:
+当前 3 个脚本:
 
 | 脚本 | 测试场景 | 验证对象 |
 |------|---------|---------|
 | `verify_gemma4.py` | 单元测试 + 端到端推理 | cann_lm 模型定义 + wrapper I/O |
-| `compare_hf_vs_ep.py` | HF vs EP 对比(greedy/sampling) | wrapper export + scatter 推理 |
 | `verify_gemma4_chunk.py` | chunk 推理 + logits 精度对比 | chunk vs 非 chunk + vs HF logits |
 | `verify_gemma4_epair.py` | ep 回环 + wrapper direct 推理 | ep.module 回环 vs wrapper |
-| `verify_gemma4_wrapper_bypass.py` | wrapper 重写验证 | host mask == model 4D + bypass vs model.forward |
-| `verify_gemma4_wrapper_export.py` | wrapper 可导出 + 图无 masked_fill | torch.export + FX 图 masked_fill==0 |
+
+> wrapper 重写验证（host mask==model 4D + bypass vs model.forward）与可导出性（FX 图 masked_fill==0）已抽到 `tests/py/llm_models/test_gemma4.py`（GEMMA4-024/025），示例脚本 `verify_gemma4_wrapper_bypass.py` / `verify_gemma4_wrapper_export.py` 已删。
+>
+> `verify_gemma4_epair_quant.py` 已删（quant PLE int8 回环，需 dopt GPTQ 产物，从未实际验证过）。quant embeddings 的 sample-inputs 构造已由 `test_gemma4.py::test_wrapper_get_sample_inputs_quant_embeddings_mode`（GEMMA4-015）覆盖；完整 quant epair 回环若需复测，可在 `verify_gemma4_epair.py` 加 `--quant-embeddings` 模式（需 dopt 产物）。
+>
+> `compare_hf_vs_ep.py` 已删（HF vs EP 对比，被 `verify_gemma4_epair.py --vs-hf` 覆盖：greedy 模式 token 一致是强判定，已在 epair 验证；sampling 同 seed 因 bfloat16 tie-breaking 预期分叉，非强判定）。
 
 ---
 
@@ -71,37 +74,7 @@ python verify_gemma4.py --layers 4 --prompt "Hi"
 
 ---
 
-## 2. `compare_hf_vs_ep.py` — HF vs EP 对比
-
-**测试场景**:
-- HF `model.generate()` vs EP(`ep.module` prefill + wrapper decode)对比
-- **greedy**(定位/验证 logits)或 **sampling**(确认推理效果)切换
-- 验证 wrapper export + scatter 推理与 HF 一致
-
-**用法**:
-```bash
-# 默认 sampling (temp=1.0, top_k=64, top_p=0.95)
-python compare_hf_vs_ep.py
-
-# greedy (定位 bug / 验证 logits 对)
-# 修改脚本顶部:TEMPERATURE = 0.0, generate_hf 的 do_sample=False
-```
-
-**参数**(脚本顶部常量):
-- `TEMPERATURE`/`TOP_K`/`TOP_P`:sampling 参数
-- `MAX_NEW_TOKENS`:30
-- `EXPORT_SEQ_LEN`:8(prefill pad 到此长度)
-- `BOS_TOKEN_ID`:2(gemma4 必须)
-
-**关键**(sliding window 修复后):
-- greedy:EP == HF == CLM 完全一致(prompt1/3 验证)
-- sampling:EP 不退化,第一 token 多数对,分叉后输出连贯(符合 bfloat16 tie-breaking 预期)
-
-**调试经验**:用 greedy 验证(sampling 随机无法判断 bug),见 `skills/gemma4-debug/SKILL.md` #18。
-
----
-
-## 3. `verify_gemma4_chunk.py` — chunk 推理 + logits 精度对比
+## 2. `verify_gemma4_chunk.py` — chunk 推理 + logits 精度对比
 
 **测试场景**:
 - chunk vs 非 chunk 生成对比(token 一致)
@@ -145,7 +118,7 @@ python verify_gemma4_chunk.py --prompt "Hello" --token-level
 
 ---
 
-## 4. `verify_gemma4_epair.py` — ep 回环 + wrapper direct 推理
+## 3. `verify_gemma4_epair.py` — ep 回环 + wrapper direct 推理
 
 **测试场景**:
 - ep 模式:`ep.module()` prefill(padded 到 EXPORT_SEQ_LEN)+ wrapper decode,对比 ep 回环 vs wrapper direct

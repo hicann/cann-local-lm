@@ -68,7 +68,7 @@
 
 ## 5. 用例设计
 
-### 5.1 gemma4 modeling（test_gemma4.py，23 项）
+### 5.1 gemma4 modeling（test_gemma4.py，25 项）
 
 | ID | 被测单元 | 场景与预期 | 优先级 |
 |---|---|---|---|
@@ -82,9 +82,9 @@
 | GEMMA4-008 | KV sharing | 6 层后 3 共享：hs shape + shared_kv_states 非空 + 共享层 is_kv_shared + 无 k_proj | P1 |
 | GEMMA4-009 | 层截断 | 2/4/8 层 logits vocab=1000 + 参数量 | P1 |
 | GEMMA4-010 | `Gemma4ExportWrapper` vs model | logits max_diff=0 + KV max_diff=0（mask 用 `_build_mask_full/sliding` 预构） | P0 |
-| GEMMA4-011 | `_build_mask_sliding` true branch | kv_max>sliding_window → bool mask [1,1,kv_max,kv_max] + row0 attend[0]/mask[1] + padding 全 True | P1 |
+| GEMMA4-011 | `_build_mask_sliding` true branch | kv_max>sliding_window → bool mask [1,1,seq,kv_max]（矩形, arch31 tiling）+ row0 attend[0]/mask[1] | P1 |
 | GEMMA4-012 | `_build_mask_sliding` degenerate | kv_max<=sliding_window → == `_build_mask_full` | P1 |
-| GEMMA4-013 | `get_sample_inputs` input_ids mode | input_ids shape + mask_full/sliding [1,1,16,16] + new_kv_pos + past_kv list + head_dim | P1 |
+| GEMMA4-013 | `get_sample_inputs` input_ids mode | input_ids shape + mask_full/sliding [1,1,seq,16]（矩形）+ new_kv_pos + past_kv list + head_dim | P1 |
 | GEMMA4-014 | `get_sample_inputs` embeddings mode | input_ids=None + emb [1,seq,hidden] + ple 非空 | P1 |
 | GEMMA4-015 | `get_sample_inputs` quant_embeddings mode | int8 emb + embeddings_scale [1,seq] | P1 |
 | GEMMA4-016 | `make_sample_inputs`/`make_input_output_names` | ONNX helper shapes + in/out names 数量=5+2N/1+2N | P2 |
@@ -95,6 +95,8 @@
 | GEMMA4-021 | `_prepare_causal_mask` 4D sliding | kv_len>sliding_window → window 限制含 -inf | P1 |
 | GEMMA4-022 | `_prepare_causal_mask` 2D padding | 2D mask→bool key_valid + padded 位 -inf | P1 |
 | GEMMA4-023 | `to_dict`/`Gemma4Config.__post_init__` | to_dict 无 `_` 前缀 + None→defaults + dict→dataclass | P1 |
+| GEMMA4-024 | wrapper 可导出 + 图无 masked_fill | torch.export 能 trace（use_embeddings=False/True+detach 两模式）+ FX 图 masked_fill 节点==0（NPU 不支持 ge.MaskedFill） | P0 |
+| GEMMA4-025 | wrapper vs model **decode** | 单 token decode（q@pos S）wrapper logits+KV == model.forward scatter-write（maxdiff=0, KV torch.equal）；扩 GEMMA4-010 到 decode 步 | P0 |
 
 ### 5.2 qwen3 modeling（test_qwen3.py，21 项）
 
@@ -257,7 +259,7 @@ TORCH_DEVICE_BACKEND_AUTOLOAD=0 /mnt/workspace/torch-delegate-harmony/.venv/bin/
 1. **fused_attn causal CPU impl 限制**：`_build_sparse_mask` 解包 `b,n,s_q,s_k=q.shape`，BNSD 下 `q=[b,n,s,d]` 使 `s_k=d`、`s_q≠s_k` 命中 early-return `None` → causal mask 被跳过。这是 cann_lm CPU impl 限制（不碰 cann_lm），causal 用例放宽为 shape+finite；数值精确对齐改由 `extern_mask`（传 bool atten_mask）和 `s_q==s_k`（square）测试覆盖。
 2. **chunk_gated_delta_rule**：融合算子数值精确校验难（BHSD↔BSHD 转换 + delta rule 递归），仅测 out/final_state shape + finite；数值由 qwen3.5 modeling（test_modeling_qwen3_5）间接覆盖。
 3. **ExportWrapper 基类 forward**：基类 `forward` 调 `self._drive_layers`（子类实现，基类未定义），故 base 测试不测 forward，只测 `__init__`/`set_quant_embeddings`/`_num_layers`；forward 由各模型 wrapper（GEMMA4-010 / QWEN3-013 / Q35-036）端到端覆盖。
-4. **export_wrapper forward 归 e2e**：各模型 `export_wrapper.py` 的 `forward` 经 `torch.export` + torchair GE 转换的完整导出路径归 `examples/test_converter/export_llm_model/run_e2e_pipeline.sh` e2e 验证，UT 只测其纯逻辑 helper（mask builder / sample inputs / names）和单步 forward 数值一致性。
+4. **export_wrapper forward 归 e2e**：各模型 `export_wrapper.py` 的 `forward` 经 `torch.export` + torchair GE 转换的完整导出路径归 `examples/test_converter/export_llm_model/run_e2e_pipeline.sh` e2e 验证，UT 只测其纯逻辑 helper（mask builder / sample inputs / names）和单步 forward 数值一致性。**例外**：纯 `torch.export` + FX 图 `masked_fill` 节点计数（静态性质，不需 GE 转换/NPU/真实权重，CPU 小模型即可）已纳入 UT（GEMMA4-024），因 NPU 不支持 `ge.MaskedFill`，该断言是 bypass 重写的核心交付物，须在 UT 锁定。
 5. **真实权重/出字**：不在 UT 范围（需 HF 模型 + 权重），归 `examples/test_converter/llm_models_run_on_cpu/`（CPU e2e）+ `examples/test_converter/export_llm_model/`（HF→epair→OM→NPU e2e）。
 
 当前没有 skip 或 xfail 用例；所有已收集用例均作为普通回归用例执行。
@@ -324,3 +326,13 @@ TORCH_DEVICE_BACKEND_AUTOLOAD=0 \
 | DEF-003 | `torch_causal_conv1d_update` weight 从 2D `[dim, kernel]` 变 3D `[dim, 1, kernel]`（Conv1d 标准 shape） | 测试 weight 改 `torch.randn(dim, 1, kernel)`，对齐新 API | test_causal_conv1d_update 通过，conv_state shape 正确 |
 | DEF-004 | `Qwen3_5GatedDeltaNet.forward` / `Qwen3_5DecoderLayer.forward` 返回值从单 Tensor 变为 3-tuple `(out, ..., ...)` | 测试解包 `out, _, _ = gdn(x)` / `out_linear, _, _ = layer(x, ...)` | test_gated_delta_net + test_decoder_layer 通过 |
 | DEF-005 | gemma4 RoPE full cos shape 断言硬编码 `== global_head_dim` 不匹配缓存 buffer 实际维度（partial rotary） | cos shape 断言改为对齐 `rope.cos_cached_full_attention.shape[-1]`（缓存 buffer 驱动） | test_components RoPE shape 断言通过 |
+
+### 9.4 增量更新（2026-09-21）
+
+从 `examples/test_converter/llm_models_run_on_cpu/debug_gemma4/verify_gemma4_wrapper_bypass.py` + `verify_gemma4_wrapper_export.py` 抽出核心断言入 pytest（示例脚本可删）：
+
+- **新增 GEMMA4-024**（`test_wrapper_export_no_masked_fill`）：`torch.export` 能 trace（use_embeddings=False/True+detach 两模式）+ FX 图 `masked_fill` 节点==0。NPU 不支持 `ge.MaskedFill`，bypass 重写核心交付物，UT 锁定。
+- **新增 GEMMA4-025**（`test_wrapper_vs_model_decode`）：单 token decode（q@pos S）wrapper logits+KV == model.forward scatter-write（maxdiff=0, KV `torch.equal`），扩 GEMMA4-010（仅 prefill）到 decode 步。
+- **未移植**：bypass 的 `host mask == model 4D` 逐位 `torch.equal`——已失效（host 改 BOOL 后与 model fp 4D dtype 不符，假阴性）；且被 GEMMA4-025 的 logits maxdiff=0 逻辑蕴含（mask 若语义分歧 logits 必分歧），无需移植。
+- **顺带修 3 个 stale 断言**（GEMMA4-011/013/016）：mask 形状从方阵 `[1,1,kv_max,kv_max]` 改矩形 `[1,1,seq,kv_max]`（arch31 tiling 要求，见 `_build_mask_full` docstring「矩形 q_dim=seq_len」）后这 3 个测试未跟更新，现修正。
+- gemma4 项数 23→25，全套 140→142 passed。

@@ -335,14 +335,12 @@ def test_wrapper_build_mask_sliding_true_branch():
 
     mask = wrapper._build_mask_sliding(seq, kv_max, dtype, new_pos)
 
-    assert mask.shape == (1, 1, kv_max, kv_max)
+    assert mask.shape == (1, 1, seq, kv_max)  # 矩形 [b,1,seq_len,kv_max] (arch31 tiling)
     assert mask.dtype == torch.bool
     # first seq row (q_abs=0): attend only kv[0] (diff=0 <= w-1=3, diff>=0)
     row0 = mask[0, 0, 0]
     assert row0[0].item() is False  # attend (False=attend)
     assert row0[1].item() is True  # masked out
-    # padding rows (seq..kv_max) all True (masked out)
-    assert mask[0, 0, seq].all().item() is True
 
 
 def test_wrapper_build_mask_sliding_degenerate_to_full():
@@ -369,8 +367,8 @@ def test_wrapper_get_sample_inputs_input_ids_mode():
     inputs = wrapper.get_sample_inputs(seq_len=seq, use_embeddings=False)
     # (input_ids, mask_full, mask_sliding, pos_ids, past_kv, new_kv_pos, emb, out_pos, ple, e_scale, ple_scale)
     assert inputs[0] is not None and inputs[0].shape == (1, seq)
-    assert inputs[1].shape == (1, 1, 16, 16)  # mask_full [b,1,kv_max,kv_max]
-    assert inputs[2].shape == (1, 1, 16, 16)  # mask_sliding
+    assert inputs[1].shape == (1, 1, seq, 16)  # mask_full [b,1,seq_len,kv_max] (矩形)
+    assert inputs[2].shape == (1, 1, seq, 16)  # mask_sliding
     assert inputs[5].shape == (seq,)           # new_kv_cache_pos
     assert len(inputs[4]) == config.num_hidden_layers  # past_kv list
     # per-layer head dim: full layers use global_head_dim(32), sliding use head_dim(32)
@@ -417,8 +415,8 @@ def test_wrapper_onnx_helpers():
     si = wrapper.make_sample_inputs(seq_len=4)
     # (input_ids, mask_full, mask_sliding, pos_ids, past_kv, new_kv_pos, None, None, None, None)
     assert si[0].shape == (1, 4)
-    assert si[1].shape == (1, 1, 16, 16)  # mask_full [b,1,kv_max,kv_max]
-    assert si[2].shape == (1, 1, 16, 16)  # mask_sliding
+    assert si[1].shape == (1, 1, 4, 16)  # mask_full [b,1,seq_len,kv_max] (矩形)
+    assert si[2].shape == (1, 1, 4, 16)  # mask_sliding
     assert si[7] is None and si[8] is None and si[9] is None
 
     in_names, out_names = wrapper.make_input_output_names()
@@ -468,6 +466,112 @@ def test_wrapper_forward_with_output_pos_and_embeddings():
             embeddings, output_pos, None, embeddings_scale, None,
         )
     assert logits.shape == (b, 1, config.vocab_size)
+
+
+# ── export: torch.export 可导出 + FX 图无 masked_fill (NPU 兼容) ──
+
+def _count_masked_fill(ep) -> int:
+    """Count call_function nodes whose target contains 'masked_fill'."""
+    return sum(1 for n in ep.graph.nodes
+               if n.op == "call_function" and "masked_fill" in str(n.target))
+
+
+def test_wrapper_export_no_masked_fill():
+    """torch.export 能 trace wrapper + FX 图无 masked_fill 节点 (NPU 不支持 ge.MaskedFill).
+
+    bypass 重写核心目标: mask 改 host 预构 (图输入), 图内不再构造 mask (无 masked_fill)。
+    两种模式都测: use_embeddings=False (图内查表) / True (host 查表 + detach 外置查表子模块,
+    模拟 saver)。从 debug_gemma4/verify_gemma4_wrapper_export.py 抽出。
+    """
+    config = make_wrapper_config()
+    model = Gemma4ForCausalLM(config).eval()
+    wrapper = Gemma4ExportWrapper(model, kv_cache_max_len=16, batch=1).eval()
+
+    # 1. 图内查表模式 (input_ids + PLE 内查)
+    si = wrapper.get_sample_inputs(seq_len=4, use_embeddings=False)
+    ep = torch.export.export(wrapper, si, strict=False)
+    n_mf = _count_masked_fill(ep)
+    check(f"[use_embeddings=False] torch.export OK; masked_fill={n_mf} (期望 0)", n_mf == 0)
+
+    # 2. use_embeddings=True (host 查表 + detach 外置 embed_tokens/embed_tokens_per_layer)
+    si2 = wrapper.get_sample_inputs(seq_len=4, use_embeddings=True)
+    wrapper.detach_externalized_lookups()
+    ep2 = torch.export.export(wrapper, si2, strict=False)
+    n_mf2 = _count_masked_fill(ep2)
+    check(f"[use_embeddings=True] torch.export OK (detached); masked_fill={n_mf2} (期望 0)",
+          n_mf2 == 0)
+
+
+# ── bypass decode: wrapper 单 token decode == model.forward (maxdiff=0) ──
+
+def _cob_mask(q_positions, kv_len, dtype):
+    """caller 4D causal-over-buffer [1,1,q,kv_len] (k<=q → 0, else MIN)."""
+    min_val = torch.finfo(dtype).min
+    q = torch.tensor(q_positions, dtype=dtype).unsqueeze(1)
+    k = torch.arange(kv_len, dtype=dtype).unsqueeze(0)
+    return torch.where(k <= q, torch.tensor(0.0, dtype=dtype), min_val).unsqueeze(0).unsqueeze(0)
+
+
+def test_wrapper_vs_model_decode():
+    """wrapper 单 token decode (q@pos S) == model.forward scatter-write (logits+KV maxdiff=0).
+
+    扩展 test_wrapper_vs_model (仅 prefill) 到 decode 步: 验证 scatter-write decode 路径
+    (host 预构 mask + 跳过 pad 槽位 new_kv_cache_pos) 与 model.forward (4D cob +
+    内部 _prepare_causal_mask) 数值逐位一致 (maxdiff=0, KV torch.equal)。
+    从 debug_gemma4/verify_gemma4_wrapper_bypass.py 抽出 (mask 逐位相等那条已失效:
+    host 改 BOOL 后 torch.equal 假阴性, 但被 logits maxdiff=0 逻辑蕴含, 故不移植)。
+    """
+    config = make_wrapper_config()  # sliding_window=4, PLE on, 4 层
+    model = Gemma4ForCausalLM(config).eval()
+    wrapper = Gemma4ExportWrapper(model, kv_cache_max_len=8, batch=1).eval()
+    dtype = torch.float32
+    b, s, kv_max = 1, 4, 8
+    input_ids = torch.randint(0, config.vocab_size, (b, s))
+    next_tok = torch.randint(0, config.vocab_size, (b, 1))
+    nkv = config.num_key_value_heads
+
+    def zero_bufs():
+        return [(torch.zeros(b, nkv, kv_max, wrapper._get_layer_head_dim(i), dtype=dtype),
+                 torch.zeros(b, nkv, kv_max, wrapper._get_layer_head_dim(i), dtype=dtype))
+                for i in range(config.num_hidden_layers)]
+
+    # --- prefill ---
+    nkp_pf = torch.arange(s, dtype=torch.int64)
+    cob_pf = _cob_mask(list(range(s)), kv_max, dtype)
+    pos_pf = torch.arange(s, dtype=torch.long).unsqueeze(0)
+    with torch.no_grad():
+        out_old = model(input_ids=input_ids, attention_mask=cob_pf, position_ids=pos_pf,
+                        past_key_values=zero_bufs(), new_kv_cache_pos=nkp_pf,
+                        shared_kv_states=None)
+        old_l0, old_kv = out_old["logits"], out_old["past_key_values"]
+        h_full_pf = wrapper._build_mask_full(s, kv_max, dtype, nkp_pf)
+        h_slide_pf = wrapper._build_mask_sliding(s, kv_max, dtype, nkp_pf)
+        _, *new_flat0 = wrapper(input_ids, h_full_pf, h_slide_pf, pos_pf, zero_bufs(),
+                                nkp_pf, None, None)
+
+    # --- decode (q@pos s, sliding window=[s-w+1..s]) ---
+    nkp_dec = torch.tensor([s], dtype=torch.int64)
+    cob_dec = _cob_mask([s], kv_max, dtype)
+    pos_dec = torch.tensor([[s]], dtype=torch.long)
+    kv_new = [(new_flat0[i], new_flat0[i + 1]) for i in range(0, len(new_flat0), 2)]
+    with torch.no_grad():
+        out_old_d = model(input_ids=next_tok, attention_mask=cob_dec, position_ids=pos_dec,
+                          past_key_values=old_kv, new_kv_cache_pos=nkp_dec,
+                          shared_kv_states=None)
+        old_l1, old_kv_d = out_old_d["logits"], out_old_d["past_key_values"]
+        h_full_d = wrapper._build_mask_full(1, kv_max, dtype, nkp_dec)
+        h_slide_d = wrapper._build_mask_sliding(1, kv_max, dtype, nkp_dec)
+        new_l1, *new_flat1 = wrapper(next_tok, h_full_d, h_slide_d, pos_dec, kv_new,
+                                     nkp_dec, None, None)
+
+    diff = (new_l1.float() - old_l1.float()).abs().max().item()
+    check(f"decode logits max_diff={diff:.2e} (期望 0)", diff == 0.0)
+    for i in range(len(old_kv_d)):
+        if old_kv_d[i] is None:
+            continue
+        k_eq = torch.equal(old_kv_d[i][0], new_flat1[i * 2])
+        v_eq = torch.equal(old_kv_d[i][1], new_flat1[i * 2 + 1])
+        check(f"decode layer{i} KV equal (k={k_eq}, v={v_eq})", k_eq and v_eq)
 
 
 # ── modeling edge branches (eager_attention_forward softcap/scaling; KV scatter; mask) ──

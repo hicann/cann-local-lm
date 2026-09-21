@@ -1,26 +1,32 @@
 #!/usr/bin/env python3
 """验证 gemma4 epair/ep 推理: ep.module 回环 vs wrapper direct
 
-合并自 verify_gemma4_epair_chunk.py (ep 回环对比) + inference_ep.py (wrapper direct 推理),
-去除重复 (make_zero_kv_buffer / make_causal_mask_over_buffer / reconstruct_kv / load_and_export).
+适配当前 Gemma4ExportWrapper API (11 参 + 双 mask + scatter-write 绝对位 BOOL 语义):
+  forward(input_ids, mask_full, mask_sliding, position_ids, past_key_values,
+          new_kv_cache_pos, embeddings, output_pos, per_layer_token_identity,
+          embeddings_scale, per_layer_token_identity_scale)
+
+mask 由 host 预构 (wrapper._build_mask_full/_build_mask_sliding), BOOL
+(False=attend, True=mask out); 图内无 masked_fill。KV 为预分配零 buffer,
+new_kv_cache_pos 指定绝对写位置 (scatter-write)。
 
 模式:
-  --mode ep       (默认): ep.module() prefill (padded) + wrapper decode, 对比 ep 回环 vs wrapper direct
-  --mode wrapper         : wrapper direct 推理 (不 pad, scatter-write, q_start 正确)
+  --mode ep       (默认): ep.module() prefill (padded to EXPORT_SEQ_LEN) + wrapper decode, 对比 ep 回环 vs wrapper direct
+  --mode wrapper        : wrapper direct 推理 (不 pad, scatter-write)
   --sampling            : sampling (默认 greedy)
   --vs-hf               : 加 HF 对比
+  --use-embeddings      : 纯 embeddings (host 查表喂 embeddings+PLE), input_ids 不入图
 
-固定: BOS + bfloat16, scatter-write (KV buffer [kv_cache_max_len])
+固定: BOS + bfloat16, BOOL mask, scatter-write KV buffer [kv_cache_max_len]
 
 用法:
   python verify_gemma4_epair.py                       # ep 回环 vs wrapper, greedy, 三 prompt
   python verify_gemma4_epair.py --mode wrapper        # wrapper direct 推理
   python verify_gemma4_epair.py --sampling             # sampling 模式
   python verify_gemma4_epair.py --vs-hf                # 加 HF 三方对比
-  python verify_gemma4_epair.py --prompt "Hello"
   python verify_gemma4_epair.py --use-embeddings       # 纯 embeddings: ep 外置查表 (含 PLE) vs wrapper/HF
 
-环境变量 (先 source 基底, 详见 compare_hf_vs_ep.py docstring):
+环境变量 (先 source 基底):
   source ../../../../scripts/set_env_export.sh   # 或 source ../check_env.sh
   export GEMMA4_HF_PATH=<gemma4 model dir>      # 必填
 """
@@ -57,36 +63,14 @@ DEFAULT_PROMPTS = [
 
 
 # ──────────────────────────────────────────────
-# mask + KV buffer helpers (共享)
+# mask + KV buffer helpers (scatter-write, BOOL)
 # ──────────────────────────────────────────────
 
-def make_causal_mask_over_buffer(seq_len, kv_max, dtype, q_start=0):
-    """4D causal mask [1,1,seq_len,kv_max]: k_pos <= (q_start+q_idx) → attend.
-
-    q_start: query 起始序列位置 (prefill=0, decode=cached_pos). wrapper 模式用.
-    """
-    min_val = torch.finfo(dtype).min
-    q_pos = (torch.arange(seq_len, dtype=dtype) + q_start).unsqueeze(1)
-    k_pos = torch.arange(kv_max, dtype=dtype).unsqueeze(0)
-    return torch.where(k_pos <= q_pos, torch.tensor(0.0, dtype=dtype), min_val).unsqueeze(0).unsqueeze(0)
-
-
-def make_causal_mask_with_padding(q_len, kv_max, real_q_len, dtype):
-    """prefill mask (ep 模式, pad 到 EXPORT_SEQ_LEN): causal over buffer + pad 行屏蔽."""
-    min_val = torch.finfo(dtype).min
-    q_pos = torch.arange(q_len, dtype=dtype).unsqueeze(1)
-    k_pos = torch.arange(kv_max, dtype=dtype).unsqueeze(0)
-    mask = torch.where(k_pos <= q_pos, torch.tensor(0.0, dtype=dtype), min_val)
-    if real_q_len < q_len:
-        mask[real_q_len:, :] = min_val
-    return mask.unsqueeze(0).unsqueeze(0)
-
-
 def make_zero_kv_buffer(wrapper, dtype):
-    """零 KV buffer: list[(k,v), ...], per-layer head_dim."""
+    """零 KV buffer: list[(k,v), ...], per-layer head_dim (gemma4 sliding/full 差异)."""
     config = wrapper.config
     num_kv_heads = config.num_key_value_heads
-    num_layers = config.num_hidden_layers
+    num_layers = wrapper._num_layers()
     kv_max = wrapper.kv_cache_max_len
     buf = []
     for i in range(num_layers):
@@ -100,6 +84,35 @@ def make_zero_kv_buffer(wrapper, dtype):
 def reconstruct_kv(flat_kv):
     """展平 [k0,v0,...] → [(k0,v0),...]."""
     return [(flat_kv[i], flat_kv[i + 1]) for i in range(0, len(flat_kv), 2)]
+
+
+def build_masks(wrapper, seq_len, new_kv_cache_pos):
+    """用 wrapper 自带 helper 构造 (mask_full, mask_sliding), BOOL scatter-write 绝对位.
+
+    query @ 绝对位 new_kv_cache_pos[i] attend kv[0:abs+1] (full) 或窗口内 (sliding);
+    未写位 [actual:kv_max] 被 mask(True) 屏蔽。
+    """
+    kv_max = wrapper.kv_cache_max_len
+    dtype = wrapper._model_dtype
+    mask_full = wrapper._build_mask_full(seq_len, kv_max, dtype, new_kv_cache_pos)
+    mask_sliding = wrapper._build_mask_sliding(seq_len, kv_max, dtype, new_kv_cache_pos)
+    return mask_full, mask_sliding
+
+
+def mask_out_pad_rows(mask, real_seq_len):
+    """ep padded prefill: pad 行 [real_seq_len:] 全屏蔽 (output 丢弃). 原地改."""
+    mask[:, :, real_seq_len:, :] = True
+    return mask
+
+
+def mask_out_pad_slots(mask, real_seq_len, export_seq_len):
+    """ep decode: 屏蔽 pad 槽位 [real_seq_len:export_seq_len] (pad KV 不参与注意).
+
+    注: 短 seq (logical_pos < sliding_window) 下 sliding==full, 此屏蔽足够;
+    长 seq 跨窗口的 sliding 非连续槽位映射未实现 (本脚本 test prompts 均 < sliding_window)。
+    """
+    mask[:, :, :, real_seq_len:export_seq_len] = True
+    return mask
 
 
 def sample_next_token(logits, temperature, top_k, top_p):
@@ -144,7 +157,7 @@ def load_and_export(hf_path, dtype, use_embeddings=False):
 
 
 # ──────────────────────────────────────────────
-# ep 模式: ep.module prefill (padded) + wrapper decode
+# host PLE (use_embeddings 模式)
 # ──────────────────────────────────────────────
 
 def _host_ple(wrapper, ids, dtype):
@@ -156,20 +169,88 @@ def _host_ple(wrapper, ids, dtype):
     ).to(dtype).detach()
 
 
+# ──────────────────────────────────────────────
+# wrapper 模式: wrapper direct (不 pad, scatter-write)
+# ──────────────────────────────────────────────
+
+def generate_wrapper(wrapper, input_ids, num_steps, dtype,
+                     sampling, temp, top_k, top_p, use_embeddings=False):
+    """wrapper direct prefill (不 pad, 实际 seq_len) + wrapper decode (scatter-write).
+
+    无 pad: new_kv_cache_pos = arange(seq_len); decode 写位置 = 序列逻辑位置 = seq_len+n-1。
+    """
+    seq_len = input_ids.shape[1]
+    kv = make_zero_kv_buffer(wrapper, dtype)
+    new_kv_pos = torch.arange(seq_len, dtype=torch.int32)
+    mask_full, mask_sliding = build_masks(wrapper, seq_len, new_kv_pos)
+    pos_ids = torch.arange(seq_len, dtype=torch.int32).unsqueeze(0)
+    output_pos = torch.tensor([seq_len - 1], dtype=torch.int32)
+
+    embed_tokens = wrapper.model.model.embed_tokens
+    with torch.no_grad():
+        if use_embeddings:
+            emb = embed_tokens(input_ids).to(dtype).detach()
+            ple = _host_ple(wrapper, input_ids, dtype)
+            logits, *kv_flat = wrapper(None, mask_full, mask_sliding, pos_ids, kv, new_kv_pos,
+                                        emb, output_pos, ple, None, None)
+        else:
+            logits, *kv_flat = wrapper(input_ids, mask_full, mask_sliding, pos_ids, kv, new_kv_pos,
+                                        None, output_pos, None, None, None)
+    kv = reconstruct_kv(kv_flat)
+
+    tokens = []
+    for _ in range(num_steps):
+        if sampling:
+            next_token = sample_next_token(logits, temp, top_k, top_p)
+        else:
+            next_token = torch.argmax(logits[:, -1, :], dim=-1, keepdim=True)
+        tokens.append(next_token.item())
+        if next_token.item() == 1:  # EOS
+            break
+        n = len(tokens)
+        cached_pos = seq_len + n - 1  # 序列逻辑位置 = buffer 写位置 (无 pad)
+        dec_new_pos = torch.tensor([cached_pos], dtype=torch.int32)
+        m_full, m_slide = build_masks(wrapper, 1, dec_new_pos)
+        pos_dec = torch.tensor([[cached_pos]], dtype=torch.int32)
+        with torch.no_grad():
+            if use_embeddings:
+                dec_emb = embed_tokens(next_token).to(dtype).detach()
+                dec_ple = _host_ple(wrapper, next_token, dtype)
+                logits, *kv_flat = wrapper(None, m_full, m_slide, pos_dec, kv, dec_new_pos,
+                                           dec_emb, None, dec_ple, None, None)
+            else:
+                logits, *kv_flat = wrapper(next_token, m_full, m_slide, pos_dec, kv, dec_new_pos,
+                                            None, None, None, None, None)
+        kv = reconstruct_kv(kv_flat)
+    return tokens
+
+
+# ──────────────────────────────────────────────
+# ep 模式: ep.module prefill (padded) + wrapper decode
+# ──────────────────────────────────────────────
+
 def generate_ep(ep, wrapper, sample_inputs, input_ids, num_steps, dtype,
                 sampling, temp, top_k, top_p, use_embeddings=False):
-    """ep.module() prefill (padded to EXPORT_SEQ_LEN) + wrapper decode.
+    """ep.module() prefill (padded to EXPORT_SEQ_LEN) + wrapper decode (scatter-write).
 
-    decode 跳过 pad: 序列位置 = real_seq_len+n-1; buffer 写位置 = EXPORT_SEQ_LEN+n-1.
-    mask 屏蔽 pad 位置 [real_seq_len, EXPORT_SEQ_LEN) + 未写入 [cached_len, kv_max).
+    prefill: pad 到 EXPORT_SEQ_LEN, mask 屏蔽 pad 行, output_pos 取最后 real token。
+    decode: 跳过 pad 槽位 (写位置 = EXPORT_SEQ_LEN+n-1, 序列位置 = real_seq_len+n-1),
+            mask 屏蔽 pad 槽 [real_seq_len:EXPORT_SEQ_LEN] + 未写 [cached:kv_max)。
 
-    use_embeddings=True 时走纯 embeddings: host 用 embed_tokens / embed_tokens_per_layer
-    查表算 embeddings (pos 5) + per_layer_token_identity (pos 7), input_ids (pos 0) 不入图。
+    traced_inputs 结构 (gemma4 11 参):
+      [0] input_ids  [1] mask_full  [2] mask_sliding  [3] position_ids
+      [4] past_key_values (list[(k,v)], 不可破坏嵌套)  [5] new_kv_cache_pos
+      [6] embeddings  [7] output_pos  [8] per_layer_token_identity
+      [9] embeddings_scale  [10] per_layer_token_identity_scale
+
+    use_embeddings=True: host 查表喂 embeddings (pos 6) + per_layer_token_identity (pos 8),
+                         input_ids (pos 0) 保持 None (不入图)。
     """
     module = ep.module()
     real_seq_len = input_ids.shape[1]
     embed_tokens = wrapper.model.model.embed_tokens
 
+    # pad 到 EXPORT_SEQ_LEN
     if real_seq_len < EXPORT_SEQ_LEN:
         pad_len = EXPORT_SEQ_LEN - real_seq_len
         input_ids_padded = torch.cat([
@@ -179,18 +260,22 @@ def generate_ep(ep, wrapper, sample_inputs, input_ids, num_steps, dtype,
     else:
         input_ids_padded = input_ids
 
+    # 基于 traced sample_inputs 结构替换 per-prompt 值 (保持 past_key_values [4] 嵌套不变)
     traced_inputs = list(sample_inputs)
+    new_kv_pos_prefill = torch.arange(EXPORT_SEQ_LEN, dtype=torch.int32)
+    mask_full, mask_sliding = build_masks(wrapper, EXPORT_SEQ_LEN, new_kv_pos_prefill)
+    traced_inputs[1] = mask_out_pad_rows(mask_full.clone(), real_seq_len)
+    traced_inputs[2] = mask_out_pad_rows(mask_sliding.clone(), real_seq_len)
+    traced_inputs[3] = torch.arange(EXPORT_SEQ_LEN, dtype=torch.int32).unsqueeze(0)
+    traced_inputs[5] = new_kv_pos_prefill
+    traced_inputs[7] = torch.tensor([real_seq_len - 1], dtype=torch.int32)  # 取最后 real token
+
     if use_embeddings:
-        # 纯 embeddings: host 查表喂 embeddings (pos 5) + per_layer_token_identity (pos 7);
-        # input_ids (pos 0) 保持 None (不入图)。
-        traced_inputs[5] = embed_tokens(input_ids_padded).to(dtype).detach()
-        traced_inputs[7] = _host_ple(wrapper, input_ids_padded, dtype)
+        traced_inputs[0] = None  # input_ids 不入图
+        traced_inputs[6] = embed_tokens(input_ids_padded).to(dtype).detach()
+        traced_inputs[8] = _host_ple(wrapper, input_ids_padded, dtype)
     else:
         traced_inputs[0] = input_ids_padded
-    traced_inputs[1] = make_causal_mask_with_padding(EXPORT_SEQ_LEN, KV_CACHE_MAX_LEN, real_seq_len, dtype)
-    traced_inputs[2] = torch.arange(EXPORT_SEQ_LEN, dtype=torch.int64).unsqueeze(0)
-    traced_inputs[4] = torch.arange(EXPORT_SEQ_LEN, dtype=torch.int64)
-    traced_inputs[6] = torch.tensor([real_seq_len - 1], dtype=torch.int32)
 
     with torch.no_grad():
         out = module(*traced_inputs)
@@ -205,61 +290,26 @@ def generate_ep(ep, wrapper, sample_inputs, input_ids, num_steps, dtype,
         else:
             next_token = torch.argmax(logits[:, -1, :], dim=-1, keepdim=True)
         tokens.append(next_token.item())
-        if next_token.item() == 1:
+        if next_token.item() == 1:  # EOS
             break
-        cached_len = EXPORT_SEQ_LEN + len(tokens)
-        seq_pos = real_seq_len + len(tokens) - 1
-        min_val = torch.finfo(dtype).min
-        mask_dec = torch.zeros(1, 1, 1, KV_CACHE_MAX_LEN, dtype=dtype)
-        if cached_len < KV_CACHE_MAX_LEN:
-            mask_dec[:, :, :, cached_len:] = min_val
-        if real_seq_len < EXPORT_SEQ_LEN:
-            mask_dec[:, :, :, real_seq_len:EXPORT_SEQ_LEN] = min_val
-        pos_id = torch.tensor([[seq_pos]], dtype=torch.long)
-        new_pos = torch.tensor([cached_len - 1], dtype=torch.long)
+        n = len(tokens)
+        write_pos = EXPORT_SEQ_LEN + n - 1   # buffer 写位置 (跳过 pad 槽 real_seq_len..EXPORT_SEQ_LEN-1)
+        seq_pos = real_seq_len + n - 1       # 序列逻辑位置 (跳过 pad 位)
+        dec_new_pos = torch.tensor([write_pos], dtype=torch.int32)
+        m_full, m_slide = build_masks(wrapper, 1, dec_new_pos)
+        # 屏蔽 pad 槽 (短 seq 下 sliding==full, 此屏蔽足够)
+        m_full = mask_out_pad_slots(m_full, real_seq_len, EXPORT_SEQ_LEN)
+        m_slide = mask_out_pad_slots(m_slide, real_seq_len, EXPORT_SEQ_LEN)
+        pos_id = torch.tensor([[seq_pos]], dtype=torch.int32)
         with torch.no_grad():
             if use_embeddings:
                 dec_emb = embed_tokens(next_token).to(dtype).detach()
                 dec_ple = _host_ple(wrapper, next_token, dtype)
-                logits, *kv_flat = wrapper(None, mask_dec, pos_id, kv, new_pos, dec_emb, None, dec_ple)
+                logits, *kv_flat = wrapper(None, m_full, m_slide, pos_id, kv, dec_new_pos,
+                                           dec_emb, None, dec_ple, None, None)
             else:
-                logits, *kv_flat = wrapper(next_token, mask_dec, pos_id, kv, new_pos, None, None)
-        kv = reconstruct_kv(kv_flat)
-    return tokens
-
-
-# ──────────────────────────────────────────────
-# wrapper 模式: wrapper direct (不 pad)
-# ──────────────────────────────────────────────
-
-def generate_wrapper(wrapper, input_ids, num_steps, dtype,
-                     sampling, temp, top_k, top_p):
-    """wrapper direct prefill (不 pad, 实际 seq_len) + wrapper decode (scatter-write)."""
-    seq_len = input_ids.shape[1]
-    kv = make_zero_kv_buffer(wrapper, dtype)
-    mask = make_causal_mask_over_buffer(seq_len, KV_CACHE_MAX_LEN, dtype)
-    pos_ids = torch.arange(seq_len, dtype=torch.int64).unsqueeze(0)
-    new_pos = torch.arange(seq_len, dtype=torch.int64)
-
-    with torch.no_grad():
-        logits, *kv_flat = wrapper(input_ids, mask, pos_ids, kv, new_pos, None, None)
-    kv = reconstruct_kv(kv_flat)
-
-    tokens = []
-    for _ in range(num_steps):
-        if sampling:
-            next_token = sample_next_token(logits, temp, top_k, top_p)
-        else:
-            next_token = torch.argmax(logits[:, -1, :], dim=-1, keepdim=True)
-        tokens.append(next_token.item())
-        if next_token.item() == 1:
-            break
-        cached_pos = seq_len + len(tokens) - 1   # 序列位置 + buffer 写位置 (decode 第 n 个 = seq_len+n-1)
-        mask_dec = make_causal_mask_over_buffer(1, KV_CACHE_MAX_LEN, dtype, q_start=cached_pos)
-        pos_dec = torch.tensor([[cached_pos]], dtype=torch.int64)
-        new_pos_dec = torch.tensor([cached_pos], dtype=torch.int64)
-        with torch.no_grad():
-            logits, *kv_flat = wrapper(next_token, mask_dec, pos_dec, kv, new_pos_dec, None, None)
+                logits, *kv_flat = wrapper(next_token, m_full, m_slide, pos_id, kv, dec_new_pos,
+                                            None, None, None, None, None)
         kv = reconstruct_kv(kv_flat)
     return tokens
 
@@ -343,15 +393,18 @@ def main():
             print(f"\n  {tag} (ep.module prefill + wrapper decode): \"{text_ep}\"")
             # wrapper 基准 (in-graph)
             tokens_w = generate_wrapper(wrapper, input_ids, args.num_steps,
-                                        dtype, sampling, args.temp, args.top_k, args.top_p)
+                                        dtype, sampling, args.temp, args.top_k, args.top_p,
+                                        use_embeddings=args.use_embeddings)
             text_w = tokenizer.decode(tokens_w, skip_special_tokens=True)
-            print(f"  WR (wrapper direct, in-graph):        \"{text_w}\"")
+            wr_tag = "WR-EMB" if args.use_embeddings else "WR"
+            print(f"  {wr_tag} (wrapper direct):                \"{text_w}\"")
             match = tokens_ep == tokens_w
             all_pass = all_pass and match
-            print(f"\n  {tag}==WR: {match}")
+            print(f"\n  {tag}=={wr_tag}: {match}")
         else:
             tokens_w = generate_wrapper(wrapper, input_ids, args.num_steps,
-                                        dtype, sampling, args.temp, args.top_k, args.top_p)
+                                        dtype, sampling, args.temp, args.top_k, args.top_p,
+                                        use_embeddings=args.use_embeddings)
             text_w = tokenizer.decode(tokens_w, skip_special_tokens=True)
             print(f"\n  Output: \"{text_w}\"")
 

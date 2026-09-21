@@ -80,6 +80,29 @@ def reconstruct_kv(flat_kv):
     return [(flat_kv[i], flat_kv[i + 1]) for i in range(0, len(flat_kv), 2)]
 
 
+def make_zero_kv_buffer(wrapper, dtype):
+    """零 KV buffer: list[(k,v), ...], per-layer head_dim (gemma4 sliding/full 差异). 供 wrapper scatter-write."""
+    config = wrapper.config
+    num_kv_heads = config.num_key_value_heads
+    num_layers = wrapper._num_layers()
+    kv_max = wrapper.kv_cache_max_len
+    buf = []
+    for i in range(num_layers):
+        hd = wrapper._get_layer_head_dim(i)
+        buf.append((torch.zeros(1, num_kv_heads, kv_max, hd, dtype=dtype),
+                   torch.zeros(1, num_kv_heads, kv_max, hd, dtype=dtype)))
+    return buf
+
+
+def build_masks(wrapper, seq_len, new_kv_cache_pos):
+    """用 wrapper 自带 helper 构造 (mask_full, mask_sliding), BOOL scatter-write 绝对位."""
+    kv_max = wrapper.kv_cache_max_len
+    dtype = wrapper._model_dtype
+    mask_full = wrapper._build_mask_full(seq_len, kv_max, dtype, new_kv_cache_pos)
+    mask_sliding = wrapper._build_mask_sliding(seq_len, kv_max, dtype, new_kv_cache_pos)
+    return mask_full, mask_sliding
+
+
 # ──────────────────────────────────────────────
 # cann_lm model.forward (cat KV 累积)
 # ──────────────────────────────────────────────
@@ -144,13 +167,15 @@ def generate_cann(model, input_ids, num_steps, dtype, chunked=False, chunk_size=
 
 def generate_wrapper(wrapper, input_ids, num_steps, dtype, chunked=False, chunk_size=8,
                      return_logits=False):
-    """wrapper 一次性/分 chunk prefill + greedy decode (flat KV).
+    """wrapper 一次性/分 chunk prefill + greedy decode (scatter-write, 双 mask BOOL).
 
+    适配当前 Gemma4ExportWrapper API (11 参 + mask_full/mask_sliding + 绝对位 new_kv_cache_pos)。
+    chunk 模式: 每个 chunk 的 new_kv_cache_pos = arange(start, end) (绝对位),
+                mask 跨 chunk 看前面所有 KV (scatter-write buffer 持久跨 chunk)。
     return_logits=True (仅非 chunk): 返回 (tokens, [(label, logits), ...]).
     """
     seq_len = input_ids.shape[1]
-    kv = None
-    logits = None
+    kv = make_zero_kv_buffer(wrapper, dtype)
     logits_list = []
 
     if chunked:
@@ -162,18 +187,23 @@ def generate_wrapper(wrapper, input_ids, num_steps, dtype, chunked=False, chunk_
             end = min(start + chunk_size, seq_len)
             chunk = input_ids[:, start:end]
             chunk_len = end - start
-            mask = make_chunk_mask(chunk_len, start, dtype)
+            nkp = torch.arange(start, end, dtype=torch.int32)  # 绝对位写+查询位置
+            mask_full, mask_sliding = build_masks(wrapper, chunk_len, nkp)
+            pos_ids = torch.arange(start, end, dtype=torch.int32).unsqueeze(0)
             with torch.no_grad():
                 logits, *kv_flat = wrapper(
-                    chunk, mask, None, kv,
-                    torch.arange(start, end, dtype=torch.long), None, None)
+                    chunk, mask_full, mask_sliding, pos_ids, kv, nkp,
+                    None, None, None, None, None)
             kv = reconstruct_kv(kv_flat)
     else:
-        mask = make_causal_mask(seq_len, seq_len, dtype)
+        nkp = torch.arange(seq_len, dtype=torch.int32)
+        mask_full, mask_sliding = build_masks(wrapper, seq_len, nkp)
+        pos_ids = torch.arange(seq_len, dtype=torch.int32).unsqueeze(0)
+        output_pos = torch.tensor([seq_len - 1], dtype=torch.int32)
         with torch.no_grad():
             logits, *kv_flat = wrapper(
-                input_ids, mask, None, None,
-                torch.arange(seq_len, dtype=torch.long), None, None)
+                input_ids, mask_full, mask_sliding, pos_ids, kv, nkp,
+                None, output_pos, None, None, None)
         kv = reconstruct_kv(kv_flat)
         if return_logits:
             logits_list.append(("prefill", logits.clone()))
@@ -182,12 +212,14 @@ def generate_wrapper(wrapper, input_ids, num_steps, dtype, chunked=False, chunk_
     for i in range(num_steps):
         next_token = torch.argmax(logits[:, -1, :], dim=-1, keepdim=True)
         tokens.append(next_token.item())
-        cached_len = seq_len + len(tokens)
-        mask_dec = make_decode_mask(cached_len, dtype)
+        cached_pos = seq_len + len(tokens) - 1  # 序列逻辑位 = buffer 写位 (无 pad)
+        dec_nkp = torch.tensor([cached_pos], dtype=torch.int32)
+        m_full, m_slide = build_masks(wrapper, 1, dec_nkp)
+        pos_dec = torch.tensor([[cached_pos]], dtype=torch.int32)
         with torch.no_grad():
             logits, *kv_flat = wrapper(
-                next_token, mask_dec, None, kv,
-                torch.tensor([cached_len - 1], dtype=torch.long), None, None)
+                next_token, m_full, m_slide, pos_dec, kv, dec_nkp,
+                None, None, None, None, None)
         kv = reconstruct_kv(kv_flat)
         if return_logits:
             logits_list.append((f"decode{i+1}", logits.clone()))

@@ -57,6 +57,7 @@ struct GraphBuildContext {
   std::unordered_set<std::string> deferred_nz_transpose_x2_ops;
   std::unordered_map<std::string, std::pair<std::string, bool>> nz_transpose_passthrough;
   std::vector<DeferredOutputBinding> deferred_outputs;
+  std::vector<std::string> tap_names;  // 要 tap 到 graph 输出的中间 FX tensor 名
 };
 
 struct GraphPlanningDeps {
@@ -1876,6 +1877,19 @@ bool FinalizeGraph(GraphBuildContext &ctx, const EpairModelParser &parser, Valid
            GetNodeNameForLog(output->producer).c_str(), output->output_index);
     outputs.push_back({output->producer, output->output_index});
   }
+  // Tap: 把指定中间 FX tensor 加成 graph 额外输出 (经 ValueRegistry alias 解析; 保活中间值供 OM 逐算子比对)
+  for (const auto &tap_name : ctx.tap_names) {
+    const RegisteredValue *tapped = ctx.registry.Resolve(tap_name);
+    if (tapped == nullptr) {
+      TDLOGE("FinalizeGraph tap not found: tensor_name=%s (确认是 FX 输出 tensor 名; 多输出 node 用 name_0)",
+             tap_name.c_str());
+      AddError(result, "TAP_NOT_FOUND", "Tap output tensor not found in registry", tap_name);
+      return false;
+    }
+    TDLOGI("FinalizeGraph tap: %s -> producer_node=%s, producer_index=%d", tap_name.c_str(),
+           GetNodeNameForLog(tapped->producer).c_str(), tapped->output_index);
+    outputs.push_back({tapped->producer, tapped->output_index});
+  }
   if (ctx.graph->SetOutputs(outputs) != ge::GRAPH_SUCCESS) {
     TDLOGE("FinalizeGraph failed: SetOutputs error, output_count=%zu", outputs.size());
     AddError(result, "SET_GRAPH_OUTPUT_FAILED", "Failed to bind graph outputs");
@@ -1941,6 +1955,7 @@ std::unique_ptr<ge::Graph> GeGraphBuilder::Build(ValidationResult &result) {
   }
 
   GraphBuildContext ctx("epair_graph");
+  ctx.tap_names = tap_outputs_;
 
   TDLOGI("Build stage: PrepareContext");
   if (!PrepareContext(ctx, result)) {

@@ -6,8 +6,10 @@
 #include "ge/ge_ir_build.h"
 #include "torch_delegate/epair_model_loader.h"
 #include "reg_register.h"
+#include <cctype>
 #include <iostream>
 #include <string>
+#include <vector>
 #include <cstdlib>
 #include <filesystem>
 
@@ -20,6 +22,25 @@ void PrintStage(size_t index, size_t total, const std::string &name) {
   std::cout << kStageSep << std::endl;
   std::cout << " [" << index << "/" << total << "] " << name << std::endl;
   std::cout << kStageSep << std::endl;
+}
+
+// Split a tap list value by ';' or ',' (trim whitespace). 支持 --tap "a;b;c" / --tap=a,b / 多次 --tap 混用.
+std::vector<std::string> SplitTapList(const std::string &s) {
+  std::vector<std::string> out;
+  std::string cur;
+  auto flush = [&out, &cur]() {
+    size_t b = 0, e = cur.size();
+    while (b < e && std::isspace(static_cast<unsigned char>(cur[b]))) ++b;
+    while (e > b && std::isspace(static_cast<unsigned char>(cur[e - 1]))) --e;
+    if (e > b) out.push_back(cur.substr(b, e - b));
+    cur.clear();
+  };
+  for (char c : s) {
+    if (c == ';' || c == ',') flush();
+    else cur.push_back(c);
+  }
+  flush();
+  return out;
 }
 
 std::map<ge::AscendString, ge::AscendString> GlobalOptionsWithSoc(const std::string &soc_version) {
@@ -59,18 +80,56 @@ std::string DeriveOutputName(const std::string &model_json_path) {
 }  // namespace
 
 int main(int argc, char *argv[]) {
-  if (argc < 3) {
+  // 解析: --tap "a;b;c" (单条 flag, ;/, 分隔) + 位置参数 [model_json] [weights_index] [output_name]
+  std::vector<std::string> tap_outputs;
+  std::vector<std::string> positional;
+  bool tap_seen = false;
+  for (int i = 1; i < argc; ++i) {
+    std::string arg = argv[i];
+    if (arg == "--tap" || arg.rfind("--tap=", 0) == 0) {
+      if (tap_seen) {
+        std::cerr << "[ERROR] multiple --tap not allowed; use ONE --tap with ';' / ',' separated list,"
+                  << " e.g. --tap \"mm;add_1\"" << std::endl;
+        return -1;
+      }
+      tap_seen = true;
+      std::string val;
+      if (arg == "--tap") {
+        if (i + 1 >= argc) {
+          std::cerr << "[ERROR] --tap requires a tensor name list (e.g. --tap \"mm;add_1\")" << std::endl;
+          return -1;
+        }
+        val = argv[++i];
+      } else {
+        val = arg.substr(6);
+      }
+      std::vector<std::string> parts = SplitTapList(val);
+      if (parts.empty()) {
+        std::cerr << "[ERROR] --tap has no valid names after splitting (e.g. --tap \"mm;add_1\")" << std::endl;
+        return -1;
+      }
+      tap_outputs = std::move(parts);
+    } else {
+      positional.push_back(arg);
+    }
+  }
+
+  if (positional.size() < 2) {
     std::cerr << "[ERROR] Usage: " << argv[0]
-              << " <model_json_path> <weights_index_path> [output_name]" << std::endl;
+              << " <model_json_path> <weights_index_path> [output_name] [--tap \"<name>;<name>...\"]"
+              << std::endl;
     std::cerr << "  output_name defaults to the model_json filename stem" << std::endl;
+    std::cerr << "  --tap \"n1;n2\"  tap intermediate FX output tensors as extra graph outputs"
+              << " (ONE --tap, ';' / ',' separated; single-output node uses node.name, e.g. \"mm;add_1\")"
+              << std::endl;
     return -1;
   }
 
   constexpr size_t kTotalStages = 3;
-  const char *model_json_path = argv[1];
-  const char *weights_index_path = argv[2];
+  const std::string model_json_path = positional[0];
+  const std::string weights_index_path = positional[1];
   const std::string output_name =
-      (argc >= 4) ? std::string(argv[3]) : DeriveOutputName(model_json_path);
+      (positional.size() >= 3) ? positional[2] : DeriveOutputName(model_json_path);
 
   // [1/3] Load epair and build GE Graph
   PrintStage(1, kTotalStages, "Load epair and build GE Graph");
@@ -93,7 +152,12 @@ int main(int argc, char *argv[]) {
     std::cerr << "[ERROR] aclgrphBuildInitialize failed, status: " << init_status << std::endl;
     return -1;
   }
-  td::EpairModelLoader loader(model_json_path, weights_index_path);
+  td::EpairModelLoader loader(model_json_path.c_str(), weights_index_path.c_str(), tap_outputs);
+  if (!tap_outputs.empty()) {
+    std::cout << "[INFO] tap outputs (" << tap_outputs.size() << "):";
+    for (const auto &t : tap_outputs) std::cout << " " << t;
+    std::cout << std::endl;
+  }
   std::cout << "[PASS] EpairModelLoader constructed" << std::endl;
 
   // [2/3] Extract GE Graph (also validates initialization)

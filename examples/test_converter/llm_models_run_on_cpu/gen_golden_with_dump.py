@@ -155,10 +155,16 @@ def gen_golden_with_dump(
 
     input_names = _get_input_names(wrapper)
 
-    print(f"[2/4] DumpInterpreter: {len(list(gm.graph.nodes))} FX nodes")
+    print(f"[2/4] {'DumpInterpreter' if dump_intermediates else 'forward (no-intermediates)'}: "
+          f"{len(list(gm.graph.nodes))} FX nodes")
     with torch.no_grad():
-        interp = DumpInterpreter(gm)
-        output = interp.run(*sample_inputs)
+        if dump_intermediates:
+            interp = DumpInterpreter(gm)
+            output = interp.run(*sample_inputs)
+        else:
+            # --no-intermediates: 直接跑图, 不 capture 中间 (DumpInterpreter 会把所有 node 输出
+            # 存 self.dump, seq 大时 OOM; 无需中间时跳过 capture, 只取最终 output)
+            output = gm(*sample_inputs)
 
     meta: dict[str, Any] = {
         "model_type": model_type,

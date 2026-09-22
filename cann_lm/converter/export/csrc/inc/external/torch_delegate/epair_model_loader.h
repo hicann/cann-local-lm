@@ -1,6 +1,8 @@
 #pragma once
 
 #include <memory>
+#include <string>
+#include <vector>
 
 #include <graph/graph.h>
 
@@ -34,6 +36,15 @@ class EpairModelLoader {
    * @note 构造过程会解析模型 JSON 和权重，构建 GE Graph，但不执行编译。
    */
   EpairModelLoader(const char *model_json_path, const char *weights_index_path);
+
+  /**
+   * @brief 同上，但额外指定要 tap 到 graph 输出的中间 FX tensor 名列表。
+   * @param tap_outputs 要暴露为 graph 额外输出的 FX 输出 tensor 名（单输出 node 用 node.name，
+   *   如 "mm"/"add_1"；多输出 node 用 "name_0"）。FinalizeGraph 经 ValueRegistry alias
+   *   解析到对应 GE GNode，append 到 graph outputs。保活中间值供 OM 逐算子比对。
+   */
+  EpairModelLoader(const char *model_json_path, const char *weights_index_path,
+                   const std::vector<std::string> &tap_outputs);
 
   ~EpairModelLoader();
 

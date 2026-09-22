@@ -149,6 +149,164 @@ export LD_LIBRARY_PATH=/mnt/workspace/CANN-LM_5883/build:${LD_LIBRARY_PATH:-}
 
 > 简化发现：① **无需重建 `build_kx`**——`build/cann_lm_compile`（0715 链）+ `LD_LIBRARY_PATH` 覆盖到 cann-kirinx90/lib64，运行时加载新 weekly（≥20260909）libruntime 接受 `rtSetSocVersion(KirinX90)`，0715 二进制与 cann-kirinx90 库 ABI 兼容直接编通；② **无需 A7 sitecustomize**——本机 torch_npu 在 Python 3.11.4，而 GE 嵌入的 libpython 是 3.12.9，不会加载 3.11.4 的 torch_npu，无双重 GE 堆损坏（teardown 的 ASAN leak summary 在 `.omc` 写出之后，良性）。
 
+## golden 参考数据生成（`gen_golden_with_dump.py`）
+
+`examples/test_converter/llm_models_run_on_cpu/gen_golden_with_dump.py`：用 `torch.export` + `DumpInterpreter`（`torch.fx.Interpreter`）在 CPU eager 跑 wrapper，dump **每个 FX node 的输出**为 `.bin`，作为逐算子精度比对的"标准答案"（golden）。OM 编译后是二进制读不出中间值，需配合 `cann_lm_compile --tap`（见下节）把指定中间值暴露成 OM 输出，再跟 golden 的 `node_<name>.bin` 比 maxdiff。
+
+> 走的是 **wrapper 入口**（`Gemma4ExportWrapper`/`Qwen3_5ExportWrapper` 的 forward → `_drive_layers` → 直接驱动层），跟 converter 导出 + OM 编译是同一张图（不是 raw `model.forward`），所以 golden 的 `node_*.bin` 与 OM 逐算子可比对。
+
+### 用法
+
+```bash
+# converter env (① CPU venv + torchair, 无 NPU)
+source scripts/set_env_export.sh
+export TORCH_DEVICE_BACKEND_AUTOLOAD=0
+
+python examples/test_converter/llm_models_run_on_cpu/gen_golden_with_dump.py \
+  --model-type {gemma4|qwen3_5} \
+  --hf-path <HF 模型目录> \
+  --output-dir <输出目录> \
+  [--seq-len N] [--dtype D] [--num-layers N] [--no-embeddings] [--no-intermediates] [--seed N]
+```
+
+| 选项 | 默认 | 说明 |
+|---|---|---|
+| `--model-type` | 必填 | `gemma4` / `qwen3_5`（决定 `load_model` → `wrapper_cls`）|
+| `--hf-path` | 必填 | HF 模型目录（safetensors 权重 + config）|
+| `--output-dir` | 必填 | golden 产物目录 |
+| `--seq-len` | 128 | prefill 序列长（**须与 OM 契约一致**）|
+| `--dtype` | float16 | `float16`/`fp16`/`bfloat16`/`bf16`/`float32`/`fp32`（**须与 OM 一致**，见下）|
+| `--num-layers` | all | 截断到 N 层（**须与 OM 的层数一致**）|
+| `--no-embeddings` | off | input_ids 入图（默认 embeddings 外置，匹配 converter 导出流）|
+| `--no-intermediates` | off | 只存输入+最终输出，不 dump 中间 `node_*.bin`（大 seq 省内存，见下）|
+| `--seed` | 0 | 全局 `torch.manual_seed`，固定 `get_sample_inputs` 的随机 input_ids，使 golden 跨 run 可复现 |
+
+### 产物布局（`--output-dir` 下）
+
+```
+input_<idx>_<name>[_<j>].bin   每个 wrapper 输入 tensor（FX 输出名, 单输出 node 用 node.name）
+output_<idx>.bin               每个 graph 输出 tensor（logits + KV 等）
+node_<name>[_<j>].bin          每个 FX node 输出（--no-intermediates 跳过）
+golden_meta.json               元信息（model_type/seq_len/num_layers/dtype/seed/inputs/outputs/intermediates, 含每个 .bin 的 name/shape/dtype）
+```
+
+### 关键约束
+
+1. **dtype 须与 OM 一致**：OM 是 `DT_FLOAT16` 就用 `--dtype float16`；OM 是 `DT_BFLOAT16` 就用 `--dtype bfloat16`。用 `atc --mode=1` 看 OM 的 `input_desc.dtype` 确认。gemma4 模型原生 bf16，但有的 OM 用 fp16 导出（如 `gemma4_1layer_prefill.omc` 是 `DT_FLOAT16`）→ golden 必须 `--dtype float16` 才数值路径一致。bfloat16 tensor 存盘时无损上转 float32（numpy 不支持 bf16），meta 顶层 `dtype` 记模型 dtype（`torch.bfloat16`），per-tensor `dtype` 记存盘 dtype（`float32`），比对时两边都上转 float32 即可。
+
+2. **seq_len / num_layers 须与 OM 一致**：golden 的输入 shape 必须跟 OM 的 `input_desc.shape` 逐维对齐（mask/pos/embeddings/PLE/KV 的 seq 维 + KV 层数）。用 `atc --mode=1` 拿 OM 的 9 个 Data 输入 shape 对照生成参数。
+
+3. **`--seed` 可复现**：`get_sample_inputs` 用 `torch.randint` 生成 input_ids（无 seed 每次不同），`--seed 0` 固定后跨 run golden 逐位一致（logits + 所有 node `.bin` 全等）。
+
+4. **`--no-intermediates` 省内存**：默认 `DumpInterpreter` 把**所有** node 输出 capture 到内存（`self.dump`），大 seq（如 128）会 OOM；`--no-intermediates` 时改走 `gm(*sample_inputs)` 直接跑图（不 capture 中间），只存输入+最终输出，大 seq 不爆内存。要逐算子比对仍需中间时，用小 seq（如 8）跑全量 golden，或分批 tap。
+
+### 示例
+
+```bash
+# qwen3.5 5层 fp16 seq8（全量 golden, 含中间, 小 seq 不爆内存）
+python gen_golden_with_dump.py --model-type qwen3_5 \
+  --hf-path /mnt/workspace/models/Qwen/Qwen3.5-0.8B \
+  --seq-len 8 --num-layers 5 --dtype float16 --seed 0 \
+  --output-dir out/golden_qwen35_5l
+
+# gemma4 6层 bf16 seq8（全量 golden; bf16 无损上转 float32 存盘）
+python gen_golden_with_dump.py --model-type gemma4 \
+  --hf-path /mnt/workspace/models/unsloth/gemma-4-E2B-it \
+  --seq-len 8 --num-layers 6 --dtype bfloat16 --seed 0 \
+  --output-dir out/golden_gemma4_6l
+
+# gemma4 1层 fp16 seq128 对齐 gemma4_1layer_prefill.omc（只输入+输出, 大 seq 用 --no-intermediates 避 OOM）
+python gen_golden_with_dump.py --model-type gemma4 \
+  --hf-path /mnt/workspace/models/unsloth/gemma-4-E2B-it \
+  --seq-len 128 --num-layers 1 --dtype float16 --seed 0 --no-intermediates \
+  --output-dir out/golden_gemma4_1l_seq128
+```
+
+> golden 的 `node_<name>.bin` 文件名 = FX node name（单输出 node 与输出 tensor 名一致），直接作为 `cann_lm_compile --tap` 的 tap 名（去 `node_` 前缀和 `.bin` 后缀），见下节。
+
+## tap 中间算子到 OM/OMC 输出（逐算子精度比对）
+
+`cann_lm_compile` 支持 `--tap`：把任意中间 FX 输出 tensor 暴露成 graph 额外输出，编译进 OM/OMC。用途：OM 编译后是二进制读不出中间值，`--tap` 让指定中间值成为 OM 输出 → 跑 OM 拿 tapped output → 跟 golden 的 `node_<name>.bin`（`gen_golden_with_dump.py` dump 的逐 FX node 输出）比 maxdiff，定位精度偏差点。对 Ascend `.om` 和 Kirin `.omc` 均适用。
+
+### 用法
+
+```bash
+cann_lm_compile <model_json> <weights_index> [output_name] --tap "<name1>;<name2>;..."
+# 或 --tap=<name1>;<name2>  (= 形式)
+#   - 单条 --tap, 多个名字用 ';' 或 ',' 分隔（自动 trim 空格）
+#   - 多个 --tap flag 会报错（"multiple --tap not allowed"），只能一条
+#   - 空列表（--tap ";"）报错 "no valid names"
+```
+
+### tap 名是什么
+
+**FX 输出 tensor 名**（不是 FX 算子类型如 `aten.mm`，也不是 GE 算子名如 `MatMul`）：
+- 单输出 FX node：用 **node.name**（FX 自动命名，如 `mm`、`add_1`、`add_2`）。
+- 多输出 node（返回 tuple）：用 `name_0`/`name_1`（不是 `node.name`）。
+
+解析路径：`EpairModelLoader` 3 参构造收 tap 列表 → `GeGraphBuilder::SetTapOutputs` → `FinalizeGraph`（`ge_graph_builder.cc`）对每个名调 `ValueRegistry.Resolve(name)`，经 `ascend_ir.mapping.outputs`（converter 侧算好的 FX→GE 边界映射）的 alias 解析到 `{GE GNode, output_index}`，append 到 graph outputs（原输出之后），再 `graph->SetOutputs`。找不到报 `TAP_NOT_FOUND`（确认名是 FX 输出 tensor 名；多输出用 `name_0`）。
+
+> 名字来源：导出 epair 后看 `ep_json_with_ascend_ir.json` 里 `graph_module.graph.nodes[i].outputs[0].as_tensor.name`（即 FX node 输出名）；或直接看 golden 的 `out/golden_*/node_<name>.bin` 文件名（`gen_golden_with_dump.py` 用 `DumpInterpreter` 抓的 FX node name，单输出 node 与输出 tensor 名一致）。
+
+### 验证（simple_network）
+
+```bash
+# 1 个原输出 add_2 + tap mm + tap add_1 → OM 应有 3 个输出
+cann_lm_compile epair_model/ep_json_with_ascend_ir.json epair_model/weight_info.json \
+  epair_model/simple_tap --tap "mm;add_1"
+# → simple_tap.om, [PASS] aclgrphBuildModel succeeded (GE 接受带 tap 的图)
+
+# 验证 OM 输出数（atc --mode=1 看 NetOutput 节点的 input 数 = graph 输出数）
+atc --mode=1 --om=epair_model/simple_tap.om --json=/tmp/simple_tap.json
+python -c "import json; g=json.load(open('/tmp/simple_tap.json'))['graph'][0]; \
+  no=[o for o in g['op'] if o.get('type')=='NetOutput'][0]; \
+  print('outputs:', len(no['input']))"   # → 3 (add_2 + mm + add_1 两个 tap)
+```
+
+无 tap 对照：`simple.om` 的 `NetOutput` 输入数 = 1（仅 `add_2`）。带 `--tap "mm;add_1"` = 3，正好 +2 = 两个 tap。GE 会给 tap 输出自动加 TransData/Cast 做格式转换（输出名变 `trans_Cast_*`），但 tensor 就是 tap 的中间值；被 tap 的中间值不会被 GE 死代码消除（保活），这正是逐算子比对的前提。
+
+### 验证（真实模型 gemma4_1layer prefill，kirinx90 .omc）
+
+`examples/test_converter/export_llm_model/output/gemma4_1layer/` 的 1 层 gemma4 prefill，在 `scatter_nd_update`（KV cache 更新 ×2）+ `FIA`（FusedInferAttentionScore）算子后加 tap：
+
+```bash
+# tap 名（FX 输出 tensor 名）→ GE 算子（ascend_ir.mapping.outputs 的 FX→GE 映射）:
+#   npu_scatter_nd_update   → ScatterNdUpdate:0            (KV cache K 更新结果)
+#   npu_scatter_nd_update_1 → ScatterNdUpdate_1:0          (KV cache V 更新结果)
+#   getitem_10              → FusedInferAttentionScore:0   (FIA attention 输出)
+
+# kirinx90 env (清多 CANN 污染 + source cann-kirinx90 + LD 覆盖 + A5 libpython + cd 输出目录避 onlinec 跨设备)
+unset ASCEND_HOME_PATH ASCEND_OPP_PATH ASCEND_TOOLKIT_HOME ASCEND_AICPU_PATH TOOLKIT_HOME \
+      TOOLCHAIN_HOME CMAKE_PREFIX_PATH LD_LIBRARY_PATH SOC_VERSION GE_FUSION_SWITCH_FILE \
+      GE_EXTERNAL_WEIGHT ASCEND_VISIBLE_DEVICES DEVICE PYTHONPATH
+source /mnt/workspace/cann-kirinx90/cann-9.3.0/set_env.sh
+export SOC_VERSION=KirinX90; unset GE_FUSION_SWITCH_FILE; export GE_EXTERNAL_WEIGHT=0
+export LD_LIBRARY_PATH=$PROJECT_ROOT/build:/opt/buildtools/python-3.12.9/lib:${LD_LIBRARY_PATH}
+cd examples/test_converter/export_llm_model/output/gemma4_1layer   # A6: onlinec→.omc rename 同目录同设备
+
+$PROJECT_ROOT/build/cann_lm_compile prefill_ep_json_with_ascend_ir.json weight_info.json \
+  gemma4_1layer_prefill_tap --tap "npu_scatter_nd_update;npu_scatter_nd_update_1;getitem_10"
+# → [INFO] tap outputs (3): npu_scatter_nd_update npu_scatter_nd_update_1 getitem_10
+#   [PASS] aclgrphBuildModel succeeded  [PASS] mobile model path: renamed onlinec -> gemma4_1layer_prefill_tap.omc
+#   All 3 stages passed  →  gemma4_1layer_prefill_tap.omc (1.1 GB, 内嵌权重)
+
+# 验证 OM 输出数（atc --mode=1 看 NetOutput input 数 = graph 输出数）
+atc --mode=1 --om=gemma4_1layer_prefill_tap.omc --json=/tmp/opencode/tap.json
+python -c "import json; g=json.load(open('/tmp/opencode/tap.json'))['graph'][0]; \
+  no=[o for o in g['op'] if o.get('type')=='NetOutput'][0]; print('outputs:', len(no['input']))"
+# → 6  (原 3: logits+2KV  +  3 tap: 2×scatter_nd_update + FIA)
+```
+
+无 tap 对照：`gemma4_1layer_prefill.omc` 的 `NetOutput` 输入数 = 3（logits + 2 KV）。带 `--tap "npu_scatter_nd_update;npu_scatter_nd_update_1;getitem_10"` = 6，正好 +3 = 三个 tap。跑此 omc 即得原 3 输出 + KV 更新结果 ×2 + FIA attention 输出，供逐算子跟 golden 比对。
+
+> tap 名来源：导出 epair 后 `python -c "import json; j=json.load(open('prefill_ep_json_with_ascend_ir.json')); [print(n['outputs'][0]['as_tensor']['name'], n['target']) for n in j['graph_module']['graph']['nodes']]"` 列 FX node 输出名 + target，挑 scatter/FIA 节点的输出名。或直接看 golden `out/golden_*/node_*.bin` 文件名。
+
+### 与 golden 联动
+
+跑 `gen_golden_with_dump.py` 生成 golden（`out/golden_<model>/`，含 `node_<name>.bin` 逐 FX node 输出）→ 用 `--tap` 编译同名中间值进 OM → 跑 OM 拿 tapped output → `np.fromfile` 读两边 `.bin` 比 maxdiff。tap 名直接取 golden 目录下 `node_*.bin` 的文件名（去掉 `node_` 前缀和 `.bin` 后缀），即 FX node name，一一对应。
+
+> `--tap` 的完整实现见 `cann_lm/converter/export/csrc/`：`tools/compile_main.cc`（CLI 解析 + `SplitTapList`）、`backend/ge_graph_builder.cc`（`FinalizeGraph` tap 解析循环）、`inc/external/torch_delegate/epair_model_loader.h`（3 参构造重载）。`csrc/tools/README.md` 有 cann_lm_compile 的完整选项（环境变量、权值分离、`.air` 保存等）。
+
 ## 规避清单
 
 ### A. toolkit/环境层

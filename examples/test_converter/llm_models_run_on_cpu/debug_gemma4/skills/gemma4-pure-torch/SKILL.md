@@ -534,7 +534,7 @@ def load_gemma4_weights(model: Gemma4ForCausalLM, model_path: str, device: str =
 
 ### 第 10 步：推理脚本
 
-创建 `CANN-LM-py/run_gemma4.py`，参考 `run_qwen3_5.py` 的模式：
+创建 `CANN-LM-py/run_gemma4.py`，参考 `verify_qwen3_5_vs_hf.py` 的模式：
 
 ```python
 """Gemma-4 inference using local CANN-LM-py/models/gemma4/ model definition."""

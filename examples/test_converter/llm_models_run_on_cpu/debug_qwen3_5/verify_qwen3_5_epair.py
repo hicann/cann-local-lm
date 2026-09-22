@@ -181,12 +181,13 @@ def generate_ep(ep, wrapper, sample_inputs, input_ids, num_steps, dtype, eos_set
         if next_token.item() in eos_set:
             break
         cached_len = real_seq_len + len(tokens) - 1
+        dec_nkp = torch.tensor([cached_len], dtype=torch.int32)  # scatter-write 位置 (key 固定 kv_max, 对齐 mask kv 维)
         mask_dec = torch.zeros(1, 1, 1, KV_CACHE_MAX_LEN, dtype=dtype)
         if cached_len + 1 < KV_CACHE_MAX_LEN:
             mask_dec[:, :, :, cached_len + 1:] = min_val
         pos_dec = torch.tensor([[cached_len]], dtype=torch.long)
         with torch.no_grad():
-            logits_cur, *kv_flat_ep = wrapper(next_token, mask_dec, pos_dec, kv_ep, None, None, None)
+            logits_cur, *kv_flat_ep = wrapper(next_token, mask_dec, pos_dec, kv_ep, dec_nkp, None, None)
         kv_ep = reconstruct_kv(kv_flat_ep)
     return tokens
 

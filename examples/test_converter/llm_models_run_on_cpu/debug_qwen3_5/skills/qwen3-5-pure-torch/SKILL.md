@@ -710,17 +710,13 @@ else:
 
 | 脚本 | 用途 |
 |------|------|
-| `cann_lm/models/run_qwen3_5.py` | 纯 torch 模型 + HF tokenizer 出字 |
 | `cann_lm/models/qwen3_5/verify_qwen3_5_vs_hf.py` | 与 HF `Qwen3_5ForCausalLM` 逐 token 对拍（float32 + eager） |
 | `cann_lm/hf_cpu.py` | 禁用 transformers 的 torch_npu probe（本环境必做，先于 `from transformers import`） |
 
 ```bash
-# 出字
-cd cann_lm/models && TORCH_DEVICE_BACKEND_AUTOLOAD=0 python3 run_qwen3_5.py \
-    --model /path/to/qwe3.5-0.8B --greedy --max-new-tokens 64
-# 对拍
+# 对拍 (含 greedy 出字)
 cd cann_lm/models/qwen3_5 && TORCH_DEVICE_BACKEND_AUTOLOAD=0 python3 verify_qwen3_5_vs_hf.py \
-    --model /path/to/qwe3.5-0.8B
+    --model /path/to/qwen3.5-0.8B
 ```
 
 ### 验证结果（0.8B，float32 + eager）

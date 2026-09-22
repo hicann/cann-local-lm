@@ -1,26 +1,24 @@
 #!/usr/bin/env python3
-"""验证 qwen3.5 多轮对话: 跨轮 KV/delta_cache 累积 (cann + wrapper + chunk)
+"""验证 qwen3.5 多轮对话: 跨轮上下文 (cann/wrapper + chunk + vs HF)
 
-多轮对话流程:
-  第1轮: chat_template(user1 + gen) → input_ids1 → prefill → KV1 + delta1 → decode assistant1
-  第2轮: chat_template(user1 + assistant1 + user2 + gen) → input_ids2
-          new = input_ids2[prev_len:] (历史在 KV1) → prefill(past=KV1, delta=delta1) → KV2 + delta2 → decode assistant2
-  ...
-
-跨轮: KV + delta_cache 累积 (不重算历史), chunk prefill 可选.
+多轮对话: 每轮独立 prefill(含历史, 重算) + decode. 上下文对(input_ids 含历史), KV/delta 不跨轮.
+qwen3.5 混合架构: full_attention SimpleKVCache + linear_attention delta_cache.
+attention_mask=None: model._create_causal_mask 自动用 past_len 算 total_len.
 
 模式:
   --mode cann (默认): cann_lm model.forward (cat KV + delta_cache)
-  --mode wrapper      : Qwen3_5ExportWrapper.forward (delta_cache box 持久)
+  --mode wrapper      : Qwen3_5ExportWrapper.forward (delta box 持久)
+
+固定: chat_template + bfloat16
 
 用法:
-  python verify_qwen3_5_multiturn.py                            # cann, 2 轮, 非 chunk
+  python verify_qwen3_5_multiturn.py                            # cann, 3 轮, 非 chunk
   python verify_qwen3_5_multiturn.py --mode wrapper             # wrapper
   python verify_qwen3_5_multiturn.py --chunk-size 4             # chunk prefill
-  python verify_qwen3_5_multiturn.py --num-turns 3 --num-steps 16
-  python verify_qwen3_5_multiturn.py --prompts "你好||介绍下AI||谢谢"
+  python verify_qwen3_5_multiturn.py --vs-hf --num-steps 16
+  python verify_qwen3_5_multiturn.py --prompts "你好||刚才我说了什么？||介绍AI"
 
-环境变量 (先 source 基底, 详见 verify_qwen3_5_all.py docstring):
+环境变量 (先 source 基底):
   source ../../../../scripts/set_env_export.sh   # 或 source ../check_env.sh
   export QWEN3_5_HF_PATH=<qwen3.5 model dir>    # 必填
 """
@@ -40,67 +38,66 @@ from cann_lm.models.qwen3_5 import Qwen3_5ForCausalLM, Qwen3_5TextConfig, load_q
 from cann_lm.models.qwen3_5.export_wrapper import Qwen3_5ExportWrapper
 
 HF_PATH = os.environ["QWEN3_5_HF_PATH"]
-DEFAULT_PROMPTS = ["你好", "刚才我说了什么？", "介绍一下人工智能"]
+DEFAULT_TURNS = ["你好", "刚才我说了什么？", "介绍一下人工智能"]
 
 
 def reconstruct_kv(flat_kv):
     return [(flat_kv[i], flat_kv[i + 1]) for i in range(0, len(flat_kv), 2)]
 
 
+def load_cann_model(hf_path, dtype):
+    config = Qwen3_5TextConfig.from_pretrained(hf_path)
+    model = Qwen3_5ForCausalLM(config).to(dtype=dtype).eval()
+    model = load_qwen3_5_weights(model, hf_path, device="cpu", dtype=dtype)
+    return model, config
+
+
+def encode_prompt(tokenizer, messages):
+    text = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+    return tokenizer(text, return_tensors="pt")["input_ids"]
+
+
 # ──────────────────────────────────────────────
-# cann 模式: model.forward (cat KV + delta_cache 跨轮累积)
+# cann: model.forward (cat KV + delta_cache)
 # ──────────────────────────────────────────────
 
-def prefill_cann(model, new_tokens, kv, delta, dtype, chunked=False, chunk_size=8):
-    """prefill new_tokens (chunked or not), 累积 KV + delta. 返回 (logits, kv, delta)."""
-    new_seq = new_tokens.shape[1]
-    logits = None
+def prefill_cann(model, input_ids, kv, delta, chunked=False, chunk_size=8):
     if chunked:
-        num_chunks = (new_seq + chunk_size - 1) // chunk_size
-        for ci in range(num_chunks):
-            s = ci * chunk_size
-            e = min(s + chunk_size, new_seq)
-            chunk = new_tokens[:, s:e]
+        seq_len = input_ids.shape[1]
+        for ci in range((seq_len + chunk_size - 1) // chunk_size):
+            s, e = ci * chunk_size, min((ci + 1) * chunk_size, seq_len)
             with torch.no_grad():
-                out = model(input_ids=chunk, attention_mask=None,
+                out = model(input_ids=input_ids[:, s:e], attention_mask=None,
                             past_key_values=kv, delta_states=delta, use_cache=True)
-            logits = out["logits"]
-            kv = out["past_key_values"]
-            delta = out["delta_cache"]
+            logits, kv, delta = out["logits"], out["past_key_values"], out["delta_cache"]
     else:
         with torch.no_grad():
-            out = model(input_ids=new_tokens, attention_mask=None,
+            out = model(input_ids=input_ids, attention_mask=None,
                         past_key_values=kv, delta_states=delta, use_cache=True)
-        logits = out["logits"]
-        kv = out["past_key_values"]
-        delta = out["delta_cache"]
+        logits, kv, delta = out["logits"], out["past_key_values"], out["delta_cache"]
     return logits, kv, delta
 
 
-def generate_multiturn_cann(model, tokenizer, prompts, num_steps, dtype, chunked=False, chunk_size=8):
-    """每轮独立 prefill (含历史, 重算) + decode. 上下文对 (input_ids 含历史), KV/delta 不跨轮."""
-    messages = []
-    results = []
-    for turn, prompt in enumerate(prompts):
+def decode_cann(model, logits, kv, delta, num_steps):
+    tokens = []
+    for _ in range(num_steps):
+        next_token = torch.argmax(logits[:, -1, :], dim=-1, keepdim=True)
+        tokens.append(next_token.item())
+        with torch.no_grad():
+            out = model(input_ids=next_token, attention_mask=None,
+                        past_key_values=kv, delta_states=delta, use_cache=True)
+        logits, kv, delta = out["logits"], out["past_key_values"], out["delta_cache"]
+    return tokens
+
+
+def run_multiturn_cann(model, tokenizer, prompts, num_steps, chunked=False, chunk_size=8):
+    """每轮独立 prefill(含历史, 重算) + decode. 上下文对(input_ids 含历史), KV/delta 不跨轮."""
+    messages, results = [], []
+    for prompt in prompts:
         messages.append({"role": "user", "content": prompt})
-        text = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-        input_ids = tokenizer(text, return_tensors="pt")["input_ids"]
-
-        # 每轮独立 prefill (含完整历史, past=None, delta=None)
-        logits, kv, delta = prefill_cann(model, input_ids, None, None, dtype, chunked, chunk_size)
-
-        # decode
-        tokens = []
-        for _ in range(num_steps):
-            next_token = torch.argmax(logits[:, -1, :], dim=-1, keepdim=True)
-            tokens.append(next_token.item())
-            with torch.no_grad():
-                out = model(input_ids=next_token, attention_mask=None,
-                            past_key_values=kv, delta_states=delta, use_cache=True)
-            logits = out["logits"]
-            kv = out["past_key_values"]
-            delta = out["delta_cache"]
-
+        input_ids = encode_prompt(tokenizer, messages)
+        logits, kv, delta = prefill_cann(model, input_ids, None, None, chunked, chunk_size)
+        tokens = decode_cann(model, logits, kv, delta, num_steps)
         text_out = tokenizer.decode(tokens, skip_special_tokens=True)
         messages.append({"role": "assistant", "content": text_out})
         results.append((prompt, text_out))
@@ -108,49 +105,44 @@ def generate_multiturn_cann(model, tokenizer, prompts, num_steps, dtype, chunked
 
 
 # ──────────────────────────────────────────────
-# wrapper 模式: Qwen3_5ExportWrapper.forward (delta_cache box 持久)
+# wrapper: Qwen3_5ExportWrapper.forward (flat KV + delta box 持久)
 # ──────────────────────────────────────────────
 
-def prefill_wrapper(wrapper, new_tokens, kv, dtype, chunked=False, chunk_size=8):
-    """wrapper prefill (flat KV + delta box). 返回 (logits, kv)."""
-    new_seq = new_tokens.shape[1]
-    logits = None
+def prefill_wrapper(wrapper, input_ids, kv, chunked=False, chunk_size=8):
     if chunked:
-        num_chunks = (new_seq + chunk_size - 1) // chunk_size
-        for ci in range(num_chunks):
-            s = ci * chunk_size
-            e = min(s + chunk_size, new_seq)
-            chunk = new_tokens[:, s:e]
+        seq_len = input_ids.shape[1]
+        for ci in range((seq_len + chunk_size - 1) // chunk_size):
+            s, e = ci * chunk_size, min((ci + 1) * chunk_size, seq_len)
             with torch.no_grad():
-                logits, *kv_flat = wrapper(chunk, None, None, kv, None, None, None)
+                logits, *kv_flat = wrapper(input_ids[:, s:e], None, None, kv, None, None, None)
             kv = reconstruct_kv(kv_flat)
     else:
         with torch.no_grad():
-            logits, *kv_flat = wrapper(new_tokens, None, None, kv, None, None, None)
+            logits, *kv_flat = wrapper(input_ids, None, None, kv, None, None, None)
         kv = reconstruct_kv(kv_flat)
     return logits, kv
 
 
-def generate_multiturn_wrapper(wrapper, tokenizer, prompts, num_steps, dtype, chunked=False, chunk_size=8):
-    """每轮独立 prefill (含历史, 重算) + decode. wrapper delta box 每轮重置."""
-    messages = []
-    results = []
-    for turn, prompt in enumerate(prompts):
+def decode_wrapper(wrapper, logits, kv, num_steps):
+    tokens = []
+    for _ in range(num_steps):
+        next_token = torch.argmax(logits[:, -1, :], dim=-1, keepdim=True)
+        tokens.append(next_token.item())
+        with torch.no_grad():
+            logits, *kv_flat = wrapper(next_token, None, None, kv, None, None, None)
+        kv = reconstruct_kv(kv_flat)
+    return tokens
+
+
+def run_multiturn_wrapper(wrapper, tokenizer, prompts, num_steps, chunked=False, chunk_size=8):
+    """每轮独立 prefill(含历史, 重算) + decode, 每轮重置 delta box."""
+    messages, results = [], []
+    for prompt in prompts:
         messages.append({"role": "user", "content": prompt})
-        text = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-        input_ids = tokenizer(text, return_tensors="pt")["input_ids"]
-
-        wrapper._delta_cache_box[0] = None  # 每轮重置 delta
-        logits, kv = prefill_wrapper(wrapper, input_ids, None, dtype, chunked, chunk_size)
-
-        tokens = []
-        for _ in range(num_steps):
-            next_token = torch.argmax(logits[:, -1, :], dim=-1, keepdim=True)
-            tokens.append(next_token.item())
-            with torch.no_grad():
-                logits, *kv_flat = wrapper(next_token, None, None, kv, None, None, None)
-            kv = reconstruct_kv(kv_flat)
-
+        input_ids = encode_prompt(tokenizer, messages)
+        wrapper._delta_cache_box[0] = None
+        logits, kv = prefill_wrapper(wrapper, input_ids, None, chunked, chunk_size)
+        tokens = decode_wrapper(wrapper, logits, kv, num_steps)
         text_out = tokenizer.decode(tokens, skip_special_tokens=True)
         messages.append({"role": "assistant", "content": text_out})
         results.append((prompt, text_out))
@@ -161,13 +153,11 @@ def generate_multiturn_wrapper(wrapper, tokenizer, prompts, num_steps, dtype, ch
 # HF transformers (多轮, 每轮 generate 含历史)
 # ──────────────────────────────────────────────
 
-def generate_multiturn_hf(hf_model, tokenizer, prompts, num_steps):
-    messages = []
-    results = []
+def run_multiturn_hf(hf_model, tokenizer, prompts, num_steps):
+    messages, results = [], []
     for prompt in prompts:
         messages.append({"role": "user", "content": prompt})
-        text = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-        input_ids = tokenizer(text, return_tensors="pt")["input_ids"]
+        input_ids = encode_prompt(tokenizer, messages)
         with torch.no_grad():
             out = hf_model.generate(input_ids=input_ids, max_new_tokens=num_steps,
                                     do_sample=False, pad_token_id=0)
@@ -179,34 +169,22 @@ def generate_multiturn_hf(hf_model, tokenizer, prompts, num_steps):
 
 
 # ──────────────────────────────────────────────
-# model loading
-# ──────────────────────────────────────────────
-
-def load_cann_model(hf_path, dtype):
-    config = Qwen3_5TextConfig.from_pretrained(hf_path)
-    model = Qwen3_5ForCausalLM(config).to(dtype=dtype).eval()
-    model = load_qwen3_5_weights(model, hf_path, device="cpu", dtype=dtype)
-    return model, config
-
-
-# ──────────────────────────────────────────────
 # main
 # ──────────────────────────────────────────────
 
 def main():
-    parser = argparse.ArgumentParser(description="qwen3.5 多轮对话验证 (cann/wrapper + chunk)")
+    parser = argparse.ArgumentParser(description="qwen3.5 多轮对话验证 (cann/wrapper + chunk + HF)")
     parser.add_argument("--mode", choices=["cann", "wrapper"], default="cann",
                         help="cann_lm model.forward 或 Qwen3_5ExportWrapper")
     parser.add_argument("--chunk-size", type=int, default=8, help="chunk prefill size (0=非 chunk)")
     parser.add_argument("--num-steps", type=int, default=16, help="每轮 decode token 数")
-    parser.add_argument("--prompts", type=str, default=None,
-                        help="多轮 prompt, || 分隔 (默认 3 轮)")
+    parser.add_argument("--prompts", type=str, default=None, help="多轮 prompt, || 分隔 (默认 3 轮)")
     parser.add_argument("--vs-hf", action="store_true", help="加 HF transformers 多轮对比")
     args = parser.parse_args()
 
     dtype = torch.bfloat16
-    prompts = args.prompts.split("||") if args.prompts else DEFAULT_PROMPTS
     chunked = args.chunk_size > 0
+    prompts = args.prompts.split("||") if args.prompts else DEFAULT_TURNS
 
     print("[1/2] Loading model")
     model, config = load_cann_model(HF_PATH, dtype)
@@ -216,33 +194,25 @@ def main():
     wrapper = None
     if args.mode == "wrapper":
         wrapper = Qwen3_5ExportWrapper(model, kv_cache_max_len=2048, batch=1).eval()
-        print(f"  Wrapper: {wrapper.__class__.__name__}")
-    print(f"  mode: {args.mode}, chunked: {chunked} (chunk_size={args.chunk_size}), turns: {len(prompts)}")
 
     hf_model = None
     if args.vs_hf:
         from transformers import AutoModelForCausalLM
-        print("  Loading HF model (bfloat16)...")
         hf_model = AutoModelForCausalLM.from_pretrained(HF_PATH, torch_dtype=dtype).eval()
-        print(f"  HF params: {sum(p.numel() for p in hf_model.parameters()):,}")
 
     from transformers import AutoTokenizer
     tokenizer = AutoTokenizer.from_pretrained(HF_PATH)
-    print(f"  Tokenizer: {tokenizer.__class__.__name__}")
 
-    print(f"\n[2/2] 多轮对话 ({len(prompts)} turns, {args.num_steps} tokens/turn)")
+    print(f"\n[2/2] 多轮对话: {len(prompts)} turns, {args.num_steps} tokens/turn, "
+          f"mode={args.mode}, chunked={chunked} (size={args.chunk_size})")
     print(f"{'='*60}")
-
     if args.mode == "cann":
-        results = generate_multiturn_cann(model, tokenizer, prompts, args.num_steps, dtype,
-                                          chunked=chunked, chunk_size=args.chunk_size)
+        results = run_multiturn_cann(model, tokenizer, prompts, args.num_steps,
+                                     chunked=chunked, chunk_size=args.chunk_size)
     else:
-        results = generate_multiturn_wrapper(wrapper, tokenizer, prompts, args.num_steps, dtype,
-                                              chunked=chunked, chunk_size=args.chunk_size)
-
-    hf_results = None
-    if args.vs_hf:
-        hf_results = generate_multiturn_hf(hf_model, tokenizer, prompts, args.num_steps)
+        results = run_multiturn_wrapper(wrapper, tokenizer, prompts, args.num_steps,
+                                        chunked=chunked, chunk_size=args.chunk_size)
+    hf_results = run_multiturn_hf(hf_model, tokenizer, prompts, args.num_steps) if args.vs_hf else None
 
     all_match = True
     for turn, (prompt, text_out) in enumerate(results):
@@ -258,10 +228,10 @@ def main():
 
     print(f"\n{'='*60}")
     if hf_results is not None:
-        print(f"[{'PASS' if all_match else 'PARTIAL'}] {args.mode} vs HF 多轮 {'一致' if all_match else '部分不一致 (bfloat16)'}")
+        print(f"[{'PASS' if all_match else 'PARTIAL'}] {args.mode} vs HF 多轮 "
+              f"{'一致' if all_match else '部分不一致 (bfloat16)'}")
     else:
         print("[DONE] 多轮对话完成")
-    print(f"{'='*60}")
 
 
 if __name__ == "__main__":

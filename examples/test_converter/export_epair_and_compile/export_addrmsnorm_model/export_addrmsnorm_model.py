@@ -120,7 +120,7 @@ class AddRmsNormModel(nn.Module):
         super().__init__()
         # bias=False: nn.Linear 默认 bias=True 会导出成 aten.addmm -> MatMulV2，
         # 而 stub GE 的 OperatorFactory 不注册 MatMulV2；bias=False 走 aten.mm ->
-        # MatMul（已注册），与 qwen3 等已验证模型一致。
+        # MatMul（已注册），与 gemma4 等已验证模型一致。
         self.fc1 = nn.Linear(HIDDEN_DIM, HIDDEN_DIM, bias=False, dtype=torch.float32)
         self.fc2 = nn.Linear(HIDDEN_DIM, HIDDEN_DIM, bias=False, dtype=torch.float32)
         self.gamma1 = nn.Parameter(torch.ones(HIDDEN_DIM, dtype=torch.float32))

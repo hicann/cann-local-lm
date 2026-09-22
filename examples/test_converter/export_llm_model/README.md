@@ -1,6 +1,6 @@
 # export_llm_model — LLM 端到端 (HF→epair→OM→NPU 出字)
 
-三模型（gemma4 / qwen3 / qwen3.5）端到端流水线：HuggingFace 模型 → epair（torch.export + GE 转换）→ OM（aclgrphBuildModel）→ NPU 出字（acl.mdl.execute）。顶层入口 `run_e2e_pipeline.sh` 串通三阶段。
+两模型（gemma4 / qwen3.5）端到端流水线：HuggingFace 模型 → epair（torch.export + GE 转换）→ OM（aclgrphBuildModel）→ NPU 出字（acl.mdl.execute）。顶层入口 `run_e2e_pipeline.sh` 串通三阶段。
 
 > 单阶段调试/验证脚本分别在子目录：`cann_lm_cli_export/`（① CLI 导出）、`om_npu_verify/`（②③ OM 编译 + NPU 出字）。CPU 侧 PyTorch/epair 层调试与 vs HF 数值对齐见 `../llm_models_run_on_cpu/`，模型定义单元测试见 `tests/llm_models/`。
 

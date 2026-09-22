@@ -8,7 +8,7 @@ SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SELF_DIR}/../common/check_env.sh"
 echo "[check_env] llm_models_run_on_cpu 前置就绪 (NPU_MODE=$NPU_MODE, lite 无 stubs)"
 echo "  converter python : ${CONVERTER_PYTHON}"
-for v in GEMMA4_HF_PATH QWEN3_HF_PATH QWEN3_5_HF_PATH; do
+for v in GEMMA4_HF_PATH QWEN3_5_HF_PATH; do
   if [[ -n "${!v:-}" ]]; then echo "  ${v} = ${!v}"
   else echo "  [!] ${v} 未设 (加载该模型的脚本需先 export ${v}=<model dir>)"; fi
 done

@@ -312,7 +312,7 @@ cann_lm/converter/quant_entry.py        ← facade，re-export run_auto_quant + 
 | 是否根治两实例 | ✅ 根治（单 cann_lm 实例） | ❌ 仍两实例（HF vs cann_lm） | ❌ 仍两实例（subprocess 内 HF） |
 | 内存峰值 | ✅ 1× | ❌ 3-4×（cann_lm + dopt 2 份 HF + sd） | ⚠️ 2×（subprocess 内 dopt 2 份 + 主进程 cann_lm，分进程） |
 | 环境冲突 | ⚠️ 单进程但仍需 NPU | ❌ converter 进程需同时 CPU stubs(export) + NPU(GPTQ)，矛盾 | ✅ 规避（subprocess NPU/GPU/CPU，主进程 CPU stubs） |
-| 改动量 | ❌ 最大（dopt 适配三模型 + vendored diff） | ✅ 小（三处改动点） | ✅ 小（converter 加 subprocess 调用） |
+| 改动量 | ❌ 最大（dopt 适配两模型 + vendored diff） | ✅ 小（三处改动点） | ✅ 小（converter 加 subprocess 调用） |
 | dopt 代码改动 | ❌ 大（get_llama/llama_sequential/visible_type_dict） | ⚠️ 中（加 ptq_quant_produce_state_dict） | ✅ 无（复用 dopt CLI） |
 | dopt 全局状态风险 | ❌ 高（进程内 args 全局单例/重入） | ❌ 高（进程内） | ✅ 隔离（subprocess 独立） |
 | 真一步化 | ✅ 是 | ✅ 是（进程内） | ❌ 否（自动化两步，converter 触发 subprocess + swap） |

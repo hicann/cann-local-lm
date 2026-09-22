@@ -17,7 +17,6 @@ ROOT = Path(__file__).resolve().parent
 
 _MODELS = {
     "gemma4": "gemma-4-E2B-it",
-    "qwen3": "qwen3-0.6B",
     "qwen3_5": "Qwen3.5-0.8B",
 }
 
@@ -63,7 +62,7 @@ def verify(model: str) -> bool:
     if mc.exists():
         try:
             cfg = json.loads(mc.read_text())
-            sub = cfg.get("config", cfg)  # 字段在 config 子键 (qwen3) 或顶层
+            sub = cfg.get("config", cfg)  # 字段在 config 子键 (qwen3.5) 或顶层
             keys = ["model_type", "hidden_size", "num_hidden_layers", "vocab_size"]
             missing = [k for k in keys if k not in sub]
             all_ok &= _check("model_config fields", not missing,

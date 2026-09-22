@@ -2,7 +2,7 @@
 
 > 端到端:模型代码 → 注册 → 加载 → 导出 epair → C++ 编译 OM
 >
-> 以 gemma4 为例(含 PLE、纯 embeddings 模式),其他模型(qwen3/qwen3_5)流程一致,差异见 [converter_design.md](./converter_design.md) "模型差异总览"。
+> 以 gemma4 为例(含 PLE、纯 embeddings 模式),其他模型(qwen3_5)流程一致,差异见 [converter_design.md](./converter_design.md) "模型差异总览"。
 >
 > 最后更新: 2026-08-07
 
@@ -73,7 +73,7 @@ examples/test_converter/export_llm_model/main.cpp
 - `host_side_weight_names()`:返回 `["model.model.embed_tokens.weight", "model.model.embed_tokens_per_layer.weight"]`(供 host 抽取打包)
 - `_get_layer_head_dim(i)`:sliding 层用 `head_dim`,full 层用 `global_head_dim`(per-layer KV 维度)
 
-> qwen3/qwen3_5 无 PLE:wrapper 的 `_drive_layers` 在 embeddings≠None 时只传 `inputs_embeds`、不传 `input_ids`;`_build_external_extras` 返回空;`detach_externalized_lookups` 只 del `embed_tokens`。详见各模型 `export_wrapper.py`。
+> qwen3_5 无 PLE:wrapper 的 `_drive_layers` 在 embeddings≠None 时只传 `inputs_embeds`、不传 `input_ids`;`_build_external_extras` 返回空;`detach_externalized_lookups` 只 del `embed_tokens`。详见各模型 `export_wrapper.py`。
 
 ---
 

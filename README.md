@@ -7,7 +7,6 @@
 | 模型　　| 架构特点　　　　　　　　　　　　　　　　　　　　　　 |
 | ---------| ------------------------------------------------------|
 | gemma4　| KV 共享 + sliding window + PLE (Per-Layer Embedding) |
-| qwen3　 | 标准 GQA　　　　　　　　　　　　　　　　　　　　　　 |
 | qwen3.5 | 混合架构 (full attention + linear attention)　　　　 |
 
 ## 目录结构
@@ -17,7 +16,7 @@ CANN-LM_5883/
 ├── cann_lm/                  # 核心源码
 │   ├── converter/            # 导出工具链 (loader → wrapper → torch.export → epair)
 │   ├── engine/               # 推理引擎 (epair → OM 运行)
-│   └── models/               # 模型定义 (gemma4/qwen3/qwen3_5 + fused_ops 算子)
+│   └── models/               # 模型定义 (gemma4/qwen3_5 + fused_ops 算子)
 ├── docs/                     # 设计文档 (cli/export/quant 三模块)
 ├── examples/                 # 端到端用例 (OM 编译 + NPU 出字验证)
 ├── scripts/                  # 构建脚本 (build.sh + build.conf + set_env*.sh + cann_lm_compile/)
@@ -32,7 +31,7 @@ CANN-LM_5883/
 | ------------------------------| ----------------------------| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | **cann_lm/converter/**　　　 | HF 模型 → epair 导出工具链 | `cann_lm_converter.py`(CLI 入口) / `loader.py`(加载) / `saver.py`(保存) / `quant/`(量化:swap/materialize/auto_quant/dopt_wrapper) / `export/`(ge_converter + C++ csrc) |
 | **cann_lm/engine/**　　　　　| epair → OM 推理引擎　　　　| `api/`(Python 接口) / `core/`(核心逻辑) / `backend/`(C++ 后端) / `pipeline/`(推理流水线)　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　 |
-| **cann_lm/models/**　　　　　| 三个模型定义 + 自定义算子　| `gemma4/`(Gemma4ForCausalLM + export_wrapper) / `qwen3/` / `qwen3_5/` / `fused_ops/`(cann_lm:: + npu:: 算子 schema+fake-meta)　　　　　　　　　　　　　　　　　　　　　|
+| **cann_lm/models/**　　　　　| 两个模型定义 + 自定义算子　| `gemma4/`(Gemma4ForCausalLM + export_wrapper) / `qwen3_5/` / `fused_ops/`(cann_lm:: + npu:: 算子 schema+fake-meta)　　　　　　　　　　　　　　　　　　　　　|
 | **docs/cann_lm_converter/**　| converter 设计文档　　　　 | `cli/cli_design.md` / `export/export_design.md` / `quant/quant_design.md` / `converter_design.md`(总览)　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　|
 | **examples/test_converter/** | 端到端测试用例　　　　　　 | `export_llm_model/`(C++ OM 编译 + om_npu_verify 出字验证) / `cann_lm_cli_export/run_pd6_cases.sh`(6 用例)　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　|
 | **scripts/**　　　　　　　　 | 构建脚本　　　　　　　　　 | `build.sh`(顶层 check/deps/third_party/cpp/tests/wheel/package/all) / `build.conf`(版本+git源+自定位派生路径) / `set_env.sh`(converter+compile 统一 env, 真 CANN 无 stubs) / `set_env_cann.sh`(③ NPU) / `_env_common.sh`(公共) / `cann_lm_compile/build_cpp.sh`(C++ .so+cann_lm_compile) / `build_test.sh`(ASAN 测试) / `build_third_party.sh`(自建 json/gtest/makeself) / `cann_lm_{converter,engine}/build_wheel.sh`(whl 打包)　 |
@@ -64,7 +63,7 @@ source scripts/set_env_cann.sh --npu   # ③ NPU verify-runtime (真 CANN + DEVI
 ```bash
 source scripts/set_env.sh
 python cann_lm/converter/cann_lm_converter.py \
-    --hf-path /path/to/qwen3-0.6B \
+    --hf-path /path/to/qwen3.5-0.8B \
     --output-dir /path/to/output \
     --dtype float16 --seq-len 8
 ```

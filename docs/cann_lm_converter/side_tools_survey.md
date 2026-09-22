@@ -105,7 +105,7 @@ README 主推点分形式。
 | 管理 | `manage`/`upload`/`share` |
 | GGUF | `fuse --export-gguf`(Mistral/Llama fp16) |
 | 分布式 | `mx.distributed`(`examples/sharded_generate.py`) |
-| 工具调用 | `mlx_lm/tool_parsers/`(13 parser:pythonic/qwen3_coder/gemma4/glm47 等) |
+| 工具调用 | `mlx_lm/tool_parsers/`(13 parser:pythonic/gemma4/glm47 等) |
 
 ### 关键文件
 
@@ -180,7 +180,7 @@ KV cache：`--max-kv-size`(旋转 KV) `--kv-bits` `--kv-group-size`(默认64) `-
 
 | 参数 | 类型 | 默认 | 说明 |
 |---|---|---|---|
-| `--model`/`-m` | str | Qwen/Qwen3-0.6B-base | 模型 |
+| `--model`/`-m` | str | <hf_model_id> | 模型 |
 | `--mlx-path` | str | mlx_model | 保存路径 |
 | `--bits` | int | 4 | GPTQ 层位数 |
 | `--group-size` | int | 64 | GPTQ 层 group size |
@@ -331,7 +331,7 @@ docs/
     ├── backends/            # 各 backend 文档
     └── tutorials_source/   # 教程
 examples/                    # 端到端用例(按主题分)
-    ├── models/              # 模型动物园(60+:llama/qwen3/gemma3/whisper/stable_diffusion 等)
+    ├── models/              # 模型动物园(60+:llama/gemma3/whisper/stable_diffusion 等)
     ├── portable/ selective_build/ devtools/ demo-apps/
     ├── xnnpack/ arm/ qualcomm/ samsung/ cadence/ apple/ mediatek/ nxp/
     └── llm_server/ llm_pte_finetuning/
@@ -357,7 +357,7 @@ examples/                    # 端到端用例(按主题分)
 | 推理(C++ runtime) | `extension/llm/runner/`(TextLLMRunner/MultiModalRunner + pybindings `Runtime.get()`;KV cache/attention sink/dynamic shape) |
 | serve(OpenAI 兼容) | `examples/llm_server/`(FastAPI 控制面 + C++ worker JSONL;`/v1/chat/completions` 流式 + 工具调用 Hermes/Qwen XML) |
 | 微调 | `examples/llm_pte_finetuning/`(torchtune LoRA,先 .pte checkpoint→训练,CPU/fp32) |
-| 模型动物园 | `examples/models/`(60+:llama/qwen3/gemma3/phi_4_mini/llava/whisper/stable_diffusion 等) |
+| 模型动物园 | `examples/models/`(60+:llama/gemma3/phi_4_mini/llava/whisper/stable_diffusion 等) |
 | DevTools | `devtools/`(inspector/etdump/etrecord/pte_tool/size_analysis/visualization/bundled_program) |
 | 多 backend | `backends/`(xnnpack/coreml/qnn/mediatek/samsung/arm/cadence/nxp/vulkan/openvino/cuda/metal/mlx) |
 | 跨平台 SDK | `extension/apple/`/`extension/android/` + Swift Package |

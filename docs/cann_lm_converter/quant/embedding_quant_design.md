@@ -76,7 +76,7 @@ host 查表+gather:
 
 ## dopt 产物现状(已验证)
 
-`<dopt 产物目录>/model.safetensors`(qwen3-0.6B 的 dopt 产物, `--output-dir` 指定):
+`<dopt 产物目录>/model.safetensors`(示例 LLM 的 dopt 产物, `--output-dir` 指定):
 
 ```
 model.embed_tokens.quant_op.weight_quantizer.bit:            [] int64 = 8
@@ -85,7 +85,7 @@ model.embed_tokens.quant_op.weight_quantizer.max/min/offset:  [151936] fp32   (o
 model.embed_tokens.quant_op.weight_quantizer.unsigned_quant: [] fp32 = 0.0
 model.embed_tokens.weight:                                    [151936, 1024]=[vocab,hidden] fp32  ← fakequant
 lm_head.quant_op.*:                                           11 keys (input_quantizer bit/max/min/offset)
-embed_tokens_per_layer.*:                                     0 keys (qwen3 无 PLE)
+embed_tokens_per_layer.*:                                     0 keys (非 PLE 模型)
 ```
 
 实测:
@@ -182,11 +182,11 @@ host: int8_emb = gather(int8_weight, input_ids)         # [b,s,hidden]
 
 ---
 
-## 验证方案(qwen3,dopt 产物已就绪)
+## 验证方案(dopt 产物已就绪)
 
 1. **物化精确性**:`materialize_int8_per_channel_symmetric(w, s)` → `int8*scale` vs dopt fakequant `w`,maxdiff=0(已初步验证)
 2. **host gather + dequant 回环**:`get_sample_inputs(quant_embeddings=True)` → `ep.module()` 输出 vs float embeddings 输出,maxdiff 应=0(dopt fakequant 精确)
-3. **端到端 OM 验证 vs HF**:扩展 `examples/test_converter/export_llm_model/om_npu_verify/run_qwen3_om.py` 支持 embed 量化样本(host 用 int8+scale gather 喂图),OM-Q vs wrapper(in-graph float) vs HF。原 `verify_qwen3_epair.py` 已重构进 OM runner
+3. **端到端 OM 验证 vs HF**:扩展 OM runner（`run_*_om.py`）支持 embed 量化样本(host 用 int8+scale gather 喂图),OM-Q vs wrapper(in-graph float) vs HF。
 4. **C++ OM 编译**:quant-embeddings epair → `examples/test_converter/export_llm_model/build/cann_lm_compile` → .om(图入口 dequant 用 aten cast+mul,应可编译)
 
 ---
@@ -196,7 +196,7 @@ host: int8_emb = gather(int8_weight, input_ids)         # [b,s,hidden]
 gemma4 dopt 产物**不含** embed_tokens/embed_tokens_per_layer scale → 需重跑 dopt 加 `Quant_Embed_MinMax` 策略给两者:
 
 - dopt `do_opt.py` 已支持按原始类型自动映射 Embedding wrapper；layer_strategy 给 `embed_tokens` + `embed_tokens_per_layer` 配 `Quant_Embed_MinMax` 即可，无需 `target_op`
-- 重跑后 cann_lm 改造代码(qwen3 验证过的路径)直接复用
+- 重跑后 cann_lm 改造代码(gemma4 验证过的路径)直接复用
 - PLE 的 `ple_q`+`ple_scale`:int8 `[b,s,L,h_pl]` + scale `[b,s]`,dequant `ple_q.float()*scale[b,s,1,1]`
 
 ---
@@ -204,7 +204,7 @@ gemma4 dopt 产物**不含** embed_tokens/embed_tokens_per_layer scale → 需�
 ## 风险与未决
 
 1. **lm_head dopt 策略对齐**:lm_head 与其他 Linear 统一使用 `Quant_INT8-4_ECO`，对应 QuantLinear W4A8（`act_quant=True`）。
-2. **tied 模型**(qwen3-0.6B `tie_word_embeddings=True`):`embed_tokens.weight == lm_head.weight` → embed 量化(int8 per-vocab for host lookup)+ lm_head 量化(int4 W4A8 for graph matmul)是**同一权重的两种量化表示**,各自独立,可行(host 用 int8+scale 查表,图内 lm_head 用 int4+group_scale matmul)。
+2. **tied 模型**(qwen3.5-0.8B `tie_word_embeddings=True`):`embed_tokens.weight == lm_head.weight` → embed 量化(int8 per-vocab for host lookup)+ lm_head 量化(int4 W4A8 for graph matmul)是**同一权重的两种量化表示**,各自独立,可行(host 用 int8+scale 查表,图内 lm_head 用 int4+group_scale matmul)。
 3. **dopt embed offset=0 vs quant.py zero=128**:实测 dopt embed 是 `offset=0` signed(非 `quant.py` GPTQ 量子的 `zero=128` unsigned)。`materialize_int8_per_channel_symmetric` 用 signed `round(w/s).clamp(-128,127)` 已对齐(精确重建)。CANN/GE 侧 int8 signed 存储匹配(aten cast int8→float)。
 4. **精度回归**:int8 量化误差(dopt fakequant 已含 round/clamp 误差,但 `q*s` 精确重建 dopt 产物,故 host gather + dequant = dopt fakequant 值,与"float embeddings"差异 = dopt 量化误差本身)。需 vs 原始 float embeddings(未量化)做端到端 logits 回归,确认 int8 量化误差可接受。
 5. **host_weights 存 int8+scale 的机制**:swap 返回 dict 直存(已定)。需确认 `_extract_host_side_weights` / `host_side_weight_names` 在 quant-embeddings 模式下从 swap dict 取而非 wrapper.state_dict(因 detach 后 float embed_tokens 已删,且本设计用 int8+scale 不用 float)。

@@ -64,7 +64,7 @@ Qwen3.5-0.8B 是**混合架构**：6 层 full_attention（标准 GQA + KV cache�
 
 ## 1. 模型架构差异
 
-qwen3.5 与 gemma4 / qwen3 的接口不一致，converter 通过注册表 + adapter 抹平。以下差异表均摘自 `converter_design.md`。
+qwen3.5 与 gemma4 的接口不一致，converter 通过注册表 + adapter 抹平。以下差异表均摘自 `converter_design.md`。
 
 ### Config 加载差异
 
@@ -76,21 +76,21 @@ qwen3_5 的 config 嵌套在 `config.json` 的 `text_config` 子字典下，`bui
 
 ### forward 签名差异
 
-| 参数 | gemma4 | qwen3 | qwen3_5 |
-|------|:------:|:-----:|:-------:|
-| position_ids | 无（内部计算） | 有 | 无（内部计算） |
-| past_key_values | `list` | `list` | **`SimpleKVCache`** |
-| output_hidden_states | 有 | 有 | **无** |
-| use_cache | 无 | 无 | **有** |
-| **delta_cache** | 无 | 无 | **有（独有）** |
+| 参数 | gemma4 | qwen3_5 |
+|------|:------:|:-------:|
+| position_ids | 无（内部计算） | 无（内部计算） |
+| past_key_values | `list` | **`SimpleKVCache`** |
+| output_hidden_states | 有 | **无** |
+| use_cache | 无 | **有** |
+| **delta_cache** | 无 | **有（独有）** |
 
 ### forward 返回差异
 
-| 返回 key | gemma4 | qwen3 | qwen3_5 |
-|----------|--------|-------|---------|
-| past_key_values | 有 | 有 | 有 |
-| hidden_states | 有 | 有 | **无** |
-| **delta_cache** | 无 | 无 | **有（独有）** |
+| 返回 key | gemma4 | qwen3_5 |
+|----------|--------|---------|
+| past_key_values | 有 | 有 |
+| hidden_states | 有 | **无** |
+| **delta_cache** | 无 | **有（独有）** |
 
 ### 权重 key 重映射差异
 
@@ -133,7 +133,7 @@ qwen3_5 无 PLE，`embeddings` 非 None 时只传 `inputs_embeds`（不传 `inpu
 |------|-------------|
 | qwen3_5 | `modeling_qwen3_5.py` 第 616 行 `if attention_mask.dim() == 4: return attention_mask`（**新增**） |
 
-qwen3_5 的 4D 透传是为导出新增的（gemma4 / qwen3 原生就有），是新模型接入指南里"mask 4D 透传"检查项的参考实现。
+qwen3_5 的 4D 透传是为导出新增的（gemma4 原生就有），是新模型接入指南里"mask 4D 透传"检查项的参考实现。
 
 ---
 
@@ -294,7 +294,6 @@ epair 导出层解决后，跑 C++ `aclgrphBuildModel` 编译 OM 时，**infersh
 | `modeling_qwen3_5.py` `ForCausalLM.forward` + `generate` | `delta_cache` → `delta_states`/`delta_out`（eager 兼容） |
 | `export_wrapper.py` 基类 `forward` + `_drive_layers` | 加 `delta_states` 参数，返回 `*delta_out_flat` |
 | `qwen3_5/export_wrapper.py` `_drive_layers` | 不构造 SimpleDeltaNetCache，直接传 `delta_states` tuple；eager/prefill 传 `_delta_cache_box`；override `get_sample_inputs` 构造零 delta_states（prefill 图输入）；`new_conv_state` 用 slice 替代 `F.pad` |
-| `qwen3/export_wrapper.py` `_drive_layers` | 返回加空 `[]`（兼容基类签名） |
 
 #### prefill + decode 双图 delta tensor 流
 

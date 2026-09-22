@@ -33,7 +33,7 @@ class Gemma4ExportWrapper(ExportWrapper):
         """gemma4: full_attention 层用 global_head_dim，sliding 层用 head_dim。
 
         gemma4 有 per-layer head_dim 差异（sliding 层的 KV 维度 = head_dim，
-        full 层的 KV 维度 = global_head_dim）。qwen3/qwen3.5 无此差异（用 base 默认）。
+        full 层的 KV 维度 = global_head_dim）。qwen3.5 无此差异（用 base 默认）。
         """
         global_head_dim = getattr(self.config, "global_head_dim", None)
         layer_types = getattr(self.config, "layer_types", None)

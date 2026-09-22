@@ -2,7 +2,7 @@
 
 cann_lm 最小端到端示例：把一个小网络导出为 epair（`torch.export` → `lite_export_context` + torchair GE IR），再用 `cann_lm_compile` 编译 OM，验证整条「PyTorch → epair → OM」链路通。是接入新模型/新算子前的最小回归用例。
 
-> LLM 级（gemma4/qwen3/qwen3.5）导出+OM 编译+出字见 [`../export_llm_model/`](../export_llm_model)（`om_npu_verify/`）。
+> LLM 级（gemma4/qwen3.5）导出+OM 编译+出字见 [`../export_llm_model/`](../export_llm_model)（`om_npu_verify/`）。
 
 ## 目录结构
 

@@ -297,14 +297,14 @@ export TORCH_DELEGATE_ENABLE_FALLBACK_CODEGEN=0
 
 # 默认: 纯 embeddings (use_embeddings=True 默认, embed_tokens 查表外置到 host)
 python cann_lm/converter/cann_lm_converter.py \
-    --hf-path /path/to/qwen3-0.6B \
+    --hf-path /path/to/qwen3.5-0.8B \
     --output-dir /path/to/output \
     --dtype float16 \
     --seq-len 8
 
 # 图内查表 (需显式 --no-use-embeddings 关闭纯 embeddings, 图内含 embed_tokens)
 python cann_lm/converter/cann_lm_converter.py \
-    --hf-path /path/to/qwen3-0.6B \
+    --hf-path /path/to/qwen3.5-0.8B \
     --output-dir /path/to/output \
     --dtype float16 \
     --seq-len 8 \
@@ -312,7 +312,6 @@ python cann_lm/converter/cann_lm_converter.py \
 
 # 数值验证: OM runner (ep 回环的超集, OM vs eager/HF)
 python3 examples/test_converter/export_llm_model/om_npu_verify/run_gemma4_om.py   # gemma4: OM vs eager, maxdiff<1.0
-python3 examples/test_converter/export_llm_model/om_npu_verify/run_qwen3_om.py     # qwen3: OM vs eager
 python3 examples/test_converter/export_llm_model/om_npu_verify/run_qwen3_5_om.py  # qwen3.5: OM vs EP/HF
 
 # C++ OM 编译: 纯 embeddings epair → .om

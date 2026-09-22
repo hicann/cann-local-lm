@@ -2,7 +2,7 @@
 
 ## 1. 文档信息
 
-- 被测对象：`cann_lm/models/`（gemma4 / qwen3 / qwen3_5 modeling + fused_ops + model_registry + ExportWrapper 基类）
+- 被测对象：`cann_lm/models/`（gemma4 / qwen3_5 modeling + fused_ops + model_registry + ExportWrapper 基类）
 - 测试归档目录：`tests/llm_models`
 - 测试框架：`pytest`
 - 基准环境：converter venv（`/mnt/workspace/torch-delegate-harmony/.venv`，Python 3.11.4、torch 2.9.0+cpu、torchair 源码编译、torch-delegate），**不装 torch_npu**；`TORCH_DEVICE_BACKEND_AUTOLOAD=0`
@@ -21,7 +21,6 @@
 范围内模块：
 
 - `gemma4/{configuration_gemma4,modeling_gemma4,export_wrapper}.py`
-- `qwen3/{configuration_qwen3,modeling_qwen3,export_wrapper}.py`
 - `qwen3_5/{configuration_qwen3_5,modeling_qwen3_5,export_wrapper}.py`
 - `fused_ops/*`（rms_norm / rotary_mul / l2_norm / dynamic_quant / scatter_nd_update / quant_matmul / chunk_gated_delta_rule / fused_infer_attention_score + `_library.py` / `ops.py` 注册基础设施间接覆盖）
 - `model_registry.py`
@@ -98,33 +97,7 @@
 | GEMMA4-024 | wrapper 可导出 + 图无 masked_fill | torch.export 能 trace（use_embeddings=False/True+detach 两模式）+ FX 图 masked_fill 节点==0（NPU 不支持 ge.MaskedFill） | P0 |
 | GEMMA4-025 | wrapper vs model **decode** | 单 token decode（q@pos S）wrapper logits+KV == model.forward scatter-write（maxdiff=0, KV torch.equal）；扩 GEMMA4-010 到 decode 步 | P0 |
 
-### 5.2 qwen3 modeling（test_qwen3.py，21 项）
-
-| ID | 被测单元 | 场景与预期 | 优先级 |
-|---|---|---|---|
-| QWEN3-001 | `Qwen3TextConfig` | model_type/head_dim/tie + `from_dict` 过滤未知 key | P0 |
-| QWEN3-002 | `Qwen3RMSNorm` | shape + vs 手算 `x*rsqrt(var+eps)` + unit RMS + finite | P0 |
-| QWEN3-003 | `Qwen3RotaryEmbedding`/`apply_rotary_pos_emb`/`rotate_half` | cos/sin shape + RoPE 保 q/k 范数 + rotate_half 精确 | P0 |
-| QWEN3-004 | `Qwen3MLP` | shape + finite + gate/up/down 属性 | P0 |
-| QWEN3-005 | `Qwen3Attention`/`Qwen3DecoderLayer` | attn + layer shape + finite + q_norm/k_norm | P0 |
-| QWEN3-006 | `Qwen3ForCausalLM` forward + tie | logits shape + loss None + tie 生效（weight is） | P0 |
-| QWEN3-007 | 确定性 | 两次 forward logits `torch.equal` | P0 |
-| QWEN3-008 | causal 不变性 | prefix 末位 logits == full[:,k-1] for all k | P0 |
-| QWEN3-009 | KV cache 一致性 | 增量 decode per-position == full prefill (atol=1e-3) | P0 |
-| QWEN3-010 | greedy==argmax | greedy 首 token == argmax(forward[:,-1]) | P0 |
-| QWEN3-011 | loss | labels → loss 标量 + finite | P0 |
-| QWEN3-012 | 层截断 | 2/4/8 层 logits shape | P1 |
-| QWEN3-013 | `Qwen3ExportWrapper` vs model | logits max_diff=0 + KV max_diff=0 | P0 |
-| QWEN3-014 | attention scatter-write | new_kv_cache_pos + 预分配 buffer → index_copy + buffer 保持 kv_max | P1 |
-| QWEN3-015 | 2D padding mask | 2D mask → logits shape + finite | P1 |
-| QWEN3-016 | `output_hidden_states` | hidden_states count=layers+2 + first=embed shape | P1 |
-| QWEN3-017 | generate decode + sampling | greedy≥decode step + top_k/top_p sampling | P1 |
-| QWEN3-018 | generate no eos | eos=None → 跑满 max_new_tokens | P2 |
-| QWEN3-019 | misc branches | extra_repr 含 eps + MHA n_rep=1 + inputs_embeds + untied lm_head | P2 |
-| QWEN3-020 | eos list + sampling branches | eos as list 提前停 + top_k-only + top_p-only | P2 |
-| QWEN3-021 | `to_dict`/`from_json_file` | to_dict 无 `_` + text_config wrapper + flat json | P1 |
-
-### 5.3 qwen3.5 modeling（test_modeling_qwen3_5.py，38 项）
+### 5.2 qwen3.5 modeling（test_modeling_qwen3_5.py，38 项）
 
 | ID | 被测单元 | 场景与预期 | 优先级 |
 |---|---|---|---|
@@ -199,11 +172,11 @@
 
 | ID | 被测单元 | 场景与预期 | 优先级 |
 |---|---|---|---|
-| REG-001 | `available_models` | =={gemma4,qwen3,qwen3_5} + 全在 REGISTRY | P0 |
-| REG-002 | `get_entry` alias（×9 case） | gemma4/gemma-4/大小写、qwen3/qwen-3、qwen3_5/qwen3.5 → REGISTRY[expected] | P0 |
+| REG-001 | `available_models` | =={gemma4,qwen3_5} + 全在 REGISTRY | P0 |
+| REG-002 | `get_entry` alias（×7 case） | gemma4/gemma-4/大小写、qwen3_5/qwen3.5 → REGISTRY[expected] | P0 |
 | REG-003 | `get_entry` 未知（×5 case） | unknown/llama/""/gemma5/qwen4 → ValueError | P0 |
 | REG-004 | entry 字段（×3 模型） | config_cls/model_cls/wrapper_cls/config_json_key + load_weights_fn callable + model_type 非空 | P0 |
-| REG-005 | `detect_model_type`（×3 case） | {model_type:gemma4/qwen3/qwen3_5} → REGISTRY[key] | P0 |
+| REG-005 | `detect_model_type`（×2 case） | {model_type:gemma4/qwen3_5} → REGISTRY[key] | P0 |
 | REG-006 | `detect_model_type` 缺字段 | {} → ValueError(match model_type) | P0 |
 | REG-007 | `detect_model_type` 未知 | {model_type:llama} → ValueError(match Unknown) | P0 |
 
@@ -224,7 +197,6 @@ tests/py/llm_models/
 ├── UT_DESIGN.md
 ├── conftest.py
 ├── test_gemma4.py
-├── test_qwen3.py
 ├── test_modeling_qwen3_5.py
 ├── test_fused_ops.py
 ├── test_model_registry.py
@@ -276,7 +248,7 @@ pytest exit code: 0
 - 收集用例总数：140
 - 普通回归用例：140，全部通过
 - skip/xfail：0
-- 按文件分布：test_gemma4 23 / test_qwen3 21 / test_modeling_qwen3_5 38 / test_fused_ops 28 / test_model_registry 23 / test_export_wrapper_base 7
+- 按文件分布：test_gemma4 23 / test_modeling_qwen3_5 38 / test_fused_ops 28 / test_model_registry 23 / test_export_wrapper_base 7
 
 ### 9.2 覆盖率结果
 
@@ -298,11 +270,8 @@ TORCH_DEVICE_BACKEND_AUTOLOAD=0 \
 | `qwen3_5/export_wrapper.py` | 95% |
 | `gemma4/configuration_gemma4.py` | 91% |
 | `gemma4/export_wrapper.py` | 90% |
-| `qwen3/configuration_qwen3.py` | 88% |
 | `qwen3_5/configuration_qwen3_5.py` | 86% |
 | `qwen3_5/modeling_qwen3_5.py` | 86% |
-| `qwen3/modeling_qwen3.py` | 85% |
-| `qwen3/export_wrapper.py` | 84% |
 | `fused_ops/_library.py` | 82% |
 | `fused_ops/chunk_gated_delta_rule.py` | 81% |
 | `fused_ops/rotary_mul.py` | 81% |
@@ -321,7 +290,7 @@ TORCH_DEVICE_BACKEND_AUTOLOAD=0 \
 
 | ID | 原现象 | 修复内容 | 回归结果 |
 |---|---|---|---|
-| DEF-001 | `apply_rotary_pos_emb` 签名漂移：gemma4 需传 `position_embeddings` tuple + layer_type；qwen3 需先 `transpose(1,2)` 再调用 | 测试代码对齐新签名：gemma4 `apply_rotary_pos_emb(q, k, cos, sin, "full_attention")`；qwen3 `apply_rotary_pos_emb(q.transpose(1,2), k.transpose(1,2), cos, sin)` | gemma4 test_components + qwen3 test_rope 通过，q/k shape 正确 |
+| DEF-001 | `apply_rotary_pos_emb` 签名漂移：gemma4 需传 `position_embeddings` tuple + layer_type | 测试代码对齐新签名：gemma4 `apply_rotary_pos_emb(q, k, cos, sin, "full_attention")` | gemma4 test_components 通过，q/k shape 正确 |
 | DEF-002 | qwen3.5 `ForCausalLM.forward` 参数 `delta_cache` 重命名为 `delta_states`，旧名 KeyError | 增量 decode 用例改传 `delta_states=dc`；TextModel export path 用 `delta_states=(conv_list, rec_list)` tuple | test_incremental_decode + test_text_model_export_delta_states 通过 |
 | DEF-003 | `torch_causal_conv1d_update` weight 从 2D `[dim, kernel]` 变 3D `[dim, 1, kernel]`（Conv1d 标准 shape） | 测试 weight 改 `torch.randn(dim, 1, kernel)`，对齐新 API | test_causal_conv1d_update 通过，conv_state shape 正确 |
 | DEF-004 | `Qwen3_5GatedDeltaNet.forward` / `Qwen3_5DecoderLayer.forward` 返回值从单 Tensor 变为 3-tuple `(out, ..., ...)` | 测试解包 `out, _, _ = gdn(x)` / `out_linear, _, _ = layer(x, ...)` | test_gated_delta_net + test_decoder_layer 通过 |

@@ -198,7 +198,7 @@ import torch_delegate
 | torchair 编译 | 带 CANN SDK（`NO_ASCEND_SDK=0`） | stubs（`NO_ASCEND_SDK=1`） |
 | 调 dopt | `from dopt_lm import ...` 函数 | `subprocess` 跑 `python -m dopt_lm.opt_main` CLI |
 | 产物传输 | 内存（state_dict 直接传） | 临时盘 IO |
-| 状态 | **已放弃**（GPTQ 验证通过，但 export 卡 torchair hcom_broadcast + fused_ops 兼容） | 已实现 + 实测成功（qwen3-0.6B 完整 epair 产物） |
+| 状态 | **已放弃**（GPTQ 验证通过，但 export 卡 torchair hcom_broadcast + fused_ops 兼容） | 已实现 + 实测成功（gemma4 完整 epair 产物） |
 
 > **方案 A 已放弃**（torchair 带 CANN SDK 编译不完整 `hcom_broadcast` + fused_ops/真 torch_npu 兼容问题多）。当前用方案 C（`auto_quant.py` subprocess，已实测成功）。
 
@@ -509,7 +509,7 @@ GPTQ 循环写死**文本-only ForCausalLM** 结构假设：
 - `torch.ops.npu.npu_trans_quant_param(fp32_scale_1d)` → int64（UINT64 deqScale，fp32→定点）。
 - `torch.ops.npu.npu_quant_matmul`（V5 aclnn）A8W4 K-G 要求：x2Scale=UINT64/INT64、yOffset=FLOAT32(n,) 非空、k 256 对齐、group_sizes=[0,0,256]。
 
-### 3. OM 编译调试记录（W4A8 qwen3-0.6B 2 层，路径 C' 时期）
+### 3. OM 编译调试记录（W4A8 LLM 2 层，路径 C' 时期）
 
 在 NPU（Ascend910_9362 / CANN 9.2.0）上对 quant epair 做 `aclgrphBuildModel`（OM 编译），逐步调试：
 

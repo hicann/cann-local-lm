@@ -70,7 +70,7 @@ transformers/src/transformers/models/gemma4/
 
 ### 第 2 步：创建目录结构
 
-在 `CANN-LM-py/models/` 下创建 gemma4 目录，参考现有 qwen3/qwen3_5 结构：
+在 `CANN-LM-py/models/` 下创建 gemma4 目录，参考现有 qwen3_5 结构：
 
 ```
 CANN-LM-py/models/gemma4/
@@ -273,7 +273,7 @@ class Gemma4TextMLP(nn.Module):
 
 ### 第 5 步：实现 Attention Layer
 
-关键区别于 Qwen3：
+关键特性：
 - 使用 `query_pre_attn_scalar` 而非 `head_dim^-0.5`
 - Q/K 投影后各自 Norm
 - 支持 soft-capping

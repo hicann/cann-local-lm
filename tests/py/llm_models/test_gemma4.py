@@ -648,7 +648,7 @@ def test_prepare_causal_mask_4d_sliding_window():
 
 
 def test_prepare_causal_mask_2d_padding():
-    """2D attention_mask -> bool key_valid + causal (qwen3-style, 765-785)."""
+    """2D attention_mask -> bool key_valid + causal (gemma4-style, 765-785)."""
     config = make_small_config()
     model = Gemma4TextModel(config)
     b, s, d = 1, 6, config.hidden_size

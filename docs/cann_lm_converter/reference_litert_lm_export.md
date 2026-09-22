@@ -248,7 +248,7 @@ litert-torch 的核心策略是**永远不直接导出原始模型，始终通�
 #### 第 1 层：固定 wrapper 接口
 
 ```python
-# 不论 gemma4/qwen3/qwen3_5，wrapper 的 forward 签名固定:
+# 不论 gemma4/qwen3_5，wrapper 的 forward 签名固定:
 def forward(self, tokens, input_pos, kv_cache, mask):
     inputs = self.adapt_inputs(tokens, input_pos, kv_cache, mask)  # 翻译差异
     output = self.model(**inputs)                                   # 调原始模型

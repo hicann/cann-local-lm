@@ -1,12 +1,12 @@
 # 短期设计：Converter 层 Adapter 方案
 
-> 不修改模型代码，通过注册表 + adapter 抹平 gemma4/qwen3/qwen3_5 的接口差异
+> 不修改模型代码，通过注册表 + adapter 抹平 gemma4/qwen3_5 的接口差异
 >
 > 状态: 待核对 | 最后核对: 2026-07-14
 
 ## 背景
 
-三个模型（gemma4, qwen3, qwen3_5）有相同的骨架但接口不一致：
+两个模型（gemma4, qwen3_5）有相同的骨架但接口不一致：
 
 - Config 加载方式不同（gemma4 无 from_pretrained，qwen3_5 无 to_dict）
 - forward 签名不同（position_ids 有/无，delta_cache 有/无）
@@ -25,7 +25,6 @@
 cann_lm/
 ├── models/                          # 不修改
 │   ├── gemma4/
-│   ├── qwen3/
 │   └── qwen3_5/
 ├── converter/
 │   ├── model_registry.py            # 模型注册表 (差异记录)
@@ -43,28 +42,14 @@ cann_lm/
 ```python
 @dataclass
 class ModelEntry:
-    config_cls: type                 # Qwen3TextConfig / Gemma4TextConfig / ...
-    model_cls: type                  # Qwen3ForCausalLM / Gemma4ForCausalLM / ...
-    load_weights_fn: callable        # load_qwen3_weights / load_gemma4_weights / ...
+    config_cls: type                 # Gemma4TextConfig / Qwen3_5TextConfig / ...
+    model_cls: type                  # Gemma4ForCausalLM / Qwen3_5ForCausalLM / ...
+    load_weights_fn: callable        # load_gemma4_weights / load_qwen3_5_weights / ...
     config_json_key: str             # "text_config" 或 None (扁平 config)
     forward_kwargs: dict             # torch.export 时的 None kwargs
     needs_wrapper: bool = True        # 是否需要 ExportWrapper (dict → logits)
 
 REGISTRY = {
-    "qwen3": ModelEntry(
-        config_cls=Qwen3TextConfig,
-        model_cls=Qwen3ForCausalLM,
-        load_weights_fn=load_qwen3_weights,
-        config_json_key=None,              # 扁平 config，直接从顶层取
-        forward_kwargs={
-            "attention_mask": None,
-            "position_ids": None,
-            "past_key_values": None,
-            "inputs_embeds": None,
-            "labels": None,
-            "output_hidden_states": False,
-        },
-    ),
     "gemma4": ModelEntry(
         config_cls=Gemma4TextConfig,
         model_cls=Gemma4ForCausalLM,

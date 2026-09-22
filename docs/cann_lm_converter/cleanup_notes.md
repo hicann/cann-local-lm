@@ -72,7 +72,7 @@
 ### 清理动作
 
 1. 删除上述 6 个文件顶部的 `from __future__ import annotations`(各文件 1 行,连同其后空行保持 import 分组整洁)。
-2. 清理后跑一次 converter 冒烟(如 `examples/` 下 qwen3-0.6B `single` 导出)确认无 import / 注解求值错误。
+2. 清理后跑一次 converter 冒烟(如 `examples/` 下 qwen3.5-0.8B `single` 导出)确认无 import / 注解求值错误。
 3. 更新本文档状态为「已清理」并补清理日期。
 
 ### 执行结果(2026-08-31)
@@ -585,7 +585,7 @@ token_identity = m.embed_tokens_per_layer(input_ids).reshape(...).detach()   # H
 1. **`cann_lm/models/gemma4/export_wrapper.py`**:
    - `forward`(:49-72)加 `per_layer_token_identity_scale` 参数 + PLE dequant(`per_layer_token_identity(int8) * per_layer_token_identity_scale → float`,仿 `embeddings/embeddings_scale`)
    - `get_sample_inputs(quant)`(:246-269)从 `_quant_embeddings` 取 PLE int8+scale,gather `input_ids`→`ple_q`+`ple_scale`;非 quant/图内分支加 `None` ple_scale 保持 11 元素返回顺序
-2. **`cann_lm/models/fused_ops/fused_infer_attention_score.py` `_fa_cpu`**(:92-100):兼容 gemma4 mask 方阵 `[b,1,kv_max,kv_max]` bool(截前 seq_len 行匹配 `attn_weights [b,heads,seq_len,kv_max]` + bool→float `True→-inf`);非方阵 float mask(qwen3 等)不受影响
+ 2. **`cann_lm/models/fused_ops/fused_infer_attention_score.py` `_fa_cpu`**(:92-100):兼容 gemma4 mask 方阵 `[b,1,kv_max,kv_max]` bool(截前 seq_len 行匹配 `attn_weights [b,heads,seq_len,kv_max]` + bool→float `True→-inf`);非方阵 float mask(qwen3.5 等)不受影响
 3. **`examples/.../debug_gemma4/verify_gemma4_epair_quant.py`**(新,97 行):epair 回环验证(load+dopt+set_quant_embeddings+export+ep.module vs wrapper logits 一致+PLE dequant sanity)
 
 **验证结果**(`verify_gemma4_epair_quant.py --hf-path gemma-4-E2B-it --quant-path /tmp/opencode/gemma4_quant_output`):
@@ -777,7 +777,7 @@ token_identity = m.embed_tokens_per_layer(input_ids).reshape(...).detach()   # H
 
 ### 待验证
 
-1. MatMul NZ 输入接受性:`reg_register.h` MatMul 是否接受 weight Const `FORMAT_FRACTAL_NZ` 而不插运行期 transdata(需最小 qwen3-0.6B NZ 导出 + OM 编译验证,参数化放 `examples/`)
+1. MatMul NZ 输入接受性:`reg_register.h` MatMul 是否接受 weight Const `FORMAT_FRACTAL_NZ` 而不插运行期 transdata(需最小 LLM（截断 N 层）NZ 导出 + OM 编译验证,参数化放 `examples/`)
 2. NZ shape 语义:实现按 GE 标准(逻辑 shape + 内部 pad),OM 编译实测确认 kernel 正确读 partial block
 
 ### 行动项
@@ -1013,7 +1013,7 @@ def make_input_output_names(self) -> tuple[list[str], list[str]]:
     output_names = ["logits"]
     for i in range(n):
         output_names.extend([f"past_key_{i}_out", f"past_value_{i}_out"])
-    if self._has_delta_out():  # 子类 override: qwen3.5 True, qwen3/gemma4 False
+    if self._has_delta_out():  # 子类 override: qwen3.5 True, gemma4 False
         for i in range(n):
             output_names.extend([f"delta_conv_{i}_out", f"delta_rec_{i}_out"])
     return input_names, output_names

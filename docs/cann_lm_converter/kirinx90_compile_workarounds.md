@@ -333,7 +333,7 @@ python -c "import json; g=json.load(open('/tmp/opencode/tap.json'))['graph'][0];
 | B2 | `TensorMove`（scatter out-of-place converter 的 const→mutable 拷贝）无 engine | ① `kv_cache` 从 `nn.Parameter` 改 **forward 输入**（placeholder→Data 可变变量；`ge.ScatterNdUpdate` 是 ref 节点，ref 输入不能引用 Const，故 cache 必须是输入而非 Parameter）；② `compile_to_epair` 里 **monkeypatch** `npu_scatter_nd_update.default` converter，直发 `ge.ScatterNdUpdate`（跳过 `ge.TensorMove`） | `kirin_ops_net.py` + `kirin_ops_net.py::compile_to_epair` |
 | B3 | `L2Normalize` 正向 impl 缺失 + tvm CCE codegen 崩 | ops-nn 包打包缺口（缺正向 `ops_nn/dynamic/l2_normalize.py` 动态入口，只有 `_grad`；legacy `ops_legacy/dynamic/l2_normalize.py` 是 tvm/tbe-DSL，kirinx90 上 `tvm CCECodegenImpl` 崩 EB9999）→ **手写 AscendC-apt wrapper** `l2_normalize.py`（仿 `rms_norm.py`/`gelu_apt.py`），用 `asc_op_compiler.compile_op`→ccec 编已打包的 `ascendc/l2_norm/l2_normalize.cpp`，绕开 tvm CCE 路径 | 写入 kirinx90 opp `ops_nn/dynamic/l2_normalize.py` |
 
-> 以上 B1–B3 是 `kirin_ops_net.py` 小网络的**就地规避**（改 modeling/monkeypatch）。真实模型层（gemma4/qwen3）走 **`KIRINX90_CONVERTER_PATCHES`** 机制（converter 导出时 patch GE converter，见 B4–B6）。
+> 以上 B1–B3 是 `kirin_ops_net.py` 小网络的**就地规避**（改 modeling/monkeypatch）。真实模型层（gemma4/qwen3.5）走 **`KIRINX90_CONVERTER_PATCHES`** 机制（converter 导出时 patch GE converter，见 B4–B6）。
 
 ### B.2 KIRINX90_CONVERTER_PATCHES 机制（真实模型层规避）
 

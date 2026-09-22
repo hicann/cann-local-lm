@@ -12,14 +12,12 @@ from cann_lm.models.model_registry import (
     detect_model_type,
     get_entry,
 )
-from cann_lm.models.qwen3 import Qwen3ForCausalLM, Qwen3TextConfig
-from cann_lm.models.qwen3.export_wrapper import Qwen3ExportWrapper
 from cann_lm.models.qwen3_5 import Qwen3_5ForCausalLM, Qwen3_5TextConfig
 from cann_lm.models.qwen3_5.export_wrapper import Qwen3_5ExportWrapper
 
 
-def test_available_models_covers_three_models():
-    assert set(available_models()) == {"gemma4", "qwen3", "qwen3_5"}
+def test_available_models_covers_two_models():
+    assert set(available_models()) == {"gemma4", "qwen3_5"}
     assert all(k in REGISTRY for k in available_models())
 
 
@@ -30,8 +28,6 @@ def test_available_models_covers_three_models():
         ("gemma-4", "gemma4"),
         ("Gemma4", "gemma4"),          # 大小写不敏感
         ("GEMMA-4", "gemma4"),
-        ("qwen3", "qwen3"),
-        ("qwen-3", "qwen3"),
         ("qwen3_5", "qwen3_5"),
         ("qwen3.5", "qwen3_5"),
         ("Qwen3.5", "qwen3_5"),
@@ -51,7 +47,6 @@ def test_get_entry_unknown_raises(bad_name):
     "name,config_cls,model_cls,wrapper_cls,json_key",
     [
         ("gemma4", Gemma4TextConfig, Gemma4ForCausalLM, Gemma4ExportWrapper, "text_config"),
-        ("qwen3", Qwen3TextConfig, Qwen3ForCausalLM, Qwen3ExportWrapper, None),
         ("qwen3_5", Qwen3_5TextConfig, Qwen3_5ForCausalLM, Qwen3_5ExportWrapper, "text_config"),
     ],
 )
@@ -62,14 +57,13 @@ def test_entry_fields(name, config_cls, model_cls, wrapper_cls, json_key):
     assert e.wrapper_cls is wrapper_cls
     assert e.config_json_key == json_key
     assert callable(e.load_weights_fn)
-    assert e.model_type  # 非空 (gemma4_text / qwen3 / qwen3_5_text)
+    assert e.model_type  # 非空 (gemma4_text / qwen3_5_text)
 
 
 @pytest.mark.parametrize(
     "model_type,expected_key",
     [
         ("gemma4", "gemma4"),      # gemma4 HF config 顶层 model_type
-        ("qwen3", "qwen3"),
         ("qwen3_5", "qwen3_5"),    # qwen3.5 HF config 顶层 model_type
     ],
 )

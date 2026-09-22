@@ -10,7 +10,7 @@ and the lru_cache keeps it False, so no `import torch_npu` ever happens.
 Usage::
 
     import cann_lm.hf_cpu  # noqa: F401  <-- must precede `from transformers import ...`
-    from transformers import AutoTokenizer, Qwen3ForCausalLM
+    from transformers import AutoTokenizer, AutoModelForCausalLM
 """
 
 from __future__ import annotations

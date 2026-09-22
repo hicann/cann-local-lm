@@ -62,7 +62,7 @@ parse_args → convert → loader.load_model (export_index) → [可选 quant sw
 
 ```bash
 # 默认: prefill-decode + 纯 embeddings (use_embeddings=True 默认)
-cann-lm-converter --hf-path /path/to/qwen3-0.6B --output-dir /path/to/out --dtype float16 --seq-len 128
+cann-lm-converter --hf-path /path/to/qwen3.5-0.8B --output-dir /path/to/out --dtype float16 --seq-len 128
 
 # 量化场景1: 消费 dopt GPTQ 产物 (--quant-path)
 cann-lm-converter --hf-path /path/to/model --output-dir /path/to/out --quant-path /path/to/dopt_output

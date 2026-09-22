@@ -65,7 +65,7 @@ cann_lm/
 │   ├── model_registry.py          # 模型注册表 (ModelEntry + REGISTRY + detect_model_type + available_models)
 │   ├── export_wrapper.py           # ExportWrapper 基类 (forward + get_sample_inputs + _drive_layers)
 │   ├── fused_ops/                  # 自定义算子库 (cann_lm:: + npu::, 见 fused_ops.md)
-│   └── {gemma4,qwen3,qwen3_5}/     # 各模型定义 + 子类 export_wrapper.py
+│   └── {gemma4,qwen3_5}/     # 各模型定义 + 子类 export_wrapper.py
 └── converter/
     ├── __init__.py
     ├── cann_lm_converter.py        # CLI 入口 (pipeline) + 程序化 convert() 函数  ← 见 cli_design.md
@@ -85,18 +85,18 @@ cann_lm/
 
 ## 模型注册表 model_registry.py
 
-三个模型接口不一致，converter 通过注册表 + adapter 抹平差异。
+两个模型接口不一致，converter 通过注册表 + adapter 抹平差异。
 
 ```python
 @dataclass
 class ModelEntry:
     """一个模型在注册表中的条目"""
-    model_type: str               # "gemma4_text" / "qwen3" / "qwen3_5_text"
-    config_cls: type              # Gemma4TextConfig / Qwen3TextConfig / Qwen3_5TextConfig
-    model_cls: type               # Gemma4ForCausalLM / Qwen3ForCausalLM / Qwen3_5ForCausalLM
-    load_weights_fn: callable     # load_gemma4_weights / load_qwen3_weights / load_qwen3_5_weights
+    model_type: str               # "gemma4_text" / "qwen3_5_text"
+    config_cls: type              # Gemma4TextConfig / Qwen3_5TextConfig
+    model_cls: type               # Gemma4ForCausalLM / Qwen3_5ForCausalLM
+    load_weights_fn: callable     # load_gemma4_weights / load_qwen3_5_weights
     config_json_key: str | None   # config.json 中 text 配置的 key (如 "text_config")，None 表示顶层
-    wrapper_cls: type             # ExportWrapper 子类 (Qwen3ExportWrapper / Gemma4ExportWrapper / ...)
+    wrapper_cls: type             # ExportWrapper 子类 (Gemma4ExportWrapper / Qwen3_5ExportWrapper / ...)
 
 
 REGISTRY: dict[str, ModelEntry] = {
@@ -107,14 +107,6 @@ REGISTRY: dict[str, ModelEntry] = {
         load_weights_fn=load_gemma4_weights,
         config_json_key="text_config",
         wrapper_cls=Gemma4ExportWrapper,
-    ),
-    "qwen3": ModelEntry(
-        model_type="qwen3",
-        config_cls=Qwen3TextConfig,
-        model_cls=Qwen3ForCausalLM,
-        load_weights_fn=load_qwen3_weights,
-        config_json_key=None,               # 扁平 config，直接从顶层取
-        wrapper_cls=Qwen3ExportWrapper,
     ),
     "qwen3_5": ModelEntry(
         model_type="qwen3_5_text",
@@ -128,7 +120,6 @@ REGISTRY: dict[str, ModelEntry] = {
 
 _ALIASES: dict[str, str] = {
     "gemma4": "gemma4", "gemma-4": "gemma4",
-    "qwen3": "qwen3", "qwen-3": "qwen3",
     "qwen3.5": "qwen3_5", "qwen3_5": "qwen3_5",
 }
 
@@ -232,7 +223,7 @@ def load_model(
 
 ```python
 def build_config(hf_config: dict, entry: ModelEntry):
-    # 嵌套 config (gemma4/qwen3_5): 从 text_config 子字典取；扁平 config (qwen3): 顶层
+    # 嵌套 config (gemma4/qwen3_5): 从 text_config 子字典取；扁平 config: 顶层
     if entry.config_json_key in hf_config:
         raw = hf_config[entry.config_json_key]
     else:
@@ -247,7 +238,7 @@ def build_config(hf_config: dict, entry: ModelEntry):
     return config
 ```
 
-> 注：`config_cls` 上的 `from_pretrained` / `from_json_file` 方法（qwen3/qwen3_5 有）不再被 `build_config` 调用——统一走字段过滤路径，避免不同 class 的加载方式分叉。
+> 注：`config_cls` 上的 `from_pretrained` / `from_json_file` 方法（qwen3_5 有）不再被 `build_config` 调用——统一走字段过滤路径，避免不同 class 的加载方式分叉。
 
 ### collect_tokenizer_files
 
@@ -287,15 +278,15 @@ def collect_tokenizer_files(hf_path: str) -> list[Path]:
 
 ### ExportWrapper 基类 — 统一 I/O 契约
 
-参考 litert-torch 的 `ExportableModule` 和 npu_tuned_export 的 `Qwen3ForCausalLMWrapper`，设计统一 wrapper 基类。核心思想：**KV cache 作为显式图输入输出**，子类实现 `_drive_layers` 负责与原生模型 forward 对接。
+参考 litert-torch 的 `ExportableModule` 和 npu_tuned_export 的 wrapper 设计，设计统一 wrapper 基类。核心思想：**KV cache 作为显式图输入输出**，子类实现 `_drive_layers` 负责与原生模型 forward 对接。
 
 支持 **两种 embedding 模式**：
 - `use_embeddings=False`（默认）：传 `input_ids`，图内含 `embed_tokens` 节点
-- `use_embeddings=True`（纯 embeddings）：`input_ids` **不入图**（None placeholder），host 算好 `embeddings` 传入；model forward 收到 `inputs_embeds` 跳过 `embed_tokens` 查表。gemma4 因 PLE（Per-Layer Embedding）的 `embed_tokens_per_layer` 查表也外置，**额外传 `per_layer_token_identity`**（host 算好的 token identity）；qwen3/qwen3_5 无 PLE，仅传 `embeddings`。
+- `use_embeddings=True`（纯 embeddings）：`input_ids` **不入图**（None placeholder），host 算好 `embeddings` 传入；model forward 收到 `inputs_embeds` 跳过 `embed_tokens` 查表。gemma4 因 PLE（Per-Layer Embedding）的 `embed_tokens_per_layer` 查表也外置，**额外传 `per_layer_token_identity`**（host 算好的 token identity）；qwen3_5 无 PLE，仅传 `embeddings`。
 
-> 注：`use_embeddings=True` 时 `saver` 在 `get_sample_inputs`（用它算 sample）+ host 权重抽取**之后**、`torch.export` **之前** 调用 `wrapper.detach_externalized_lookups()` 把外置查表子模块（`embed_tokens`，gemma4 加 `embed_tokens_per_layer`）从模型 `del` 掉 → torch.export 不 lift 它们 → `weights_*.bin` **不含**冗余查表权重（≈ OM，GE 编译本就剪掉它们），查表权重单独打包到 `host_weights_info.json` + `host_weights_*.bin` 给 host（带 dtype/shape）。依赖纯 embeddings forward 不访问这些子模块（`embed_tokens` 被 `inputs_embeds` 跳过、gemma4 `embed_tokens_per_layer` 被实例方法替换跳过）；`saver` 导出后断言它们不在 `inputs_to_parameters` 兜底。tied qwen3：del `embed_tokens` 后 `lm_head.weight`（同数据）仍在 → 被 OM bake；host 从 `host_weights` 拿 `embed_tokens.weight` 查表（lm_head/embed_tokens 双角色，非冗余）。
+> 注：`use_embeddings=True` 时 `saver` 在 `get_sample_inputs`（用它算 sample）+ host 权重抽取**之后**、`torch.export` **之前** 调用 `wrapper.detach_externalized_lookups()` 把外置查表子模块（`embed_tokens`，gemma4 加 `embed_tokens_per_layer`）从模型 `del` 掉 → torch.export 不 lift 它们 → `weights_*.bin` **不含**冗余查表权重（≈ OM，GE 编译本就剪掉它们），查表权重单独打包到 `host_weights_info.json` + `host_weights_*.bin` 给 host（带 dtype/shape）。依赖纯 embeddings forward 不访问这些子模块（`embed_tokens` 被 `inputs_embeds` 跳过、gemma4 `embed_tokens_per_layer` 被实例方法替换跳过）；`saver` 导出后断言它们不在 `inputs_to_parameters` 兜底。tied 模型（qwen3.5）：del `embed_tokens` 后 `lm_head.weight`（同数据）仍在 → 被 OM bake；host 从 `host_weights` 拿 `embed_tokens.weight` 查表（lm_head/embed_tokens 双角色，非冗余）。
 
-基类位于 `cann_lm/models/export_wrapper.py`，子类位于各模型目录（如 `cann_lm/models/qwen3/export_wrapper.py`）。
+基类位于 `cann_lm/models/export_wrapper.py`，子类位于各模型目录（如 `cann_lm/models/qwen3_5/export_wrapper.py`）。
 
 ```python
 class ExportWrapper(nn.Module):
@@ -343,7 +334,7 @@ class ExportWrapper(nn.Module):
     ) -> tuple[torch.Tensor, list[torch.Tensor], list[torch.Tensor]]:
         """子类实现：统一 I/O → 原生 forward kwargs → 提取 logits + 展平 KV/delta
 
-        返回 3-tuple (logits, past_kv_flat, delta_out_flat)：qwen3 的 delta_out_flat 为 []，
+        返回 3-tuple (logits, past_kv_flat, delta_out_flat)：gemma4 的 delta_out_flat 为 []，
         qwen3_5 线性注意力填 recurrent state。per_layer_token_identity 仅 gemma4 PLE。
         """
         raise NotImplementedError
@@ -391,59 +382,23 @@ class ExportWrapper(nn.Module):
   past_key_0, past_value_0, past_key_1, past_value_1, ...    ← 展平的所有层 KV cache
 ```
 
-**为什么需要 4D 预构造 mask？** 模型的 `_prepare_causal_mask` / `_create_causal_mask` 内部有动态控制流（依赖运行时 seq 长度），torch.export 无法静态追踪。传 4D mask 时走透传路径（`return attention_mask`），跳过动态构造。三个模型的透传位置：
+**为什么需要 4D 预构造 mask？** 模型的 `_prepare_causal_mask` / `_create_causal_mask` 内部有动态控制流（依赖运行时 seq 长度），torch.export 无法静态追踪。传 4D mask 时走透传路径（`return attention_mask`），跳过动态构造。两个模型的透传位置：
 
 | 模型 | 透传代码位置 |
 |------|-------------|
-| qwen3 | `modeling_qwen3.py` 第 349 行 `return attention_mask` |
 | gemma4 | `modeling_gemma4.py` 第 619 行 `return attention_mask` |
 | qwen3_5 | `modeling_qwen3_5.py` 第 616 行 `if attention_mask.dim() == 4: return attention_mask`（新增） |
 
-### Qwen3ExportWrapper 子类示例
-
-```python
-class Qwen3ExportWrapper(ExportWrapper):
-    """qwen3 子类：调原生 forward + 提取 logits + 展平 list[(k,v)] cache"""
-
-    def _drive_layers(self, input_ids, attention_mask, position_ids,
-                      past_key_values, new_kv_cache_pos, embeddings=None,
-                      per_layer_token_identity=None, delta_states=None):  # qwen3 无 PLE/delta, 忽略
-        kwargs = {
-            "attention_mask": attention_mask,
-            "position_ids": position_ids,
-            "past_key_values": past_key_values,
-            "new_kv_cache_pos": new_kv_cache_pos,
-        }
-        # 纯 embeddings: embeddings 提供时只传 inputs_embeds (不传 input_ids),
-        # model forward `if inputs_embeds is None` 跳过 embed_tokens 查表 → input_ids 不入图。
-        if embeddings is not None:
-            kwargs["inputs_embeds"] = embeddings   # 图外查表
-        else:
-            kwargs["input_ids"] = input_ids        # 图内查表
-
-        outputs = self.model(**kwargs)
-        logits = outputs["logits"]
-        past_kv_flat = []
-        updated_kv = outputs.get("past_key_values") or [None] * self._num_layers()
-        for i, layer_kv in enumerate(updated_kv):
-            k = layer_kv[0] if layer_kv is not None else past_key_values[i][0]
-            v = layer_kv[1] if layer_kv is not None else past_key_values[i][1]
-            past_kv_flat.append(k)
-            past_kv_flat.append(v)
-        return logits, past_kv_flat, []   # delta_out_flat 为空 (qwen3 无线性注意力)
-```
-
 > gemma4 子类（`Gemma4ExportWrapper`）在纯 embeddings 分支额外处理 PLE：用**实例方法替换**把 `text_model._compute_per_layer_inputs` 临时替换为返回 host 算好的 `per_layer_token_identity`，使 model.forward 跳过 `embed_tokens_per_layer(input_ids)` 查表 + bf16 反查，而层循环/mask/rope/lm_head 仍复用 model.forward（不改 modeling）。`_build_external_extras` 算 `per_layer_token_identity = embed_tokens_per_layer(input_ids).reshape(b,s,L,h_pl)`。详见 `models/gemma4/export_wrapper.py`。
 
-### 三个子类的差异
+### 两个子类的差异
 
 | 子类 | 文件位置 | 原生 cache 类型 | forward kwargs 差异 | 特殊处理 |
 |------|---------|----------------|---------------------|---------|
-| Qwen3ExportWrapper | `models/qwen3/export_wrapper.py` | `list[(k,v), ...]` | `position_ids` 外部传入 | 无 PLE；`per_layer_token_identity` 忽略 |
 | Gemma4ExportWrapper | `models/gemma4/export_wrapper.py` | `list[(k,v), ...]` | `position_ids` 外部传入 | `shared_kv_states=None`；**纯 embeddings 时实例方法替换 `_compute_per_layer_inputs` 外置 PLE 查表**，收 `per_layer_token_identity` |
 | Qwen3_5ExportWrapper | `models/qwen3_5/export_wrapper.py` | `SimpleKVCache` | `delta_cache`、`use_cache` | list → SimpleKVCache 转换；`delta_cache=None`；无 PLE |
 
-三个子类都支持纯 embeddings：`embeddings` 非 None 时只传 `inputs_embeds`（不传 `input_ids`，input_ids 不入图），None 时传 `input_ids`（图内查表）。gemma4 额外用 `per_layer_token_identity` 外置 PLE。
+两个子类都支持纯 embeddings：`embeddings` 非 None 时只传 `inputs_embeds`（不传 `input_ids`，input_ids 不入图），None 时传 `input_ids`（图内查表）。gemma4 额外用 `per_layer_token_identity` 外置 PLE。
 
 ### 轻量 vs 全量
 
@@ -452,13 +407,12 @@ class Qwen3ExportWrapper(ExportWrapper):
 | 对外 I/O | 统一（基类） | 统一（基类） |
 | 子类内部 | 调原生 `forward`（带 `if past is None` 分支） | 各 attention 加 scatter-write 路径 |
 | 导出图 | 按 sample 走一条分支、形状特化 | 一张静态图覆盖 prefill+decode |
-| 工作量 | 小（基类 + 3 子类脚手架） | 大（逐模型改 attention） |
+| 工作量 | 小（基类 + 2 子类脚手架） | 大（逐模型改 attention） |
 
 ### 各模型的全量难点（后续）
 
 - **gemma4**：KV 共享（后 n 层无自己的 buffer，复用别的层）→ 不 fit "每层一个 buffer"；sliding window 的局部 mask；per-layer head_dim/rope。
 - **qwen3_5**：线性注意力（GatedDeltaNet）的 cache 是 `[num_v_heads, k_head_dim, v_head_dim]` 的 **recurrent state**（delta rule 增量更新），不是 `[kv_cache_max_len, ...]` 的 KV buffer——需单独设计 recurrent buffer 的增量协议。详见 [reference_qwen3_5_export.md](../reference_qwen3_5_export.md)。
-- **qwen3**：最接近参考工程（标准 GQA + KV cache），全量改造阻力最小，建议先做。
 
 ### save_epair 接口
 
@@ -585,14 +539,14 @@ attention_mask = mask.unsqueeze(0).unsqueeze(0).expand(batch, 1, seq_len, kv_max
 
 其余输入：input_ids（random）、position_ids（arange）、new_kv_cache_pos（arange）、output_pos（`[seq_len-1]`）、past_key_values（每层一对零 buffer，per-layer head_dim 由 `_get_layer_head_dim` 决定）。
 
-纯 embeddings 模式（`use_embeddings=True`）：`input_ids` 不入位置参数（None placeholder），改由 `embeddings = embed_tokens(input_ids).detach()`（host 算）；gemma4 经 `_build_external_extras` 额外追加 `per_layer_token_identity`。返回 tuple 数随模式变化：`use_embeddings=False`=7-tuple；纯 embeddings qwen3=7 / gemma4=8（末位 `per_layer_token_identity`）；quant-embeddings=9（多 `embeddings_scale`，gemma4 含 PLE）；qwen3_5 经子类重写追加 `delta_states` 为 10-tuple。均对齐 `forward` 签名（缺省位取 None 默认）。
+纯 embeddings 模式（`use_embeddings=True`）：`input_ids` 不入位置参数（None placeholder），改由 `embeddings = embed_tokens(input_ids).detach()`（host 算）；gemma4 经 `_build_external_extras` 额外追加 `per_layer_token_identity`。返回 tuple 数随模式变化：`use_embeddings=False`=7-tuple；纯 embeddings gemma4=8（末位 `per_layer_token_identity`）；quant-embeddings=9（多 `embeddings_scale`，gemma4 含 PLE）；qwen3_5 经子类重写追加 `delta_states` 为 10-tuple。均对齐 `forward` 签名（缺省位取 None 默认）。
 
 ### save_model_config
 
 ```python
 def save_model_config(artifact: ModelArtifact, output_dir: Path, *,
                       use_embeddings: bool = False, quant_embeddings: bool = False) -> None:
-    # to_dict 有则用 (gemma4/qwen3)，无则用 dataclasses.asdict (qwen3_5)
+    # to_dict 有则用 (gemma4)，无则用 dataclasses.asdict (qwen3_5)
     if hasattr(artifact.config, "to_dict"):
         config_dict = artifact.config.to_dict()
     elif dataclasses.is_dataclass(artifact.config):
@@ -836,7 +790,7 @@ Please register the GE operator or decompose the operation in the model definiti
 
 - schema 为 `() -> ()`，**无输出**、无 GE 算子映射（`ascend_ir.source` 为空）；
 - 纯 PyTorch 运行时验证，不是计算节点，GE 编译阶段不需要；
-- 每层 transformer 约产生 9 个，qwen3-0.6B（28 层）共 ~262 个。
+- 每层 transformer 约产生 9 个，qwen3.5-0.8B（24 层）共 ~216 个。
 
 **问题**：若不处理，`PlanNodes` 会把它们当作 `ascend_ir.source` 为空的未映射算子，走到「无法映射算子的处理」分支报 `UNMAPPED_OPERATOR` 错误导致构图失败。
 
@@ -860,7 +814,7 @@ for (const auto &node : parser.Nodes()) {
 
 ### model_constants_config.json 分析
 
-`data/constants/model_constants_config.json` 是 PT2 归档格式的内部元信息文件，由 `torch_delegate.epair_save()` 生成。以 qwen3-0.6B 导出为例，记录 `model.lifted_tensor_0/1`、`model.rotary_emb.inv_freq` 等常量的 `path_name`/`is_param`/`tensor_meta`。
+`data/constants/model_constants_config.json` 是 PT2 归档格式的内部元信息文件，由 `torch_delegate.epair_save()` 生成。以 gemma4-E2B 导出为例，记录 `model.lifted_tensor_0/1`、`model.rotary_emb.inv_freq` 等常量的 `path_name`/`is_param`/`tensor_meta`。
 
 `input_specs` 是 ep_json 中 `graph_module.signature` 下的数组字段，列出模型的所有输入。`model_constants_config.json` 中的 3 个常量**全部出现在 `input_specs` 中**（作为 `tensor_constant` 或 `buffer`）。
 
@@ -985,7 +939,7 @@ td::EpairModelLoader decode_loader("decode_ep_json_with_ascend_ir.json",
 
 - `aten.index_copy.default` GE converter 缺失已解决：在 `converter/export/ge_converters/ge_converter.py` 用 `ge.InplaceUpdate` + `ge.TransposeD` 实现了 converter。converter CLI 导出 gemma4 prefill/decode + C++ `main.cpp` 加载编译 OM 全链路跑通（prefill 6079 节点 / decode 6044 节点 / `prefill.om` + `decode.om` 各 9.4GB）。
 
-- **纯 embeddings（`--use-embeddings`）全链路已通**：converter CLI 导出 + C++ `main.cpp` OM 编译跑通——qwen3-0.6B（`qwen3_pure_emb.om` 374MB，weights ≈ OM）+ gemma4-E2B（5B 参数 35 层含 PLE，`gemma4_e2b_pure.om` 4.57GB，ep_json 19MB / weights 4.56GB ≈ OM / host_weights 5.5GB 查表权重给 host）。`saver.detach_externalized_lookups()` 在导出前 del 外置查表子模块 → torch.export 不 lift → `weights_*.bin` 不含冗余查表权重（≈ OM，无 5.5GB 冗余）。数值验证由 OM runner（`examples/test_converter/export_llm_model/om_npu_verify/run_*_om.py`，OM vs eager/HF，ep 回环的超集）承接——原 `verify_qwen3_epair.py`/`verify_gemma4_epair.py`（`ep.module()` vs wrapper 的 ep 回环）已重构进 OM runner。gemma4 经 `run_gemma4_om.py` 验证（OM vs eager maxdiff<1.0 MATCH）+ `run_gemma4_gen.py` 文本生成通过；qwen3.5 经 `run_qwen3_5_om.py`（OM vs EP/HF MATCH）。**注**：qwen3（base）`run_qwen3_om.py` 暴露 OM 数值异常（OM vs eager maxdiff≈20，cann_lm eager≈HF 正确、OM 输出错误），疑在其动态 RoPE（Pow/Cos/Sin，gemma4 用预缓存表不触发），OM 计算侧待排查。
+- **纯 embeddings（`--use-embeddings`）全链路已通**：converter CLI 导出 + C++ `main.cpp` OM 编译跑通——gemma4-E2B（5B 参数 35 层含 PLE，`gemma4_e2b_pure.om` 4.57GB，ep_json 19MB / weights 4.56GB ≈ OM / host_weights 5.5GB 查表权重给 host）。`saver.detach_externalized_lookups()` 在导出前 del 外置查表子模块 → torch.export 不 lift → `weights_*.bin` 不含冗余查表权重（≈ OM，无 5.5GB 冗余）。数值验证由 OM runner（`examples/test_converter/export_llm_model/om_npu_verify/run_*_om.py`，OM vs eager/HF，ep 回环的超集）承接——原 `verify_gemma4_epair.py`（`ep.module()` vs wrapper 的 ep 回环）已重构进 OM runner。gemma4 经 `run_gemma4_om.py` 验证（OM vs eager maxdiff<1.0 MATCH）+ `run_gemma4_gen.py` 文本生成通过；qwen3.5 经 `run_qwen3_5_om.py`（OM vs EP/HF MATCH）。
 
 ### 逐图常量内联：actual_seq_qlen/kvlen → `ge.Const`（消除共享冲突 + PartitionedCall）
 
@@ -1086,7 +1040,6 @@ python cann_lm/converter/cann_lm_converter.py \
 
 | 模型 | logits max_diff (vs HF) | tokens match | 层数 | 架构特点 |
 |------|----------------------|-------------|------|---------|
-| qwen3-0.6B | 0.023 | ✅ | 28 | 标准 GQA |
 | qwen3.5-0.8B | 0.019 | ✅ | 24 | 混合 (6 full + 18 linear) |
 | gemma4-E2B | 0.17 | ✅ | 35 | KV 共享 + sliding + per-layer embeddings |
 
@@ -1103,14 +1056,14 @@ python cann_lm/converter/cann_lm_converter.py \
 
 ### gemma4 误差积累分析
 
-gemma4 的 max_diff (0.17) 比 qwen3 (0.023) 大约 7 倍，原因如下：
+gemma4 的 max_diff (0.17) 比 qwen3.5 (0.019) 大约 9 倍，原因如下：
 
 #### 误差来源
 
 | 来源 | gemma4 特有 | 贡献 | 说明 |
 |------|------------|------|------|
 | **Gemma4ClippableLinear** vs nn.Linear | ✅ | 最大 | HF 用 `Gemma4ClippableLinear` (有 clamp 逻辑), 我们用 `nn.Linear` — 相同权重下计算结果有微小差异 |
-| **5 个 RMSNorm/层 × 35 层 = 175 次** | ✅ | 中等 | gemma4 有 per_layer_input_norm, 每层 5 个 RMSNorm (vs qwen3 的 2 个 × 28 层 = 56 次) |
+| **5 个 RMSNorm/层 × 35 层 = 175 次** | ✅ | 中等 | gemma4 有 per_layer_input_norm, 每层 5 个 RMSNorm (35 层共 175 次) |
 | **Per-Layer Embeddings (PLE)** | ✅ | 中等 | 额外的 embedding 查表 + projection 计算路径 |
 | **Double-wide MLP** | ✅ | 小 | `use_double_wide_mlp=True`, 更宽的 MLP |
 | **k_norm + v_norm** (per-head RMSNorm) | ✅ | 小 | 每个 head 单独做 RMSNorm |
@@ -1250,13 +1203,13 @@ HF (Gemma4ClippableLinear):           cann_lm (nn.Linear):
 
 ## 待实现与遗留（导出相关）
 
-1. **统一 cache 签名（全量版）** — ExportWrapper 基类 + 每模型子类（**轻量版已实现**：基类 `forward`/`get_sample_inputs` + 3 个子类 `_drive_layers`，KV cache 显式图 I/O）；**全量版待做**（各 attention 加 scatter-write 路径，一张静态图覆盖 prefill+decode）
+1. **统一 cache 签名（全量版）** — ExportWrapper 基类 + 每模型子类（**轻量版已实现**：基类 `forward`/`get_sample_inputs` + 2 个子类 `_drive_layers`，KV cache 显式图 I/O）；**全量版待做**（各 attention 加 scatter-write 路径，一张静态图覆盖 prefill+decode）
 2. **prefill/decode 分离** — **已实现**（`saver.save_epair_prefill_decode` + CLI `--mode prefill-decode`）。gemma4 Python 导出 + C++ OM 编译全链路跑通
 3. **generation_config.json 处理** — 当前已从 `collect_tokenizer_files` 中移除。后续需要在 `llm_config` 中单独处理 `generation_config.json` 的参数（temperature/top_p/top_k/max_length 等），需和 llm_engine 确认使用哪些字段后再实现
 4. **图的导出输入输出接口** — 需要确定如何统一导出输入输出（个数不确定，且可能比较多）
 5. **qwen3.5 线性注意力导出** — 详见 [reference_qwen3_5_export.md](../reference_qwen3_5_export.md)
 6. **新 ExportWrapper 的 ep_json 格式与 C++ 解析器不兼容** — **[已解决]** C++ `epair_model_parser.cc` 的 `parse_named_arg` 已支持 `arg.name` 和 `arg.as_tensor.name` 两种格式
-7. **qwen3 / qwen3.5 scatter-write 改造** — 当前方案 B（预分配 buffer + `index_copy` scatter-write）仅实现 gemma4。qwen3 和 qwen3.5 的 attention 层同样需要从 `torch.cat` 改为 `index_copy` + 预分配 buffer。详见 [reference_qwen3_5_export.md](../reference_qwen3_5_export.md) "scatter-write 改造"
+7. **qwen3.5 scatter-write 改造** — 当前方案 B（预分配 buffer + `index_copy` scatter-write）仅实现 gemma4。qwen3.5 的 attention 层同样需要从 `torch.cat` 改为 `index_copy` + 预分配 buffer。详见 [reference_qwen3_5_export.md](../reference_qwen3_5_export.md) "scatter-write 改造"
 8. **aten.index_copy.default GE converter 缺失** — **[已解决]** 在 `converter/export/ge_converters/ge_converter.py` 注册 `aten.index_copy.default` converter，用 `ge.InplaceUpdate` + `ge.TransposeD` 实现
 
 > 量化相关待实现/遗留见 [quant_design.md](../quant/quant_design.md) "已知问题与遗留"。

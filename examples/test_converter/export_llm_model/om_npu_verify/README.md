@@ -8,7 +8,6 @@
 om_npu_verify/                  # main.cpp + CMakeLists + reg_register.h 已上移到上级 export_llm_model/
 ├── run_gemma4_om.py             # ACL python OM 运行验证 (单 OM vs eager; GEMMA4_OM env 切换 OM)
 ├── run_gemma4_gen.py            # ACL python OM 文本生成 (prefill+decode pipeline, 吐字)
-├── run_qwen3_om.py              # ACL python qwen3 OM 验证 (OM vs eager; QWEN3_OM/NUM_LAYERS env)
 ├── run_qwen3_5_om*.py          # qwen3.5 OM 验证 (OM vs EP/HF)
 ├── README.md                    # 本文件
 ├── epair_gemma4/                # 导出产物 (ep_json + weight_info + weights_*.bin)
@@ -20,7 +19,7 @@ om_npu_verify/                  # main.cpp + CMakeLists + reg_register.h 已上�
 - `cann_lm/converter/export/csrc/inc/external/reg_register.h`  # CANN 算子注册宏 (IR 校准版 81 ops)
 - `build/cann_lm_compile`  # 编译好的可执行 (aarch64, 由 build_cpp.sh 产)
 ```
-> 导出 epair 用 CLI `cann_lm/converter/cann_lm_converter.py`(唯一入口);批量导出三模型见 `../cann_lm_cli_export/run.sh`。
+> 导出 epair 用 CLI `cann_lm/converter/cann_lm_converter.py`(唯一入口);批量导出两模型见 `../cann_lm_cli_export/run.sh`。
 
 ## 环境
 
@@ -34,7 +33,7 @@ source $PROJECT_ROOT/scripts/set_env_cann.sh
 # ③ NPU 出字 (真 CANN + DEVICE=npu; 用 $DOPT_PYTHON 跑 run_*_gen.py)
 source $PROJECT_ROOT/scripts/set_env_cann.sh --npu
 ```
-> HF 模型路径由调用方必填 export: `GEMMA4_HF_PATH` / `QWEN3_HF_PATH` / `QWEN3_5_HF_PATH`. `check_env.sh` 一次性检查三套子流程前置.
+> HF 模型路径由调用方必填 export: `GEMMA4_HF_PATH` / `QWEN3_5_HF_PATH`. `check_env.sh` 一次性检查三套子流程前置.
 
 ## 使用流程
 
@@ -54,7 +53,7 @@ $CONVERTER_PYTHON $PROJECT_ROOT/cann_lm/converter/cann_lm_converter.py \
 - 纯 embeddings(`--use-embeddings` 默认 True):embed_tokens + PLE embed_tokens_per_layer 查表外置到 host(图内不含,host 喂 embeddings + per_layer_token_identity);detach 避免冗余打包。图内查表用 `--no-use-embeddings`。
 - prefill+decode 两图(出字用):`--mode prefill-decode --seq-len 128`。
 - 产物:`epair_gemma4/ep_json_with_ascend_ir.json`(GE IR)+ `weight_info.json` + `weights_*.bin`。
-- 批量导出三模型见 `../cann_lm_cli_export/run.sh`(基于 CLI)。
+- 批量导出两模型见 `../cann_lm_cli_export/run.sh`(基于 CLI)。
 
 ### 3. 编译 epair→OM(**每次编译都关 AUB**)
 > **默认每次编译都关 `AutomaticUbFusion`**(产生 `AutomaticBufferFusionOp` 的 UB 融合 pass),让元素算子(Mul/Add/Gelu 等)保持独立、图结构清晰可读。见下"关掉 AutomaticBufferFusionOp"。先建 cfg(一次性):

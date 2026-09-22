@@ -74,12 +74,9 @@ CANN-LM/cann_lm/models/qwen3_5/
 CANN-LM/cann_lm/models/qwen3_next/
 ├── configuration_qwen3_next.py   # Qwen3NextConfig（Qwen3_5TextConfig 的基类）
 ├── modeling_qwen3_next.py        # GatedDeltaNet, MoE 等核心组件
-
-CANN-LM/cann_lm/models/qwen3/
-├── modeling_qwen3.py             # Qwen3ForCausalLM（Qwen3_5ForCausalLM 的基类）
 ```
 
-继承链：`Qwen3RMSNorm → Qwen3NextRMSNorm → Qwen3_5RMSNorm`，`Qwen3Attention → Qwen3NextAttention(+Q Gate) → Qwen3_5Attention`
+继承链（transformers 参考）：`Qwen3NextRMSNorm → Qwen3_5RMSNorm`，`Qwen3NextAttention(+Q Gate) → Qwen3_5Attention`
 
 ### 第 2 步：创建目录结构
 

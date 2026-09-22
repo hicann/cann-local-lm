@@ -3,7 +3,7 @@
 Mirrors litert-torch's ExportableModuleBase design:
 - A base class unifies the external I/O contract (input_ids/embeddings, attention_mask,
   position_ids, past_key_values, ...).
-- Subclasses live under each model dir (e.g. cann_lm/models/qwen3/export_wrapper.py).
+- Subclasses live under each model dir (e.g. cann_lm/models/qwen3_5/export_wrapper.py).
 - Subclasses implement _drive_layers: translate the unified I/O into native model forward kwargs.
 - Supports both token_ids (in-graph lookup) and embeddings (out-of-graph lookup) modes.
 """
@@ -126,7 +126,7 @@ class ExportWrapper(nn.Module):
 
         if use_embeddings:
             extras = self._build_external_extras(input_ids)
-            ple = extras[0] if extras else None  # per_layer_token_identity (gemma4 PLE; qwen3=None)
+            ple = extras[0] if extras else None  # per_layer_token_identity (gemma4 PLE; qwen3_5=None)
             if quant_embeddings:
                 # int8 per-channel: host gathers int8_weight[input_ids] + scale[input_ids]; graph entry dequants (base forward).
                 q_w, q_s = self._quant_embeddings["model.model.embed_tokens.weight"]

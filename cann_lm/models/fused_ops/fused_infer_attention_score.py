@@ -92,7 +92,7 @@ if not _HAS_TORCH_NPU:
         if atten_mask is not None:
             # gemma4 mask 方阵 [b,1,kv_max,kv_max] bool (False=attend, True=mask out):
             # 截前 seq_len 行匹配 attn_weights [b,heads,seq_len,kv_max] + bool→float (True→-inf)。
-            # 非方阵 [b,1,seq_len,kv_max] float mask (qwen3 等) 直用, 不受影响。
+            # 非方阵 [b,1,seq_len,kv_max] float mask (其他模型) 直用, 不受影响。
             if atten_mask.shape[2] != attn_weights.shape[2]:
                 atten_mask = atten_mask[:, :, :attn_weights.shape[2], :]
             if atten_mask.dtype == torch.bool:

@@ -283,7 +283,7 @@ for t,c in types.most_common():
 > 确认 fused 算子逻辑正确（NPU eager），不经过 OM 编译。用 wrapper（scatter-write buffer）跑 eager 单次 forward，与 OM logits 对比（原 eager 出字脚本 `run_gemma4_eager_gen.py` 已移除，eager 验证改为单 forward 数值对比）。
 
 ```bash
-QWEN3_OM=/path/to/qwen3.om GEMMA4_OM=/path/to/gemma4.om \
+GEMMA4_OM=/path/to/gemma4.om \
 /opt/buildtools/Python-3.11.4/bin/python3 examples/test_converter/export_llm_model/om_npu_verify/run_gemma4_om.py
 ```
 

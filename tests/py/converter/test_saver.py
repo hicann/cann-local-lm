@@ -36,10 +36,10 @@ class _DictConfig:
         self.hidden_size = 16
 
 
-def _artifact(config, *, model_type="qwen3", quant_info=None, hf_config=None):
+def _artifact(config, *, model_type="qwen3_5", quant_info=None, hf_config=None):
     return ModelArtifact(
         model=nn.Linear(1, 1), config=config, hf_path="/x",
-        hf_config=hf_config if hf_config is not None else {"model_type": "qwen3"},
+        hf_config=hf_config if hf_config is not None else {"model_type": "qwen3_5"},
         tokenizer_files=[], model_type=model_type, wrapper_cls=None,
         quant_info=quant_info,
     )
@@ -50,9 +50,9 @@ def _artifact(config, *, model_type="qwen3", quant_info=None, hf_config=None):
 def test_save_model_config_uses_to_dict(tmp_path):
     save_model_config(_artifact(_ToDictConfig()), tmp_path)
     data = json.loads((tmp_path / "model_config.json").read_text())
-    assert data["model_type"] == "qwen3"
+    assert data["model_type"] == "qwen3_5"
     assert data["config"] == {"hidden_size": 64}
-    assert data["hf_config"] == {"model_type": "qwen3"}
+    assert data["hf_config"] == {"model_type": "qwen3_5"}
     assert data["use_embeddings"] is False
     assert data["quant_embeddings"] is False
     assert "quant_info" not in data  # quant_info=None → 不写

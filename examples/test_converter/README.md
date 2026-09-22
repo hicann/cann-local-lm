@@ -27,7 +27,7 @@ OM 运行/出字 (系统 Python + torch_npu + acl + NPU)
 | 组　　　　　　　　　 | 目录　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　| 覆盖阶段　　　　 | 说明　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　|
 | ----------------------| -----------------------------------------------------------------------| ------------------| -------------------------------------------------------------------------------------------------------------------------|
 | **基础 e2e**　　　　 | [`export_epair_and_compile/`](export_epair_and_compile/)　　　　　　　　　　| ①②③ 导出+C++加载 | 最小回归（SimpleNetwork 单 op）；自带 `run.sh`（含环境检查）+ README　　　　　　　　　　　　　　　　　　　　　　　　　　|
-| **LLM 主流程**　　　 | [`export_llm_model/`](export_llm_model/)　　　　　　　　　　　　　　　| 全链路　　　　　 | 三模型端到端（①→②③）；`run_e2e_pipeline.sh`（含 `--check-env` 验前置 + 真实执行记录）；产物 gitignore（`output/`）　　　　　 |
+| **LLM 主流程**　　　 | [`export_llm_model/`](export_llm_model/)　　　　　　　　　　　　　　　| 全链路　　　　　 | 两模型端到端（①→②③）；`run_e2e_pipeline.sh`（含 `--check-env` 验前置 + 真实执行记录）；产物 gitignore（`output/`）　　　　　 |
 | ├ CLI 导出测试　　　 | `export_llm_model/cann_lm_cli_export/`　　　　　　　　　　　　　　　| ①②　　　　　　　 | `run.sh`(source ①基底) + `verify.py` + `run_pd6_cases.sh`；HF 路径必填 env（`*_HF_PATH`）　　　　　　　　　　　　　 |
 | ├ OM 编译+出字　　　 | `export_llm_model/om_npu_verify/`　　　　　　　　　　　　　　　　　　 | ②③　　　　　　　 | `run_*_gen.py`/`run_*_om.py` + `check_env.sh`(source ①基底) + README；OM/HF 路径经 env 传入　　　　　　　　　　　　　|
 | └ e2e 编排　　　　　 | `export_llm_model/run_e2e_pipeline.sh`　　　　　　　　　　　　　　　| ①②③　　　　　　 | 串 cli_export→OM 编译→NPU 出字；每步子 shell source 对应基底脚本（隔离 LD）；产物落 `output/`　　　　　　　　　 |
@@ -37,7 +37,7 @@ OM 运行/出字 (系统 Python + torch_npu + acl + NPU)
 
 ## 端到端流程（从 CLI 到验证 PASS）
 
-以 gemma4 为例（qwen3/qwen3.5 同理，换 `--hf-path`）。
+以 gemma4 为例（qwen3.5 同理，换 `--hf-path`）。
 
 ### ① CLI 导出 epair（converter venv）
 ```bash
@@ -54,7 +54,7 @@ $VENV/bin/python3 cann_lm/converter/cann_lm_converter.py \
   --dtype bfloat16 --mode prefill-decode --seq-len 128   # --use-embeddings 默认 True
 ```
 - **PASS**：`Done. Output: epair_gemma4_pd` + 产物含 `prefill_ep_json_with_ascend_ir.json` + `decode_ep_json_with_ascend_ir.json` + `weight_info.json` + `weights_0.bin` + `host_weights_*.bin`。
-- 批量三模型 + 产物校验见 `cann_lm_cli_export/run.sh` + `verify.py`。
+- 批量两模型 + 产物校验见 `cann_lm_cli_export/run.sh` + `verify.py`。
 
 ### ② 产物校验 + IR 算子统计
 ```bash

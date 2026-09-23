@@ -125,8 +125,6 @@
 |---|---|---|---|
 | LDR-001 | `ModelArtifact` | dataclass 字段集合完整 | P1 |
 | LDR-002 | `ModelArtifact` | `quant_info` 默认 None | P1 |
-| LDR-003 | `build_config` | qwen3 hf_config 过滤未知 key（junk_field 丢弃） | P0 |
-| LDR-004 | `build_config` | qwen3 缺字段 → 用 config_cls 默认值 | P0 |
 | LDR-005 | `build_config` | gemma4 读嵌套 `text_config` | P0 |
 | LDR-006 | `build_config` | gemma4 `__post_init__` 运行（layer_types 末层 full + rope） | P0 |
 | LDR-007 | `build_config` | gemma4 `text_config` 缺失 → fallback 顶层 hf_config | P0 |

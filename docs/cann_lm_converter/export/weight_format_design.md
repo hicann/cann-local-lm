@@ -186,7 +186,7 @@ for name in names:
 - `nd2nz` 内部对非 16 倍数维补零（保证字节完整），写入物理 NZ 块
 - GE kernel 读 partial block 的有效元素、忽略 pad 零值
 
-**不写 padded shape**（`[m*16, k*16]`）——会让 MatMul 输出维度变 padded_M，破坏下游 shape。LLM Linear 维度实践上多 16 对齐（qwen3 hidden 1024/2048、intermediate 3072、head_dim 128×n_heads），pad 极少触发。
+**不写 padded shape**（`[m*16, k*16]`）——会让 MatMul 输出维度变 padded_M，破坏下游 shape。LLM Linear 维度实践上多 16 对齐（hidden 1024/2048、intermediate 3072、head_dim 128×n_heads 等），pad 极少触发。
 
 ## Stage 划分
 
@@ -313,11 +313,11 @@ total=4  TransData=0
 
 **根因**:GE 的 `CheckTensorIsValid` 不理解 NZ padding(检查 `data_size == Product(logical_shape) * elem_size`,不认 NZ 块 padding)。CANN 官方 `aclnnMatmulWeightNz` 走 ACLNN runtime(4D NZ 直传,不走 GE `CheckTensorIsValid`),所以官方路径能处理非对齐;GE 图编译路径不行。
 
-**当前实现**:16 对齐 shape 用 NZ(已验证);非对齐自动回落 ND(需在 `_pack_weights_to_dir` 加 shape 对齐检查)。LLM 实际权重维度多 16 对齐(qwen3 hidden 1024/2048、intermediate 3072、head_dim 128×n_heads),非对齐极少。
+**当前实现**:16 对齐 shape 用 NZ(已验证);非对齐自动回落 ND(需在 `_pack_weights_to_dir` 加 shape 对齐检查)。LLM 实际权重维度多 16 对齐(hidden 1024/2048、intermediate 3072、head_dim 128×n_heads 等),非对齐极少。
 
 ### L3 整网(A3)
 
-qwen3-0.6B `--mode single` + `CANN_LM_ENABLE_WEIGHT_TRANS=1` 导出 → OM 编译 → `atc --mode=1` 查 `*_proj` 对应 MatMul 无 TransData → NPU 出字 vs ND 版一致。
+LLM `--mode single` + `CANN_LM_ENABLE_WEIGHT_TRANS=1` 导出 → OM 编译 → `atc --mode=1` 查 `*_proj` 对应 MatMul 无 TransData → NPU 出字 vs ND 版一致。
 
 ### L4 Kirin(延后)
 

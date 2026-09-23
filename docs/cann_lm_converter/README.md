@@ -1,6 +1,6 @@
 # CANN-LM Converter 文档导航
 
-> 把 HuggingFace 模型转换为 epair 格式的 CLI 工具设计文档集。支持 gemma4 / qwen3 / qwen3_5（后续可扩展）。
+> 把 HuggingFace 模型转换为 epair 格式的 CLI 工具设计文档集。支持 gemma4 / qwen3_5（后续可扩展）。
 >
 > 文档按 **CLI / 模型导出 / 量化** 三模块组织，其余为参考文档。
 
@@ -28,7 +28,6 @@ docs/cann_lm_converter/
 ├── reference_python_to_om_self_test_flow.md ← 改源码到 OM 出字的自验证流程
 ├── reference_qwen3_5_export.md            ← qwen3.5 混合架构导出专题
 ├── reference_litert_lm_export.md          ← LiteRT-LM 外部参考
-├── reference_npu_tuned_export_qwen3.md    ← npu_tuned_export 参考
 ├── reference_npu_op_elimination.md        ← NPU 算子消除技能
 ├── ops_replacement.md                    ← gemma4 OM 算子等价替换（对齐 [fused_ops.md](../cann_lm_models/fused_ops/fused_ops.md) §1 算子总表）
 └── fia_static_kvmax_investigation.md     ← FIA 静态 kv_max 可行性调查与执行计划
@@ -56,7 +55,6 @@ docs/cann_lm_converter/
 | [reference_python_to_om_self_test_flow.md](./reference_python_to_om_self_test_flow.md) | 改 Python 源码到 OM 出字的 7 阶段自验证流程（fused_ops / modeling / ge_converter / reg_register.h） |
 | [reference_qwen3_5_export.md](./reference_qwen3_5_export.md) | qwen3.5 混合架构导出专题（`ChunkGatedDeltaRule` 维度修复 / delta_states tensor 化 / ACL OM 调试 / npu-op-elimination 改造） |
 | [reference_litert_lm_export.md](./reference_litert_lm_export.md) | LiteRT-LM + litert-torch 外部参考（prefill/decode 两签名 / KV cache pytree / wrapper 统一 I/O） |
-| [reference_npu_tuned_export_qwen3.md](./reference_npu_tuned_export_qwen3.md) | npu_tuned_export qwen3 fork 改造参考（预分配 KV buffer + scatter-write + 预缓存 RoPE + host 4D mask） |
 | [reference_npu_op_elimination.md](./reference_npu_op_elimination.md) | NPU 算子消除技能（host 预构 mask / repeat_kv concat / RoPE 预缓存 Gather） |
 | [ops_replacement.md](./ops_replacement.md) | gemma4 OM 算子等价替换（index_copy→npu_scatter_nd_update / stack→cat+transpose / arange→Const / expand→StridedSliceD+ConcatV2D / index→index_select / 关 InplaceAddRmsNorm 融合，对齐 [fused_ops.md](../cann_lm_models/fused_ops/fused_ops.md) §1 算子总表） |
 | [fia_static_kvmax_investigation.md](./fia_static_kvmax_investigation.md) | FIA 静态 kv_max 可行性调查与执行计划（actual_seq_kvlen 语义考证 / 退化根因 / 多 chunk mask分析 / 旋钮空间 A-E / Phase 0-5 双 variant baseline + 单旋钮扫 + 组合 + 多 chunk 终判） |
@@ -66,14 +64,14 @@ docs/cann_lm_converter/
 ```bash
 source /home/developer/Ascend/cann/set_env.sh
 export LD_LIBRARY_PATH=/mnt/workspace/torchair/build/stubs:${ASCEND_HOME_PATH}/lib64:${LD_LIBRARY_PATH:-}
-export TORCH_DELEGATE_HOME=/mnt/workspace/torch-delegate-harmony
-export PYTHONPATH=/mnt/workspace/project/CANN-LM_5883:${PYTHONPATH:-}
+export TORCH_DELEGATE_HOME=$TORCH_DELEGATE_HOME
+export PYTHONPATH=$PROJECT_ROOT:${PYTHONPATH:-}
 export TORCH_DEVICE_BACKEND_AUTOLOAD=0
 export TORCH_DELEGATE_ENABLE_FALLBACK_CODEGEN=0
 
 # 导出 epair（single 模式）
 python cann_lm/converter/cann_lm_converter.py \
-    --hf-path /path/to/qwen3-0.6B \
+    --hf-path /path/to/qwen3.5-0.8B \
     --output-dir /path/to/output \
     --dtype float16 --seq-len 8
 ```

@@ -272,13 +272,13 @@ output_dir/
 | 变量 | 说明 | 默认值 |
 |------|------|--------|
 | `ASCEND_HOME_PATH` | CANN 安装路径 (由 CANN `set_env.sh` 设置) | (需 source CANN set_env.sh) |
-| `PYTHONPATH` | 项目根目录 (`/mnt/workspace/project/CANN-LM_5883`) | (需设置) |
+| `PYTHONPATH` | 项目根目录 (`$PROJECT_ROOT`) | (需设置) |
 | `TORCH_DEVICE_BACKEND_AUTOLOAD` | backend autoload 开关 (设为 0 禁用) | `0` |
-| `TORCH_DELEGATE_HOME` | torch-delegate 安装路径 | `/mnt/workspace/torch-delegate-harmony` |
+| `TORCH_DELEGATE_HOME` | torch-delegate 安装路径 | `$TORCH_DELEGATE_HOME` |
 | `TORCH_DELEGATE_ENABLE_FALLBACK_CODEGEN` | fallback codegen 开关 (设为 0 禁用) | `0` (converter 模式) |
 | `ASCEND_SLOG_PRINT_TO_STDOUT` | GE 详细日志 (定位 not registered 等) | `1` (converter 模式) |
 | `LD_LIBRARY_PATH` | converter 模式: stubs 在 CANN lib64 前;NPU/OM 模式: 仅 CANN lib64 | (按模式) |
-| `DOPT_PYTHON` | dopt subprocess 用的系统 Python (`--quant-method gptq` 触发) | `/opt/buildtools/Python-3.11.4/bin/python3` |
+| `DOPT_PYTHON` | dopt subprocess 用的系统 Python (`--quant-method gptq` 触发) | _(自动探测；`_env_common.sh` 找能 `import torch_npu` 的 python，换机器无需改)_ |
 | `CONVERTER_PYTHON` | converter venv python (export 设置后供开发者用) | `${TORCH_DELEGATE_HOME}/.venv/bin/python` |
 | `SOC_VERSION` | OM 编译目标 SOC (om 模式) | `Ascend910_9362` |
 | `GE_FUSION_SWITCH_FILE` | OM 编译 fusion switch 配置 (关 AUB fusion) | `/tmp/fusion_autoub_off.cfg` |
@@ -290,21 +290,21 @@ output_dir/
 ```bash
 source /home/developer/Ascend/cann/set_env.sh
 export LD_LIBRARY_PATH=/mnt/workspace/torchair/build/stubs:${ASCEND_HOME_PATH}/lib64:${LD_LIBRARY_PATH:-}
-export TORCH_DELEGATE_HOME=/mnt/workspace/torch-delegate-harmony
-export PYTHONPATH=/mnt/workspace/project/CANN-LM_5883:${PYTHONPATH:-}
+export TORCH_DELEGATE_HOME=$TORCH_DELEGATE_HOME
+export PYTHONPATH=$PROJECT_ROOT:${PYTHONPATH:-}
 export TORCH_DEVICE_BACKEND_AUTOLOAD=0
 export TORCH_DELEGATE_ENABLE_FALLBACK_CODEGEN=0
 
 # 默认: 纯 embeddings (use_embeddings=True 默认, embed_tokens 查表外置到 host)
 python cann_lm/converter/cann_lm_converter.py \
-    --hf-path /path/to/qwen3-0.6B \
+    --hf-path /path/to/qwen3.5-0.8B \
     --output-dir /path/to/output \
     --dtype float16 \
     --seq-len 8
 
 # 图内查表 (需显式 --no-use-embeddings 关闭纯 embeddings, 图内含 embed_tokens)
 python cann_lm/converter/cann_lm_converter.py \
-    --hf-path /path/to/qwen3-0.6B \
+    --hf-path /path/to/qwen3.5-0.8B \
     --output-dir /path/to/output \
     --dtype float16 \
     --seq-len 8 \
@@ -312,7 +312,6 @@ python cann_lm/converter/cann_lm_converter.py \
 
 # 数值验证: OM runner (ep 回环的超集, OM vs eager/HF)
 python3 examples/test_converter/export_llm_model/om_npu_verify/run_gemma4_om.py   # gemma4: OM vs eager, maxdiff<1.0
-python3 examples/test_converter/export_llm_model/om_npu_verify/run_qwen3_om.py     # qwen3: OM vs eager
 python3 examples/test_converter/export_llm_model/om_npu_verify/run_qwen3_5_om.py  # qwen3.5: OM vs EP/HF
 
 # C++ OM 编译: 纯 embeddings epair → .om

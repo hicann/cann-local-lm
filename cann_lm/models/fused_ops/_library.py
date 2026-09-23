@@ -29,8 +29,8 @@ import torch
 # 始终注册 npu schema + CPU impl, lite 模式由 torch_delegate 的 fake module 提供 torch_npu
 _HAS_TORCH_NPU = False
 
-# npu 命名空间: FRAGMENT (允许和 torch_npu 的 npu namespace 共存, define cann_lm 自定义 op)
-NPU_LIB = torch.library.Library("npu", "FRAGMENT")
+# cann_lm 命名空间: FRAGMENT (cann_lm 独占, torch_npu 不提供 cann_lm:: 算子, 无冲突)
+NPU_LIB = torch.library.Library("cann_lm", "FRAGMENT")
 
 
 def safe_define(schema: str) -> None:

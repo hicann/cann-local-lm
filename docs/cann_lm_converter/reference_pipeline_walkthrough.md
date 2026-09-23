@@ -2,7 +2,7 @@
 
 > 端到端:模型代码 → 注册 → 加载 → 导出 epair → C++ 编译 OM
 >
-> 以 gemma4 为例(含 PLE、纯 embeddings 模式),其他模型(qwen3/qwen3_5)流程一致,差异见 [converter_design.md](./converter_design.md) "模型差异总览"。
+> 以 gemma4 为例(含 PLE、纯 embeddings 模式),其他模型(qwen3_5)流程一致,差异见 [converter_design.md](./converter_design.md) "模型差异总览"。
 >
 > 最后更新: 2026-08-07
 
@@ -73,7 +73,7 @@ examples/test_converter/export_llm_model/main.cpp
 - `host_side_weight_names()`:返回 `["model.model.embed_tokens.weight", "model.model.embed_tokens_per_layer.weight"]`(供 host 抽取打包)
 - `_get_layer_head_dim(i)`:sliding 层用 `head_dim`,full 层用 `global_head_dim`(per-layer KV 维度)
 
-> qwen3/qwen3_5 无 PLE:wrapper 的 `_drive_layers` 在 embeddings≠None 时只传 `inputs_embeds`、不传 `input_ids`;`_build_external_extras` 返回空;`detach_externalized_lookups` 只 del `embed_tokens`。详见各模型 `export_wrapper.py`。
+> qwen3_5 无 PLE:wrapper 的 `_drive_layers` 在 embeddings≠None 时只传 `inputs_embeds`、不传 `input_ids`;`_build_external_extras` 返回空;`detach_externalized_lookups` 只 del `embed_tokens`。详见各模型 `export_wrapper.py`。
 
 ---
 
@@ -198,13 +198,13 @@ td::EpairModelLoader decode_loader ("decode_ep_json_with_ascend_ir.json",  "weig
 ```bash
 source /home/developer/Ascend/cann/set_env.sh
 export LD_LIBRARY_PATH=/mnt/workspace/torchair/build/stubs:${ASCEND_HOME_PATH}/lib64:${LD_LIBRARY_PATH:-}
-export TORCH_DELEGATE_HOME=/mnt/workspace/torch-delegate-harmony
-export PYTHONPATH=/mnt/workspace/project/CANN-LM_5883:${PYTHONPATH:-}
+export TORCH_DELEGATE_HOME=$TORCH_DELEGATE_HOME
+export PYTHONPATH=$PROJECT_ROOT:${PYTHONPATH:-}
 export TORCH_DEVICE_BACKEND_AUTOLOAD=0
 export TORCH_DELEGATE_ENABLE_FALLBACK_CODEGEN=0
 
-VENV=/mnt/workspace/torch-delegate-harmony/.venv/bin/python
-BIN=/mnt/workspace/project/CANN-LM_5883/examples/test_converter/export_llm_model/build/cann_lm_compile
+VENV=$TORCH_DELEGATE_HOME/.venv/bin/python
+BIN=$PROJECT_ROOT/examples/test_converter/export_llm_model/build/cann_lm_compile
 HF=/mnt/workspace/data/models/gemma-4-E2B-it
 OUT=/tmp/opencode/gemma4_out
 

@@ -33,34 +33,9 @@ def test_model_artifact_fields():
 def test_model_artifact_quant_info_defaults_none():
     art = ModelArtifact(
         model=nn.Linear(1, 1), config=object(), hf_path="/x", hf_config={},
-        tokenizer_files=[], model_type="qwen3", wrapper_cls=None,
+        tokenizer_files=[], model_type="qwen3_5", wrapper_cls=None,
     )
     assert art.quant_info is None
-
-
-# ── build_config: 字段过滤 (qwen3, config_json_key=None → 用顶层 hf_config) ──
-
-def test_build_config_qwen3_filters_unknown_keys():
-    entry = REGISTRY["qwen3"]
-    hf_config = {
-        "model_type": "qwen3", "hidden_size": 512, "num_hidden_layers": 2,
-        "vocab_size": 100, "junk_field": "should_be_dropped",
-    }
-    config = build_config(hf_config, entry)
-
-    assert config.model_type == "qwen3"
-    assert config.hidden_size == 512
-    assert config.num_hidden_layers == 2
-    assert config.vocab_size == 100
-    assert not hasattr(config, "junk_field")
-
-
-def test_build_config_qwen3_uses_defaults_for_missing_fields():
-    entry = REGISTRY["qwen3"]
-    # 只给 model_type, 其余字段用 config_cls 默认值
-    config = build_config({"model_type": "qwen3"}, entry)
-    assert config.hidden_size == 1024  # Qwen3TextConfig 默认
-    assert config.num_hidden_layers == 28
 
 
 # ── build_config: config_json_key 嵌套 (gemma4, key="text_config") ──

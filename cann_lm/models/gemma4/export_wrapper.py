@@ -33,7 +33,7 @@ class Gemma4ExportWrapper(ExportWrapper):
         """gemma4: full_attention 层用 global_head_dim，sliding 层用 head_dim。
 
         gemma4 有 per-layer head_dim 差异（sliding 层的 KV 维度 = head_dim，
-        full 层的 KV 维度 = global_head_dim）。qwen3/qwen3.5 无此差异（用 base 默认）。
+        full 层的 KV 维度 = global_head_dim）。qwen3.5 无此差异（用 base 默认）。
         """
         global_head_dim = getattr(self.config, "global_head_dim", None)
         layer_types = getattr(self.config, "layer_types", None)
@@ -83,7 +83,7 @@ class Gemma4ExportWrapper(ExportWrapper):
         if output_pos is not None:
             # index_select 替代 advanced indexing (logits[:, output_pos, :] -> ge.IndexByTensor,
             # 未在 support_ops.md 列出); index_select(1, idx) -> ge.GatherV2 (support_ops.md).
-            logits = logits.index_select(1, output_pos.to(torch.int64))
+            logits = logits.index_select(1, output_pos)
         return logits, *past_kv_flat
 
     def _drive_layers(
@@ -190,39 +190,36 @@ class Gemma4ExportWrapper(ExportWrapper):
 
     def _build_mask_full(self, seq_len: int, kv_max: int, dtype: torch.dtype,
                          new_kv_cache_pos: torch.Tensor) -> torch.Tensor:
-        """bool 方阵 [b,1,kv_max,kv_max], 绝对位 causal。False=attend, True=mask out。
+        """bool 矩阵 [b,1,seq_len,kv_max], 绝对位 causal。False=attend, True=mask out。
 
-        前 seq_len 行: query@绝对位 new_kv_cache_pos[i] attend kv[0:abs+1]
-        后 (kv_max-seq_len) 行: padding 全 True (mask out, 无 query, kernel 用
-        actual_seq_qlen=seq_len 只取前 seq_len 行)。
-        dtype 参数保留兼容 (调用方仍传), 内部用 bool: 图内 _pad_mask_to_kv_square
-        对 bool 方阵走 q_len>=kv_len 直通分支 (return mask.bool(), bool→bool 不变),
-        跳过 float→bool 转换信息损失。
+        query@绝对位 new_kv_cache_pos[i] attend kv[0:abs+1]; 未写位 [actual:kv_max] 被
+        mask(True) 屏蔽。矩形 q_dim=seq_len 去掉方阵 padding 行 (arch31 tiling 要求
+        mask 第三维=S1=seq_len, 不接受 kv_max)。
         """
-        mask = torch.ones(self.batch, 1, kv_max, kv_max, dtype=torch.bool)
+        mask = torch.ones(self.batch, 1, seq_len, kv_max, dtype=torch.bool)
         q_abs = new_kv_cache_pos.unsqueeze(1)        # [seq, 1] 绝对位
         k = torch.arange(kv_max).unsqueeze(0)          # [1, kv_max]
         attend = k <= q_abs                              # [seq, kv_max] True=attend
-        mask[:, :, :seq_len, :] = ~attend                # False=attend, True=mask out
+        mask[:] = ~attend                                 # False=attend, True=mask out
         return mask
 
     def _build_mask_sliding(self, seq_len: int, kv_max: int, dtype: torch.dtype,
                             new_kv_cache_pos: torch.Tensor) -> torch.Tensor:
-        """bool 方阵 [b,1,kv_max,kv_max], 绝对位 causal + sliding window。
+        """bool 矩阵 [b,1,seq_len,kv_max], 绝对位 causal + sliding window。
 
-        前 seq_len 行: query@绝对位 attend kv[max(0, abs-w+1):abs+1] (窗口内+causal)
-        后 (kv_max-seq_len) 行: padding 全 True。
+        query@绝对位 attend kv[max(0, abs-w+1):abs+1] (窗口内+causal);
+        未写位 [actual:kv_max] 被 mask(True) 屏蔽。矩形 q_dim=seq_len。
         kv_len <= sliding_window 时 causal 已隐含在窗口内, 退化为 mask_full。
         """
         w = self._sliding_window
         if not w or w <= 0 or kv_max <= w:
             return self._build_mask_full(seq_len, kv_max, dtype, new_kv_cache_pos)
-        mask = torch.ones(self.batch, 1, kv_max, kv_max, dtype=torch.bool)
+        mask = torch.ones(self.batch, 1, seq_len, kv_max, dtype=torch.bool)
         q_abs = new_kv_cache_pos.unsqueeze(1)
         k = torch.arange(kv_max).unsqueeze(0)
         diff = q_abs - k
         attend = (diff >= 0) & (diff <= w - 1)
-        mask[:, :, :seq_len, :] = ~attend
+        mask[:] = ~attend
         return mask
 
     # ──────────────────────────────────────────────────────────────
@@ -244,10 +241,10 @@ class Gemma4ExportWrapper(ExportWrapper):
         dtype = self._model_dtype
 
         input_ids = torch.randint(0, cfg.vocab_size, (self.batch, seq_len), dtype=torch.int64)
-        new_kv_cache_pos = torch.arange(seq_len, dtype=torch.int64)
+        new_kv_cache_pos = torch.arange(seq_len, dtype=torch.int32)
         mask_full = self._build_mask_full(seq_len, kv_max, dtype, new_kv_cache_pos)
         mask_sliding = self._build_mask_sliding(seq_len, kv_max, dtype, new_kv_cache_pos)
-        position_ids = torch.arange(seq_len, dtype=torch.int64).unsqueeze(0).repeat(self.batch, 1)
+        position_ids = torch.arange(seq_len, dtype=torch.int32).unsqueeze(0).repeat(self.batch, 1)
         output_pos = torch.tensor([seq_len - 1], dtype=torch.int32)
 
         past_key_values = []
@@ -332,10 +329,10 @@ class Gemma4ExportWrapper(ExportWrapper):
             dtype = self._model_dtype
 
         input_ids = torch.randint(0, cfg.vocab_size, (self.batch, seq_len), dtype=torch.int64)
-        new_kv_cache_pos = torch.arange(seq_len, dtype=torch.int64)
+        new_kv_cache_pos = torch.arange(seq_len, dtype=torch.int32)
         mask_full = self._build_mask_full(seq_len, kv_max, dtype, new_kv_cache_pos)
         mask_sliding = self._build_mask_sliding(seq_len, kv_max, dtype, new_kv_cache_pos)
-        position_ids = torch.arange(seq_len, dtype=torch.int64).unsqueeze(0).repeat(self.batch, 1)
+        position_ids = torch.arange(seq_len, dtype=torch.int32).unsqueeze(0).repeat(self.batch, 1)
 
         past_key_values = []
         for i in range(num_layers):

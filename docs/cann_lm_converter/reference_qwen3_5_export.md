@@ -64,7 +64,7 @@ Qwen3.5-0.8B 是**混合架构**：6 层 full_attention（标准 GQA + KV cache�
 
 ## 1. 模型架构差异
 
-qwen3.5 与 gemma4 / qwen3 的接口不一致，converter 通过注册表 + adapter 抹平。以下差异表均摘自 `converter_design.md`。
+qwen3.5 与 gemma4 的接口不一致，converter 通过注册表 + adapter 抹平。以下差异表均摘自 `converter_design.md`。
 
 ### Config 加载差异
 
@@ -76,21 +76,21 @@ qwen3_5 的 config 嵌套在 `config.json` 的 `text_config` 子字典下，`bui
 
 ### forward 签名差异
 
-| 参数 | gemma4 | qwen3 | qwen3_5 |
-|------|:------:|:-----:|:-------:|
-| position_ids | 无（内部计算） | 有 | 无（内部计算） |
-| past_key_values | `list` | `list` | **`SimpleKVCache`** |
-| output_hidden_states | 有 | 有 | **无** |
-| use_cache | 无 | 无 | **有** |
-| **delta_cache** | 无 | 无 | **有（独有）** |
+| 参数 | gemma4 | qwen3_5 |
+|------|:------:|:-------:|
+| position_ids | 无（内部计算） | 无（内部计算） |
+| past_key_values | `list` | **`SimpleKVCache`** |
+| output_hidden_states | 有 | **无** |
+| use_cache | 无 | **有** |
+| **delta_cache** | 无 | **有（独有）** |
 
 ### forward 返回差异
 
-| 返回 key | gemma4 | qwen3 | qwen3_5 |
-|----------|--------|-------|---------|
-| past_key_values | 有 | 有 | 有 |
-| hidden_states | 有 | 有 | **无** |
-| **delta_cache** | 无 | 无 | **有（独有）** |
+| 返回 key | gemma4 | qwen3_5 |
+|----------|--------|---------|
+| past_key_values | 有 | 有 |
+| hidden_states | 有 | **无** |
+| **delta_cache** | 无 | **有（独有）** |
 
 ### 权重 key 重映射差异
 
@@ -133,7 +133,7 @@ qwen3_5 无 PLE，`embeddings` 非 None 时只传 `inputs_embeds`（不传 `inpu
 |------|-------------|
 | qwen3_5 | `modeling_qwen3_5.py` 第 616 行 `if attention_mask.dim() == 4: return attention_mask`（**新增**） |
 
-qwen3_5 的 4D 透传是为导出新增的（gemma4 / qwen3 原生就有），是新模型接入指南里"mask 4D 透传"检查项的参考实现。
+qwen3_5 的 4D 透传是为导出新增的（gemma4 原生就有），是新模型接入指南里"mask 4D 透传"检查项的参考实现。
 
 ---
 
@@ -294,7 +294,6 @@ epair 导出层解决后，跑 C++ `aclgrphBuildModel` 编译 OM 时，**infersh
 | `modeling_qwen3_5.py` `ForCausalLM.forward` + `generate` | `delta_cache` → `delta_states`/`delta_out`（eager 兼容） |
 | `export_wrapper.py` 基类 `forward` + `_drive_layers` | 加 `delta_states` 参数，返回 `*delta_out_flat` |
 | `qwen3_5/export_wrapper.py` `_drive_layers` | 不构造 SimpleDeltaNetCache，直接传 `delta_states` tuple；eager/prefill 传 `_delta_cache_box`；override `get_sample_inputs` 构造零 delta_states（prefill 图输入）；`new_conv_state` 用 slice 替代 `F.pad` |
-| `qwen3/export_wrapper.py` `_drive_layers` | 返回加空 `[]`（兼容基类签名） |
 
 #### prefill + decode 双图 delta tensor 流
 
@@ -689,22 +688,22 @@ b = stateShape[0];      // batch 数从 state shape 取
 ```bash
 cd examples/test_converter/export_llm_model/om_npu_verify
 source /home/developer/Ascend/cann/set_env.sh
-export PYTHONPATH=/mnt/workspace/project/CANN-LM_5883:/home/developer/Ascend/cann-9.2.0/python.site-packages:${PYTHONPATH:-}
+export PYTHONPATH=$PROJECT_ROOT:/home/developer/Ascend/cann-9.2.0/python.site-packages:${PYTHONPATH:-}
 export TORCH_DEVICE_BACKEND_AUTOLOAD=0
 
 # OM vs EP + OM vs HF（系统 Python, NPU）
-/opt/buildtools/Python-3.11.4/bin/python3 run_qwen3_5_om.py
+$DOPT_PYTHON run_qwen3_5_om.py
 # → OM vs EP maxdiff=1.5781e+01, OM vs HF maxdiff=1.5750e+01, MISMATCH
 
 # EP dump（venv, CPU）
 export LD_LIBRARY_PATH=/mnt/workspace/torchair/build/stubs:${ASCEND_HOME_PATH}/lib64:${LD_LIBRARY_PATH:-}
-export TORCH_DELEGATE_HOME=/mnt/workspace/torch-delegate-harmony
+export TORCH_DELEGATE_HOME=$TORCH_DELEGATE_HOME
 export TORCH_DELEGATE_ENABLE_FALLBACK_CODEGEN=0
-/mnt/workspace/torch-delegate-harmony/.venv/bin/python dump_ep_logits.py
+$TORCH_DELEGATE_HOME/.venv/bin/python dump_ep_logits.py
 
 # 单算子 chunk OM vs CPU（系统 Python 存 npy → venv 对比）
-/opt/buildtools/Python-3.11.4/bin/python3 debug_chunk_om.py    # 存 chunk_om_dump.npz
-/mnt/workspace/torch-delegate-harmony/.venv/bin/python cpu_chunk_compare.py  # 对比 → PASS (maxdiff 0.006)
+$DOPT_PYTHON debug_chunk_om.py    # 存 chunk_om_dump.npz
+$TORCH_DELEGATE_HOME/.venv/bin/python cpu_chunk_compare.py  # 对比 → PASS (maxdiff 0.006)
 ```
 
 ### 8.10 embeddings 入图验证（2026-08-10）
@@ -733,12 +732,12 @@ qwen3.5 `tie_word_embeddings=true`：`embed_tokens` 与 `lm_head` 共享 storage
 # 1. 导出 embeddings 入图 epair（venv, CPU）
 source /home/developer/Ascend/cann/set_env.sh
 export LD_LIBRARY_PATH=/mnt/workspace/torchair/build/stubs:${ASCEND_HOME_PATH}/lib64:${LD_LIBRARY_PATH:-}
-export TORCH_DELEGATE_HOME=/mnt/workspace/torch-delegate-harmony
-export PYTHONPATH=/mnt/workspace/project/CANN-LM_5883:${PYTHONPATH:-}
+export TORCH_DELEGATE_HOME=$TORCH_DELEGATE_HOME
+export PYTHONPATH=$PROJECT_ROOT:${PYTHONPATH:-}
 export TORCH_DEVICE_BACKEND_AUTOLOAD=0
 export TORCH_DELEGATE_ENABLE_FALLBACK_CODEGEN=0
 cd examples/test_converter/export_llm_model/om_npu_verify
-/mnt/workspace/torch-delegate-harmony/.venv/bin/python3 /mnt/workspace/project/CANN-LM_5883/cann_lm/converter/cann_lm_converter.py \
+$TORCH_DELEGATE_HOME/.venv/bin/python3 $PROJECT_ROOT/cann_lm/converter/cann_lm_converter.py \
   --hf-path /mnt/workspace/data/models/Qwen3.5-0.8B \
   --output-dir epair_qwen3_5_emb \
   --seq-len 8 --dtype bfloat16 --mode single          # --use-embeddings 默认 True
@@ -751,7 +750,7 @@ export SOC_VERSION=Ascend910_9362
 
 # 3. 验证（系统 Python, NPU acl + HF 对比）
 export PYTHONPATH=/home/developer/Ascend/cann-9.2.0/python.site-packages:${PYTHONPATH:-}
-/opt/buildtools/Python-3.11.4/bin/python3 run_qwen3_5_om_emb.py
+$DOPT_PYTHON run_qwen3_5_om_emb.py
 # → OM vs HF maxdiff=0.375, top5_overlap=5/5, MATCH
 ```
 

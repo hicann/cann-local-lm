@@ -14,6 +14,7 @@
 
 """Register cann_lm GE converters (torch.export -> epair IR)."""
 
+import os
 from typing import Any
 
 import torch
@@ -40,7 +41,7 @@ def register_ge_converters() -> None:
     _compat_ir.is_cann_compat = lambda *a, **k: ""
 
     from ._quant_matmul_converter import convert_quant_matmul
-    register_fx_node_ge_converter(torch.ops.npu.npu_quant_matmul.default)(convert_quant_matmul)
+    register_fx_node_ge_converter(torch.ops.cann_lm.quant_matmul.default)(convert_quant_matmul)
 
     # softplus: torchair placeholder -> ge.SoftplusV2. reg_register.h must register SoftplusV2
     # (else GetGEGraph heap corruption). beta/threshold float() (aten Scalar is int, ge .f is float).
@@ -56,7 +57,7 @@ def register_ge_converters() -> None:
         return ge.L2Normalize(x, axis=[dim], eps=float(eps))
 
     from ._chunk_gated_delta_rule_converter import convert_chunk_gated_delta_rule
-    register_fx_node_ge_converter(torch.ops.npu.npu_chunk_gated_delta_rule.default)(convert_chunk_gated_delta_rule)
+    register_fx_node_ge_converter(torch.ops.cann_lm.chunk_gated_delta_rule.default)(convert_chunk_gated_delta_rule)
 
     from ._conv1d_converter import convert_conv1d
     register_fx_node_ge_converter(torch.ops.aten.conv1d.default)(convert_conv1d)
@@ -65,11 +66,23 @@ def register_ge_converters() -> None:
     register_fx_node_ge_converter(torch.ops.aten.index_copy.default)(convert_index_copy)
 
     from ._scatter_nd_update_converter import convert_scatter_nd_update, convert_scatter_nd_update_
-    register_fx_node_ge_converter(torch.ops.npu.npu_scatter_nd_update.default)(convert_scatter_nd_update)
-    register_fx_node_ge_converter(torch.ops.npu.npu_scatter_nd_update_.default)(convert_scatter_nd_update_)
+    register_fx_node_ge_converter(torch.ops.cann_lm.scatter_nd_update.default)(convert_scatter_nd_update)
+    register_fx_node_ge_converter(torch.ops.cann_lm.scatter_nd_update_.default)(convert_scatter_nd_update_)
+
+    from ._rms_norm_converter import convert_rms_norm
+    register_fx_node_ge_converter(torch.ops.cann_lm.rms_norm.default)(convert_rms_norm)
+
+    from ._rotary_mul_converter import convert_rotary_mul
+    register_fx_node_ge_converter(torch.ops.cann_lm.rotary_mul.default)(convert_rotary_mul)
 
     from ._index_put_converter import convert_index_put
     register_fx_node_ge_converter(torch.ops.aten.index_put.default)(convert_index_put)
 
     from ._fused_infer_attention_score_v2_converter import convert_fused_infer_attention_score_v2
-    register_fx_node_ge_converter(torch.ops.npu.npu_fused_infer_attention_score_v2.default)(convert_fused_infer_attention_score_v2)
+    register_fx_node_ge_converter(torch.ops.cann_lm.fused_infer_attention_score_v2.default)(convert_fused_infer_attention_score_v2)
+
+    # KirinX90 converter patches (last-write-wins, override after all above).
+    # 环境变量 KIRINX90_CONVERTER_PATCHES=1 时加载，用等价算子替换 kirinx90 不支持的 op。
+    if os.environ.get("KIRINX90_CONVERTER_PATCHES", "") == "1":
+        from ._kirinx90_converter_patches import register_kirinx90_patches
+        register_kirinx90_patches()

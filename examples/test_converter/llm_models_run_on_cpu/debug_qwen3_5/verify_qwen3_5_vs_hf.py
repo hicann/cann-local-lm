@@ -11,19 +11,20 @@ is numerically correct relative to the HF reference (incl. the GatedDeltaNet
 linear-attention chunk prefill and interleaved MRoPE).
 
 Usage:
-    python verify_qwen3_5_vs_hf.py --model /path/to/qwe3.5-0.8B
+    python verify_qwen3_5_vs_hf.py --model /path/to/qwen3.5-0.8B
 """
 
 import argparse
 import os
 import sys
+from pathlib import Path
 
 import torch
 
 THIS_DIR = os.path.dirname(os.path.abspath(__file__))
-_PROJECT_ROOT = os.path.normpath(os.path.join(THIS_DIR, "..", "..", ".."))
-if _PROJECT_ROOT not in sys.path:
-    sys.path.insert(0, _PROJECT_ROOT)
+_PROJECT_ROOT = next(p for p in Path(__file__).resolve().parents if (p / "cann_lm").is_dir())
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
 
 _LLM_ENGINE_DIR = os.path.dirname(THIS_DIR)  # llm_models_run_on_cpu/ holds sibling hf_cpu.py
 if _LLM_ENGINE_DIR not in sys.path:

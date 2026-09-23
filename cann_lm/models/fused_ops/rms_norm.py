@@ -12,9 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""npu::npu_rms_norm - RMSNorm op (schema + meta + CPU eager kernel).
+"""cann_lm::rms_norm - RMSNorm op (schema + meta + CPU eager kernel).
 
-注册到 npu 命名空间 (torch.ops.npu.npu_rms_norm), torchair custom/ 的
+注册到 npu 命名空间 (torch.ops.cann_lm.rms_norm), torchair custom/ 的
 npu_rms_norm converter 自动注册 (ge.RmsNorm). stubs 环境 (无 torch_npu)
 自定义 schema + fake + CPU impl; 真实 torch_npu 由 torch_npu 提供 schema.
 """
@@ -25,12 +25,12 @@ from ._library import NPU_LIB, safe_define, _HAS_TORCH_NPU, register_cpu_impl
 
 if NPU_LIB is not None:
     safe_define(
-        "npu_rms_norm(Tensor self, Tensor gamma, float epsilon=1e-6) -> (Tensor y, Tensor rstd)"
+        "rms_norm(Tensor self, Tensor gamma, float epsilon=1e-6) -> (Tensor y, Tensor rstd)"
     )
 
 if not _HAS_TORCH_NPU:
 
-    @torch.library.register_fake("npu::npu_rms_norm")
+    @torch.library.register_fake("cann_lm::rms_norm")
     def _rms_norm_meta(
         self: torch.Tensor,
         gamma: torch.Tensor,
@@ -41,7 +41,7 @@ if not _HAS_TORCH_NPU:
         rstd = self.new_empty(self.shape[:-1] + (1,), dtype=torch.float32)
         return y, rstd
 
-    @register_cpu_impl("npu::npu_rms_norm")
+    @register_cpu_impl("cann_lm::rms_norm")
     def _rms_norm_cpu(
         self: torch.Tensor,
         gamma: torch.Tensor,

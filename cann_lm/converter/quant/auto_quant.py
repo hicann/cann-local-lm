@@ -4,14 +4,25 @@ See docs/cann_lm_converter/quant/quant_design.md (one-shot quant plan selection)
 """
 
 import os
+import shutil
 import subprocess
 import tempfile
 from pathlib import Path
 
+
+def _dopt_python() -> str:
+    """③ NPU 阶段装 torch_npu 的系统 python (与 converter P1 venv 隔离).
+
+    正常由 scripts/_env_common.sh 的 _resolve_dopt_python 自动探测并 export;
+    兜底用 PATH 里的 python3 (此时多半未 source env 脚本, subprocess 会失败并报错).
+    """
+    return os.environ.get("DOPT_PYTHON") or shutil.which("python3") or "python3"
+
+
 def _run_dopt_subprocess(hf_path: str, device: str) -> str:
     quant_dir = Path(__file__).resolve().parent
     wrapper_path = quant_dir / "dopt_wrapper.py"
-    dopt_python = os.environ.get("DOPT_PYTHON", "/opt/buildtools/Python-3.11.4/bin/python3")
+    dopt_python = _dopt_python()
     tmp_out = tempfile.mkdtemp(prefix="dopt_gptq_", dir=os.environ.get("DOPT_TMP_DIR"))
     cmd = [
         dopt_python, str(wrapper_path),
@@ -44,7 +55,7 @@ def _detect_device_type() -> str:
     env_dev = os.environ.get("DEVICE")
     if env_dev in ("npu", "cuda", "cpu"):
         return env_dev
-    dopt_python = os.environ.get("DOPT_PYTHON", "/opt/buildtools/Python-3.11.4/bin/python3")
+    dopt_python = _dopt_python()
     env = os.environ.copy()
     ld = env.get("LD_LIBRARY_PATH", "")
     env["LD_LIBRARY_PATH"] = ":".join(p for p in ld.split(":") if "stubs" not in p)

@@ -19,8 +19,9 @@ std::atomic<uint32_t> g_next_graph_id{0};
 
 class EpairModelLoader::Impl {
  public:
-  Impl(const char *model_json_path, const char *weights_index_path) {
-    Initialize(model_json_path, weights_index_path);
+  Impl(const char *model_json_path, const char *weights_index_path,
+       const std::vector<std::string> &tap_outputs) {
+    Initialize(model_json_path, weights_index_path, tap_outputs);
   }
 
   Status GetGEGraph(ge::Graph *out_graph) {
@@ -46,10 +47,11 @@ class EpairModelLoader::Impl {
   }
 
  private:
-  void Initialize(const char *model_json_path, const char *weights_index_path) {
-    TDLOGI("Initialize enter: model_json=%s, weights_index=%s",
+  void Initialize(const char *model_json_path, const char *weights_index_path,
+                  const std::vector<std::string> &tap_outputs) {
+    TDLOGI("Initialize enter: model_json=%s, weights_index=%s, tap_outputs=%zu",
            model_json_path ? model_json_path : "(null)",
-           weights_index_path ? weights_index_path : "(null)");
+           weights_index_path ? weights_index_path : "(null)", tap_outputs.size());
 
     if (model_json_path == nullptr || weights_index_path == nullptr) {
       TDLOGE("Initialize failed: one or more paths are null");
@@ -75,6 +77,9 @@ class EpairModelLoader::Impl {
       init_status_ = FAILED;
       return;
     }
+    if (!tap_outputs.empty()) {
+      builder.SetTapOutputs(tap_outputs);  // tap 须在 Build() 前设, FinalizeGraph 解析
+    }
     TDLOGI("Initialize step: builder initialized");
 
     graph_ = builder.Build(result);
@@ -96,7 +101,11 @@ class EpairModelLoader::Impl {
 };
 
 EpairModelLoader::EpairModelLoader(const char *model_json_path, const char *weights_index_path)
-    : impl_(MakeShared<Impl>(model_json_path, weights_index_path)) {
+    : EpairModelLoader(model_json_path, weights_index_path, {}) {}
+
+EpairModelLoader::EpairModelLoader(const char *model_json_path, const char *weights_index_path,
+                                   const std::vector<std::string> &tap_outputs)
+    : impl_(MakeShared<Impl>(model_json_path, weights_index_path, tap_outputs)) {
   if (impl_ == nullptr) {
     TDLOGE("EpairModelLoader construction failed: Impl allocation failed");
     return;

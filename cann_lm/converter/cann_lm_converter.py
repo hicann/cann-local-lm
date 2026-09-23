@@ -30,8 +30,20 @@ if str(_PROJECT_ROOT) not in sys.path:
 _DTYPE_MAP = {
     "float32": torch.float32,
     "float16": torch.float16,
-    "bfloat16": torch.bfloat16,
 }
+
+
+def _derive_dtype(target_soc: str) -> torch.dtype:
+    """Derive weight dtype from --target-soc (no --dtype given).
+
+    Ascend family (910/950) → bfloat16: ChunkGatedDeltaRule (qwen3.5 linear_attn)
+    op-info on Ascend declares input dtype=bfloat16 only (no float16 kernel).
+    Kirin (KirinX90) → float16: kirinx90 op-info supports float16.
+    """
+    s = (target_soc or "")
+    if s.startswith("Kirin"):
+        return torch.float16
+    return torch.bfloat16
 
 _DEFAULT_MAX_FILE_SIZE = 50 * 1024 * 1024 * 1024  # 50GB
 
@@ -151,9 +163,10 @@ def parse_args() -> argparse.Namespace:
                         help="HuggingFace model path (local directory)")
     parser.add_argument("--output-dir", required=True,
                         help="epair output directory")
-    parser.add_argument("--dtype", default="float16",
-                        choices=list(_DTYPE_MAP),
-                        help="Weight dtype (default: float16)")
+    parser.add_argument("--dtype", default=None, choices=list(_DTYPE_MAP),
+                        help="Weight dtype override (float16/float32). Default: derived from "
+                             "--target-soc (Ascend→bfloat16, Kirin→float16); Ascend needs bf16 "
+                             "for ChunkGatedDeltaRule (qwen3.5 linear_attn).")
     parser.add_argument("--max-file-size", type=int, default=_DEFAULT_MAX_FILE_SIZE,
                         help="Max bytes per bin file (default: 50GB)")
     parser.add_argument("--kv-cache-max-len", type=int, default=2048,
@@ -189,10 +202,13 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    dtype = _DTYPE_MAP[args.dtype] if args.dtype else _derive_dtype(args.target_soc)
+    print(f"[dtype] target_soc={args.target_soc} -> {str(dtype)} "
+          f"({'override' if args.dtype else 'derived from target-soc'})")
     convert(
         hf_path=args.hf_path,
         output_dir=args.output_dir,
-        dtype=_DTYPE_MAP[args.dtype],
+        dtype=dtype,
         max_file_size=args.max_file_size,
         kv_cache_max_len=args.kv_cache_max_len,
         seq_len=args.seq_len,

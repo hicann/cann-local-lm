@@ -12,9 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""npu::npu_rotary_mul - fused rotate-half RoPE (schema + meta + CPU eager kernel).
+"""cann_lm::rotary_mul - fused rotate-half RoPE (schema + meta + CPU eager kernel).
 
-注册到 npu 命名空间 (torch.ops.npu.npu_rotary_mul), torchair custom/ 的
+注册到 npu 命名空间 (torch.ops.cann_lm.rotary_mul), torchair custom/ 的
 npu_rotary_mul converter 自动注册 (arch35 -> ge.RotaryPositionEmbedding,
 旧架构 -> ge.RotaryMul). cann_lm CPU impl 仅支持 rotary_mode='half'.
 """
@@ -25,12 +25,12 @@ from ._library import NPU_LIB, safe_define, _HAS_TORCH_NPU, register_cpu_impl
 
 if NPU_LIB is not None:
     safe_define(
-        "npu_rotary_mul(Tensor self, Tensor r1, Tensor r2, str rotary_mode=\"half\") -> Tensor out"
+        "rotary_mul(Tensor self, Tensor r1, Tensor r2, str rotary_mode=\"half\") -> Tensor out"
     )
 
 if not _HAS_TORCH_NPU:
 
-    @torch.library.register_fake("npu::npu_rotary_mul")
+    @torch.library.register_fake("cann_lm::rotary_mul")
     def _rotary_mul_meta(
         self: torch.Tensor,
         r1: torch.Tensor,
@@ -40,7 +40,7 @@ if not _HAS_TORCH_NPU:
         del r1, r2, rotary_mode
         return torch.empty_like(self)
 
-    @register_cpu_impl("npu::npu_rotary_mul")
+    @register_cpu_impl("cann_lm::rotary_mul")
     def _rotary_mul_cpu(
         self: torch.Tensor,
         r1: torch.Tensor,

@@ -267,13 +267,16 @@ void GeWeightLoader::LoadConsolidated(const std::string &weights_index_path, con
   // Derive bin file directory from the index file path
   const std::filesystem::path index_dir = std::filesystem::path(weights_index_path).parent_path();
 
-  // Build logical_name -> is_parameter lookup from model input_specs
-  std::unordered_map<std::string, bool> logical_is_parameter;
+  // Build logical_name -> is_weight lookup from model input_specs (fallback path
+  // for old weight_info.json without the _is_weight field). Semantics mirror the
+  // Python packer: parameters + buffers are module state (_is_weight=true);
+  // lifted tensor constants are trace-time graph constants (_is_weight=false).
+  std::unordered_map<std::string, bool> logical_is_weight;
   for (const auto &spec : model.input_specs) {
-    if (spec.kind == PlaceholderKind::Parameter) {
-      logical_is_parameter[spec.logical_name] = true;
-    } else if (spec.kind == PlaceholderKind::Buffer || spec.kind == PlaceholderKind::TensorConstant) {
-      logical_is_parameter[spec.logical_name] = false;
+    if (spec.kind == PlaceholderKind::Parameter || spec.kind == PlaceholderKind::Buffer) {
+      logical_is_weight[spec.logical_name] = true;
+    } else if (spec.kind == PlaceholderKind::TensorConstant) {
+      logical_is_weight[spec.logical_name] = false;
     }
   }
 
@@ -301,11 +304,17 @@ void GeWeightLoader::LoadConsolidated(const std::string &weights_index_path, con
       info.offset = static_cast<size_t>(entry.value("offset", int64_t{0}));
       info.data_size = static_cast<size_t>(entry.value("size", int64_t{0}));
       info.use_pickle = false;
-      info.format_str = entry.value("format", std::string());  // "NZ" => FORMAT_FRACTAL_NZ (CreateConstNode)
+      info.format_str = entry.value("format", std::string());  // "NZ" =>FORMAT_FRACTAL_NZ (CreateConstNode)
 
-    const auto param_it = logical_is_parameter.find(info.logical_name);
-    if (param_it != logical_is_parameter.end()) {
-      info.is_parameter = param_it->second;
+    // Prefer the explicit _is_weight field (self-describing weight_info.json);
+    // fall back to input_specs derivation when absent (back-compat with old index).
+    if (entry.contains("_is_weight") && entry["_is_weight"].is_boolean()) {
+      info.is_parameter = entry["_is_weight"].get<bool>();
+    } else {
+      const auto param_it = logical_is_weight.find(info.logical_name);
+      if (param_it != logical_is_weight.end()) {
+        info.is_parameter = param_it->second;
+      }
     }
 
     // tensor_values may be keyed by placeholder name (e.g. "p_w1");

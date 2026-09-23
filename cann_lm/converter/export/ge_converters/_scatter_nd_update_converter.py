@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""npu::npu_scatter_nd_update(_) GE converter -> ge.ScatterNdUpdate.
+"""cann_lm::scatter_nd_update(_) GE converter -> ge.ScatterNdUpdate.
 
 Maps directly to ge.ScatterNdUpdate (standard multi-dim coordinate scatter), bypassing
 the aten.index_copy InplaceUpdate+Transpose path. out-of-place adds ge.TensorMove (in-place

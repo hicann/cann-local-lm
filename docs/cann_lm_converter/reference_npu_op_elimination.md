@@ -7,14 +7,14 @@ description: |
   - 导出图含低效算子想替换 (BroadcastTo → ConcatV2D,Pow/Neg/Cos/Sin → Gather)
   - OM 编译失败报 "operator not supported" 或某算子 kernel 缺失
   - 把 gitee npu_tuned 模式 (host 预构 mask / repeat_kv concat / RoPE 预缓存) 应用到 cann_lm 模型
-  - 对 gemma4 / qwen3 / qwen3.5 做 export 前的图改造
+  - 对 gemma4 / qwen3.5 做 export 前的图改造
 version: 1.0.0
 metadata:
   author: assistant
   category: graph-rewrite
   last_updated: 2026-08-10
   demonstrated_on: gemma4 (e2b 真实配置)
-  applicable_to: [gemma4, qwen3, qwen3_5]
+  applicable_to: [gemma4, qwen3_5]
 allowedTools:
   - read
   - grep
@@ -27,7 +27,7 @@ allowedTools:
 # NPU 算子消除技能
 
 把 HF 模型导出图里 NPU 不支持 / 低效的算子改造成 NPU 友好形式,使 epair→OM 编译通过且算子表干净。
-来源: gitee `npu_tuned` 模式 (参考 `docs/cann_lm_converter/reference_npu_tuned_export_qwen3.md`)。
+来源: gitee `npu_tuned` 模式。
 首次完整应用于 cann_lm gemma4 (e2b 真实配置: 35 层后 20 KV 共享, head_dim=256/global=512, PLE 开, sliding=512, kv_max=2048)。
 
 ## 总览: 三处改造
@@ -151,7 +151,7 @@ def repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
 - 数值零差 (maxdiff=0.00e+00), e2b OM dump 实测 ConcatV2D=70 (=35 层 × 2(k,v)), BroadcastTo=0
 
 ### 文件
-- `cann_lm/models/gemma4/modeling_gemma4.py` `repeat_kv()` (qwen3/qwen3.5 同名函数同改)
+- `cann_lm/models/gemma4/modeling_gemma4.py` `repeat_kv()` (qwen3.5 同名函数同改)
 
 ## 改造 3: RoPE 预缓存表 + Gather (Pow/Neg/Cos/Sin → Gather)
 
@@ -247,17 +247,17 @@ export GE_FUSION_SWITCH_FILE=/path/to/fusion_autoub_off.cfg
 ```bash
 source /home/developer/Ascend/cann/set_env.sh
 export LD_LIBRARY_PATH=/mnt/workspace/torchair/build/stubs:${ASCEND_HOME_PATH}/lib64:${LD_LIBRARY_PATH:-}
-export PYTHONPATH=/mnt/workspace/project/CANN-LM_5883:${PYTHONPATH:-}
+export PYTHONPATH=$PROJECT_ROOT:${PYTHONPATH:-}
 export TORCH_DEVICE_BACKEND_AUTOLOAD=0
-export TORCH_DELEGATE_HOME=/mnt/workspace/torch-delegate-harmony
+export TORCH_DELEGATE_HOME=$TORCH_DELEGATE_HOME
 export TORCH_DELEGATE_ENABLE_FALLBACK_CODEGEN=0
-# venv: /mnt/workspace/torch-delegate-harmony/.venv (torch 2.9.0+cpu + torchair 源码编译 NO_ASCEND_SDK=1)
+# venv: $TORCH_DELEGATE_HOME/.venv (torch 2.9.0+cpu + torchair 源码编译 NO_ASCEND_SDK=1)
 ```
 
 ### NPU (OM 编译 + 推理验证)
 ```bash
 source /home/developer/Ascend/cann/set_env.sh
-export PYTHONPATH=/mnt/workspace/project/CANN-LM_5883:${PYTHONPATH:-}
+export PYTHONPATH=$PROJECT_ROOT:${PYTHONPATH:-}
 # 系统 Python 3.11.4 (torch 2.7.1+cpu, torch_npu 2.7.1.post4, Ascend910 ×2)
 ```
 
@@ -276,15 +276,15 @@ naive `torch.cat([x]*n_rep, dim=1)` 不 reshape 会得到 rep-major (所有 n_re
 wrapper 的 `_drive_layers` 只走 export 路径; `model.forward` (含 `_prepare_causal_mask` 的 None/2D 分支) 必须保留给 eager generate 用。两路径独立, 互不影响。
 
 ### 5. PLE 查表外置
-gemma4 PLE 的 `embed_tokens_per_layer` 查表若留在图内, 是大 embedding gather (vocab × num_layers × hidden)。host 预算 `per_layer_token_identity` 外置, `detach_externalized_lookups()` 删掉 embedding 模块, 图内只剩 project。qwen3/qwen3.5 无 PLE, 跳过。
+gemma4 PLE 的 `embed_tokens_per_layer` 查表若留在图内, 是大 embedding gather (vocab × num_layers × hidden)。host 预算 `per_layer_token_identity` 外置, `detach_externalized_lookups()` 删掉 embedding 模块, 图内只剩 project。qwen3.5 无 PLE, 跳过。
 
 ## 跨模型适用性
 
-| 改造 | gemma4 | qwen3 | qwen3.5 | 备注 |
-|---|:---:|:---:|:---:|---|
-| 1. host mask | ✓ 已应用 | 待应用 | 待应用 | 有 sliding window 的模型才需 mask_sliding; 纯 causal 用 mask_full 即可 |
-| 2. repeat_kv concat | ✓ 已应用 | 待应用 | 待应用 | 所有 GQA 模型通用 (n_rep>1) |
-| 3. RoPE 预缓存 | ✓ 已应用 | 待应用 | 待应用 | 所有动态算 cos/sin 的实现通用 |
+| 改造 | gemma4 | qwen3.5 | 备注 |
+|---|:---:|:---:|---|
+| 1. host mask | ✓ 已应用 | 待应用 | 有 sliding window 的模型才需 mask_sliding; 纯 causal 用 mask_full 即可 |
+| 2. repeat_kv concat | ✓ 已应用 | 待应用 | 所有 GQA 模型通用 (n_rep>1) |
+| 3. RoPE 预缓存 | ✓ 已应用 | 待应用 | 所有动态算 cos/sin 的实现通用 |
 
 > "待应用" = 该改造逻辑通用, 适配新模型时按本文代码片段对齐其 `repeat_kv` / RoPE / export_wrapper 即可。
 
@@ -298,7 +298,6 @@ gemma4 PLE 的 `embed_tokens_per_layer` 查表若留在图内, 是大 embedding 
 | `examples/test_converter/llm_models_run_on_cpu/debug_gemma4/verify_gemma4_wrapper_bypass.py` | 数值验证 (wrapper vs 原始) |
 | `examples/test_converter/llm_models_run_on_cpu/debug_gemma4/verify_gemma4_wrapper_export.py` | 导出验证 |
 | `examples/test_converter/export_llm_model/om_npu_verify/` | OM 编译 + 推理工具 |
-| `docs/cann_lm_converter/reference_npu_tuned_export_qwen3.md` | npu_tuned 模式参考来源 |
 | `docs/cann_lm_converter/converter_design.md` | converter 全流程设计 |
 
 ## 参考提交

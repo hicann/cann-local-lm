@@ -2,7 +2,7 @@
 name: cann-lm-epair-export
 description: |
   CANN-LM 模型 epair 导出技能。当用户提到以下场景时使用：
-  - 导出 CANN-LM 模型 (gemma4/qwen3/qwen3_5) 为 epair 格式
+  - 导出 CANN-LM 模型 (gemma4/qwen3_5) 为 epair 格式
   - cann_lm 自定义算子 (fused_ops: add_rms_norm/rms_norm/rotary_mul/rope_in_place/quant_matmul/fused_infer_attention_score/beam_search)
   - GE 转换器注册 (converter/export/ge_converter.py)
   - torchair 打桩库在无 NPU 设备时编译 epair

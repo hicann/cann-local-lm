@@ -26,27 +26,27 @@ OM 运行/出字 (系统 Python + torch_npu + acl + NPU)
 
 | 组　　　　　　　　　 | 目录　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　| 覆盖阶段　　　　 | 说明　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　|
 | ----------------------| -----------------------------------------------------------------------| ------------------| -------------------------------------------------------------------------------------------------------------------------|
-| **基础 e2e**　　　　 | [`export_and_load_epair/`](export_and_load_epair/)　　　　　　　　　　| ①②③ 导出+C++加载 | 最小回归（SimpleNetwork 单 op）；自带 `run.sh`（含环境检查）+ README　　　　　　　　　　　　　　　　　　　　　　　　　　|
-| **LLM 主流程**　　　 | [`export_llm_model/`](export_llm_model/)　　　　　　　　　　　　　　　| 全链路　　　　　 | 三模型端到端（①→②③）；`run_e2e_pipeline.sh`（含 `--check-env` 验前置 + 真实执行记录）；产物 gitignore（`output/`）　　　　　 |
+| **基础 e2e**　　　　 | [`export_epair_and_compile/`](export_epair_and_compile/)　　　　　　　　　　| ①②③ 导出+C++加载 | 最小回归（SimpleNetwork 单 op）；自带 `run.sh`（含环境检查）+ README　　　　　　　　　　　　　　　　　　　　　　　　　　|
+| **LLM 主流程**　　　 | [`export_llm_model/`](export_llm_model/)　　　　　　　　　　　　　　　| 全链路　　　　　 | 两模型端到端（①→②③）；`run_e2e_pipeline.sh`（含 `--check-env` 验前置 + 真实执行记录）；产物 gitignore（`output/`）　　　　　 |
 | ├ CLI 导出测试　　　 | `export_llm_model/cann_lm_cli_export/`　　　　　　　　　　　　　　　| ①②　　　　　　　 | `run.sh`(source ①基底) + `verify.py` + `run_pd6_cases.sh`；HF 路径必填 env（`*_HF_PATH`）　　　　　　　　　　　　　 |
 | ├ OM 编译+出字　　　 | `export_llm_model/om_npu_verify/`　　　　　　　　　　　　　　　　　　 | ②③　　　　　　　 | `run_*_gen.py`/`run_*_om.py` + `check_env.sh`(source ①基底) + README；OM/HF 路径经 env 传入　　　　　　　　　　　　　|
 | └ e2e 编排　　　　　 | `export_llm_model/run_e2e_pipeline.sh`　　　　　　　　　　　　　　　| ①②③　　　　　　 | 串 cli_export→OM 编译→NPU 出字；每步子 shell source 对应基底脚本（隔离 LD）；产物落 `output/`　　　　　　　　　 |
 | **CPU 调试验证**　　 | [`llm_models_run_on_cpu/`](llm_models_run_on_cpu/)　　　　　　　　　　　　　| ①③(ep回环)　　　 | 脱离 epair 编译链；`check_env.sh`(source ①基底) + `debug_*/verify_*.py`（ep 回环、vs HF、chunk）+ skills；HF 路径必填 env　　　 |
-| └ OM 编译器+算子注册 | `cann_lm/converter/export/csrc/{tools/compile_main.cc, inc/external/reg_register.h}` | ③　　　　　　　　| `compile_main.cc`=EpairModelLoader→OM（产 `build/cann_lm_compile`）；`reg_register.h`=IR 校准 81 ops（master，om_npu_verify/export_and_load_epair 经 backend PUBLIC include 引用） |
+| └ OM 编译器+算子注册 | `cann_lm/converter/export/csrc/{tools/compile_main.cc, inc/external/reg_register.h}` | ③　　　　　　　　| `compile_main.cc`=EpairModelLoader→OM（产 `build/cann_lm_compile`）；`reg_register.h`=IR 校准 81 ops（master，om_npu_verify/export_epair_and_compile 经 backend PUBLIC include 引用） |
 | **dopt 量化 ST**　　 | [`dopt_quantization_st/`](dopt_quantization_st/)　　　　　　　　　　| GPTQ+产物校验　　 | gemma4/Qwen3.5 真实模型路径运行时注入，校准集内置；仓库不含真实权重和机器路径；支持无权重静态自检　　　　　　　　　　　　|
 
 ## 端到端流程（从 CLI 到验证 PASS）
 
-以 gemma4 为例（qwen3/qwen3.5 同理，换 `--hf-path`）。
+以 gemma4 为例（qwen3.5 同理，换 `--hf-path`）。
 
 ### ① CLI 导出 epair（converter venv）
 ```bash
 source /home/developer/Ascend/cann/set_env.sh
-export LD_LIBRARY_PATH=/mnt/workspace/torchair/build/stubs:${ASCEND_HOME_PATH}/lib64:${LD_LIBRARY_PATH:-}
-export PYTHONPATH=/mnt/workspace/project/CANN-LM_5883:${PYTHONPATH:-}
-export TORCH_DELEGATE_HOME=/mnt/workspace/torch-delegate-harmony
+export LD_LIBRARY_PATH=$TORCHAIR_ROOT/build/stubs:${ASCEND_HOME_PATH}/lib64:${LD_LIBRARY_PATH:-}
+export PYTHONPATH=$PROJECT_ROOT:${PYTHONPATH:-}
+export TORCH_DELEGATE_HOME=$TORCH_DELEGATE_HOME
 export TORCH_DEVICE_BACKEND_AUTOLOAD=0; export TORCH_DELEGATE_ENABLE_FALLBACK_CODEGEN=0
-VENV=/mnt/workspace/torch-delegate-harmony/.venv
+VENV=$TORCH_DELEGATE_HOME/.venv
 
 $VENV/bin/python3 cann_lm/converter/cann_lm_converter.py \
   --hf-path /mnt/workspace/data/models/gemma-4-E2B-it \
@@ -54,7 +54,7 @@ $VENV/bin/python3 cann_lm/converter/cann_lm_converter.py \
   --dtype bfloat16 --mode prefill-decode --seq-len 128   # --use-embeddings 默认 True
 ```
 - **PASS**：`Done. Output: epair_gemma4_pd` + 产物含 `prefill_ep_json_with_ascend_ir.json` + `decode_ep_json_with_ascend_ir.json` + `weight_info.json` + `weights_0.bin` + `host_weights_*.bin`。
-- 批量三模型 + 产物校验见 `cann_lm_cli_export/run.sh` + `verify.py`。
+- 批量两模型 + 产物校验见 `cann_lm_cli_export/run.sh` + `verify.py`。
 
 ### ② 产物校验 + IR 算子统计
 ```bash
@@ -73,7 +73,7 @@ export SOC_VERSION=Ascend910_9362                 # 算子对该 Soc 存在；�
 export GE_FUSION_SWITCH_FILE=/tmp/fusion_autoub_off.cfg   # 关 AUB
 # echo '{"Switch":{"UBFusion":{"AutomaticUbFusion":"off"}}}' > /tmp/fusion_autoub_off.cfg  # 一次性建
 cd examples/test_converter/export_llm_model
-TORCH_PKG_DIR=/mnt/workspace/torch-delegate-harmony/.venv/lib/python3.11/site-packages/torch
+TORCH_PKG_DIR=$TORCH_DELEGATE_HOME/.venv/lib/python3.12/site-packages/torch
 cmake -S . -B build -DCANN_ROOT=$ASCEND_HOME_PATH -DTORCH_PKG_DIR=$TORCH_PKG_DIR   # 一次性
 cmake --build build -j4
 ./build/cann_lm_compile om_npu_verify/epair_gemma4_pd/prefill_ep_json_with_ascend_ir.json \
@@ -88,13 +88,13 @@ ln -sf prefill_linux_aarch64.om prefill.om   # 在 /tmp/opencode/gemma4_pd/
 ### ④ OM 运行/出字 + 数值验证（系统 Python + torch_npu + NPU）
 ```bash
 source /home/developer/Ascend/cann/set_env.sh
-export PYTHONPATH=/home/developer/Ascend/cann-9.2.0/python/site-packages:/mnt/workspace/project/CANN-LM_5883:${PYTHONPATH:-}
+export PYTHONPATH=/home/developer/Ascend/cann-9.2.0/python/site-packages:$PROJECT_ROOT:${PYTHONPATH:-}
 cd examples/test_converter/export_llm_model/om_npu_verify
 
 # 出字（prefill OM + decode OM）
-/opt/buildtools/Python-3.11.4/bin/python3 run_gemma4_gen.py "Hello, my name is"
+$DOPT_PYTHON run_gemma4_gen.py "Hello, my name is"
 # 数值（单 OM vs eager, maxdiff）
-GEMMA4_OM=/tmp/opencode/gemma4_calib/gemma4_calib_noaub.om /opt/buildtools/Python-3.11.4/bin/python3 run_gemma4_om.py
+GEMMA4_OM=/tmp/opencode/gemma4_calib/gemma4_calib_noaub.om $DOPT_PYTHON run_gemma4_om.py
 ```
 - **PASS**：出字合理（如 `"Hello! It's nice to meet you. What is your name? 😊"`）+ `run_gemma4_om.py` `maxdiff<1.0 → MATCH`。
 - 环境检查：`om_npu_verify/check_env.sh`（Flow 3 段）。
@@ -105,9 +105,9 @@ GEMMA4_OM=/tmp/opencode/gemma4_calib/gemma4_calib_noaub.om /opt/buildtools/Pytho
 |---|---|---|
 | converter venv（CPU+stubs） | ①导出 | `torchair/build/stubs` 在 LD_LIBRARY_PATH 前；`TORCH_DEVICE_BACKEND_AUTOLOAD=0` |
 | 真 CANN（CPU 侧） | ③OM 编译 | 不带 stubs；`SOC_VERSION=Ascend910_9362`；`GE_FUSION_SWITCH_FILE` 关 AUB；不需 NPU |
-| 系统 Python+torch_npu+NPU | ④OM 运行/出字 | `/opt/buildtools/Python-3.11.4/bin/python3`；PYTHONPATH 含 CANN `python/site-packages`；需 NPU |
+| 系统 Python+torch_npu+NPU | ④OM 运行/出字 | `$DOPT_PYTHON`；PYTHONPATH 含 CANN `python/site-packages`；需 NPU |
 
-- 环境检查脚本：`export_llm_model/om_npu_verify/check_env.sh`（三套全覆盖）、`export_and_load_epair/run.sh`（基础 e2e，内置 phase 1）。
+- 环境检查脚本：`export_llm_model/om_npu_verify/check_env.sh`（三套全覆盖）、`export_epair_and_compile/run.sh`（基础 e2e，内置 phase 1）。
 
 ## 产物与 .gitignore
 
@@ -115,6 +115,6 @@ GEMMA4_OM=/tmp/opencode/gemma4_calib/gemma4_calib_noaub.om /opt/buildtools/Pytho
 
 ## 详细文档
 
-- 各子目录 README（`export_and_load_epair/`、`export_llm_model/cann_lm_cli_export/`、`export_llm_model/om_npu_verify/`、`llm_models_run_on_cpu/`）。
+- 各子目录 README（`export_epair_and_compile/`、`export_llm_model/cann_lm_cli_export/`、`export_llm_model/om_npu_verify/`、`llm_models_run_on_cpu/`）。
 - **端到端自验证全流程**（7 阶段：改源码→schema→CLI→IR→OM→eager→OM 出字）：[`docs/cann_lm_converter/reference_python_to_om_self_test_flow.md`](../../docs/cann_lm_converter/reference_python_to_om_self_test_flow.md)。
 - converter 设计：[`docs/cann_lm_converter/`](../../docs/cann_lm_converter/)（cli_design / export_design / quant_design）。

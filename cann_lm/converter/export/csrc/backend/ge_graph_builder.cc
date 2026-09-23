@@ -57,6 +57,7 @@ struct GraphBuildContext {
   std::unordered_set<std::string> deferred_nz_transpose_x2_ops;
   std::unordered_map<std::string, std::pair<std::string, bool>> nz_transpose_passthrough;
   std::vector<DeferredOutputBinding> deferred_outputs;
+  std::vector<std::string> tap_names;  // 要 tap 到 graph 输出的中间 FX tensor 名
 };
 
 struct GraphPlanningDeps {
@@ -476,7 +477,8 @@ std::unique_ptr<ge::GNode> BuildRecoverableNode(ge::Graph &graph, const std::str
 std::optional<RegisteredValue> CreateConstNode(ge::Graph &graph, const std::string &node_name,
                                                const TensorHolder &holder, const td::AtenTensorDescMapper &mapper,
                                                ValidationResult &result, const std::string &context,
-                                               ge::Placement placement = ge::kPlacementDevice) {
+                                               ge::Placement placement = ge::kPlacementDevice,
+                                               bool is_weight = false) {
   const ge::DataType dtype = mapper.MapPt2Dtype(holder.datatype, result, context);
   const bool is_nz = (holder.format_str == "NZ");
   const ge::Format format = is_nz
@@ -519,8 +521,17 @@ std::optional<RegisteredValue> CreateConstNode(ge::Graph &graph, const std::stri
   }
   ge::AttrValue value_attr;
   value_attr.SetAttrValue(tensor);
+  // Private attr _is_weight mirrors weight_info.json: true for nn.Module state
+  // (parameters + buffers), false for trace-time lifted constants / inline
+  // scalar consts. Surfaces in GE dump (ge_proto_*.txt) for debugging which
+  // Const nodes are model weights vs graph constants.
+  ge::AttrValue is_weight_attr;
+  is_weight_attr.SetAttrValue(is_weight);
   std::vector<std::pair<std::string, ge::TensorDesc>> outputs = {{"y", desc}};
-  std::vector<std::pair<std::string, ge::AttrValue>> attrs = {{"value", value_attr}};
+  std::vector<std::pair<std::string, ge::AttrValue>> attrs = {
+      {"value", value_attr},
+      {"_is_weight", is_weight_attr},
+  };
   std::unique_ptr<ge::GNode> node =
       BuildRecoverableNode(graph, "Const", node_name, {}, outputs, attrs, result, context);
   if (node == nullptr) {
@@ -623,8 +634,11 @@ std::optional<RegisteredIrDef> QueryRegisteredIrDef(const std::string &op_type, 
   std::vector<std::pair<ge::AscendString, ge::AscendString>> inputs;
   std::vector<std::pair<ge::AscendString, ge::AscendString>> outputs;
   std::vector<std::pair<ge::AscendString, ge::AscendString>> attrs;
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
   if (::GetRegisteredIrDef(op_type.c_str(), inputs, outputs, attrs) != ge::GRAPH_SUCCESS) {
     AddError(result, "REGISTERED_IR_QUERY_FAILED", "GetRegisteredIrDef failed", context + ":" + op_type);
+#pragma GCC diagnostic pop
     return std::nullopt;
   }
   RegisteredIrDef ir_def;
@@ -1242,8 +1256,16 @@ bool PreparePlaceholders(GraphBuildContext &ctx, const EpairModelParser &parser,
         TDLOGE("PreparePlaceholders failed: load tensor data error, placeholder=%s", input.name.c_str());
         return false;
       }
+      // Propagate _is_weight from weight_info.json (via TensorRecordInfo.is_parameter)
+      // to the GE Const node attr. Parameter/Buffer → true; TensorConstant → false.
+      bool is_weight = false;
+      const auto *rec_info = loader.GetTensorRecordInfo(input.name);
+      if (rec_info != nullptr) {
+        is_weight = rec_info->is_parameter;
+      }
       const std::optional<RegisteredValue> const_value =
-          CreateConstNode(*ctx.graph, input.name, holder, mapper, result, input.name);
+          CreateConstNode(*ctx.graph, input.name, holder, mapper, result, input.name,
+                          ge::kPlacementDevice, is_weight);
       if (!result.ok || !const_value.has_value()) {
         TDLOGE("PreparePlaceholders failed: create const node error, placeholder=%s", input.name.c_str());
         return false;
@@ -1855,6 +1877,19 @@ bool FinalizeGraph(GraphBuildContext &ctx, const EpairModelParser &parser, Valid
            GetNodeNameForLog(output->producer).c_str(), output->output_index);
     outputs.push_back({output->producer, output->output_index});
   }
+  // Tap: 把指定中间 FX tensor 加成 graph 额外输出 (经 ValueRegistry alias 解析; 保活中间值供 OM 逐算子比对)
+  for (const auto &tap_name : ctx.tap_names) {
+    const RegisteredValue *tapped = ctx.registry.Resolve(tap_name);
+    if (tapped == nullptr) {
+      TDLOGE("FinalizeGraph tap not found: tensor_name=%s (确认是 FX 输出 tensor 名; 多输出 node 用 name_0)",
+             tap_name.c_str());
+      AddError(result, "TAP_NOT_FOUND", "Tap output tensor not found in registry", tap_name);
+      return false;
+    }
+    TDLOGI("FinalizeGraph tap: %s -> producer_node=%s, producer_index=%d", tap_name.c_str(),
+           GetNodeNameForLog(tapped->producer).c_str(), tapped->output_index);
+    outputs.push_back({tapped->producer, tapped->output_index});
+  }
   if (ctx.graph->SetOutputs(outputs) != ge::GRAPH_SUCCESS) {
     TDLOGE("FinalizeGraph failed: SetOutputs error, output_count=%zu", outputs.size());
     AddError(result, "SET_GRAPH_OUTPUT_FAILED", "Failed to bind graph outputs");
@@ -1920,6 +1955,7 @@ std::unique_ptr<ge::Graph> GeGraphBuilder::Build(ValidationResult &result) {
   }
 
   GraphBuildContext ctx("epair_graph");
+  ctx.tap_names = tap_outputs_;
 
   TDLOGI("Build stage: PrepareContext");
   if (!PrepareContext(ctx, result)) {

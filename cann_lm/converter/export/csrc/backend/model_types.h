@@ -207,6 +207,10 @@ struct TensorHolder {
 struct TensorRecordInfo {
   std::string logical_name;
   std::string record_path;
+  // Mirrors weight_info.json "_is_weight": true for nn.Module state (parameters +
+  // buffers, shared across prefill/decode); false for lifted tensor constants.
+  // Populated by LoadConsolidated from the _is_weight field, falling back to
+  // input_specs PlaceholderKind derivation for old index files without the field.
   bool is_parameter = false;
   bool use_pickle = false;
   ParsedTensorMeta tensor_meta;

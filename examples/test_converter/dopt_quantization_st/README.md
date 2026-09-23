@@ -102,7 +102,7 @@ bash examples/test_converter/dopt_quantization_st/run.sh run \
 
 重新运行真实 smoke 时需指定新输出目录：
 
-export DOPT_PYTHON=/opt/buildtools/Python-3.11.4/bin/python3
+export DOPT_PYTHON=$DOPT_PYTHON   # 或先 source scripts/set_env_cann.sh --npu 自动探测
 export GEMMA4_MODEL_PATH=/mnt/workspace/oreo/cann_lm/models/gemma-4-E4B-it
 export QWEN3_5_MODEL_PATH=/mnt/workspace/oreo/cann_lm/models/Qwen3.5-4B
 

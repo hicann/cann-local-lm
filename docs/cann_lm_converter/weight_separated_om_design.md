@@ -42,7 +42,7 @@ source scripts/set_env_npu.sh
 export PREFILL_OM=$PWD/build/om_output/pd_prefill/prefill.om
 export DECODE_OM=$PWD/build/om_output/pd_decode/decode.om
 cd examples/test_converter/export_llm_model/om_npu_verify
-/opt/buildtools/Python-3.11.4/bin/python3 run_qwen3_5_gen_emb.py "Hello, my name is"
+$DOPT_PYTHON run_qwen3_5_gen_emb.py "Hello, my name is"
 ```
 
 结果: 3 stages pass, 出字正常 → `' John. I am a 19-year-old male. I am a student at a university. I'`
@@ -220,7 +220,7 @@ prefill + decode 的权值 placeholder 名: 640 个 **全共享** (0 差异), �
 | `cann_lm/converter/export/csrc/tools/fusion_autoub_off.cfg` | GE 融合开关配置 (静态文件) |
 | `cann_lm/converter/export/csrc/inc/external/reg_register.h` | 自研算子注册 (仅 ChunkGatedDeltaRule; 标准算子由 CANN opp 运行时注册) |
 | `scripts/cann_lm_compile/build_cpp.sh` | C++ 统一构建入口 |
-| `scripts/cann_lm_compile/run_compile.sh` | 一键 epair→OM 编译 (build+run+存日志) |
+| `examples/test_converter/export_llm_model/run_compile.sh` | 一键 epair→OM 编译 (build+run+存日志) |
 | `scripts/cann_lm_compile/package_run.sh` | makeself .run 自解压包打包 |
 | `examples/test_converter/export_llm_model/om_npu_verify/run_qwen3_5_gen_emb.py` | 出字验证脚本 (embeddings 入图, 分离 OM) |
 | `docs/cann_lm_converter/ops_replacement.md` | OM 算子替换 + 动态变体分析 |

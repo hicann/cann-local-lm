@@ -27,7 +27,7 @@ from ._library import NPU_LIB, safe_define, _HAS_TORCH_NPU, register_cpu_impl
 
 if NPU_LIB is not None:
     safe_define(
-        "npu_quant_matmul("
+        "quant_matmul("
         "Tensor x1, Tensor x2, Tensor scale, *, "
         "Tensor? offset=None, Tensor? pertoken_scale=None, Tensor? bias=None, "
         "int? output_dtype=None, int? x1_dtype=None, int? x2_dtype=None, "
@@ -48,7 +48,7 @@ _SCALAR_TYPE_TO_TORCH_DTYPE = {
 
 
 if not _HAS_TORCH_NPU:
-    @torch.library.register_fake("npu::npu_quant_matmul")
+    @torch.library.register_fake("cann_lm::quant_matmul")
     def _quant_matmul_meta(
         x1: torch.Tensor,
         x2: torch.Tensor,
@@ -78,7 +78,7 @@ if not _HAS_TORCH_NPU:
         return x1.new_empty(batch + [m, n], dtype=out_dtype)
 
 
-    @register_cpu_impl("npu::npu_quant_matmul")
+    @register_cpu_impl("cann_lm::quant_matmul")
     def _npu_quant_matmul_cpu(
         x1: torch.Tensor,
         x2: torch.Tensor,

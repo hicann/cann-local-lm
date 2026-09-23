@@ -91,7 +91,7 @@ def test_valid_minimal_args_namespace_and_defaults():
     args = _run_parse(["--hf-path", "/data/model", "--output-dir", "/out"])
     assert args.hf_path == "/data/model"
     assert args.output_dir == "/out"
-    assert args.dtype == "float16"  # 默认
+    assert args.dtype is None  # 默认 None, 运行时由 --target-soc derive
     assert args.mode == "prefill-decode"  # 默认
     assert args.use_embeddings is True  # 默认
     assert args.kv_cache_max_len == 2048

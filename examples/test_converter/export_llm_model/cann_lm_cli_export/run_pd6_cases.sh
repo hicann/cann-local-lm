@@ -94,7 +94,7 @@ run_conv() {
   rm -rf "$OUT"
   echo "### converter mode=$MODE seq=$SEQ_LEN -> $(basename "$OUT")  $(date +%T)"
   "$CONVERTER_PYTHON" "$CONV" \
-    --hf-path "$HF" --output-dir "$OUT" --mode "$MODE" --dtype bfloat16 --seq-len "$SEQ_LEN" "$@" \
+    --hf-path "$HF" --output-dir "$OUT" --mode "$MODE" --seq-len "$SEQ_LEN" "$@" \
     >"$OUT.log" 2>&1 &
   local PID=$!
   for _ in $(seq 1 "$POLLS"); do

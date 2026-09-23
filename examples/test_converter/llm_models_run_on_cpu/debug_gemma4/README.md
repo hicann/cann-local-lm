@@ -26,82 +26,24 @@ export GEMMA4_HF_PATH=<gemma4 model dir>   # 必填
 
 ## 脚本列表
 
-当前 8 个脚本:
+当前 4 个脚本:
 
 | 脚本 | 测试场景 | 验证对象 |
 |------|---------|---------|
-| `verify_gemma4.py` | 单元测试 + 端到端推理 | cann_lm 模型定义 + wrapper I/O |
-| `compare_hf_vs_ep.py` | HF vs EP 对比(greedy/sampling) | wrapper export + scatter 推理 |
 | `verify_gemma4_chunk.py` | chunk 推理 + logits 精度对比 | chunk vs 非 chunk + vs HF logits |
 | `verify_gemma4_epair.py` | ep 回环 + wrapper direct 推理 | ep.module 回环 vs wrapper |
-| `verify_gemma4_wrapper_bypass.py` | wrapper 重写验证 | host mask == model 4D + bypass vs model.forward |
-| `verify_gemma4_wrapper_export.py` | wrapper 可导出 + 图无 masked_fill | torch.export + FX 图 masked_fill==0 |
+| `verify_gemma4_multiturn.py` | 多轮对话(cann/wrapper + chunk) | 跨轮上下文,每轮 prefill(含历史)+ decode |
+| `verify_gemma4_vs_hf.py` | pure-torch vs HF 数值对齐 | logits max_diff/argmax/top5 + greedy token 一致 |
+
+> wrapper 重写验证（host mask==model 4D + bypass vs model.forward）与可导出性（FX 图 masked_fill==0）已抽到 `tests/py/llm_models/test_gemma4.py`（GEMMA4-024/025），示例脚本 `verify_gemma4_wrapper_bypass.py` / `verify_gemma4_wrapper_export.py` 已删。
+>
+> `verify_gemma4_epair_quant.py` 已删（quant PLE int8 回环，需 dopt GPTQ 产物，从未实际验证过）。quant embeddings 的 sample-inputs 构造已由 `test_gemma4.py::test_wrapper_get_sample_inputs_quant_embeddings_mode`（GEMMA4-015）覆盖；完整 quant epair 回环若需复测，可在 `verify_gemma4_epair.py` 加 `--quant-embeddings` 模式（需 dopt 产物）。
+>
+> `compare_hf_vs_ep.py` 已删（HF vs EP 对比，被 `verify_gemma4_epair.py --vs-hf` 覆盖：greedy 模式 token 一致是强判定，已在 epair 验证；sampling 同 seed 因 bfloat16 tie-breaking 预期分叉，非强判定）。
 
 ---
 
-## 1. `verify_gemma4.py` — 单元测试 + 端到端推理
-
-**测试场景**:
-- **单元测试**(10 项 pytest, 已抽到 [`tests/llm_models/test_gemma4.py`](../../../../tests/llm_models/test_gemma4.py)):config / components(RMSNorm/RoPE/apply_rotary/repeat_kv/rotate_half)/ attention / MLP / decoder layer / TextModel / ForCausalLM / KV sharing / layer truncation / **wrapper vs model 单步**(max_diff=0.0)
-- **端到端推理**(本脚本):text → tokenize(chat_template) → forward → generate → 文本输出(支持随机权重快测 / 真实 safetensors)
-
-**用法**:
-```bash
-# 单元测试 (pytest, 随机权重, 快测 shape/pipeline):
-pytest tests/llm_models/test_gemma4.py
-
-# 真实权重 e2e 出字 (chat_template):
-python verify_gemma4.py --model $GEMMA4_HF_PATH --prompt "Hello, my name is" --max-new-tokens 16
-
-# 截断层 + 随机权重 (快测):
-python verify_gemma4.py --layers 4 --prompt "Hi"
-```
-
-**参数**:
-- `--prompt`:输入文本(默认 "Hello, how are you?")
-- `--model`:safetensors 路径(None = 随机权重, 走 ByteTokenizer fallback)
-- `--layers`/`--hidden`:随机权重的层数/隐藏维度
-- `--max-new-tokens`:生成 token 数(默认 64)
-- `--device`:cpu/cuda/auto(默认 auto)
-
-**验证层次**:
-1. 单元测试(45 项,含 `test_wrapper_vs_model`:wrapper 单步 forward vs 原始 model,max_diff=0.0,验证 wrapper 是薄封装不引入误差)
-2. 单 token sanity check(forward pass OK)
-3. 文本生成(BOS + bfloat16)
-
----
-
-## 2. `compare_hf_vs_ep.py` — HF vs EP 对比
-
-**测试场景**:
-- HF `model.generate()` vs EP(`ep.module` prefill + wrapper decode)对比
-- **greedy**(定位/验证 logits)或 **sampling**(确认推理效果)切换
-- 验证 wrapper export + scatter 推理与 HF 一致
-
-**用法**:
-```bash
-# 默认 sampling (temp=1.0, top_k=64, top_p=0.95)
-python compare_hf_vs_ep.py
-
-# greedy (定位 bug / 验证 logits 对)
-# 修改脚本顶部:TEMPERATURE = 0.0, generate_hf 的 do_sample=False
-```
-
-**参数**(脚本顶部常量):
-- `TEMPERATURE`/`TOP_K`/`TOP_P`:sampling 参数
-- `MAX_NEW_TOKENS`:30
-- `EXPORT_SEQ_LEN`:8(prefill pad 到此长度)
-- `BOS_TOKEN_ID`:2(gemma4 必须)
-
-**关键**(sliding window 修复后):
-- greedy:EP == HF == CLM 完全一致(prompt1/3 验证)
-- sampling:EP 不退化,第一 token 多数对,分叉后输出连贯(符合 bfloat16 tie-breaking 预期)
-
-**调试经验**:用 greedy 验证(sampling 随机无法判断 bug),见 `skills/gemma4-debug/SKILL.md` #18。
-
----
-
-## 3. `verify_gemma4_chunk.py` — chunk 推理 + logits 精度对比
+## 1. `verify_gemma4_chunk.py` — chunk 推理 + logits 精度对比
 
 **测试场景**:
 - chunk vs 非 chunk 生成对比(token 一致)
@@ -145,7 +87,7 @@ python verify_gemma4_chunk.py --prompt "Hello" --token-level
 
 ---
 
-## 4. `verify_gemma4_epair.py` — ep 回环 + wrapper direct 推理
+## 2. `verify_gemma4_epair.py` — ep 回环 + wrapper direct 推理
 
 **测试场景**:
 - ep 模式:`ep.module()` prefill(padded 到 EXPORT_SEQ_LEN)+ wrapper decode,对比 ep 回环 vs wrapper direct
@@ -184,6 +126,71 @@ python verify_gemma4_epair.py --prompt "Hello" --num-steps 16
 - decode:mask 屏蔽 pad 位置 `[real_seq_len, EXPORT_SEQ_LEN)` + 未写入 `[cached_len, kv_max)`;position_ids 跳过 pad(`real_seq_len+n-1`);buffer 写位置跳 pad(`EXPORT_SEQ_LEN+n-1`)
 
 **验证结果**:greedy `ep==wrapper` True(回环一致)
+
+---
+
+## 3. `verify_gemma4_multiturn.py` — 多轮对话(cann/wrapper + chunk)
+
+**测试场景**:
+- 多轮对话(多 user 输入,跨轮上下文)
+- 支持 `--mode cann`/`wrapper` + `--chunk-size`(chunk prefill)
+- 每轮独立 prefill(含完整历史,重算)+ decode
+- 可选 `--vs-hf`(HF 多轮 `model.generate` 对比)
+- gemma4 标准 transformer,无 delta_cache;每轮重算(past=None, shared={} 重置)
+
+**gemma4 特有**:
+- BOS 由 chat_template 自动加(gemma4 必须 BOS 起始)
+- cann model.forward 需手动 4D mask(causal/chunk/decode)+ shared_kv_states(PLE)
+- wrapper 双 mask BOOL(full/sliding)+ new_kv_cache_pos 绝对位 + 零 KV buffer(scatter-write)
+
+**用法**:
+```bash
+# cann, 3 轮 (默认)
+python verify_gemma4_multiturn.py --num-steps 16
+
+# wrapper + chunk
+python verify_gemma4_multiturn.py --mode wrapper --chunk-size 4 --num-steps 16
+
+# vs HF 精度对比
+python verify_gemma4_multiturn.py --vs-hf --num-steps 16
+
+# 自定义多轮
+python verify_gemma4_multiturn.py --prompts "你好||刚才我说了什么？||介绍AI"
+```
+
+**参数**:
+- `--mode`:`cann`(默认)/ `wrapper`
+- `--chunk-size`:chunk prefill size(0=非 chunk,默认 8)
+- `--num-turns`:对话轮数(默认 3)
+- `--num-steps`:每轮 decode token 数(默认 16)
+- `--prompts`:多轮 prompt,`||` 分隔
+- `--vs-hf`:加 HF transformers 多轮对比
+
+**注**:当前"每轮独立 prefill(含历史,重算)"模式(上下文对,但 KV 不跨轮累积). 真跨轮(只 prefill 新 token,past=上轮 KV)需精确 token 对齐,待后续.
+
+---
+
+## 4. `verify_gemma4_vs_hf.py` — pure-torch vs HF 数值对齐
+
+cann_lm Gemma4ForCausalLM vs HF Gemma4ForConditionalGeneration (text: `language_model` + `lm_head` + `softcap` 拆解), 对比:
+- per-position logits max_diff / argmax_match / top5_overlap (chat prompt + random 32-token)
+- prefill cache-vs-nocache invariant (mine 内部一致性)
+- greedy 生成 token-id 一致
+
+**gemma4 特有**: BOS 必须起始(chat_template 自动加; random 前置 `BOS_TOKEN_ID=2`); bfloat16 必须; cann forward 需手动 4D mask + `shared_kv_states` (PLE); HF logits 拆解 `lm_head(language_model(...).last_hidden_state)` + softcap tanh.
+
+**用法**:
+```bash
+python verify_gemma4_vs_hf.py --model $GEMMA4_HF_PATH
+python verify_gemma4_vs_hf.py --model /path/to/gemma-4-E2B-it --gen-tokens 8
+```
+
+**参数**:
+- `--model`: gemma4 checkpoint 路径(必填)
+- `--prompt`: 输入文本(默认 "Hello, how are you?")
+- `--gen-tokens`: greedy 生成 token 数(默认 8)
+
+**验证结果**: ✅ PASS (logits argmax 100%, top5 100%, greedy token 一致; bfloat16 max|Δ| 数值差异预期)
 
 ---
 

@@ -10,8 +10,11 @@ __pycache__/
 
 # Build artifacts
 build/
+build_tests/
 build_kx*/
 build_cov/
+output/
+deps/
 .cache/
 *.o
 *.so
@@ -69,3 +72,10 @@ cann_lm/converter/quant/calibration.json
 *.egg-info/
 dist/
 examples/test_converter/export_kirin_ops_net/
+
+# Generated model artifacts and debug scripts
+examples/test_converter/export_epair_and_compile/export_addrmsnorm_model/generate/
+examples/test_converter/export_llm_model/cann_lm_cli_export/.dopt_shim/
+examples/test_converter/export_llm_model/cann_lm_cli_export/extract_dopt_weight.py
+examples/test_converter/export_llm_model/cann_lm_cli_export/extract_node_weight.py
+models/

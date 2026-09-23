@@ -18,24 +18,24 @@ cann_lm/models/qwen3_5/
 └── export_wrapper.py           # Qwen3_5ExportWrapper
 ```
 
-## 与 qwen3 的关键差异
+## qwen3.5 关键特性
 
-| 方面 | qwen3 | qwen3.5 |
-|------|-------|---------|
-| 架构 | 全 full attention | 混合 (6 full + 18 linear) |
-| `layer_types` | 无 | `["linear","linear","linear","full","linear",...]` |
-| KV cache | `list[(k,v),...]` | `SimpleKVCache` (list-based, torch.export 友好) |
-| Linear attention cache | 无 | `SimpleDeltaNetCache` (conv_state + recurrent_state) |
-| ForCausalLM.forward | 接受 `position_ids` | 不接受（内部计算） |
-| `_create_causal_mask` | 有 4D 透传 | 需手动添加 4D 透传 |
-| `linear_attn_mask` | 无 | 有（`torch.all(mask==1)` 检查，需移除避免数据依赖） |
+| 方面 | qwen3.5 |
+|------|---------|
+| 架构 | 混合 (6 full + 18 linear) |
+| `layer_types` | `["linear","linear","linear","full","linear",...]` |
+| KV cache | `SimpleKVCache` (list-based, torch.export 友好) |
+| Linear attention cache | `SimpleDeltaNetCache` (conv_state + recurrent_state) |
+| ForCausalLM.forward | 不接受 `position_ids`（内部计算） |
+| `_create_causal_mask` | 需手动添加 4D 透传 |
+| `linear_attn_mask` | 有（`torch.all(mask==1)` 检查，需移除避免数据依赖） |
 
 ## 1. Config — 增加 layer_types
 
 ```python
 @dataclass
 class Qwen3_5TextConfig:
-    # ... 同 qwen3 的基础字段 ...
+    # ... 基础字段（vocab/hidden/layers 等） ...
     full_attention_interval: int = 4  # 每 N 层一个 full attention
     layer_types: list[str] = None     # 计算得出
 

@@ -22,7 +22,7 @@ class Qwen3_5RMSNorm(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # Qwen/Gemma 偏置约定: gamma = 1 + weight (weight zeros-init); npu_rms_norm 内部 fp32 累加后 cast 回输入 dtype
-        y, _ = torch.ops.npu.npu_rms_norm(x, 1.0 + self.weight, epsilon=self.eps)
+        y, _ = torch.ops.cann_lm.rms_norm(x, 1.0 + self.weight, epsilon=self.eps)
         return y
 
     def extra_repr(self):
@@ -38,7 +38,7 @@ class Qwen3_5RMSNormGated(nn.Module):
     def forward(self, hidden_states: torch.Tensor, gate: torch.Tensor = None) -> torch.Tensor:
         input_dtype = hidden_states.dtype
         # weight ones-init 标准 gamma (非 1+weight); npu_rms_norm = (x*rstd)*weight, 返回输入 dtype
-        normed, _ = torch.ops.npu.npu_rms_norm(hidden_states, self.weight, epsilon=self.variance_epsilon)
+        normed, _ = torch.ops.cann_lm.rms_norm(hidden_states, self.weight, epsilon=self.variance_epsilon)
         return (normed * F.silu(gate.to(torch.float32))).to(input_dtype)
 
 
@@ -125,8 +125,8 @@ def apply_rotary_pos_emb(
     rotary_dim = cos.shape[-1]
     q_rot, q_pass = q[..., :rotary_dim], q[..., rotary_dim:]
     k_rot, k_pass = k[..., :rotary_dim], k[..., rotary_dim:]
-    q_embed = torch.ops.npu.npu_rotary_mul(q_rot, cos, sin, rotary_mode="half")
-    k_embed = torch.ops.npu.npu_rotary_mul(k_rot, cos, sin, rotary_mode="half")
+    q_embed = torch.ops.cann_lm.rotary_mul(q_rot, cos, sin, rotary_mode="half")
+    k_embed = torch.ops.cann_lm.rotary_mul(k_rot, cos, sin, rotary_mode="half")
     q_embed = torch.cat([q_embed, q_pass], dim=-1)
     k_embed = torch.cat([k_embed, k_pass], dim=-1)
     return q_embed, k_embed
@@ -212,7 +212,7 @@ def fused_attention_forward(
     actual_seq_qlen = torch.tensor([q_len], dtype=torch.int64, device=query.device)
     actual_seq_kvlen = None  # sparse_mode=0 + kvlen=None: 纯靠 bool mask 控制有效区段 (见 gemma4 验证)
     atten_mask_bool = _pad_mask_to_kv_square(attention_mask, key.shape[2]) if attention_mask is not None else None
-    attn_output, _ = torch.ops.npu.npu_fused_infer_attention_score_v2(
+    attn_output, _ = torch.ops.cann_lm.fused_infer_attention_score_v2(
         query, key, value,
         num_query_heads=module.config.num_attention_heads,
         num_key_value_heads=module.config.num_key_value_heads,
@@ -411,7 +411,7 @@ def scatter_kv_to_cache(
         return cache.index_copy(2, kv_pos, kv_new)
     seq = kv_pos.shape[0]
     n_grid = torch.tensor(
-        [[i] * kv_max for i in range(n)], device=cache.device, dtype=torch.int64
+        [[i] * kv_max for i in range(n)], device=cache.device, dtype=torch.int32
     )
     col_n = n_grid[:, :seq].reshape(-1)
     col_pos = torch.cat([kv_pos] * n, dim=0)
@@ -420,7 +420,7 @@ def scatter_kv_to_cache(
         [col_b.view(1, -1), col_n.view(1, -1), col_pos.view(1, -1)], dim=0
     ).transpose(0, 1).reshape(-1, 3)
     updates = kv_new.reshape(-1, d)
-    return torch.ops.npu.npu_scatter_nd_update(cache, indices, updates)
+    return torch.ops.cann_lm.scatter_nd_update(cache, indices, updates)
 
 
 class SimpleKVCache:
@@ -618,7 +618,7 @@ class Qwen3_5GatedDeltaNet(nn.Module):
         query_t = torch.ops.cann_lm.l2norm(query_t, dim=-1, eps=1e-6)
         key_t = torch.ops.cann_lm.l2norm(key_t, dim=-1, eps=1e-6)
         scale = 1.0 / (self.head_k_dim ** 0.5)
-        core_attn_out_t, last_recurrent_state_npu = torch.ops.npu.npu_chunk_gated_delta_rule(
+        core_attn_out_t, last_recurrent_state_npu = torch.ops.cann_lm.chunk_gated_delta_rule(
             query_t, key_t, value_t,
             beta=beta_t, initial_state=initial_state,
             actual_seq_lengths=actual_seq_lens, g=g_t,
@@ -805,8 +805,8 @@ def _create_causal_mask(
     device = inputs_embeds.device
     min_val = torch.finfo(dtype).min
 
-    q_pos = torch.arange(seq_len, device=device, dtype=torch.long) + past_len  # (seq_len,)
-    k_pos = torch.arange(total_len, device=device, dtype=torch.long)          # (total_len,)
+    q_pos = torch.arange(seq_len, device=device, dtype=torch.int32) + past_len  # (seq_len,)
+    k_pos = torch.arange(total_len, device=device, dtype=torch.int32)          # (total_len,)
     causal = k_pos.unsqueeze(0) <= q_pos.unsqueeze(1)                          # (seq_len, total_len)
     causal_mask = torch.where(causal, torch.tensor(0.0, dtype=dtype, device=device),
                               torch.tensor(min_val, dtype=dtype, device=device))
@@ -876,7 +876,7 @@ class Qwen3_5TextModel(nn.Module):
 
         if position_ids is None:
             past_len = past_key_values.get_seq_length() if past_key_values is not None else 0
-            position_ids = torch.arange(past_len, past_len + seq_len, device=inputs_embeds.device)
+            position_ids = torch.arange(past_len, past_len + seq_len, device=inputs_embeds.device, dtype=torch.int32)
             # mRoPE: 扩 4 维 position (1 text + 3 mrope, 文本模式 4 维相同)
             # cat 替代 expand 消除 BroadcastTo (dim0 1->4; dim1 1->batch_size, batch=1 时无操作)
             position_ids = position_ids.view(1, 1, -1)
@@ -949,6 +949,7 @@ class Qwen3_5ForCausalLM(nn.Module):
         self,
         input_ids: torch.Tensor | None = None,
         attention_mask: torch.Tensor | None = None,
+        position_ids: torch.Tensor | None = None,
         past_key_values: SimpleKVCache | None = None,
         delta_states=None,
         inputs_embeds: torch.Tensor | None = None,
@@ -959,6 +960,7 @@ class Qwen3_5ForCausalLM(nn.Module):
         hidden_states, past_key_values, delta_out = self.model(
             input_ids=input_ids,
             attention_mask=attention_mask,
+            position_ids=position_ids,
             past_key_values=past_key_values,
             delta_states=delta_states,
             inputs_embeds=inputs_embeds,

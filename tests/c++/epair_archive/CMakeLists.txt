@@ -10,25 +10,24 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # ── paths ──
 set(PROJECT_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../..")
 set(CSRC_DIR "${PROJECT_ROOT}/cann_lm/converter/export/csrc")
-# torch-delegate-harmony is a sibling of the project parent directory.
-# From PROJECT_ROOT (CANN-LM_5883):  ../../torch-delegate-harmony
-set(TORCH_DELEGATE_HOME "${PROJECT_ROOT}/../../torch-delegate-harmony")
+# 自带三方库 (bash scripts/build.sh third_party 产出), 不再依赖 sibling torch-delegate-harmony
+set(THIRD_PARTY_ROOT "${PROJECT_ROOT}/output/third_party")
 set(FIXTURES_DIR "${CMAKE_CURRENT_BINARY_DIR}/fixtures")
 set(CANN_PATH "$ENV{ASCEND_HOME_PATH}")
 if(NOT CANN_PATH)
     message(FATAL_ERROR "ASCEND_HOME_PATH not set. Source CANN env first (source scripts/set_env_compile.sh).")
 endif()
 
-# ── CANN ── (sibling cmake/modules 在前保持既有搜索序; 本仓 cmake/modules 补 DelegateCommonFlags)
-list(APPEND CMAKE_MODULE_PATH "${TORCH_DELEGATE_HOME}/cmake/modules" "${PROJECT_ROOT}/cmake/modules")
+# ── CANN ── (本仓 cmake/modules 自包含: Find*.cmake + DelegateCommonFlags + TorchDelegateCannCommon)
+list(APPEND CMAKE_MODULE_PATH "${PROJECT_ROOT}/cmake/modules")
 include(TorchDelegateCannCommon)
 include(DelegateCommonFlags)
 torch_delegate_cann_include_search_paths(CANN_INCLUDE_DIRS)
 torch_delegate_cann_library_search_paths(CANN_LIB_DIRS)
 
-# ── deps ──
-find_package(nlohmann_json REQUIRED)
-find_package(GTest REQUIRED)
+# ── deps ── (third_party 提示: 顶层 build_cpp.sh 传 -D..._DIR; 独立构建时回退自带路径)
+find_package(nlohmann_json REQUIRED PATHS "${THIRD_PARTY_ROOT}/json/share/cmake/nlohmann_json" NO_DEFAULT_PATH)
+find_package(GTest REQUIRED PATHS "${THIRD_PARTY_ROOT}/gtest/lib/cmake/GTest" NO_DEFAULT_PATH)
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 find_package(ascendcl REQUIRED)
 find_package(acl_rt REQUIRED)

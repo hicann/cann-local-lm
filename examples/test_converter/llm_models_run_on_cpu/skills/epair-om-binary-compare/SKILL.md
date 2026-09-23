@@ -12,7 +12,7 @@ version: 1.0.0
 metadata:
   author: assistant
   category: model-verification
-  model: qwen3-0.6b
+  model: gemma4-e2b
   reference: torch-delegate PR #93
 allowedTools:
   - read
@@ -79,9 +79,9 @@ dd if=B.om bs=1 skip=1600 count=400 2>/dev/null | xxd | head -25
 
 → 判定：**同模型 + 同编译，差异纯粹是 GE 编译期 ID/时间戳，不影响模型内容**（图结构 + 算子 + 权重一致）。
 
-## 实战样例：qwen3-0.6B 两个 .om 比较
+## 实战样例：同一 LLM 两个 .om 比较
 
-两份 `.om` 均由 qwen3-0.6B + stub GE 编译生成（不同时间）：
+两份 `.om` 均由同一 LLM + stub GE 编译生成（不同时间）：
 
 | 指标 | 值 |
 |------|------|

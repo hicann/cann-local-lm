@@ -107,6 +107,39 @@ def export_air(output_path: Path, dtype: torch.dtype, device_name: str) -> Path:
     return air_file
 
 
+def export_program(output_path: Path, dtype: torch.dtype, device_name: str) -> Path:
+    """torch.export -> .pt2 (CPU, 不需 NPU)."""
+    device = select_device(device_name)
+    torch.manual_seed(0)
+    model = build_model(dtype, device).eval()
+    sample_inputs = build_sample_inputs(dtype, device)
+    ep = torch.export.export(model, sample_inputs, strict=False)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    torch.export.save(ep, output_path)
+    return output_path
+
+
+def compile_to_epair(ep_path: Path, output_dir: Path, max_file_size: int) -> Path:
+    """.pt2 -> epair (lite_export_context 绕过 aclrtSetDevice, register_ge_converters)."""
+    import torch_delegate
+    from torch_delegate import LiteConfig, lite_export_context
+    from cann_lm.converter.export.epair_utils import consolidated_weights_save
+    from cann_lm.converter.export.ge_converters import register_ge_converters
+
+    output_dir = Path(output_dir).resolve()
+    output_dir.mkdir(parents=True, exist_ok=True)
+    ep = torch.export.load(Path(ep_path).resolve())
+
+    target_soc = os.environ.get("SOC_VERSION", "Ascend910B")
+    lite_config = LiteConfig(target_soc=target_soc, allow_hf32=False)
+    with lite_export_context(lite_config):
+        register_ge_converters()
+        epair = torch_delegate.export_to_epair(ep)
+
+    consolidated_weights_save(epair, output_dir, save_weights=True, max_file_size=max_file_size)
+    return output_dir
+
+
 def gen_golden(output_dir: Path, dtype: torch.dtype) -> Path:
     """生成 golden 输入/输出 (固定 seed eager CPU 参考输出, 存 .bin + meta.json).
 
@@ -152,6 +185,14 @@ def main() -> None:
     pa.add_argument("--output", default="out/add_to_add")
     pa.add_argument("--dtype", type=_dtype_arg, default=torch.float16)
     pa.add_argument("--device", choices=("cpu", "cuda"), default="cpu")
+    p_exp = sub.add_parser("export", help="torch.export -> .pt2")
+    p_exp.add_argument("--output", default="out/add_to_add.pt2")
+    p_exp.add_argument("--dtype", type=_dtype_arg, default=torch.float16)
+    p_exp.add_argument("--device", choices=("cpu",), default="cpu")
+    p_cmp = sub.add_parser("compile", help=".pt2 -> epair")
+    p_cmp.add_argument("--ep-path", default="out/add_to_add.pt2")
+    p_cmp.add_argument("--output-dir", default="out/add_to_add_epair")
+    p_cmp.add_argument("--max-file-size", type=int, default=512 * 1024 * 1024)
     pg = sub.add_parser("golden", help="生成 golden 输入/输出 (.bin + meta.json)")
     pg.add_argument("--output-dir", default="out/golden_add_to_add")
     pg.add_argument("--dtype", type=_dtype_arg, default=torch.float16)
@@ -161,6 +202,12 @@ def main() -> None:
     elif args.command == "air":
         f = export_air(Path(args.output), args.dtype, args.device)
         print(f"AIR model: {f}")
+    elif args.command == "export":
+        out_path = export_program(Path(args.output), args.dtype, args.device)
+        print(f"Exported program saved to: {out_path}")
+    elif args.command == "compile":
+        d = compile_to_epair(Path(args.ep_path), Path(args.output_dir), args.max_file_size)
+        print(f"Consolidated epair written to: {d}")
     elif args.command == "golden":
         d = gen_golden(Path(args.output_dir), args.dtype)
         print(f"Golden data written to: {d}")

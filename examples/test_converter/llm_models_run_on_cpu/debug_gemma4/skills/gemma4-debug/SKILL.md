@@ -25,7 +25,6 @@ cd "${PROJECT_ROOT}/examples/test_converter/llm_models_run_on_cpu/debug_gemma4"
 | 脚本 | 用途 | 状态 |
 |------|------|------|
 | `compare_hf_vs_ep.py` | HF vs EP (ep.module) 对比, greedy/sampling 切换 | PASS (greedy EP==HF, sliding 修复) |
-| `verify_gemma4.py` | 单元测试 (45 项, 含 wrapper vs model 单步) + 端到端推理 (BOS+bfloat16) | PASS (45 tests + 出字) |
 | `verify_gemma4_chunk.py` | chunk vs 非 chunk (--mode cann/wrapper + 可选 --vs-hf/--logits-diff) | PASS (chunk==非chunk, logits-diff token match) |
 | `verify_gemma4_epair.py` | ep 回环 vs wrapper direct (--mode ep/wrapper + sampling) | PASS (ep==wrapper greedy) |
 

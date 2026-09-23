@@ -167,7 +167,7 @@ def _drive_layers(self, ...):
 
 **现象**: `TypeError: Qwen3_5ForCausalLM.forward() got an unexpected keyword argument 'position_ids'`
 
-**原因**: qwen3.5 的 ForCausalLM.forward() 没有 `position_ids` 参数（内部计算）。与 qwen3 不同。
+**原因**: qwen3.5 的 ForCausalLM.forward() 没有 `position_ids` 参数（内部计算）。
 
 **解决**: 原始模型调用时不传 `position_ids`。wrapper 的 `_drive_layers` 也不传给模型。
 
@@ -185,7 +185,7 @@ v_hf = kv_hf.layers[i].values
 
 **现象**: qwen3.5 的 `_create_causal_mask` 总是动态构造 mask，torch.export 无法追踪
 
-**解决**: 添加 4D 透传（与 qwen3/gemma4/transformers 对齐）:
+**解决**: 添加 4D 透传（与 gemma4/transformers 对齐）:
 ```python
 def _create_causal_mask(attention_mask, inputs_embeds, past_key_values):
     if attention_mask is not None and attention_mask.dim() == 4:
@@ -195,18 +195,18 @@ def _create_causal_mask(attention_mask, inputs_embeds, past_key_values):
 
 **文件**: `cann_lm/models/qwen3_5/modeling_qwen3_5.py`
 
-## qwen3.5 vs qwen3 关键差异
+## qwen3.5 关键特性
 
-| 差异点 | qwen3 | qwen3.5 |
-|--------|-------|---------|
-| 架构 | 28 层全 full attention | 24 层混合 (6 full + 18 linear) |
-| cache 类型 | `list[(k,v),...]` | `SimpleKVCache` (改 list 后可追踪) |
-| KV cache 层索引 | 连续 [0..27] | 不连续 [3,7,11,15,19,23] |
-| position_ids | ForCausalLM.forward 接受 | ForCausalLM.forward 不接受（内部计算） |
-| delta_cache | 无 | 有（线性注意力 recurrent state，当前传 None） |
-| 4D mask 透传 | 已有 | 需新增 |
-| torch.all 检查 | 无 | 有（需移除） |
-| torch.export | 直接可用 | 需修复 3 个问题后可用 |
+| 方面 | qwen3.5 |
+|--------|---------|
+| 架构 | 24 层混合 (6 full + 18 linear) |
+| cache 类型 | `SimpleKVCache` (改 list 后可追踪) |
+| KV cache 层索引 | 不连续 [3,7,11,15,19,23] |
+| position_ids | ForCausalLM.forward 不接受（内部计算） |
+| delta_cache | 有（线性注意力 recurrent state，当前传 None） |
+| 4D mask 透传 | 需新增 |
+| torch.all 检查 | 有（需移除） |
+| torch.export | 需修复 3 个问题后可用 |
 
 ## 注意事项
 

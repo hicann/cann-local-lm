@@ -300,10 +300,10 @@ def _swap_linear_from_sd(
         if offset is not None and offset.abs().max().item() != 0.0:
             raise NotImplementedError(
                 f"{name}: non-zero offset (asymmetric) not supported by "
-                "npu::npu_quant_matmul (symmetric offset=0 only). Re-run dopt with a "
+                "cann_lm::quant_matmul (symmetric offset=0 only). Re-run dopt with a "
                 "symmetric strategy."
             )
-        # Pre-transpose weight_q [n,k//2]->[k//2,n] and scale [n,k//g]->[k//g,n]: npu::npu_quant_matmul
+        # Pre-transpose weight_q [n,k//2]->[k//2,n] and scale [n,k//g]->[k//g,n]: cann_lm::quant_matmul
         # meta takes N = x2.size(-1); _quant_matmul_converter hardcodes transpose_x2=False.
         weight_q, weight_scale = materialize_int4_per_group_symmetric(
             w_gptq, scale2d, group_size, signed=True, nbits=bit, packed=True
@@ -328,8 +328,8 @@ def _swap_linear_from_sd(
         "scope": f"all nn.Linear except {list(skip)}",
         "n_quantized": n_q,
         "n_skipped_no_dopt_key": n_skip,
-        "weight_int4_encoding": "nibble-packed int8 [k//2,n] pre-transposed (low nibble=even k, signed [-8,7]) — npu::npu_quant_matmul x2",
-        "op": "npu::npu_quant_matmul",
+        "weight_int4_encoding": "nibble-packed int8 [k//2,n] pre-transposed (low nibble=even k, signed [-8,7]) — cann_lm::quant_matmul x2",
+        "op": "cann_lm::quant_matmul",
         "dopt_unsigned_quant": uq,
         "offset_supported": "symmetric only (offset=0); non-zero offset rejected",
     }

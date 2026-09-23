@@ -13,7 +13,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$SCRIPT_DIR/../.." && pwd)"
 DIST="$REPO/dist"
-TORCH_DELEGATE_HOME="${TORCH_DELEGATE_HOME:-/mnt/workspace/torch-delegate-harmony}"
+# TORCH_DELEGATE_HOME 自定位派生 (不硬编码 /mnt/workspace; 与 build.conf 的 deps/ 一致)
+TORCH_DELEGATE_HOME="${TORCH_DELEGATE_HOME:-${REPO}/deps/torch-delegate}"
 VENV="${VENV:-${TORCH_DELEGATE_HOME}/.venv}"
 PIP="$VENV/bin/pip"
 

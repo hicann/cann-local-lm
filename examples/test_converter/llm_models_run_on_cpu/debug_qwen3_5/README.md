@@ -27,17 +27,13 @@ export QWEN3_5_HF_PATH=<qwen3.5 model dir>   # 必填
 
 ## 脚本列表
 
-当前 8 个脚本:
+当前 4 个脚本:
 
 | 脚本 | 测试场景 | 验证对象 |
 |------|---------|---------|
-| `run_qwen3_5.py` | 端到端推理 | cann_lm 模型 + chat_template + model.generate |
 | `verify_qwen3_5_vs_hf.py` | pure-torch vs HF 数值对齐 | logits max_diff(greedy token 一致) |
-| `verify_wrapper_qwen3_5.py` | wrapper 自测 | Qwen3_5ExportWrapper vs 原始 model(max_diff=0.0) |
-| `verify_wrapper_qwen3_5_decode.py` | wrapper 两轮 forward(prefill+decode) | wrapper 多轮 decode token 序列对比 |
-| `verify_qwen3_5_all.py` | 单步 + 多轮 decode + epair 导出 | wrapper vs model / vs HF / torch.export + ep.module 回环 |
 | `verify_qwen3_5_epair.py` | epair 导出 + ep 回环推理 | ep.module prefill + wrapper decode vs wrapper direct vs HF |
-| `verify_qwen3_5_chunk.py` | chunk 推理 + vs HF | 分 chunk prefill vs 非 chunk,验证一致性 + vs HF |
+| `verify_qwen3_5_chunk.py` | chunk 推理一致性 | 单轮 chunk vs 非 chunk invariant + vs HF |
 | `verify_qwen3_5_multiturn.py` | 多轮对话(cann/wrapper + chunk) | 跨轮上下文,每轮 prefill(含历史)+ decode |
 
 ---
@@ -48,37 +44,7 @@ export QWEN3_5_HF_PATH=<qwen3.5 model dir>   # 必填
 
 ---
 
-## 2. `run_qwen3_5.py` — 端到端推理
-
-**测试场景**:
-- 用 cann_lm 纯 PyTorch 实现 + `transformers.AutoTokenizer`
-- `chat_template` + `model.generate`(cat 模式)+ greedy/sampling
-
-**用法**:
-```bash
-# greedy
-python run_qwen3_5.py --model $QWEN3_5_HF_PATH --prompt "你好" --greedy --max-new-tokens 16
-
-# sampling
-python run_qwen3_5.py --model $QWEN3_5_HF_PATH --prompt "你好，请介绍一下你自己。" --max-new-tokens 256
-
-# 多 prompt (|| 分隔)
-python run_qwen3_5.py --model /path/to/model --prompt "你好||介绍AI"
-```
-
-**参数**:
-- `--model`:Qwen3.5 checkpoint 路径(必填)
-- `--prompt`:输入文本(默认 "你好，请介绍一下你自己。")
-- `--max-new-tokens`:默认 256
-- `--temperature`:默认 0.6
-- `--greedy`:greedy 解码(默认 sampling)
-- `--dtype`:bfloat16(默认)/ float16 / float32
-
-**验证结果**:✅ greedy "你好！很高兴见到你。有什么我可以帮助你的吗?"
-
----
-
-## 3. `verify_qwen3_5_vs_hf.py` — pure-torch vs HF 数值对齐
+## 2. `verify_qwen3_5_vs_hf.py` — pure-torch vs HF 数值对齐
 
 **测试场景**:
 - cann_lm pure-torch 模型 vs HuggingFace transformers Qwen3.5
@@ -101,46 +67,7 @@ python verify_qwen3_5_vs_hf.py --model $QWEN3_5_HF_PATH --gen-tokens 8
 
 ---
 
-## 4. `verify_wrapper_qwen3_5.py` — wrapper 自测
-
-**测试场景**:
-- `Qwen3_5ExportWrapper` 单步 forward vs 原始 model
-- 验证 wrapper I/O 转换不引入误差(预期 max_diff=0.0)
-- 对比 logits + KV cache(6 full_attention 层)
-
-**用法**:
-```bash
-python verify_wrapper_qwen3_5.py
-```
-
-**验证结果**:✅ PASS
-- logits `max_diff=0.000000e+00`
-- KV cache 6 full_attention layers match(max_kv_diff=0.0)
-
----
-
-## 5. `verify_qwen3_5_all.py` — 单步 + 多轮 decode + epair 导出
-
-**测试场景**:
-- Layer 1: 单步 forward 精度(wrapper vs 原始 model)
-- Layer 2: 多轮 decode(3 steps,wrapper vs 原始 model)
-- Layer 3: wrapper vs HF transformers
-- Layer 4: epair 导出(torch.export)+ ep.module 回环 vs HF
-
-**用法**:
-```bash
-python verify_qwen3_5_all.py
-```
-
-**验证结果**:✅ 全 PASS
-- Layer 1: diff=0.0
-- Layer 2: PASS
-- Layer 3: wrapper vs HF diff=0.02(bfloat16 正常)
-- Layer 4: torch.export OK(19418 节点),ep.module 回环 vs HF diff=0.02
-
----
-
-## 5.5 `verify_qwen3_5_epair.py` — epair 导出 + ep 回环推理
+## 3. `verify_qwen3_5_epair.py` — epair 导出 + ep 回环推理
 
 **测试场景**(2 模式):
 - `--mode ep`(默认):`ep.module()` prefill(验证 logits)+ wrapper decode(ep 回环),对比 ep vs wrapper direct vs HF
@@ -175,14 +102,11 @@ python verify_qwen3_5_epair.py --no-vs-hf
 
 ---
 
-## 6. `verify_qwen3_5_chunk.py` — chunk 推理 + vs HF
+## 4. `verify_qwen3_5_chunk.py` — chunk 推理一致性
 
-**测试场景**:
-- chunk vs 非 chunk prefill + greedy decode
-- 验证分 chunk 推理与一次性 prefill 的一致性
-- 可选 vs HF(model.generate)
-- qwen3.5 `_create_causal_mask` 自动用 `past_len` 算 total_len → `attention_mask=None` 即可
-- `delta_cache` 跨 chunk 累积(linear attention recurrent state)
+单轮 chunk invariant: A=非 chunk prefill + decode vs B=chunk prefill + decode, 验证 A==B. 可选 `--vs-hf` 加 HF 三方对比.
+
+qwen3.5 混合架构: full_attention SimpleKVCache + linear_attention delta_cache. `attention_mask=None` 时 model `_create_causal_mask` 自动用 `past_len` 算 total_len.
 
 **用法**:
 ```bash
@@ -200,27 +124,22 @@ python verify_qwen3_5_chunk.py --prompt "你好" --token-level
 ```
 
 **参数**:
-- `--vs-hf`:加 HF transformers 对比
-- `--chunk-size`:默认 8(seq_len < chunk_size 时单 chunk,需 < seq_len 才真分 chunk)
-- `--num-steps`:decode 步数(默认 10)
-- `--prompt`:单 prompt(默认三 prompt)
-- `--token-level`:打印 token 级详细对比
+- `--mode`: `cann`(默认)/ `wrapper`
+- `--chunk-size`: chunk prefill size(需 < seq_len 才真分 chunk, 默认 8)
+- `--num-steps`: decode token 数(默认 10)
+- `--vs-hf`: 加 HF transformers 对比
+- `--prompt`: 单 prompt(默认三 prompt)
+- `--token-level`: 打印 token 级详细对比
 
 **验证结果**(`--chunk-size 4 --num-steps 8 --vs-hf`):
-- prompt1/2:chunk vs 非 chunk 一致(A==B)
-- prompt3:`chunk == HF`(对),非 chunk != HF(偏)
-  - **发现**:qwen3.5 linear attention 的 `delta_cache` 在一次性 prefill(非 chunk)时 recurrent state 处理与 HF 不一致;**分 chunk 更接近 HF**(数值路径不同)
-  - 符合 cann-recipes-infer 的 prefill/decode 分离设计(参考其 `modeling_qwen3_5_moe.py`)
+- prompt1/2: chunk vs 非 chunk 一致(A==B)
+- prompt3: `chunk==HF`(对), 非 chunk != HF(偏)——linear attention `delta_cache` 一次性 prefill 与 HF 数值路径不同, 分 chunk 更接近 HF
 
 ---
 
-## 7. `verify_qwen3_5_multiturn.py` — 多轮对话(cann/wrapper + chunk)
+## 5. `verify_qwen3_5_multiturn.py` — 多轮对话
 
-**测试场景**:
-- 多轮对话(多 user 输入,跨轮上下文)
-- 支持 `--mode cann`/`wrapper` + `--chunk-size`(chunk prefill)
-- 每轮独立 prefill(含完整历史,重算)+ decode
-- 可选 `--vs-hf`(HF 多轮 `model.generate` 对比)
+多轮对话(跨轮上下文): 每轮独立 prefill(含历史, 重算) + decode. 上下文对(input_ids 含历史), KV/delta 不跨轮. 可选 `--vs-hf`.
 
 **用法**:
 ```bash
@@ -232,33 +151,29 @@ python verify_qwen3_5_multiturn.py --mode wrapper --chunk-size 4 --num-steps 16
 
 # vs HF 精度对比
 python verify_qwen3_5_multiturn.py --vs-hf --num-steps 16
-python verify_qwen3_5_multiturn.py --mode wrapper --chunk-size 4 --vs-hf --num-steps 16
 
 # 自定义多轮
-python verify_qwen3_5_multiturn.py --prompts "你好||刚才我说了什么？||介绍一下人工智能"
+python verify_qwen3_5_multiturn.py --prompts "你好||刚才我说了什么？||介绍AI"
 ```
 
 **参数**:
-- `--mode`:`cann`(默认)/ `wrapper`
-- `--chunk-size`:chunk prefill size(0=非 chunk,默认 8)
-- `--num-steps`:每轮 decode token 数(默认 16)
-- `--prompts`:多轮 prompt,`||` 分隔(默认 3 轮)
-- `--vs-hf`:加 HF transformers 多轮对比
+- `--mode`: `cann`(默认)/ `wrapper`
+- `--chunk-size`: chunk prefill size(0=非 chunk, 默认 8)
+- `--num-steps`: 每轮 decode token 数(默认 16)
+- `--prompts`: 多轮 prompt, `||` 分隔(默认 3 轮)
+- `--vs-hf`: 加 HF transformers 多轮对比
 
-**验证结果**(`--vs-hf --num-steps 16`):
-- cann 模式:3 轮 `cann==HF` True
-- wrapper + chunk(`--mode wrapper --chunk-size 4`):3 轮 `wrapper==HF` True
-- 示例:Turn2 "刚才我说了什么？" → cann/wrapper/HF 都 "刚才我并没有说任何具体的话,因为我是 Qwen3.5"
+**验证结果**(`--vs-hf --num-steps 16`): cann/wrapper 3 轮 `==HF` True; 示例 Turn2 "刚才我说了什么？" → "刚才我并没有说任何具体的话,因为我是 Qwen3.5"
 
-**注**:当前"每轮独立 prefill(含历史,重算)"模式 —— 上下文对(因 input_ids 含历史),但 KV/delta 不跨轮累积。真跨轮(只 prefill 新 token,past=上轮 KV/delta)需精确 token 对齐(chat_template 编码 assistant ≠ decode tokens),待后续。
+**注**: 当前"每轮独立 prefill(含历史, 重算)"模式(上下文对, 但 KV/delta 不跨轮累积). 真跨轮(只 prefill 新 token, past=上轮 KV/delta)需精确 token 对齐(chat_template 编码 assistant ≠ decode tokens), 待后续.
 
 ---
 
 ## 待补充/未测
 
-> ~~多轮对话~~(已补充):`verify_qwen3_5_multiturn.py` 支持 `--mode cann/wrapper` + `--chunk-size`,每轮独立 prefill(含历史)+ decode,验证多轮上下文。
+> ~~多轮对话~~(已补充):`verify_qwen3_5_chunk_multiturn.py` `--num-turns>1` 支持 `--mode cann/wrapper` + `--chunk-size`,每轮独立 prefill(含历史)+ decode,验证多轮上下文。
 >
-> ~~wrapper chunk 推理~~(已解决):`Qwen3_5ExportWrapper._delta_cache_box`(list 容器)持久化 delta_cache,`verify_qwen3_5_chunk.py` 支持 `--mode wrapper`。
+> ~~wrapper chunk 推理~~(已解决):`Qwen3_5ExportWrapper._delta_cache_box`(list 容器)持久化 delta_cache,`verify_qwen3_5_chunk_multiturn.py` `--mode wrapper` 支持 chunk。
 
 **注**:当前多轮用"每轮独立 prefill(含历史,重算)"模式(上下文对,但 KV/delta 不跨轮累积)。真跨轮(只 prefill 新 token,past=上轮 KV/delta)需精确 token 对齐(chat_template 编码 assistant ≠ decode tokens),待后续。
 

@@ -111,7 +111,8 @@ def save_epair(
 
     config = EpairConfig()
     config.whitelist_decompositions.update(_EXTRA_DECOMPOSITION_OPS)
-    epair = torch_delegate.export_to_epair(ep, config)
+    with lite_export_context(lite_config):
+        epair = torch_delegate.export_to_epair(ep, config)
 
     # C++ skips _assert_tensor_metadata nodes and as_none constant_inputs; no Python-side ep_json strip needed.
 
@@ -214,11 +215,13 @@ def save_epair_prefill_decode(
         whitelist_decompositions = set(EpairConfig().whitelist_decompositions)
     whitelist_decompositions.update(_EXTRA_DECOMPOSITION_OPS)
     config = EpairConfig(whitelist_decompositions=whitelist_decompositions)
-    prefill_epair = torch_delegate.export_to_epair(prefill_ep, config)
+    with lite_export_context(lite_config):
+        prefill_epair = torch_delegate.export_to_epair(prefill_ep, config)
     del prefill_ep
 
     decode_ep = torch.export.export(wrapper, decode_sample, strict=False)
-    decode_epair = torch_delegate.export_to_epair(decode_ep, config)
+    with lite_export_context(lite_config):
+        decode_epair = torch_delegate.export_to_epair(decode_ep, config)
 
     # Release model memory (OOM guard); epair.ep holds an independent ExportedProgram ref.
     del decode_ep, wrapper

@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 #
-# run.sh — 用 cann_lm_converter.py CLI 把 gemma4/qwen3/qwen3.5 导出为 epair
+# run.sh — 用 cann_lm_converter.py CLI 把 gemma4/qwen3.5 导出为 epair
 #
 # 用法:
-#   bash run.sh                          # 导出全部三模型 (single 模式)
-#   bash run.sh "qwen3 qwen3_5"          # 导出指定模型
+#   bash run.sh                          # 导出全部两模型 (single 模式)
+#   bash run.sh "qwen3_5"               # 导出指定模型
 #   MODE=prefill-decode bash run.sh gemma4   # prefill-decode 模式 (prefill+decode 两图)
-#   DTYPE=float16 bash run.sh            # 指定 dtype (默认 bfloat16, 三模型原生)
+#   DTYPE=float16 bash run.sh            # 指定 dtype (默认空=按 target-soc 派生: Ascend→bf16, Kirin→fp16)
 #   SEQ_LEN=128 bash run.sh              # 指定 seq_len (默认 8, 快测)
 #
 set -euo pipefail
@@ -22,15 +22,14 @@ PYTHON="${CONVERTER_PYTHON}"
 # model -> HF path 映射 (由调用方 export 必填; 无机器默认)
 declare -A HF_PATHS=(
   [gemma4]="${GEMMA4_HF_PATH:?请 export GEMMA4_HF_PATH=<gemma4 model dir>}"
-  [qwen3]="${QWEN3_HF_PATH:?请 export QWEN3_HF_PATH=<qwen3 model dir>}"
   [qwen3_5]="${QWEN3_5_HF_PATH:?请 export QWEN3_5_HF_PATH=<qwen3.5 model dir>}"
 )
 
 MODE="${MODE:-single}"
-DTYPE="${DTYPE:-bfloat16}"
+DTYPE="${DTYPE:-}"   # 空=converter 按 --target-soc 派生 (Ascend→bf16, Kirin→fp16); float16/float32 覆盖
 SEQ_LEN="${SEQ_LEN:-8}"
 NUM_LAYERS="${NUM_LAYERS:-}"
-MODELS="${1:-gemma4 qwen3 qwen3_5}"
+MODELS="${1:-gemma4 qwen3_5}"
 
 cd "${ROOT_DIR}"
 
@@ -44,7 +43,8 @@ for m in ${MODELS}; do
   echo "========================================"
   out="${ROOT_DIR}/epair_${m}"
   rm -rf "${out}"
-  args=(--hf-path "${HF_PATHS[$m]}" --output-dir "${out}" --dtype "${DTYPE}")
+  args=(--hf-path "${HF_PATHS[$m]}" --output-dir "${out}")
+  [[ -n "${DTYPE:-}" ]] && args+=(--dtype "${DTYPE}")
   if [[ "${MODE}" == "prefill-decode" ]]; then
     args+=(--mode prefill-decode --seq-len "${SEQ_LEN}")
   else

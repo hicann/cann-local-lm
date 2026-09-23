@@ -37,7 +37,6 @@ cann_lm/
 │   │   ├── generation.py            # GenerationConfig + GenerationMixin
 │   │   └── registry.py              # AutoModel / AutoConfig
 │   ├── gemma4/                      # 迁移: 继承基类
-│   ├── qwen3/                       # 迁移: 继承基类
 │   └── qwen3_5/                     # 迁移: 继承基类
 ```
 
@@ -111,7 +110,6 @@ class PreTrainedConfig:
 | 模型 | 需要做的 | 解决的问题 |
 |------|---------|-----------|
 | gemma4 | 补充 from_pretrained / from_json_file | 当前无统一加载入口 |
-| qwen3 | 继承 PreTrainedConfig | 已有 from_pretrained，迁移成本低 |
 | qwen3_5 | 补充 to_dict | 当前缺失 |
 
 ## P0: ModelOutput 统一输出
@@ -183,13 +181,13 @@ class AutoModelForCausalLM:
 **使用方式：**
 ```python
 # 注册 (在模型 __init__.py 中)
-@register_model("qwen3")
-class Qwen3ForCausalLM(PreTrainedModel):
+@register_model("qwen3_5")
+class Qwen3_5ForCausalLM(PreTrainedModel):
     ...
 
 # 加载 (一行代码)
-model = AutoModelForCausalLM.from_pretrained("/path/to/qwen3-0.6B")
-config = AutoConfig.from_pretrained("/path/to/qwen3-0.6B")
+model = AutoModelForCausalLM.from_pretrained("/path/to/qwen3.5-0.8B")
+config = AutoConfig.from_pretrained("/path/to/qwen3.5-0.8B")
 ```
 
 ## P1: Cache 基类
@@ -238,7 +236,7 @@ class StaticCache(Cache):
 ```
 
 **迁移要求：**
-- gemma4 / qwen3: list → DynamicCache (包装层转换)
+- gemma4: list → DynamicCache (包装层转换)
 - qwen3_5: SimpleKVCache → DynamicCache, SimpleDeltaNetCache 保留为子类
 
 ## P1: GenerationConfig + GenerationMixin
@@ -325,7 +323,6 @@ gemma4 / qwen3_5 有 vision_config 但当前不需要 processor，留作后续�
 - [ ] 实现 `PreTrainedConfig` (from_pretrained / to_dict / save_pretrained)
 - [ ] 实现 `ModelOutput` / `CausalLMOutput`
 - [ ] 实现 `AutoConfig` / `AutoModelForCausalLM` + `@register_model` 装饰器
-- [ ] qwen3 迁移到基类 (成本最低，已有 from_pretrained)
 - [ ] gemma4 迁移到基类 (补充 from_pretrained)
 - [ ] qwen3_5 迁移到基类 (补充 to_dict)
 - [ ] converter 层简化: 去掉 loader.py 的适配逻辑，直接用 AutoModel

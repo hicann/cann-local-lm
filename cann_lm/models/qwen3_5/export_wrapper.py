@@ -103,6 +103,7 @@ class Qwen3_5ExportWrapper(ExportWrapper):
         ds = delta_states if delta_states is not None else self._delta_cache_box[0]
         kwargs = {
             "attention_mask": attention_mask,
+            "position_ids": position_ids,
             "past_key_values": cache,
             "delta_states": ds,
             "labels": None,

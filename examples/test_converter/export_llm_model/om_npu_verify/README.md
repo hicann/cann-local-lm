@@ -8,7 +8,6 @@
 om_npu_verify/                  # main.cpp + CMakeLists + reg_register.h 已上移到上级 export_llm_model/
 ├── run_gemma4_om.py             # ACL python OM 运行验证 (单 OM vs eager; GEMMA4_OM env 切换 OM)
 ├── run_gemma4_gen.py            # ACL python OM 文本生成 (prefill+decode pipeline, 吐字)
-├── run_qwen3_om.py              # ACL python qwen3 OM 验证 (OM vs eager; QWEN3_OM/NUM_LAYERS env)
 ├── run_qwen3_5_om*.py          # qwen3.5 OM 验证 (OM vs EP/HF)
 ├── README.md                    # 本文件
 ├── epair_gemma4/                # 导出产物 (ep_json + weight_info + weights_*.bin)
@@ -20,7 +19,7 @@ om_npu_verify/                  # main.cpp + CMakeLists + reg_register.h 已上�
 - `cann_lm/converter/export/csrc/inc/external/reg_register.h`  # CANN 算子注册宏 (IR 校准版 81 ops)
 - `build/cann_lm_compile`  # 编译好的可执行 (aarch64, 由 build_cpp.sh 产)
 ```
-> 导出 epair 用 CLI `cann_lm/converter/cann_lm_converter.py`(唯一入口);批量导出三模型见 `../cann_lm_cli_export/run.sh`。
+> 导出 epair 用 CLI `cann_lm/converter/cann_lm_converter.py`(唯一入口);批量导出两模型见 `../cann_lm_cli_export/run.sh`。
 
 ## 环境
 
@@ -34,7 +33,7 @@ source $PROJECT_ROOT/scripts/set_env_cann.sh
 # ③ NPU 出字 (真 CANN + DEVICE=npu; 用 $DOPT_PYTHON 跑 run_*_gen.py)
 source $PROJECT_ROOT/scripts/set_env_cann.sh --npu
 ```
-> HF 模型路径由调用方必填 export: `GEMMA4_HF_PATH` / `QWEN3_HF_PATH` / `QWEN3_5_HF_PATH`. `check_env.sh` 一次性检查三套子流程前置.
+> HF 模型路径由调用方必填 export: `GEMMA4_HF_PATH` / `QWEN3_5_HF_PATH`. `check_env.sh` 一次性检查三套子流程前置.
 
 ## 使用流程
 
@@ -54,7 +53,7 @@ $CONVERTER_PYTHON $PROJECT_ROOT/cann_lm/converter/cann_lm_converter.py \
 - 纯 embeddings(`--use-embeddings` 默认 True):embed_tokens + PLE embed_tokens_per_layer 查表外置到 host(图内不含,host 喂 embeddings + per_layer_token_identity);detach 避免冗余打包。图内查表用 `--no-use-embeddings`。
 - prefill+decode 两图(出字用):`--mode prefill-decode --seq-len 128`。
 - 产物:`epair_gemma4/ep_json_with_ascend_ir.json`(GE IR)+ `weight_info.json` + `weights_*.bin`。
-- 批量导出三模型见 `../cann_lm_cli_export/run.sh`(基于 CLI)。
+- 批量导出两模型见 `../cann_lm_cli_export/run.sh`(基于 CLI)。
 
 ### 3. 编译 epair→OM(**每次编译都关 AUB**)
 > **默认每次编译都关 `AutomaticUbFusion`**(产生 `AutomaticBufferFusionOp` 的 UB 融合 pass),让元素算子(Mul/Add/Gelu 等)保持独立、图结构清晰可读。见下"关掉 AutomaticBufferFusionOp"。先建 cfg(一次性):
@@ -251,6 +250,35 @@ $DOPT_PYTHON run_gemma4_gen.py "Please explain the theory of relativity in detai
 - prefill OM 的 77 输入 = wrapper sample 展平(跳过 None input_ids/embeddings_scale,70 kv 拆开)
 - OM 产物路径在脚本常量 `PREFILL_OM`/`DECODE_OM` 里(当前指向 `/tmp/opencode/gemma4_pd/`)
 - 需先导出 prefill+decode OM:`cann_lm_converter.py --mode prefill-decode --use-embeddings` → C++ `main.cpp` 编译两图
+
+## 实测出字用例(gemma4-E2B, 新代码 cann_lm:: + bf16)
+
+> 2026-09-17 实测。环境:③ NPU(`source scripts/set_env_cann.sh --npu`),`$DOPT_PYTHON`(系统 Python + torch_npu + acl);OM 由 `run_e2e_pipeline.sh --model-type gemma4 --hf-path <gemma4-E2B-it> --seq-len 128` 产出(cann_lm:: 域 + 58b5d1f BOOL mask/INT32 + is_weight,dtype 按 target_soc=Ascend910B 派生 bf16)。
+
+### 用例 1:短 prompt 出字
+```bash
+PREFILL_OM=<prefill.om> DECODE_OM=<decode.om> HF="$GEMMA4_HF_PATH" \
+  $DOPT_PYTHON run_gemma4_gen.py "Hello, my name is"
+```
+- prompt 5 token(chat template 后),1 chunk prefill。
+- **生成**:`"Hello! It's nice to meet you. What is your name? 😊"`(chat-template 问候 + 反问 + emoji → EOS)。
+
+### 用例 2:超长 prompt chunked prefill(prompt > 128 token, 自然长文本无重复)
+```bash
+PROMPT='Please explain the theory of relativity in detail. Start with special relativity, covering Einsteins 1905 paper, the two postulates of constancy of the speed of light and the principle of relativity, time dilation, length contraction, the relativity of simultaneity, and the famous equation E equals m c squared. Then explain general relativity from 1915, including the equivalence principle, the curvature of spacetime, Einsteins field equations, and the Schwarzschild solution. Discuss experimental evidence: the Michelson-Morley experiment, the perihelion precession of Mercury, gravitational redshift, gravitational lensing, and the 2015 LIGO detection of gravitational waves from merging black holes. Cover black holes, event horizons, Hawking radiation, and the 2019 Event Horizon Telescope image of M87. Explain GPS satellite time correction as a practical application. Compare relativity to Newtonian mechanics and note where quantum mechanics diverges. Make it comprehensive, well-structured, and accessible.'
+PREFILL_OM=<prefill.om> DECODE_OM=<decode.om> HF="$GEMMA4_HF_PATH" \
+  $DOPT_PYTHON run_gemma4_gen.py "$PROMPT"
+```
+- prompt **204 token** > 128 → **2 chunk prefill**(KV 跨块累积):
+  ```
+  [2/3] prefill (2 chunk(s), seq=128)
+    chunk 0: tokens [0:128]   (real=128) → ok
+    chunk 1: tokens [128:204] (real=76)  → ok   ← 用 chunk 0 的 KV
+  ```
+- 每块 `new_kv_cache_pos`/`position_ids` 按 `start_pos`(0/128)偏移;mask 用 `build_mask_full/sliding`(绝对位 + [seq,kv_max] 矩形,对齐 580bff6 arch31 tiling);KV_MAX=2048(204<2048,无截断)。
+- **生成**:`"## The Theory of Relativity: A Journey Through Spacetime\n\nAlbert Einstein's theory of relativity is one of the most profound and revolutionary achievements in the"`(切题:markdown 标题 + Einstein 引言)→ 证明 chunked prefill KV 跨块累积正确(模型经分块 prefill 看到完整长 prompt)。
+
+> 两用例均 `[✓] ③ npu_verify 出字完成`,① 导出 + ② OM 编译同链路(`run_e2e_pipeline.sh`)。短/长 prompt 出字均切题连贯,验证新代码(cann_lm:: 域迁移 + 58b5d1f BOOL mask/INT32 + is_weight + dtype-from-soc + runner 同步)端到端正确。
 
 ## 注意事项
 

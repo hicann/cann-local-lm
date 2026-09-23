@@ -42,11 +42,11 @@ OM 运行/出字 (系统 Python + torch_npu + acl + NPU)
 ### ① CLI 导出 epair（converter venv）
 ```bash
 source /home/developer/Ascend/cann/set_env.sh
-export LD_LIBRARY_PATH=/mnt/workspace/torchair/build/stubs:${ASCEND_HOME_PATH}/lib64:${LD_LIBRARY_PATH:-}
-export PYTHONPATH=/mnt/workspace/project/CANN-LM_5883:${PYTHONPATH:-}
-export TORCH_DELEGATE_HOME=/mnt/workspace/torch-delegate-harmony
+export LD_LIBRARY_PATH=$TORCHAIR_ROOT/build/stubs:${ASCEND_HOME_PATH}/lib64:${LD_LIBRARY_PATH:-}
+export PYTHONPATH=$PROJECT_ROOT:${PYTHONPATH:-}
+export TORCH_DELEGATE_HOME=$TORCH_DELEGATE_HOME
 export TORCH_DEVICE_BACKEND_AUTOLOAD=0; export TORCH_DELEGATE_ENABLE_FALLBACK_CODEGEN=0
-VENV=/mnt/workspace/torch-delegate-harmony/.venv
+VENV=$TORCH_DELEGATE_HOME/.venv
 
 $VENV/bin/python3 cann_lm/converter/cann_lm_converter.py \
   --hf-path /mnt/workspace/data/models/gemma-4-E2B-it \
@@ -73,7 +73,7 @@ export SOC_VERSION=Ascend910_9362                 # 算子对该 Soc 存在；�
 export GE_FUSION_SWITCH_FILE=/tmp/fusion_autoub_off.cfg   # 关 AUB
 # echo '{"Switch":{"UBFusion":{"AutomaticUbFusion":"off"}}}' > /tmp/fusion_autoub_off.cfg  # 一次性建
 cd examples/test_converter/export_llm_model
-TORCH_PKG_DIR=/mnt/workspace/torch-delegate-harmony/.venv/lib/python3.11/site-packages/torch
+TORCH_PKG_DIR=$TORCH_DELEGATE_HOME/.venv/lib/python3.12/site-packages/torch
 cmake -S . -B build -DCANN_ROOT=$ASCEND_HOME_PATH -DTORCH_PKG_DIR=$TORCH_PKG_DIR   # 一次性
 cmake --build build -j4
 ./build/cann_lm_compile om_npu_verify/epair_gemma4_pd/prefill_ep_json_with_ascend_ir.json \
@@ -88,13 +88,13 @@ ln -sf prefill_linux_aarch64.om prefill.om   # 在 /tmp/opencode/gemma4_pd/
 ### ④ OM 运行/出字 + 数值验证（系统 Python + torch_npu + NPU）
 ```bash
 source /home/developer/Ascend/cann/set_env.sh
-export PYTHONPATH=/home/developer/Ascend/cann-9.2.0/python/site-packages:/mnt/workspace/project/CANN-LM_5883:${PYTHONPATH:-}
+export PYTHONPATH=/home/developer/Ascend/cann-9.2.0/python/site-packages:$PROJECT_ROOT:${PYTHONPATH:-}
 cd examples/test_converter/export_llm_model/om_npu_verify
 
 # 出字（prefill OM + decode OM）
-/opt/buildtools/Python-3.11.4/bin/python3 run_gemma4_gen.py "Hello, my name is"
+$DOPT_PYTHON run_gemma4_gen.py "Hello, my name is"
 # 数值（单 OM vs eager, maxdiff）
-GEMMA4_OM=/tmp/opencode/gemma4_calib/gemma4_calib_noaub.om /opt/buildtools/Python-3.11.4/bin/python3 run_gemma4_om.py
+GEMMA4_OM=/tmp/opencode/gemma4_calib/gemma4_calib_noaub.om $DOPT_PYTHON run_gemma4_om.py
 ```
 - **PASS**：出字合理（如 `"Hello! It's nice to meet you. What is your name? 😊"`）+ `run_gemma4_om.py` `maxdiff<1.0 → MATCH`。
 - 环境检查：`om_npu_verify/check_env.sh`（Flow 3 段）。
@@ -105,7 +105,7 @@ GEMMA4_OM=/tmp/opencode/gemma4_calib/gemma4_calib_noaub.om /opt/buildtools/Pytho
 |---|---|---|
 | converter venv（CPU+stubs） | ①导出 | `torchair/build/stubs` 在 LD_LIBRARY_PATH 前；`TORCH_DEVICE_BACKEND_AUTOLOAD=0` |
 | 真 CANN（CPU 侧） | ③OM 编译 | 不带 stubs；`SOC_VERSION=Ascend910_9362`；`GE_FUSION_SWITCH_FILE` 关 AUB；不需 NPU |
-| 系统 Python+torch_npu+NPU | ④OM 运行/出字 | `/opt/buildtools/Python-3.11.4/bin/python3`；PYTHONPATH 含 CANN `python/site-packages`；需 NPU |
+| 系统 Python+torch_npu+NPU | ④OM 运行/出字 | `$DOPT_PYTHON`；PYTHONPATH 含 CANN `python/site-packages`；需 NPU |
 
 - 环境检查脚本：`export_llm_model/om_npu_verify/check_env.sh`（三套全覆盖）、`export_epair_and_compile/run.sh`（基础 e2e，内置 phase 1）。
 

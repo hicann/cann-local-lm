@@ -45,7 +45,7 @@ dopt GPTQ 通过 `DEVICE=npu|cuda|cpu` 选择执行设备。NPU 需要 `torch_np
 # NPU 环境（系统 Python 3.11.4 + torch_npu）
 source /home/developer/Ascend/cann/set_env.sh
 # dopt_lm 内部相对 import `from dopt_lm.xxx` → 需 cann_lm/converter/quant 在 PYTHONPATH
-export PYTHONPATH=/mnt/workspace/project/CANN-LM_5883/cann_lm/converter/quant:${PYTHONPATH:-}
+export PYTHONPATH=$PROJECT_ROOT/cann_lm/converter/quant:${PYTHONPATH:-}
 
 # CPU 示例（若配置中 fp16=true，运行时会自动回退到 FP32）
 DEVICE=cpu python -m dopt_lm.opt_main --help

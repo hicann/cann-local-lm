@@ -27,7 +27,7 @@ converter 全流程三阶段，各阶段计算域需求不同：
 
 - `load_model(hf_path, dtype, device="cpu")` 写死 `device="cpu"`，不暴露 `--device` CLI 参数。
 - `--quant-device` 仅控制 dopt subprocess 设备（`npu`/`cuda`/`cpu`），通过 `os.environ["DEVICE"]` 传递给 subprocess；`None` 则 `_detect_device_type` spawn 检测或继承父进程 `DEVICE`，无 NPU/GPU 时回落 `cpu`（dopt_lm 支持 CPU float32，7B+ 极慢）。
-- subprocess 用独立 Python（`DOPT_PYTHON`，默认系统 `/opt/buildtools/Python-3.11.4/bin/python3`）+ 真 torch_npu/torch.cuda + NPU/GPU env（`LD_LIBRARY_PATH` 去 stubs）。
+- subprocess 用独立 Python（`DOPT_PYTHON`，由 `_env_common.sh` 自动探测装 torch_npu 的系统 python，见 build_guide.md Q7）+ 真 torch_npu/torch.cuda + NPU/GPU env（`LD_LIBRARY_PATH` 去 stubs）。
 
 > **状态变更（2026-08-31）**：`--quant-device` 已从 converter CLI 删除。subprocess 设备改由 `auto_quant._detect_device_type` 自动检测（读 `os.environ["DEVICE"]`，外部 env 如 `set_env_npu.sh` 可设；未设则 spawn 检测，无加速器回落 `cpu`），`_run_dopt_subprocess` 的 `env.setdefault("DEVICE", device)` 机制保留。本条所述 CLI `os.environ["DEVICE"]` 触发路径不再存在，但 `_detect_device_type` + subprocess env 机制保留。
 

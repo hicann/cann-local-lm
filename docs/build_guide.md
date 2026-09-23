@@ -99,7 +99,7 @@ torch-delegate 的 `build.sh` 一站式完成：环境检查 → 创建 `.venv`�
 
 ```bash
 source /home/developer/Ascend/cann/set_env.sh   # 前置：设 ASCEND_HOME_PATH
-cd /mnt/workspace/project/CANN-LM_5883          # PROJECT_ROOT
+cd $PROJECT_ROOT          # PROJECT_ROOT
 
 # clone 到默认 deps/ (或自定义路径, 用 TORCH_DELEGATE_HOME 覆盖)
 git clone https://gitcode.com/shengnan666/torch-delegate.git deps/torch-delegate
@@ -129,7 +129,7 @@ torchair 须 `cd` 进其源码根构建（`configure.py` 写相对 CWD 的 `tool
 
 ```bash
 source /home/developer/Ascend/cann/set_env.sh   # 前置：torchair cmake 需 CANN 头
-cd /mnt/workspace/project/CANN-LM_5883
+cd $PROJECT_ROOT
 
 git clone https://gitcode.com/Ascend/torchair.git deps/torchair
 # torchair 用 setup.py bdist_wheel, P1 venv 默认无 wheel 包; numpy/protobuf 是 torchair 运行时依赖
@@ -376,13 +376,13 @@ TORCHAIR_VERSION=0.1
 CANN_VERSION=9.2.0
 
 # 路径默认值（可被环境变量覆盖; PROJECT_ROOT 自定位, 上游仓默认 deps/）
-PROJECT_ROOT=/mnt/workspace/project/CANN-LM_5883   # 自定位 (build.conf 从 scripts 位置推)
+# PROJECT_ROOT: 自定位 (build.conf 从 scripts 父目录推, 不硬编码; source env 脚本后 $PROJECT_ROOT 可用)
 DEPS_DIR=${PROJECT_ROOT}/deps
 TORCHAIR_ROOT=${DEPS_DIR}/torchair                  # 前置条件, 见「安装上游组件」
 TORCH_DELEGATE_HOME=${DEPS_DIR}/torch-delegate      # 前置条件, 含 .venv (P1)
 CANN_SET_ENV=/home/developer/Ascend/cann/set_env.sh # hint (CANN 外部预置)
 CONVERTER_PYTHON=${TORCH_DELEGATE_HOME}/.venv/bin/python   # P1 venv
-DOPT_PYTHON=/opt/buildtools/Python-3.11.4/bin/python3      # P2 系统 Python (③ NPU 用)
+DOPT_PYTHON=                                   # P2 系统 Python (③ NPU 用); 由 _env_common.sh 自动探测, 不硬编码绝对路径
 SOC_VERSION=Ascend910_9362
 ```
 
@@ -511,6 +511,70 @@ ASAN flags 含 `-static-libasan`，ctest 可裸跑无需 `LD_PRELOAD`。
 2. 没有则从[master 下载链接](https://ascend.devcloud.huaweicloud.com/artifactory/cann-run-mirror/software/master)下载
 3. 安装并建立符号链接：`ln -s cann-9.2.0 cann`
 
+### Q7: 换机器/换 python 版本后 DOPT_PYTHON 要改吗
+
+**不用**。`DOPT_PYTHON` 已由 `scripts/_env_common.sh` 的 `_resolve_dopt_python` 自动探测，不再硬编码绝对路径。
+
+**探测优先级**：
+
+1. 已 `export DOPT_PYTHON` 且能 `import torch_npu` → 直接用（用户覆盖最高优先）
+2. 候选路径 + `PATH` 里的 `python3`，取第一个能 `import torch_npu` 的：`/opt/buildtools/python-3.12.9/bin/python3`、`/opt/buildtools/Python-3.11.4/bin/python3`、`/usr/local/bin/python3`、`/usr/bin/python3`、`$(command -v python3)`
+3. 都找不到 → 打印警告（仅 ③ NPU 阶段需，①② 不阻塞）
+
+**换机器**：新机有装 `torch_npu` 的 python 在候选路径或 `PATH` 即自动命中；非标路径 `export DOPT_PYTHON=/path/to/python` 覆盖。converter P1 venv 的 python 无 `torch_npu`，会被自动跳过不会误选。
+
+> 探测时 LD 前置候选 python 的 `<prefix>/lib` + CANN `lib64`（原因见 Q8），探测成功后 `<prefix>/lib` 持久 prepend 到 `LD_LIBRARY_PATH`，使后续 `$DOPT_PYTHON` 调用也能正常加载 `libpython`。
+
+### Q8: `$DOPT_PYTHON` 报 `No module named 'torch_npu'`（实际装了）/ `_ctypes` undefined symbol
+
+**现象**：`$DOPT_PYTHON -c "import torch_npu"` 报 `ModuleNotFoundError: No module named 'torch_npu'`，但 `torch_npu` 确实装在该 python 的 `site-packages`；或报 `undefined symbol: _PyErr_SetLocaleString` 等 `_ctypes` 错误。
+
+**原因**：buildtools 的 `python3` 动态依赖 `libpython3.12.so.1.0`（在 `<prefix>/lib`，如 `/opt/buildtools/python-3.12.9/lib`）。当 `LD_LIBRARY_PATH` 不含 `<prefix>/lib`（典型：干净 shell `unset LD_LIBRARY_PATH` 后 `source CANN set_env.sh`，LD 只含 CANN `lib64`），`python3` 加载到系统旧版 `libpython3.12.so.1.0` → prefix/site-packages 计算错 → `sys.path` 丢失 buildtools `site-packages` → `import torch_npu` 失败。`ldd <python>` 可见 `libpython3.12.so.1.0` 依赖。
+
+**解决方案**：`LD_LIBRARY_PATH` 前置该 python 的 `<prefix>/lib`：
+
+```bash
+export LD_LIBRARY_PATH=/opt/buildtools/python-3.12.9/lib:${LD_LIBRARY_PATH:-}
+```
+
+`_env_common.sh` 的 `_resolve_dopt_python` 已从候选 python 路径自动派生 `<prefix>/lib`（`$(dirname $(dirname <python>))/lib`）前置 + 探测成功后持久 prepend，故 `source scripts/set_env_cann.sh --npu` 流程无需手动处理。仅当脱离 env 脚本手动跑 `$DOPT_PYTHON` 时需手 prepend（路径按实际 python prefix 替换）。
+
+### Q9: dopt 量化报 `torchaudio: undefined symbol: torch_library_impl` / `torchaudio.__spec__ is None`
+
+**现象**：`dopt_quantization_st` 跑真实量化（或 `import torchaudio`）报：
+
+```
+OSError: torchaudio/lib/_torchaudio.abi3.so: undefined symbol: torch_library_impl
+```
+
+**原因**：系统 python 3.12.9 的 `torchaudio 2.11.0+cpu` 是为**更新的 torch** 编译的（其 C 扩展 `_torchaudio.abi3.so` 引用 `torch_library_impl` 符号），但运行时 torch `2.7.1+cpu` 的 `libtorch.so` **没有**该符号 → ABI 不兼容，`import torchaudio` 即崩。dopt 加载模型时 `transformers` 的 `is_torchaudio_available()` → `importlib.util.find_spec("torchaudio")` 触发 torchaudio 包查找 → 撞坏的 .so。
+
+**与 torch_npu 无关**：torch 2.7.1+cpu + torch_npu 2.7.1.post4 自身 .so 配对匹配（`import torch/torch_npu` 正常），崩的只是第三方 torchaudio build。dopt 量化文本模型（Qwen/gemma4）不需音频。
+
+**解决方案**：用 `sitecustomize.py` 设 `sys.modules['torchaudio']=None`（Python 显式屏蔽机制）：
+
+```python
+# /tmp/opencode/sitecustomize.py (或任意 PYTHONPATH 前置目录)
+import sys
+sys.modules["torchaudio"] = None   # import→ImportError; find_spec→None(不raise); is_torchaudio_available→False
+```
+
+```bash
+export PYTHONPATH=/tmp/opencode:${PYTHONPATH:-}   # 仅 ③ NPU 量化场景临时用, 不永久改系统
+bash examples/test_converter/dopt_quantization_st/run.sh run \
+    --models qwen3_5 --qwen3-5-model <model_dir> --profile demo --device npu
+```
+
+**屏蔽效果**：
+
+- `import torchaudio` → `ImportError`（None 表示显式不可用）
+- `importlib.util.find_spec("torchaudio")` → 返回 `None`（不 raise，不触发真包查找）
+- `transformers.is_torchaudio_available()` → `False` → transformers 跳过 torchaudio
+
+> ⚠️ 不要用 `types.ModuleType("torchaudio")` 假模块——它的 `__spec__` 是 None，`find_spec` 会抛 `ValueError: torchaudio.__spec__ is None`。必须用 `sys.modules["torchaudio"]=None`（CPython `find_spec` 对 None 值返回 None 而非 raise）。
+
+**根治**：重装与 torch 2.7.1 ABI 匹配的 torchaudio（但 AGENTS.md 约定不改系统环境，故用屏蔽 shim）。
+
 ## 参数说明
 
 ### build.conf 配置项（`scripts/build.conf`，单一来源，环境变量优先覆盖）
@@ -533,7 +597,7 @@ ASAN flags 含 `-static-libasan`，ctest 可裸跑无需 `LD_PRELOAD`。
 | `CONVERTER_PYTHON` | `${TORCH_DELEGATE_HOME}/.venv/bin/python` | P1 venv python（converter 用；尊重外部预置，whl 模式可指向自建 venv） |
 | `SOC_VERSION` | `Ascend910_9362` | OM 编译目标 SOC。**NPU 机用 910_9362；CPU-only + 950DT CANN 机用 `Ascend950DT_9575` 交叉编译**（env 覆盖） |
 | `CANN_SET_ENV` | `/home/developer/Ascend/cann/set_env.sh` | CANN set_env.sh 路径（hint；用户须先 source 它设 `ASCEND_HOME_PATH`） |
-| `DOPT_PYTHON` | `/opt/buildtools/Python-3.11.4/bin/python3` | P2 系统 python（③ 量化 NPU 加速用，**独立于 P1 venv**，torch_npu 与 converter CPU-torch 冲突须隔离） |
+| `DOPT_PYTHON` | _(自动探测)_ | P2 系统 python（③ 量化 NPU 加速用，**独立于 P1 venv**，torch_npu 与 converter CPU-torch 冲突须隔离；`_env_common.sh` 探测候选路径+PATH 中能 `import torch_npu` 的 python，换机器无需改） |
 
 ### 运行时环境变量（set_env.sh / _env_common.sh 导出 + 外部预置）
 
@@ -545,7 +609,7 @@ ASAN flags 含 `-static-libasan`，ctest 可裸跑无需 `LD_PRELOAD`。
 | `PYTHONPATH` | cann_lm 装位置（反查 venv site-packages 自定位，不硬编码 repo 根） | `set_env.sh` |
 | `TORCH_DEVICE_BACKEND_AUTOLOAD` | `0`，阻止 torch autoload npu backend | `_env_common.sh` |
 | `CONVERTER_PYTHON` | P1 venv python（converter 用；尊重外部预置） | `set_env.sh` |
-| `DOPT_PYTHON` | P2 系统 python（独立于 P1 venv；装 torch_npu，跑 dopt GPTQ 量化 NPU 加速） | `_env_common.sh` |
+| `DOPT_PYTHON` | P2 系统 python（独立于 P1 venv；装 torch_npu，跑 dopt GPTQ 量化 NPU 加速；**自动探测**装 torch_npu 的 python，换机器无需改） | `_env_common.sh`（自动探测） |
 | `TORCH_DELEGATE_HOME` | torch-delegate 根（前置条件，含 `.venv`） | `build.conf` / `set_env.sh` |
 | `TORCHAIR_ROOT` | torchair 根（前置条件） | `build.conf` |
 | `SOC_VERSION` | OM 编译目标 SOC（`Ascend910_9362` 默认；950DT 机用 `Ascend950DT_9575`，env 覆盖） | `set_env.sh` |

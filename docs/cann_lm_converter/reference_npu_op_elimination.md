@@ -247,17 +247,17 @@ export GE_FUSION_SWITCH_FILE=/path/to/fusion_autoub_off.cfg
 ```bash
 source /home/developer/Ascend/cann/set_env.sh
 export LD_LIBRARY_PATH=/mnt/workspace/torchair/build/stubs:${ASCEND_HOME_PATH}/lib64:${LD_LIBRARY_PATH:-}
-export PYTHONPATH=/mnt/workspace/project/CANN-LM_5883:${PYTHONPATH:-}
+export PYTHONPATH=$PROJECT_ROOT:${PYTHONPATH:-}
 export TORCH_DEVICE_BACKEND_AUTOLOAD=0
-export TORCH_DELEGATE_HOME=/mnt/workspace/torch-delegate-harmony
+export TORCH_DELEGATE_HOME=$TORCH_DELEGATE_HOME
 export TORCH_DELEGATE_ENABLE_FALLBACK_CODEGEN=0
-# venv: /mnt/workspace/torch-delegate-harmony/.venv (torch 2.9.0+cpu + torchair 源码编译 NO_ASCEND_SDK=1)
+# venv: $TORCH_DELEGATE_HOME/.venv (torch 2.9.0+cpu + torchair 源码编译 NO_ASCEND_SDK=1)
 ```
 
 ### NPU (OM 编译 + 推理验证)
 ```bash
 source /home/developer/Ascend/cann/set_env.sh
-export PYTHONPATH=/mnt/workspace/project/CANN-LM_5883:${PYTHONPATH:-}
+export PYTHONPATH=$PROJECT_ROOT:${PYTHONPATH:-}
 # 系统 Python 3.11.4 (torch 2.7.1+cpu, torch_npu 2.7.1.post4, Ascend910 ×2)
 ```
 

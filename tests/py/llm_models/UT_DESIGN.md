@@ -5,7 +5,7 @@
 - 被测对象：`cann_lm/models/`（gemma4 / qwen3_5 modeling + fused_ops + model_registry + ExportWrapper 基类）
 - 测试归档目录：`tests/llm_models`
 - 测试框架：`pytest`
-- 基准环境：converter venv（`/mnt/workspace/torch-delegate-harmony/.venv`，Python 3.11.4、torch 2.9.0+cpu、torchair 源码编译、torch-delegate），**不装 torch_npu**；`TORCH_DEVICE_BACKEND_AUTOLOAD=0`
+- 基准环境：converter venv（`$TORCH_DELEGATE_HOME/.venv`，Python 3.11.4、torch 2.9.0+cpu、torchair 源码编译、torch-delegate），**不装 torch_npu**；`TORCH_DEVICE_BACKEND_AUTOLOAD=0`
 - 设计日期：2026-09-05
 
 ## 2. 测试目标与范围
@@ -207,19 +207,19 @@ tests/py/llm_models/
 
 ```bash
 # 全套 (converter venv):
-TORCH_DEVICE_BACKEND_AUTOLOAD=0 /mnt/workspace/torch-delegate-harmony/.venv/bin/python -m pytest tests/py/llm_models/ -q
+TORCH_DEVICE_BACKEND_AUTOLOAD=0 $TORCH_DELEGATE_HOME/.venv/bin/python -m pytest tests/py/llm_models/ -q
 
 # 单文件:
-TORCH_DEVICE_BACKEND_AUTOLOAD=0 /mnt/workspace/torch-delegate-harmony/.venv/bin/python -m pytest tests/py/llm_models/test_gemma4.py -q
+TORCH_DEVICE_BACKEND_AUTOLOAD=0 $TORCH_DELEGATE_HOME/.venv/bin/python -m pytest tests/py/llm_models/test_gemma4.py -q
 
 # 单用例:
-TORCH_DEVICE_BACKEND_AUTOLOAD=0 /mnt/workspace/torch-delegate-harmony/.venv/bin/python -m pytest tests/py/llm_models/test_gemma4.py::test_config -q
+TORCH_DEVICE_BACKEND_AUTOLOAD=0 $TORCH_DELEGATE_HOME/.venv/bin/python -m pytest tests/py/llm_models/test_gemma4.py::test_config -q
 
 # 收集 (不跑, 看项数):
-TORCH_DEVICE_BACKEND_AUTOLOAD=0 /mnt/workspace/torch-delegate-harmony/.venv/bin/python -m pytest tests/py/llm_models/ --co -q
+TORCH_DEVICE_BACKEND_AUTOLOAD=0 $TORCH_DELEGATE_HOME/.venv/bin/python -m pytest tests/py/llm_models/ --co -q
 
 # 覆盖率:
-TORCH_DEVICE_BACKEND_AUTOLOAD=0 /mnt/workspace/torch-delegate-harmony/.venv/bin/python -m pytest tests/py/llm_models/ --cov=cann_lm/models --cov-report=term-missing -q
+TORCH_DEVICE_BACKEND_AUTOLOAD=0 $TORCH_DELEGATE_HOME/.venv/bin/python -m pytest tests/py/llm_models/ --cov=cann_lm/models --cov-report=term-missing -q
 ```
 
 ## 8. 准入与遗留风险
@@ -256,7 +256,7 @@ pytest exit code: 0
 
 ```bash
 TORCH_DEVICE_BACKEND_AUTOLOAD=0 \
-  /mnt/workspace/torch-delegate-harmony/.venv/bin/python \
+  $TORCH_DELEGATE_HOME/.venv/bin/python \
   -m pytest tests/py/llm_models/ --cov=cann_lm/models --cov-report=term-missing -q
 ```
 

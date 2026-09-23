@@ -133,15 +133,15 @@ done
 # 1. 导出 epair（converter env + KIRINX90_CONVERTER_PATCHES=1，patch MatMul→MatMulV3）
 source /tmp/opencode/kx_env.sh
 export SOC_VERSION=KirinX90 KIRINX90_CONVERTER_PATCHES=1
-cd /mnt/workspace/CANN-LM_5883/examples/test_converter/export_epair_and_compile
+cd $PROJECT_ROOT/examples/test_converter/export_epair_and_compile
 source ../common/check_env.sh               # ASCEND_HOME_PATH 已设则不重 source；CONVERTER_PYTHON=deps/torch-delegate/.venv
 python export_and_save_epair.py             # → epair_model/ep_json_with_ascend_ir.json（含 3× MatMulV3、0× plain MatMul）
 
 # 2. 编译 .omc（build/cann_lm_compile 0715 链 + cann-kirinx90 运行时库覆盖）
 cd epair_model
 export SOC_VERSION=KirinX90; unset GE_FUSION_SWITCH_FILE; export GE_EXTERNAL_WEIGHT=0
-export LD_LIBRARY_PATH=/mnt/workspace/CANN-LM_5883/build:${LD_LIBRARY_PATH:-}
-/mnt/workspace/CANN-LM_5883/build/cann_lm_compile ep_json_with_ascend_ir.json weight_info.json simple
+export LD_LIBRARY_PATH=$PROJECT_ROOT/build:${LD_LIBRARY_PATH:-}
+$PROJECT_ROOT/build/cann_lm_compile ep_json_with_ascend_ir.json weight_info.json simple
 # → simple.omc（mobile 路径，T1 自动 onlinec→.omc；rc=1 是 GE teardown abort，.omc 已产出，容忍）
 ```
 

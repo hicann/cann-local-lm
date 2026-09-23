@@ -42,7 +42,7 @@ source scripts/set_env_npu.sh
 export PREFILL_OM=$PWD/build/om_output/pd_prefill/prefill.om
 export DECODE_OM=$PWD/build/om_output/pd_decode/decode.om
 cd examples/test_converter/export_llm_model/om_npu_verify
-/opt/buildtools/Python-3.11.4/bin/python3 run_qwen3_5_gen_emb.py "Hello, my name is"
+$DOPT_PYTHON run_qwen3_5_gen_emb.py "Hello, my name is"
 ```
 
 结果: 3 stages pass, 出字正常 → `' John. I am a 19-year-old male. I am a student at a university. I'`

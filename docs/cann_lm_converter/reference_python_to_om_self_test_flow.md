@@ -35,11 +35,11 @@
 ```bash
 source /home/developer/Ascend/cann/set_env.sh
 export LD_LIBRARY_PATH=/mnt/workspace/torchair/build/stubs:${ASCEND_HOME_PATH}/lib64:${LD_LIBRARY_PATH:-}
-export TORCH_DELEGATE_HOME=/mnt/workspace/torch-delegate-harmony
-export PYTHONPATH=/mnt/workspace/project/CANN-LM_5883:${PYTHONPATH:-}
+export TORCH_DELEGATE_HOME=$TORCH_DELEGATE_HOME
+export PYTHONPATH=$PROJECT_ROOT:${PYTHONPATH:-}
 export TORCH_DEVICE_BACKEND_AUTOLOAD=0
 export TORCH_DELEGATE_ENABLE_FALLBACK_CODEGEN=0
-VENV=/mnt/workspace/torch-delegate-harmony/.venv
+VENV=$TORCH_DELEGATE_HOME/.venv
 ```
 
 > 关键：stubs 必须用 torchair 编译生成的 `/mnt/workspace/torchair/build/stubs`（ABI 匹配）。
@@ -64,8 +64,8 @@ export GE_FUSION_SWITCH_FILE=/tmp/fusion_autoub_off.cfg   # 关 AUB, 让元素�
 
 ```bash
 source /home/developer/Ascend/cann/set_env.sh
-export PYTHONPATH=/home/developer/Ascend/cann-9.2.0/python.site-packages:/mnt/workspace/project/CANN-LM_5883:${PYTHONPATH:-}
-# 系统 Python: /opt/buildtools/Python-3.11.4/bin/python3 (含 torch_npu + acl + transformers)
+export PYTHONPATH=/home/developer/Ascend/cann-9.2.0/python.site-packages:$PROJECT_ROOT:${PYTHONPATH:-}
+# 系统 Python: $DOPT_PYTHON (含 torch_npu + acl + transformers)
 ```
 
 ---
@@ -284,7 +284,7 @@ for t,c in types.most_common():
 
 ```bash
 GEMMA4_OM=/path/to/gemma4.om \
-/opt/buildtools/Python-3.11.4/bin/python3 examples/test_converter/export_llm_model/om_npu_verify/run_gemma4_om.py
+$DOPT_PYTHON examples/test_converter/export_llm_model/om_npu_verify/run_gemma4_om.py
 ```
 
 > `run_gemma4_om.py`：用 `wrapper.get_sample_inputs` + `_build_mask` 构造输入，`wrapper(*sample_npu)` 跑 eager forward（NPU），再用同一份 CPU sample 跑 OM（acl），对比 OM logits vs eager logits。
@@ -323,7 +323,7 @@ if _os.environ.get("FUSED_DEBUG") and self.layer_idx == 0:
 ### 阶段 6：OM 出字验证
 
 ```bash
-/opt/buildtools/Python-3.11.4/bin/python3 examples/test_converter/export_llm_model/om_npu_verify/run_gemma4_gen.py "Hello, my name is"
+$DOPT_PYTHON examples/test_converter/export_llm_model/om_npu_verify/run_gemma4_gen.py "Hello, my name is"
 ```
 
 > `run_gemma4_gen.py`：用 `acl.mdl.execute` 跑 prefill OM + decode OM，prefill + decode loop 出字。

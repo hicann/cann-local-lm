@@ -67,7 +67,7 @@ Gelu
 
 > 本节分析范围：原 6 个融合算子（ChunkGatedDeltaRule / Rmsnorm / FusedInferAttention / l2norm / RotaryPositionEmbedding / ScatterNdUpdate）。
 > DynamicQuant / QuantBatchMatmulV4 用户新归入 fuse_op，对应 `npu_dynamic_quant` / `quant_matmul`，未在本次验证范围内。
-> 验证版本：torch_npu 2.7.1.post4（系统 Python `/opt/buildtools/Python-3.11.4/bin/python3`）；converter venv（`/mnt/workspace/torch-delegate-harmony/.venv`，torch_npu absent，torchair 源码编译）。
+> 验证版本：torch_npu 2.7.1.post4（系统 Python `$DOPT_PYTHON`）；converter venv（`$TORCH_DELEGATE_HOME/.venv`，torch_npu absent，torchair 源码编译）。
 > 行号为验证时版本快照，升级后可能漂移，以文件路径为准。
 
 ### 2.1 torch_npu 2.7.1.post4（系统 Python）下的定义
@@ -87,7 +87,7 @@ Gelu
 
 ### 2.2 converter venv 下 torchair 的定义
 
-torch_npu 包 absent；torchair present（`/mnt/workspace/torch-delegate-harmony/.venv/lib/python3.11/site-packages/torchair`）。
+torch_npu 包 absent；torchair present（`$TORCH_DELEGATE_HOME/.venv/lib/python3.11/site-packages/torchair`）。
 
 > **迁移注脚**：下表为 torchair `custom/` 的 npu:: converter 现状（torchair 自带，描述 torchair 注册的 npu:: schema）。本仓 modeling 已迁 `cann_lm::`（见 §2.3），FX 图命中 `cann_lm::`（非 npu::），故下表 npu:: converter 不命中，由 cann_lm 自带 `ge_converters/` 覆盖（见 §3）。下表保留作 torchair 对照与历史溯源。
 

@@ -688,22 +688,22 @@ b = stateShape[0];      // batch 数从 state shape 取
 ```bash
 cd examples/test_converter/export_llm_model/om_npu_verify
 source /home/developer/Ascend/cann/set_env.sh
-export PYTHONPATH=/mnt/workspace/project/CANN-LM_5883:/home/developer/Ascend/cann-9.2.0/python.site-packages:${PYTHONPATH:-}
+export PYTHONPATH=$PROJECT_ROOT:/home/developer/Ascend/cann-9.2.0/python.site-packages:${PYTHONPATH:-}
 export TORCH_DEVICE_BACKEND_AUTOLOAD=0
 
 # OM vs EP + OM vs HF（系统 Python, NPU）
-/opt/buildtools/Python-3.11.4/bin/python3 run_qwen3_5_om.py
+$DOPT_PYTHON run_qwen3_5_om.py
 # → OM vs EP maxdiff=1.5781e+01, OM vs HF maxdiff=1.5750e+01, MISMATCH
 
 # EP dump（venv, CPU）
 export LD_LIBRARY_PATH=/mnt/workspace/torchair/build/stubs:${ASCEND_HOME_PATH}/lib64:${LD_LIBRARY_PATH:-}
-export TORCH_DELEGATE_HOME=/mnt/workspace/torch-delegate-harmony
+export TORCH_DELEGATE_HOME=$TORCH_DELEGATE_HOME
 export TORCH_DELEGATE_ENABLE_FALLBACK_CODEGEN=0
-/mnt/workspace/torch-delegate-harmony/.venv/bin/python dump_ep_logits.py
+$TORCH_DELEGATE_HOME/.venv/bin/python dump_ep_logits.py
 
 # 单算子 chunk OM vs CPU（系统 Python 存 npy → venv 对比）
-/opt/buildtools/Python-3.11.4/bin/python3 debug_chunk_om.py    # 存 chunk_om_dump.npz
-/mnt/workspace/torch-delegate-harmony/.venv/bin/python cpu_chunk_compare.py  # 对比 → PASS (maxdiff 0.006)
+$DOPT_PYTHON debug_chunk_om.py    # 存 chunk_om_dump.npz
+$TORCH_DELEGATE_HOME/.venv/bin/python cpu_chunk_compare.py  # 对比 → PASS (maxdiff 0.006)
 ```
 
 ### 8.10 embeddings 入图验证（2026-08-10）
@@ -732,12 +732,12 @@ qwen3.5 `tie_word_embeddings=true`：`embed_tokens` 与 `lm_head` 共享 storage
 # 1. 导出 embeddings 入图 epair（venv, CPU）
 source /home/developer/Ascend/cann/set_env.sh
 export LD_LIBRARY_PATH=/mnt/workspace/torchair/build/stubs:${ASCEND_HOME_PATH}/lib64:${LD_LIBRARY_PATH:-}
-export TORCH_DELEGATE_HOME=/mnt/workspace/torch-delegate-harmony
-export PYTHONPATH=/mnt/workspace/project/CANN-LM_5883:${PYTHONPATH:-}
+export TORCH_DELEGATE_HOME=$TORCH_DELEGATE_HOME
+export PYTHONPATH=$PROJECT_ROOT:${PYTHONPATH:-}
 export TORCH_DEVICE_BACKEND_AUTOLOAD=0
 export TORCH_DELEGATE_ENABLE_FALLBACK_CODEGEN=0
 cd examples/test_converter/export_llm_model/om_npu_verify
-/mnt/workspace/torch-delegate-harmony/.venv/bin/python3 /mnt/workspace/project/CANN-LM_5883/cann_lm/converter/cann_lm_converter.py \
+$TORCH_DELEGATE_HOME/.venv/bin/python3 $PROJECT_ROOT/cann_lm/converter/cann_lm_converter.py \
   --hf-path /mnt/workspace/data/models/Qwen3.5-0.8B \
   --output-dir epair_qwen3_5_emb \
   --seq-len 8 --dtype bfloat16 --mode single          # --use-embeddings 默认 True
@@ -750,7 +750,7 @@ export SOC_VERSION=Ascend910_9362
 
 # 3. 验证（系统 Python, NPU acl + HF 对比）
 export PYTHONPATH=/home/developer/Ascend/cann-9.2.0/python.site-packages:${PYTHONPATH:-}
-/opt/buildtools/Python-3.11.4/bin/python3 run_qwen3_5_om_emb.py
+$DOPT_PYTHON run_qwen3_5_om_emb.py
 # → OM vs HF maxdiff=0.375, top5_overlap=5/5, MATCH
 ```
 

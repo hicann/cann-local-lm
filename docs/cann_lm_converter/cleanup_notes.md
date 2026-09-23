@@ -50,9 +50,9 @@
 
 | 环境 | 路径 / 命令 | Python 版本 |
 |------|------------|-------------|
-| 默认 | `python3` | 3.11.4 |
-| 系统(④ npu verify-runtime) | `/opt/buildtools/Python-3.11.4/bin/python3` | 3.11.4 |
-| converter venv(① export epair) | `/mnt/workspace/torch-delegate-harmony/.venv/bin/python` | 3.11.4 |
+| 默认 | `python3` | 3.12.9 |
+| 系统(④ npu verify-runtime) | `$DOPT_PYTHON` | 3.12.9 |
+| converter venv(① export epair) | `$TORCH_DELEGATE_HOME/.venv/bin/python` | 3.12.9 |
 
 三套均 `>= 3.10`。Python 3.10+ 已原生支持运行时求值 `int | None`(PEP 604)、`list[str]` / `dict[str, Any]`(PEP 585),无需 future 注解。故该行冗余——属于可安全删除的死代码,且违反「不引入 future 注解」约定。
 
@@ -301,7 +301,7 @@ converter venv 装 `torch 2.9.0+cpu` + `torchair`(源码+stubs)+ `torch-delegate
 
 | 维度 | ① converter 主进程(export epair) | dopt subprocess(GPTQ) |
 |------|----------------------------------|----------------------|
-| Python | converter venv(`.venv`,3.11.4) | 系统 python(`DOPT_PYTHON`,3.11.4) |
+| Python | converter venv(`.venv`,3.12.9) | 系统 python(`DOPT_PYTHON`,3.12.9 自动探测) |
 | torch | 2.9.0+cpu | 2.7.1+cpu |
 | torch_npu | **不装**(stub 路径,`_library.py` 自提供 npu:: fake-meta) | 2.7.1.post4(真,NPU 算子) |
 | torchair | 源码编译(`NO_ASCEND_SDK=1`)+ `build/stubs` | 无(不跑 GE 转换) |

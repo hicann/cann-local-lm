@@ -25,7 +25,7 @@ QUANT_DIR = PROJECT_ROOT / "cann_lm" / "converter" / "quant"
 TEMPLATE_PATH = SCRIPT_DIR / "config.yaml.template"
 # Keep the ST self-contained by using the tracked calibration set that the
 # converter's default config also references.
-CALIBRATION_DATA = QUANT_DIR / "calibrate_sets" / "calibrate_c4.jsonl"
+CALIBRATION_DATA = QUANT_DIR / "calibrate_sets" / "calibrate_coig_cqia.jsonl"
 DEFAULT_OUTPUT_ROOT = SCRIPT_DIR / "output"
 PLACEHOLDERS = {
     "__CALIBRATION_DATA__",
@@ -153,10 +153,13 @@ def _validate_output_target(output_dir: Path) -> None:
         )
 
 
-def _profile_values(model_case: ModelCase, profile: str) -> tuple[int, int, int]:
+def _profile_values(
+    model_case: ModelCase, profile: str, ptq_override: int | None = None
+) -> tuple[int, int, int]:
     if profile == "smoke":
         return 1, 32, 1
-    return model_case.ptq_samples, model_case.cutoff_len, model_case.num_samples
+    ptq = ptq_override if ptq_override is not None else model_case.ptq_samples
+    return ptq, model_case.cutoff_len, model_case.num_samples
 
 
 def _render_optimize_config(
@@ -166,8 +169,11 @@ def _render_optimize_config(
     destination: Path,
     *,
     fp16: bool,
+    ptq_override: int | None = None,
 ) -> Path:
-    ptq_samples, cutoff_len, num_samples = _profile_values(model_case, profile)
+    ptq_samples, cutoff_len, num_samples = _profile_values(
+        model_case, profile, ptq_override
+    )
     template = TEMPLATE_PATH.read_text(encoding="utf-8")
     replacements = {
         "__CALIBRATION_DATA__": json.dumps(str(calibration_data), ensure_ascii=False),
@@ -283,9 +289,10 @@ def _run_model_case(
         calibration_data,
         output_dir / "runtime_config.yaml",
         fp16=args.device != "cpu",
+        ptq_override=args.ptq_samples,
     )
     command = _build_quant_command(args.python, model_path, optimize_config, output_dir)
-    ptq_samples, cutoff_len, _ = _profile_values(model_case, args.profile)
+    ptq_samples, cutoff_len, _ = _profile_values(model_case, args.profile, args.ptq_samples)
     print(
         f"[CASE] {model_case.st_id} model={model_case.display_name} profile={args.profile} "
         f"ptq_samples={ptq_samples} cutoff_len={cutoff_len} device={args.device}",
@@ -447,6 +454,12 @@ def build_parser() -> argparse.ArgumentParser:
         "run", help="run the gemma4 and qwen3.5 real-model quantization cases"
     )
     _add_suite_arguments(run_parser)
+    run_parser.add_argument(
+        "--ptq-samples",
+        type=int,
+        default=None,
+        help="override ptq_samples (demo profile; 快速覆盖用小值如 10)",
+    )
     run_parser.add_argument(
         "--gemma4-model",
         default=os.environ.get("GEMMA4_MODEL_PATH"),

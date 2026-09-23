@@ -12,7 +12,8 @@ set -uo pipefail
 _COMMON_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export PROJECT_ROOT="${PROJECT_ROOT:-$(cd "${_COMMON_DIR}/../../.." && pwd)}"
 
-# ── NPU 探测 ──
+# ── NPU 探测 (npu-smi 依赖 driver lib; CANN set_env 在第 26 行才 source, 此处先前置 driver lib 让 npu-smi 可执行) ──
+export LD_LIBRARY_PATH="/usr/local/Ascend/driver/lib64/common:/usr/local/Ascend/driver/lib64/driver:${LD_LIBRARY_PATH:-}"
 if command -v npu-smi &>/dev/null && npu-smi info &>/dev/null 2>&1; then
   export NPU_MODE=1
   _NPU_NAME="$(npu-smi info -l 2>/dev/null | grep -oE 'Ascend[0-9]+' | head -1 || true)"
@@ -41,7 +42,7 @@ export TORCHAIR_ROOT="${TORCHAIR_ROOT:-${PROJECT_ROOT}/deps/torchair}"
 export CONVERTER_PYTHON="${CONVERTER_PYTHON:-${TORCH_DELEGATE_HOME}/.venv/bin/python}"
 export STUBS_DIR="${TORCHAIR_ROOT}/build/stubs"
 export BACKEND_LIB="${PROJECT_ROOT}/build/libtorch_delegate_backend.so"
-export DOPT_PYTHON="${DOPT_PYTHON:-/opt/buildtools/Python-3.11.4/bin/python3}"
+export DOPT_PYTHON="${DOPT_PYTHON:-}"  # 装 torch_npu 的系统 python; 由 scripts/_env_common.sh 自动探测 (source set_env_cann.sh --npu 后已设)
 export SOC_VERSION="${SOC_VERSION:-$([[ $NPU_MODE == 1 ]] && echo Ascend910_9362 || echo kirinx90)}"
 
 # ── ensure 共享依赖 (幂等, 缺失自动建) ──

@@ -22,7 +22,45 @@ fi
 # 阻止 torch autoload npu backend (converter venv 不装 torch_npu; NPU 由 torch_npu 显式 import)
 export TORCH_DEVICE_BACKEND_AUTOLOAD=0
 
-# dopt subprocess 用系统 Python 路径
-export DOPT_PYTHON="${DOPT_PYTHON}"
+# dopt subprocess 用系统 Python: 自动探测装了 torch_npu 的 python (③ NPU 阶段需).
+# 优先级: 已 export 的 DOPT_PYTHON → 候选路径 + PATH python3 中能 import torch_npu 的.
+# 换机器无需改: 只要新机有装 torch_npu 的 python 在候选路径或 PATH 即自动命中;
+# converter P1 venv 的 python 无 torch_npu, 会被自动跳过不会误选.
+_resolve_dopt_python() {
+    local p plib
+    # LD 构造: 候选 python 的 <prefix>/lib (libpython 在此; 不加会加载系统旧版 → site-packages 计算错 → import torch_npu 失败) + CANN lib64 (torch_npu .so 依赖) + 原 LD
+    # ① 已显式设值且能 import torch_npu → 直接用 (用户覆盖最高优先)
+    if [[ -n "${DOPT_PYTHON:-}" && -x "${DOPT_PYTHON}" ]]; then
+        plib="$(dirname "$(dirname "${DOPT_PYTHON}")")/lib"; [[ -d "$plib" ]] || plib=""
+        if LD_LIBRARY_PATH="${plib:+${plib}:}${ASCEND_HOME_PATH}/lib64:${LD_LIBRARY_PATH:-}" \
+           "${DOPT_PYTHON}" -c "import torch_npu" 2>/dev/null; then
+            [[ -n "$plib" ]] && export LD_LIBRARY_PATH="${plib}:${LD_LIBRARY_PATH:-}"
+            return 0
+        fi
+    fi
+    # ② 候选探测: 常见路径 + PATH 里的 python3, 取第一个能 import torch_npu 的
+    local candidates=(
+        /opt/buildtools/python-3.12.9/bin/python3
+        /opt/buildtools/Python-3.11.4/bin/python3
+        /usr/local/bin/python3
+        /usr/bin/python3
+    )
+    local in_path; in_path="$(command -v python3 2>/dev/null || true)"
+    [[ -n "$in_path" ]] && candidates+=("$in_path")
+    for p in "${candidates[@]}"; do
+        [[ -x "$p" ]] || continue
+        plib="$(dirname "$(dirname "$p")")/lib"; [[ -d "$plib" ]] || plib=""
+        if LD_LIBRARY_PATH="${plib:+${plib}:}${ASCEND_HOME_PATH}/lib64:${LD_LIBRARY_PATH:-}" \
+           "$p" -c "import torch_npu" 2>/dev/null; then
+            export DOPT_PYTHON="$p"
+            [[ -n "$plib" ]] && export LD_LIBRARY_PATH="${plib}:${LD_LIBRARY_PATH:-}"
+            return 0
+        fi
+    done
+    return 1  # 未找到装 torch_npu 的 python (仅 ③ NPU 阶段需要; ①② 不阻塞)
+}
+if ! _resolve_dopt_python; then
+    echo "[_env_common] DOPT_PYTHON: 未探测到装 torch_npu 的 python (仅 ③ NPU 阶段需要, ①② 不受影响)" >&2
+fi
 
 set +u

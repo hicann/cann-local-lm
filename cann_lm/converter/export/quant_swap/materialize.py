@@ -122,11 +122,12 @@ def materialize_int4_per_group_symmetric(
         raise ValueError(
             f"scale shape {tuple(scale.shape)} != ({out_f}, {in_f // group_size})"
         )
-    qmax = (1 << (nbits - 1)) - 1  # signed 4-bit -> 7
+    qmax = (1 << (nbits - 1)) - 1  # signed positive max: 7 for 4-bit
+    qmin = -(1 << (nbits - 1))     # signed negative min: -8 (two's-complement full range, matches dopt qmin_max)
     scale_exp = scale.float().repeat_interleave(group_size, dim=-1)  # [out, in]
     q = torch.round(w / scale_exp)
     if signed:
-        q = q.clamp(-qmax, qmax)
+        q = q.clamp(qmin, qmax)    # [-8, 7] standard signed int4 (was [-7,7], dropped -8)
     else:
         q = q.clamp(0, 2 * qmax + 1)
     q = q.to(torch.int8)

@@ -113,7 +113,7 @@ def convert(
     if dopt_out_path:
         from cann_lm.converter.quant_entry import swap_from_dopt
         print(f"      Quant: materialize int4 (auto group_size) -> swap QuantLinear (W4A8)")
-        info, embed_quant = swap_from_dopt(artifact.model, dopt_out_path)
+        info, embed_quant = swap_from_dopt(artifact.model, dopt_out_path, target_soc=target_soc)
         artifact.quant_info = info
         print(f"      Quantized {info['n_quantized']} linears (skipped {info['n_skipped_no_dopt_key']}, group_size={info['group_size']})")
         if embed_quant:

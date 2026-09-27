@@ -67,8 +67,8 @@ def pack_int4_int32(q: torch.Tensor) -> torch.Tensor:
     nibble [k//2, n] 给 ``npu_quant_matmul`` x2).
 
     注: 交叠排列为 8 int4 连续填 int32 低->高 4 位 (n=8i -> bit0-3, n=8i+7 -> bit28-31).
-    CANN 实际排列在 libop_plugin.so (C++, 本地无源码), 需对齐 NPU
-    ``npu_convert_weight_to_int4pack`` kernel 验证.
+    已对齐 ops-nn canonical unpack_int32_to_int4 (matmul_quant_util.py) bit-exact 验证 (含 -8).
+    CANN 实际排列在 libop_plugin.so (C++, 本地无源码), 与上述一致 (经 ops-nn golden 交叉验证).
     """
     if q.shape[-1] % 8 != 0:
         raise ValueError(f"last dim {q.shape[-1]} must be multiple of 8 for int4pack")

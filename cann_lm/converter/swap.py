@@ -228,6 +228,7 @@ def _swap_linear_from_sd(
     sd: dict,
     skip: tuple[str, ...] = DEFAULT_SKIP,
     param_map: dict[str, dict] | None = None,
+    target_soc: str = "",
 ) -> dict:
     """Port a loaded dopt GPTQ sd -> materialize int4 -> swap QuantLinear in place.
 
@@ -303,13 +304,18 @@ def _swap_linear_from_sd(
                 "cann_lm::quant_matmul (symmetric offset=0 only). Re-run dopt with a "
                 "symmetric strategy."
             )
-        # Pre-transpose weight_q [n,k//2]->[k//2,n] and scale [n,k//g]->[k//g,n]: cann_lm::quant_matmul
-        # meta takes N = x2.size(-1); _quant_matmul_converter hardcodes transpose_x2=False.
+        # Pre-transpose weight_q and scale so cann_lm::quant_matmul meta takes N = x2.size(-1);
+        # _quant_matmul_converter hardcodes transpose_x2=False.
+        # KirinX90: int4pack int32 (packed-N, materialize 产 [K,N//8] K-first, 不 transpose);
+        # 其它(Ascend910): int8 nibble (materialize 产 [N,K//2], transpose -> [K//2,N]).
+        is_kirinx90 = "kirin" in (target_soc or "").lower()
+        packed = "int4pack" if is_kirinx90 else True
         weight_q, weight_scale = materialize_int4_per_group_symmetric(
-            w_gptq, scale2d, group_size, signed=True, nbits=bit, packed=True
+            w_gptq, scale2d, group_size, signed=True, nbits=bit, packed=packed
         )
-        weight_q = weight_q.transpose(-1, -2).contiguous()
-        weight_scale = weight_scale.transpose(-1, -2).contiguous()
+        weight_scale = weight_scale.transpose(-1, -2).contiguous()  # [n,k//g]->[k//g,n] (两路径都 transpose)
+        if not is_kirinx90:
+            weight_q = weight_q.transpose(-1, -2).contiguous()  # int8 nibble [n,k//2]->[k//2,n]; int4pack 已 [k,n//8]
         ql = QuantLinear(
             weight_q, weight_scale, group_size, bias=m.bias, act_quant=True,
         )
@@ -338,6 +344,7 @@ def _swap_linear_from_sd(
 def swap_from_dopt(
     model: nn.Module,
     dopt_path: str | Path,
+    target_soc: str = "",
 ) -> tuple[dict, dict[str, tuple[torch.Tensor, torch.Tensor]]]:
     """One dopt sd load -> Linear swap + Embedding extraction.
 
@@ -354,7 +361,7 @@ def swap_from_dopt(
     sd = load_dopt_state_dict(dopt_path)
     param_map = _read_quant_param_map(dopt_path)
     info = _swap_linear_from_sd(
-        model, sd, skip=DEFAULT_SKIP, param_map=param_map,
+        model, sd, skip=DEFAULT_SKIP, param_map=param_map, target_soc=target_soc,
     )
     info["dopt_path"] = str(dopt_path)
     embed_quant = swap_embeddings_from_dopt(sd, model)

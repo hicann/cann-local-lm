@@ -65,7 +65,7 @@ def convert_quant_matmul(
     is_a8w4 = x1.dtype == DataType.DT_FLOAT8_E4M3FN and (
         x2.dtype in (DataType.DT_FLOAT4_E2M1, DataType.DT_FLOAT)
     )
-    is_s8s4 = x1.dtype == DataType.DT_INT8 and x2.dtype == DataType.DT_INT8
+    is_s8s4 = x1.dtype == DataType.DT_INT8 and x2.dtype in (DataType.DT_INT8, DataType.DT_INT32)
 
     if x1_dtype is not None and x1 is not None:
         x1 = ge.Bitcast(x1, type=torch_dtype_value_to_ge_type(x1_dtype))
@@ -108,6 +108,8 @@ def convert_quant_matmul(
         # Workaround: create a dummy bias (zeros [N], float32) so InferShape passes.
         # The bias value (0) does not affect the matmul result (out = x1@x2*scale + 0).
         n = x2.shape[-1] if hasattr(x2, 'shape') else None
+        if n is not None and x2.dtype == DataType.DT_INT32:
+            n = n * 8  # int4pack 沿 N (8 int4/int32): N = last_dim * 8 (KirinX90 packed-N)
         bias = ge.Const([0.0] * int(n), dtype=1) if n else None
 
     out = ge.QuantBatchMatmulV4(

@@ -43,6 +43,9 @@ def register_ge_converters() -> None:
     from ._quant_matmul_converter import convert_quant_matmul
     register_fx_node_ge_converter(torch.ops.cann_lm.quant_matmul.default)(convert_quant_matmul)
 
+    from ._dynamic_quant_converter import convert_dynamic_quant
+    register_fx_node_ge_converter(torch.ops.cann_lm.dynamic_quant.default)(convert_dynamic_quant)
+
     # softplus: torchair placeholder -> ge.SoftplusV2. reg_register.h must register SoftplusV2
     # (else GetGEGraph heap corruption). beta/threshold float() (aten Scalar is int, ge .f is float).
     @register_fx_node_ge_converter(torch.ops.aten.softplus.default)

@@ -1,12 +1,14 @@
-"""KirinX90 GE converter patches.
+"""Kirin GE converter patches.
 
-环境变量 KIRINX90_CONVERTER_PATCHES=1 时由 ge_converter.py 加载。
-覆盖 4 类 kirinx90 不支持的 GE 算子，用等价算子替换：
+当 ``target_soc`` 是 Kirin 系列 (KirinX90 等) 时由 ``ge_converter.py`` 加载；
+``KIRINX90_CONVERTER_PATCHES=1`` 可作 force-on 覆盖。判断依据 ``active_config().target_soc``
+(由 saver 经 ``lite_export_context(LiteConfig(target_soc=...))`` 注入)。
+覆盖 Kirin aicore 不支持的 GE 算子，用等价算子替换：
 
-1. ge.MatMul      -> custom_op("MatMulV3")      (kirinx90 aicore 只有 V3)
-2. ge.RotaryMul   -> ge.RotaryPositionEmbedding  (kirinx90 有此算子，走 arch35 分支)
-3. ge.Muls        -> ge.Mul (标量转 Const tensor) (kirinx90 无 Muls engine)
-4. ge.TensorMove  -> 跳过 (scatter 直发 ScatterNdUpdate)   (kirinx90 无 TensorMove engine)
+1. ge.MatMul      -> custom_op("MatMulV3")      (Kirin aicore 只有 V3)
+2. ge.RotaryMul   -> ge.RotaryPositionEmbedding  (Kirin 有此算子，走 arch35 分支)
+3. ge.Muls        -> ge.Mul (标量转 Const tensor) (Kirin 无 Muls engine)
+4. ge.TensorMove  -> 跳过 (scatter 直发 ScatterNdUpdate)   (Kirin 无 TensorMove engine)
 
 注册机制: register_fx_node_ge_converter last-write-wins，
 在 register_ge_converters() 之后调用 register_kirinx90_patches() 覆盖。

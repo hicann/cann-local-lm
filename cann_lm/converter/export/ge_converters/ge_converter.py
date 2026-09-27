@@ -84,8 +84,13 @@ def register_ge_converters() -> None:
     from ._fused_infer_attention_score_v2_converter import convert_fused_infer_attention_score_v2
     register_fx_node_ge_converter(torch.ops.cann_lm.fused_infer_attention_score_v2.default)(convert_fused_infer_attention_score_v2)
 
-    # KirinX90 converter patches (last-write-wins, override after all above).
-    # 环境变量 KIRINX90_CONVERTER_PATCHES=1 时加载，用等价算子替换 kirinx90 不支持的 op。
-    if os.environ.get("KIRINX90_CONVERTER_PATCHES", "") == "1":
+    # Kirin GE converter patches (last-write-wins, override after all above).
+    # 当 target_soc 是 Kirin 系列 (KirinX90 等) 时加载，用等价算子替换 Kirin aicore 不支持的 op。
+    # target_soc 取自 active_config() (LiteConfig, 由 saver 在 lite_export_context 内注入);
+    # KIRINX90_CONVERTER_PATCHES=1 作为 force-on 覆盖 (向后兼容: target_soc 拿不到或需强制时用)。
+    from torch_delegate.lite_context import active_config
+    _cfg = active_config()
+    _soc = (_cfg.target_soc if _cfg is not None else "") or ""
+    if "kirin" in _soc.lower() or os.environ.get("KIRINX90_CONVERTER_PATCHES", "") == "1":
         from ._kirinx90_converter_patches import register_kirinx90_patches
         register_kirinx90_patches()

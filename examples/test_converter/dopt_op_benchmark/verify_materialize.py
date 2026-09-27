@@ -17,7 +17,7 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, SCRIPT_DIR)
 
 from cann_lm.converter.export.quant_swap.materialize import (
-    materialize_int4_per_group_symmetric, pack_int4, transdata_scale, restore_scale, _SCALE_MASK,
+    materialize_int4_per_group_symmetric, pack_int4, pack_int4_int32, transdata_scale, restore_scale, _SCALE_MASK,
 )
 from ref_w4a8 import ref_quant_weight_int4
 from bedrock.hand_fixtures import FIXTURES
@@ -145,9 +145,43 @@ def part5_dopt_neg8_drop():
     return int(ok)
 
 
+def part6_int4pack_vs_opsnn_golden():
+    """int4pack 布局对齐 ops-nn canonical unpack_int32_to_int4 [✅真正确(独立交叉)].
+
+    pack_int4_int32 (materialize.py) ↔ ops-nn golden unpack (matmul_quant_util.py) round-trip bit-exact,
+    含 -8 边界. 这 lifts 了 int4pack "未验" 状态, 也是 kirinx90 int32-int4 路径 (WeightQuantBatchMatmulV2
+    + convert_weight_to_int4_pack) 的布局可信度根.
+    """
+    import numpy as np
+    print("\n=== Part 6: pack_int4_int32 ↔ ops-nn golden unpack [✅真正确(独立交叉)] ===")
+
+    # ops-nn canonical unpack (复制自 ops-nn/matmul/common/tests/st/arch35/matmul_quant_util.py)
+    def unpack_int32_to_int4(w32, axis=-1):
+        orig = w32.shape
+        if len(orig) < 2:
+            return w32
+        w32 = np.ascontiguousarray(w32); axis = len(orig) - 1
+        n_packed = orig[axis]; n_unpacked = n_packed * 8
+        wf = w32.reshape(-1, n_packed); res = np.zeros((wf.shape[0], n_unpacked), dtype=np.int8)
+        for i in range(8):
+            v = (wf >> (i * 4)) & 0xF; v = np.where(v >= 8, v - 16, v); res[:, i::8] = v
+        ns = list(orig); ns[axis] = n_unpacked; return res.reshape(ns)
+
+    torch.manual_seed(0)
+    q = torch.randint(-8, 8, (4, 16), dtype=torch.int8)  # 含 -8 边界, n%8==0
+    packed = pack_int4_int32(q)                          # torch int32 [k, n//8]
+    unpacked = unpack_int32_to_int4(packed.numpy())      # numpy int8 [k, n]
+    ok = np.array_equal(unpacked, q.numpy())
+    n_neg8 = int((q == -8).sum()); n_neg8_kept = int((unpacked == -8).sum())
+    print(f"  [{'PASS' if ok else 'FAIL'}] round-trip bit-exact={ok} | 原 #-8={n_neg8} unpack #-8={n_neg8_kept} "
+          f"(保住={n_neg8==n_neg8_kept}) | packed {tuple(packed.shape)} {packed.dtype} unpack range [{unpacked.min()},{unpacked.max()}]")
+    return int(ok)
+
+
 def main():
     npass = part1_synthetic() + part2_pack_roundtrip() + part3_transdata_roundtrip() + part4_real_dopt()
     part5_dopt_neg8_drop()
+    part6_int4pack_vs_opsnn_golden()
     print(f"\nverify_materialize: done (见上方各 PASS/FAIL/FINDING)")
     return 0
 

@@ -29,6 +29,13 @@ def _t(x):
     return torch.tensor(x, dtype=torch.float32) if not isinstance(x, torch.Tensor) else x
 
 
+def cos_sim(a: torch.Tensor, b: torch.Tensor) -> float:
+    """余弦相似度 (flatten 后), ④ NPU vs reference 的主评判标准 (容忍 W4A16/W4A8 激活量化差 + int 累积差)."""
+    af = a.flatten().float()
+    bf = b.flatten().float()
+    return torch.nn.functional.cosine_similarity(af.unsqueeze(0), bf.unsqueeze(0)).item()
+
+
 def partA_dynamic_quant():
     print("=== A: cann_lm::dynamic_quant vs ref_dynamic_quant [⚠️仅一致+✅wiring] ===")
     cases = [
@@ -84,9 +91,10 @@ def partB_quant_matmul():
             pertoken_scale=xsc, bias=None, group_sizes=[1, 1, gs],
             output_dtype=6, transpose_x1=False, transpose_x2=False)
         d_rel = (out_op - out_ref).abs().max().item() / out_ref.abs().max().item()
-        ok2 = d_rel < 1e-5
+        cs = cos_sim(out_op, out_ref)
+        ok2 = d_rel < 1e-5 and cs > 0.999
         npass += int(ok2)
-        print(f"  [{'PASS' if ok2 else 'FAIL'}] real_qproj_L0: shape={tuple(out_op.shape)} maxRelΔ={d_rel:.2e}")
+        print(f"  [{'PASS' if ok2 else 'FAIL'}] real_qproj_L0: shape={tuple(out_op.shape)} maxRelΔ={d_rel:.2e} cos={cs:.6f}")
     return npass
 
 

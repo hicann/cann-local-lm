@@ -1,2 +1,3 @@
-golden/
 __pycache__/
+!golden/
+!golden/**

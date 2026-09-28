@@ -1,0 +1,82 @@
+{
+  "name": "dopt_op_benchmark",
+  "operator_impl": "dopt.QLinear.fakequant (quant->dequant->fp matmul, weight-only)",
+  "model_path": "/mnt/workspace/CANN-LM_5883/models/unsloth/gemma-4-E4B-it",
+  "quant_weight": "/tmp/opencode/dopt_st_demo_out/gemma4/trained_quant_weight.pth",
+  "quant_dir": "/tmp/opencode/dopt_st_demo_out/gemma4",
+  "dopt_config": "/tmp/opencode/dopt_st_demo_out/gemma4/dopt_config.json",
+  "runtime_config": "/tmp/opencode/dopt_st_demo_out/gemma4/runtime_config.yaml",
+  "device": "cpu",
+  "n_layers": 42,
+  "prompts": [
+    "中国的首都是",
+    "The capital of France is",
+    "1 + 1 =",
+    "Python is a"
+  ],
+  "inputs": [
+    {
+      "prompt": "中国的首都是",
+      "input_ids": [
+        110323,
+        238317,
+        15310
+      ]
+    },
+    {
+      "prompt": "The capital of France is",
+      "input_ids": [
+        818,
+        5279,
+        529,
+        7001,
+        563
+      ]
+    },
+    {
+      "prompt": "1 + 1 =",
+      "input_ids": [
+        236770,
+        900,
+        236743,
+        236770,
+        578
+      ]
+    },
+    {
+      "prompt": "Python is a",
+      "input_ids": [
+        32651,
+        563,
+        496
+      ]
+    }
+  ],
+  "captured_operators": [
+    "model.layers.0.self_attn.q_proj",
+    "model.layers.0.self_attn.k_proj",
+    "model.layers.0.self_attn.v_proj",
+    "model.layers.0.self_attn.o_proj",
+    "model.layers.0.mlp.gate_proj",
+    "model.layers.0.mlp.up_proj",
+    "model.layers.0.mlp.down_proj",
+    "model.layers.21.self_attn.q_proj",
+    "model.layers.21.self_attn.k_proj",
+    "model.layers.21.self_attn.v_proj",
+    "model.layers.21.self_attn.o_proj",
+    "model.layers.21.mlp.gate_proj",
+    "model.layers.21.mlp.up_proj",
+    "model.layers.21.mlp.down_proj",
+    "model.layers.41.self_attn.q_proj",
+    "model.layers.41.self_attn.o_proj",
+    "model.layers.41.mlp.gate_proj",
+    "model.layers.41.mlp.up_proj",
+    "model.layers.41.mlp.down_proj",
+    "lm_head"
+  ],
+  "e2e_logits": "e2e_logits.pt  # [n_prompts, vocab] last-token logits",
+  "op_io_dir": "op_io/<op_name>.pt  # {inputs:[act...], outputs:[act...]} per prompt",
+  "comparison_contract": "Candidate operator (e.g. cann_lm::quant_matmul / OM int4): load the SAME weight from quant_weight for <op_name>, feed saved op_io/<op>.inputs[i], compute output, compare to op_io/<op>.outputs[i] within atol=0.01 rtol=0.01. No fp16 baseline -> isolates operator correctness from quantization accuracy.",
+  "atol": 0.01,
+  "rtol": 0.01
+}

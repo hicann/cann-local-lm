@@ -786,7 +786,7 @@ REG_OP(QuantBatchMatmulV3)
 //   W4A8 = x1 DT_INT8 + x2 DT_INT4 (prebuilt ND_ND_int8_int4 kernel, tilingKey=24).
 REG_OP(QuantBatchMatmulV4)
     .INPUT(x1, TensorType({DT_FLOAT8_E5M2, DT_FLOAT8_E4M3FN, DT_INT8}))
-    .INPUT(x2, TensorType({DT_FLOAT4_E2M1, DT_INT4, DT_INT8}))
+    .INPUT(x2, TensorType({DT_FLOAT4_E2M1, DT_INT4, DT_INT8, DT_INT32}))
     .OPTIONAL_INPUT(bias, TensorType({DT_BF16, DT_FLOAT16, DT_FLOAT32}))
     .OPTIONAL_INPUT(x1_scale, TensorType({DT_FLOAT16, DT_BF16, DT_FLOAT8_E8M0, DT_FLOAT32}))
     .OPTIONAL_INPUT(x2_scale, TensorType({DT_FLOAT16, DT_BF16, DT_FLOAT8_E8M0, DT_UINT64, DT_FLOAT32}))

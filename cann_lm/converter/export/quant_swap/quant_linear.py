@@ -56,7 +56,7 @@ class QuantLinear(nn.Module):
             )
         self.group_size = group_size
         self.act_quant = act_quant
-        self.register_buffer("weight_q", weight_q.to(torch.int8))       # [k//2, n] nibble-packed (pre-transposed)
+        self.register_buffer("weight_q", weight_q)  # int8 nibble [k//2,n] (Ascend910) 或 int32 int4pack [k,n//8] (KirinX90, packed-N)
         self.register_buffer("weight_scale", weight_scale.to(torch.float32))  # [k//g, n]; serialized as int64 bit-pattern, see quant_design.md
         if bias is not None:
             self.register_buffer("bias", bias.to(weight_scale.dtype))

@@ -92,25 +92,25 @@ def test_materialize_int4_shape_unpacked_and_packed():
 
 
 def test_materialize_int4_quant_dequant_exact_fakequant():
-    # fakequant: w = q0*s (q0 在 [-7,7] 不触发 clamp), round(w/s)=q0 精确, dequant=q0*s=w
+    # fakequant: w = q0*s (q0 在 [-7,7] ⊂ [-8,7] 不触发 clamp), round(w/s)=q0 精确, dequant=q0*s=w
     out_f, in_f, g = 2, 8, 4
-    q0 = torch.randint(-7, 7, (out_f, in_f), dtype=torch.int8)  # 对称量化 clamp(-7,7)
+    q0 = torch.randint(-7, 7, (out_f, in_f), dtype=torch.int8)  # 不触发 clamp
     s = (torch.rand(out_f, in_f // g, dtype=torch.float32) + 0.1) * 0.01
     scale_exp = s.repeat_interleave(g, dim=-1)
     w = q0.float() * scale_exp
     q, sc = materialize_int4_per_group_symmetric(w, s, group_size=g)
     assert torch.equal(q, q0)  # 精确重建 (无 clamp)
     assert torch.allclose(q.float() * sc.repeat_interleave(g, dim=-1), w)
-    assert q.min() >= -7 and q.max() <= 7  # clamp(-qmax,qmax)=clamp(-7,7)
+    assert q.min() >= -8 and q.max() <= 7  # signed int4 二补码全范围 [-8,7] (P1 修复)
 
 
 def test_materialize_int4_clamp_beyond_range():
     out_f, in_f, g = 1, 4, 4
     w = torch.tensor([[10.0, -10.0, 0.5, -0.5]])
-    s = torch.tensor([[0.1]])  # w/s = [100,-100,5,-5] → clamp(-qmax,qmax)=clamp(-7,7)
+    s = torch.tensor([[0.1]])  # w/s = [100,-100,5,-5] → clamp[-8,7]
     q, _ = materialize_int4_per_group_symmetric(w, s, group_size=g)
-    # materialize 用 clamp(-qmax, qmax)=clamp(-7,7) (对称量化排除 -8 边界)
-    assert q.tolist() == [[7, -7, 5, -5]]
+    # materialize signed int4 clamp [-8,7] (二补码全范围, 保住 -8; P1 修复前是 [-7,7] 丢 -8)
+    assert q.tolist() == [[7, -8, 5, -5]]
 
 
 @pytest.mark.parametrize("bad_in,bad_scale,g,msg", [

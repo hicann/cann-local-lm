@@ -169,18 +169,14 @@ def eager_attention_forward(
 
 
 def _pad_mask_to_kv_square(mask: torch.Tensor, kv_len: int) -> torch.Tensor:
-    """pad atten_mask 的 q 维到 kv_len (融合算子要求 [*, kv_len, kv_len] 方阵).
+    """atten_mask bool 矩阵 [*, q_len, kv_len] 直通 (不 pad 到方阵).
 
-    cann_lm 的 mask 是 [*, q_len, kv_len] (float: 0.0=attend, finfo.min=mask out) -> bool
-    (False=attend, True=mask out); pad q 维到 kv_len: 前 q_len 行原 mask, 后 kv_len-q_len 行
-    pad True (mask out, 不影响, 融合算子用 actual_seq_qlen 只取前 q_len 行). 参考 gemma4/modeling_gemma4.py.
+    矩形 mask: q 维=q_len (arch31 tiling 要求 mask 第三维=S1=q_len, 不接受 kv_len;
+    方阵 q 维=kv_len≠q_len 会在 kirinx90 sm=0 校验失败, 需 patch sm=4), kv 维=kv_len
+    覆盖全 buffer (防 actual_seq_kvlen 截断丢上下文, 见 :894 decode 需覆盖全 kv buffer).
+    融合算子用 actual_seq_qlen 只取前 q_len 行, 无需 pad q 维. 参考 gemma4/modeling_gemma4.py.
     """
-    q_len = mask.shape[-2]
-    if q_len >= kv_len:
-        return mask.bool()
-    pad_shape = (*mask.shape[:-2], kv_len - q_len, kv_len)
-    pad = torch.full(pad_shape, True, dtype=torch.bool, device=mask.device)
-    return torch.cat([mask.bool(), pad], dim=-2)
+    return mask.bool()
 
 
 def fused_attention_forward(

@@ -59,7 +59,7 @@ CONVERTER="$PROJECT_ROOT/cann_lm/converter/cann_lm_converter.py"
 COMPILE_BIN="$PROJECT_ROOT/build/cann_lm_compile"
 NPY_RUNNER_DIR="$SCRIPT_DIR/om_npu_verify"
 case "$MODEL_TYPE" in
-  qwen3_5) RUNNER="$NPY_RUNNER_DIR/run_qwen3_5_gen_emb.py" ;;
+  qwen3_5) RUNNER="$NPY_RUNNER_DIR/run_qwen3_5_gen.py" ;;
   gemma4)  RUNNER="$NPY_RUNNER_DIR/run_gemma4_gen.py" ;;
   *) echo "model-type $MODEL_TYPE 暂只支持 qwen3_5/gemma4" >&2; exit 1 ;;
 esac

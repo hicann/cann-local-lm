@@ -269,6 +269,24 @@ def test_swap_linear_from_sd_happy_path_swaps_quantlinear():
     assert model.q_proj.group_size == 4
 
 
+def test_swap_linear_from_sd_kirinx90_int4pack_int32():
+    # KirinX90: int4pack int32 (packed-N, [K,N//8]), 区别于 Ascend910 int8 nibble ([K//2,N])
+    # out(N) 须整除 8 (8 int4/int32 沿 N pack)
+    class _KirinModel(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.q_proj = nn.Linear(8, 16, bias=False)  # in=8(K), out=16(N), N%8==0
+    model = _KirinModel()
+    sd = _make_q_proj_sd(out_f=16, in_f=8, group=4)
+    info = _swap_linear_from_sd(model, sd, target_soc="KirinX90")
+    assert isinstance(model.q_proj, QuantLinear)
+    assert model.q_proj.weight_q.dtype == torch.int32        # int4pack int32 (KirinX90)
+    assert model.q_proj.weight_q.shape == (8, 16 // 8)       # [K, N//8] (packed-N, 不 transpose)
+    assert model.q_proj.weight_scale.shape == (8 // 4, 16)   # [K//g, N]
+    assert model.q_proj.weight_scale.dtype == torch.float32
+    assert info["scheme"] == "W4A8-s8s4"
+
+
 def test_swap_linear_from_sd_param_map_group_size():
     model = _LinearModel()
     sd = _make_q_proj_sd(group=4)

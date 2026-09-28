@@ -67,8 +67,8 @@ def pack_int4_int32(q: torch.Tensor) -> torch.Tensor:
     nibble [k//2, n] 给 ``npu_quant_matmul`` x2).
 
     注: 交叠排列为 8 int4 连续填 int32 低->高 4 位 (n=8i -> bit0-3, n=8i+7 -> bit28-31).
-    CANN 实际排列在 libop_plugin.so (C++, 本地无源码), 需对齐 NPU
-    ``npu_convert_weight_to_int4pack`` kernel 验证.
+    已对齐 ops-nn canonical unpack_int32_to_int4 (matmul_quant_util.py) bit-exact 验证 (含 -8).
+    CANN 实际排列在 libop_plugin.so (C++, 本地无源码), 与上述一致 (经 ops-nn golden 交叉验证).
     """
     if q.shape[-1] % 8 != 0:
         raise ValueError(f"last dim {q.shape[-1]} must be multiple of 8 for int4pack")
@@ -122,11 +122,12 @@ def materialize_int4_per_group_symmetric(
         raise ValueError(
             f"scale shape {tuple(scale.shape)} != ({out_f}, {in_f // group_size})"
         )
-    qmax = (1 << (nbits - 1)) - 1  # signed 4-bit -> 7
+    qmax = (1 << (nbits - 1)) - 1  # signed positive max: 7 for 4-bit
+    qmin = -(1 << (nbits - 1))     # signed negative min: -8 (two's-complement full range, matches dopt qmin_max)
     scale_exp = scale.float().repeat_interleave(group_size, dim=-1)  # [out, in]
     q = torch.round(w / scale_exp)
     if signed:
-        q = q.clamp(-qmax, qmax)
+        q = q.clamp(qmin, qmax)    # [-8, 7] standard signed int4 (was [-7,7], dropped -8)
     else:
         q = q.clamp(0, 2 * qmax + 1)
     q = q.to(torch.int8)

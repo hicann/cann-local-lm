@@ -962,6 +962,116 @@ prefill-decode 共享 `weights_0.bin` 带来一个隐患：modeling 里 `torch.t
 >
 > 相关：[`ops_replacement.md`](../ops_replacement.md) §7（关 InplaceAddRmsNorm 融合）同属"让 OM 终态对齐 [`fused_ops.md`](../cann_lm_models/fused_ops/fused_ops.md) §1 算子总表"的编译期调整，但本节是 saver/epair 格式层的逐图常量内联（导出期），二者互补。
 
+### PD 权重分离场景（hash 去重 v2 格式，CLI-014 解法 B）
+
+> 关联 [cleanup_notes.md CLI-014](../cleanup_notes.md#cli-014-todopd-分离导出只存一份权重decode-权重丢弃pd-权重不一致时失效)：当前「权重共享」假设（上文行 892）限于 PD 同一模型同 state_dict；PD 权重真不一致（不同量化 / disaggregated 部署 / 层名前缀差异）时 decode `save_weights=False` 丢权重。解法 B 用 content hash 去重 + 两级索引，覆盖任意 PD 权重关系（同值自动 dedup / 异值各存 / 部分共享 dedup）。
+
+#### 设计
+
+当前 `weight_info.json` 单级（`name → {bin, offset, size, _is_weight}`），prefill 独有 + decode 复用。B 改两级：
+
+- `blobs`：按 content hash 去重的 blob 元数据（`hash → {bin, offset, size, format, _is_weight}`）
+- `graphs`：per-graph 的 name→hash 映射（`{prefill: {name→hash}, decode: {name→hash}}`）
+
+C++ 加载：`graphs[graph][name] → hash → blobs[hash] → {bin, offset, size}`。
+
+#### hash 选型
+
+`hashlib.sha256(tensor_bytes).hexdigest()[:16]`（64-bit，无依赖，冲突 2^-64）。计算在 `_pack_weights_to_dir` 已有 `data = raw.numpy().tobytes()` 上（额外成本 sha256 几 GB ≈ 秒级，导出非热路径可接受）。
+
+#### v2 schema
+
+```json
+{
+  "blobs": {
+    "h_a1b2c3d4e5f67890": {"bin": "weights_0.bin", "offset": 0, "size": 123456, "format": "nd", "_is_weight": true},
+    "h_d4e5f6a7b8c9d0e1": {"bin": "weights_0.bin", "offset": 123456, "size": 789012, "format": "nd", "_is_weight": true}
+  },
+  "graphs": {
+    "prefill": {"model.embed_tokens.weight": "h_a1b2c3d4e5f67890", "model.layers.0.q_proj.weight": "h_d4e5f6a7b8c9d0e1"},
+    "decode":  {"model.embed_tokens.weight": "h_a1b2c3d4e5f67890", "model.layers.0.q_proj.weight": "h_e7f8a9b0c1d2e3f4"}
+  }
+}
+```
+
+- PD 同值：两图 name 指向同 hash → blobs 一份（自动 dedup）
+- PD 异值：两图 name 指向不同 hash → blobs 两份
+- 部分共享：共享 dedup + 不同各存（零冗余）
+
+#### Python 接口
+
+```python
+# epair_utils.py
+def _pack_weights_v2(contents, output_dir, graph_name="single", max_file_size) -> dict:
+    """单图 state_dict → content hash 去重 → 两级索引 (blobs + graphs)。
+    单图导出 (consolidated_weights_save 改调)。"""
+
+def _pack_weights_pd_dedup(prefill_contents, decode_contents, output_dir, max_file_size) -> dict:
+    """PD 两图 state_dict → content hash 去重 → 两级索引 (blobs + graphs)。
+    同 hash 只写一次 bin; PD 同值自动 dedup, 异值各存。"""
+
+def consolidated_weights_save_pd(prefill_epair, decode_epair, output_dir, *,
+                                  max_file_size=..., host_side_weights=None) -> None:
+    """PD 分离导出: _pack_weights_pd_dedup 写 v2 weight_info + weights_*.bin + PD 两 ep_json"""
+```
+
+- `save_epair_prefill_decode`（`saver.py`）改调 `consolidated_weights_save_pd`（替代 prefill `save_weights=True` + decode `save_weights=False` 两次 `consolidated_weights_save`）
+- `consolidated_weights_save`（单图）改调 `_pack_weights_v2`（**单图也统一 v2**，`graphs={"single":{...}}`）
+- **去掉 `inline_fused_attn_seq_constants` + `inline_weight_scale_dtype`**：v2 hash 去重让 actual_seq（PD 128/1 不同 bytes）各存各取，从根本解决 PD 共享冲突，不再需 inline workaround
+
+#### C++ 加载（v2 两级，v1 已弃）
+
+```cpp
+// GeWeightLoader / EpairModelLoader
+if (index.contains("graphs") && index.contains("blobs")) {   // v2 检测 (无 version 字段)
+    graph = InferGraphFromEpJson(ep_json_path);  // "prefill_ep_json..." → "prefill", "decode_..." → "decode", "ep_json..." → "single"
+    for (auto& [name, spec] : tensor_specs) {
+        hash = index["graphs"][graph][name];
+        auto& blob = index["blobs"][hash];       // {bin, offset, size}
+        LoadBytes(blob["bin"], blob["offset"], blob["size"], ...);
+    }
+} else {
+    // v1 no longer supported (re-export with v2 hash-dedup)
+    AddError(...);
+}
+```
+
+- graph 名从 ep_json filename 推断（不增 CLI 参数）
+- **v1 单级 weight_info 不再兼容**（无 graphs → 报错，需重导出 v2）
+
+#### 产物布局（v2）
+
+```
+output_dir/
+├── prefill_ep_json_with_ascend_ir.json
+├── decode_ep_json_with_ascend_ir.json
+├── weight_info.json          # v2 两级 (blobs + graphs), PD 共享一份
+├── weights_*.bin            # hash 去重 blob (同值一份, 异值各存)
+├── host_weights_*.bin       # embed host gather (保持现状, 不纳入 B 去重)
+└── model_config.json
+```
+
+#### 不变部分
+
+- `host_weights`（embed host gather）：保持现状（prefill 独有），不纳入 B 去重（避免扩大改动）
+- `max_file_size` 分文件 + 单 tensor 不分片（同当前逻辑，单个超 max 整个写一个 bin）
+- hash 冲突：blobs[hash] 存 size，C++ 按 size 读（信任 sha256[:16]，不额外校验；2^-64 可忽略）
+
+#### 覆盖场景
+
+| 场景 | 当前（共享假设） | B（hash 去重） |
+|------|----------------|---------------|
+| PD 同模型同值 | ✓ 一份共享 | ✓ 自动 dedup 一份 |
+| PD 不同量化（W8A8/W4A8） | ✗ decode 丢权重 | ✓ 两份各存 |
+| disaggregated 部署 | — | ✓ 两图自包含各存 |
+| 部分共享（embed 共享 + Linear 不同） | — | ✓ 共享 dedup + 不同各存 |
+
+#### 关联
+
+- [cleanup_notes.md CLI-014](../cleanup_notes.md#cli-014-todopd-分离导出只存一份权重decode-权重丢弃pd-权重不一致时失效)（TODO + A/B/C/D 解法 + 行动项）
+- 当前「权重共享」假设（本节上文行 892，已被 v2 hash 去重取代）+ 逐图常量内联（行 944，`inline_fused_attn_seq_constants`/`inline_weight_scale_dtype` 已去掉——v2 让 actual_seq PD 各存各取，从根本解决共享冲突）
+- C++ per-graph 编译已就绪（`run_compile.sh` + `compile_main.cc`，PD 各传 `<weights_index>`），B 缺口纯 Python 侧 + C++ `GeWeightLoader` 两级读
+
 ## 新增模型接入指南
 
 新增一个模型到 converter CLI 需要以下步骤：

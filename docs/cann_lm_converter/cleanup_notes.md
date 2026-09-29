@@ -686,7 +686,7 @@ token_identity = m.embed_tokens_per_layer(input_ids).reshape(...).detach()   # H
 | 现状 | `save_epair_prefill_decode` 假设 prefill/decode 两图 state_dict 相同(同一模型),只 prefill 存权重(`consolidated_weights_save(prefill_epair, save_weights=True)` 写 `weights_*.bin` + `weight_info.json`),decode `save_weights=False`(只写 `decode_ep_json_with_ascend_ir.json`,权重丢弃) |
 | 违反约定 | 无(设计假设,非偏离) |
 | 发现日期 | 2026-09-01 |
-| 状态 | **TODO(待决策方案+待实现;2026-09-05 补解法分析)** |
+| 状态 | **已实施（B，2026-09-28）**：v2 hash 去重统一格式（单图/PD 都 v2，去 `version` 字段 + 去 v1 兼容 + 去 `inline_fused_attn_seq_constants`/`inline_weight_scale_dtype`）。验证：qwen3.5/gemma4 端到端（单轮/多轮/长 prompt 多 chunk）全通过 |
 
 ### 设计假设(当前)
 
@@ -735,11 +735,12 @@ token_identity = m.embed_tokens_per_layer(input_ids).reshape(...).detach()   # H
 
 ### 行动项
 
-- [ ] **A**:`consolidated_weights_save`/`_pack_weights_to_dir` 加 `weights_prefix`;`save_epair_prefill_decode` 加 `pd_split_weights` 开关;`model_config.json` 记 `pd_weight_split`;`run_compile.sh` auto-find 加 `weight_info_decode` fallback(或显式传)
-- [ ] **D**:单 artifact 路径加 PD state_dict 一致性 assert(fail-fast)
-- [ ] **C**(场景②③):`save_epair_prefill_decode` 扩展可选 `decode_artifact`
-- [ ] **B**(长期,部分共享 PD 才做):hash 去重 + 两级索引 + C++ `GeWeightLoader` 改读
-- [ ] 文档:[export_design.md](./export/export_design.md):936 补「PD 权重分离场景」+「C++ 已 per-graph 编译」说明(当前只写共享假设)
+- [ ] **A**:`consolidated_weights_save`/`_pack_weights_to_dir` 加 `weights_prefix`;`save_epair_prefill_decode` 加 `pd_split_weights` 开关;`model_config.json` 记 `pd_weight_split`;`run_compile.sh` auto-find 加 `weight_info_decode` fallback(或显式传) — **未做（B 已覆盖 A 的目标且更优）**
+- [ ] **D**:单 artifact 路径加 PD state_dict 一致性 assert(fail-fast) — **未做（v2 hash 去重本身即 fail-fast：PD 不同值各存，不再隐式共享）**
+- [ ] **C**(场景②③):`save_epair_prefill_decode` 扩展可选 `decode_artifact` — **未做（双 artifact 场景②③未出现）**
+- [x] **B**(已实施,2026-09-28):hash 去重 + 两级索引 + C++ `GeWeightLoader` 改读 — `_pack_weights_v2`/`_pack_weights_pd_dedup`(epair_utils.py) + `consolidated_weights_save_pd`(PD)/`consolidated_weights_save` 改调(单图统一 v2) + `ge_weight_loader.cc` v2 两级(`graphs[G][name]→hash→blobs[hash]`) + 去 v1 循环(无 graphs 报错) + `ge_graph_builder`/`epair_model_loader` graph_name 推断(ep_json filename→prefill/decode/single) + 去 `version` 字段(C++ 检测 `graphs`/`blobs` 存在) + 去 `inline_fused_attn_seq_constants`/`inline_weight_scale_dtype`(v2 解决 actual_seq PD 共享冲突,不需 inline workaround)
+- [x] 文档:[export_design.md](./export/export_design.md)「PD 权重分离场景(hash 去重 v2)」节(B 方案设计 + schema + Python/C++ 接口 + 验证矩阵)
+- [x] 验证(2026-09-28):converter UT 127 passed;qwen3.5-0.8B + gemma4-E2B 端到端(导出 v2→OM 编译 C++ v2 加载→NPU 出字);单图 `graphs["single"]` + PD `graphs["prefill"/"decode"]` hash 去重;多轮对话 + 长 prompt 多 chunk prefill;去 inline 后出字一致(v2 从根本解决 actual_seq 共享冲突)
 
 ### 关联
 

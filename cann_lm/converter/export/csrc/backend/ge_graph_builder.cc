@@ -1902,7 +1902,7 @@ bool FinalizeGraph(GraphBuildContext &ctx, const EpairModelParser &parser, Valid
 }  // namespace
 
 GeGraphBuilder::GeGraphBuilder(const std::string &model_json, const std::string &weights_index_path,
-                                ValidationResult &result)
+                                ValidationResult &result, const std::string &graph_name)
     : weights_index_path_(weights_index_path) {
   TDLOGI("GeGraphBuilder enter: weights_index=%s", weights_index_path.c_str());
 
@@ -1921,7 +1921,7 @@ GeGraphBuilder::GeGraphBuilder(const std::string &model_json, const std::string 
          parser_.Nodes().size(), parser_.GraphInputs().size(), parser_.GraphOutputs().size());
 
   TDLOGI("GeGraphBuilder step: loading weights");
-  loader_ = GeWeightLoader::Create(weights_index_path_, parser_.Model(), result);
+  loader_ = GeWeightLoader::Create(weights_index_path_, parser_.Model(), result, graph_name);
   if (!result.ok) {
     for (const auto &issue : result.issues) {
       TDLOGE("GeGraphBuilder weight issue: code=%s, message=%s, context=%s",

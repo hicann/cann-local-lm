@@ -16,9 +16,13 @@ import torch.nn as nn
 
 from cann_lm.converter.export.epair_utils import (
     ConsolidatedWeights,
+    _blob_hash,
+    _pack_weights_pd_dedup,
     _pack_weights_to_dir,
+    _pack_weights_v2,
     _strip_none_input_descs,
     consolidated_weights_save,
+    consolidated_weights_save_pd,
     inline_fused_attn_seq_constants,
     inline_weight_scale_dtype,
     pack_weights,
@@ -172,7 +176,11 @@ def test_consolidated_weights_save_writes_all_files(tmp_path):
 
     assert (tmp_path / "weights_0.bin").exists()
     info = json.loads((tmp_path / "weight_info.json").read_text())
-    assert info["weights_0.bin"][0]["name"] == "a.weight"
+    # v2: {blobs:{hash:{bin,offset,size,_is_weight}}, graphs:{single:{name→hash}}}
+    assert "blobs" in info and "graphs" in info
+    h = info["graphs"]["single"]["a.weight"]
+    assert h in info["blobs"]
+    assert info["blobs"][h]["bin"] == "weights_0.bin"
     assert (tmp_path / "ep.json").exists()
     assert json.loads((tmp_path / "ep.json").read_text()) == ep_json
 
@@ -395,3 +403,98 @@ def test_inline_weight_scale_dtype_no_tensor_values(tmp_path):
     p = tmp_path / "ep.json"
     p.write_text(json.dumps({"graph_module": {"graph": {}}}))
     assert inline_weight_scale_dtype(p) == 0
+
+
+# ── v2 hash 去重 (CLI-014 B: 单图/PD 统一 v2, 无 version, 去 v1/inline) ──
+
+def test__blob_hash_basic():
+    h1 = _blob_hash(b"hello")
+    h2 = _blob_hash(b"hello")
+    h3 = _blob_hash(b"world")
+    assert h1 == h2                      # 同 bytes → 同 hash
+    assert h1 != h3                      # 不同 bytes → 不同 hash
+    assert h1.startswith("h_")           # h_ 前缀
+    assert len(h1) == 2 + 16             # h_ + 16 hex chars (64-bit)
+
+
+def test__pack_weights_v2_single_graph_dedup(tmp_path):
+    t = torch.zeros(4)
+    sd = {"a.weight": t.clone(), "b.weight": t.clone()}   # 同 bytes
+    contents = _FakeContents(sd)
+    idx = _pack_weights_v2(contents, tmp_path, "single", 5 * 1024)
+    assert "version" not in idx            # 无 version 字段
+    assert set(idx["graphs"]) == {"single"}
+    g = idx["graphs"]["single"]
+    assert set(g) == {"a.weight", "b.weight"}
+    assert g["a.weight"] == g["b.weight"]  # 同 bytes → 同 hash
+    assert len(idx["blobs"]) == 1          # dedup → 1 blob
+    blob = idx["blobs"][g["a.weight"]]
+    assert blob["bin"] == "weights_0.bin"
+    assert blob["offset"] == 0
+    assert blob["size"] == 16              # 4 * float32
+    assert blob["_is_weight"] is True
+    assert (tmp_path / "weights_0.bin").exists()
+
+
+def test__pack_weights_v2_distinct_blobs(tmp_path):
+    sd = {"a.weight": torch.zeros(4), "b.weight": torch.ones(4)}   # 不同 bytes
+    contents = _FakeContents(sd)
+    idx = _pack_weights_v2(contents, tmp_path, "single", 5 * 1024)
+    g = idx["graphs"]["single"]
+    assert g["a.weight"] != g["b.weight"]  # 不同 bytes → 不同 hash
+    assert len(idx["blobs"]) == 2
+
+
+def test__pack_weights_v2_custom_graph_name(tmp_path):
+    sd = {"a.weight": torch.zeros(4)}
+    contents = _FakeContents(sd)
+    idx = _pack_weights_v2(contents, tmp_path, "prefill", 5 * 1024)
+    assert set(idx["graphs"]) == {"prefill"}
+
+
+def test__pack_weights_pd_dedup_shared(tmp_path):
+    sd = {"a.weight": torch.zeros(4), "b.weight": torch.ones(4)}
+    prefill = _FakeContents(dict(sd))
+    decode = _FakeContents(dict(sd))        # PD 同 state_dict
+    idx = _pack_weights_pd_dedup(prefill, decode, tmp_path, 5 * 1024)
+    assert "version" not in idx
+    assert set(idx["graphs"]) == {"prefill", "decode"}
+    pf, dc = idx["graphs"]["prefill"], idx["graphs"]["decode"]
+    assert pf == dc                         # PD 同值 → name→hash 完全一致
+    assert len(idx["blobs"]) == 2          # 共享 dedup → 2 blob (非 4)
+
+
+def test__pack_weights_pd_dedup_diff(tmp_path):
+    pf_sd = {"a.weight": torch.zeros(4)}
+    dc_sd = {"a.weight": torch.ones(4)}    # PD 不同值
+    prefill = _FakeContents(pf_sd)
+    decode = _FakeContents(dc_sd)
+    idx = _pack_weights_pd_dedup(prefill, decode, tmp_path, 5 * 1024)
+    pf_h = idx["graphs"]["prefill"]["a.weight"]
+    dc_h = idx["graphs"]["decode"]["a.weight"]
+    assert pf_h != dc_h                    # 异值 → 不同 hash
+    assert len(idx["blobs"]) == 2          # 各存 → 2 blob
+
+
+def test__pack_weights_pd_dedup_partial(tmp_path):
+    shared = torch.zeros(4)
+    pf_sd = {"a.weight": shared.clone(), "b.weight": torch.ones(4)}
+    dc_sd = {"a.weight": shared.clone(), "b.weight": torch.full((4,), 2.0)}  # a 同 b 不同
+    prefill = _FakeContents(pf_sd)
+    decode = _FakeContents(dc_sd)
+    idx = _pack_weights_pd_dedup(prefill, decode, tmp_path, 5 * 1024)
+    pf, dc = idx["graphs"]["prefill"], idx["graphs"]["decode"]
+    assert pf["a.weight"] == dc["a.weight"]   # 共享 dedup
+    assert pf["b.weight"] != dc["b.weight"]   # 异值各存
+    assert len(idx["blobs"]) == 3             # a 共享(zeros) + pf.b(ones) + dc.b(twos)
+
+
+def test__pack_weights_v2_max_file_size_split(tmp_path):
+    big1 = torch.zeros(4096)               # 16KB, 超 max_file_size=5KB
+    big2 = torch.ones(4096)                # 16KB, 不同 bytes
+    sd = {"a.weight": big1, "b.weight": big2}
+    contents = _FakeContents(sd)
+    idx = _pack_weights_v2(contents, tmp_path, "single", 5 * 1024)
+    assert len(idx["blobs"]) == 2          # 不同 bytes → 2 blob
+    assert (tmp_path / "weights_0.bin").exists()  # big1 16KB > 5KB
+    assert (tmp_path / "weights_1.bin").exists()  # big2 触发切分 → 第 2 文件

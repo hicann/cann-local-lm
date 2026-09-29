@@ -23,6 +23,8 @@ const std::string kConsolidatedNoField =
     std::string(FIXTURES_DIR) + "/annotated_consolidated_mm_add_no_field";  // index without _is_weight (fallback path)
 const std::string kConsolidatedMissingMeta = std::string(FIXTURES_DIR) + "/annotated_consolidated_missing_meta";
 const std::string kConsolidatedNoIndex = std::string(FIXTURES_DIR) + "/annotated_consolidated_no_index";
+const std::string kV1NoGraphs = std::string(FIXTURES_DIR) + "/annotated_v1_no_graphs";
+const std::string kPdDedup = std::string(FIXTURES_DIR) + "/annotated_pd_dedup";
 
 std::string ReadFile(const std::string &path) {
   std::ifstream file(path);
@@ -46,11 +48,13 @@ void AssertWeightMatches(const td::TensorHolder &holder, const std::vector<int64
   EXPECT_EQ(holder.requires_grad, expected_requires_grad);
 }
 
-td::GeWeightLoader CreateLoader(const std::string &dir_path, td::ValidationResult &result) {
+td::GeWeightLoader CreateLoader(const std::string &dir_path, td::ValidationResult &result,
+                                const std::string &graph_name = "single") {
   const std::string model_json = ReadFile(dir_path + "/extra/ep_json_with_ascend_ir.json");
   td::EpairModelParser parser = td::EpairModelParser::Parse(model_json, result);
   if (!result.ok) return {};
-  return td::GeWeightLoader::Create(dir_path + "/data/weights_index.json", parser.Model(), result);
+  return td::GeWeightLoader::Create(dir_path + "/data/weights_index.json", parser.Model(),
+                                    result, graph_name);
 }
 
 }  // namespace
@@ -218,22 +222,83 @@ TEST(GeWeightLoaderConsolidatedTest, HasTensorReturnsCorrectly) {
   EXPECT_FALSE(loader.HasTensor("does_not_exist"));
 }
 
-TEST(GeWeightLoaderConsolidatedTest, FormatStrReadFromWeightInfoNZ) {
-  // Verify format_str is read from weight_info.json "format" field.
-  // The test fixture doesn't have "format" field → format_str should be empty (default ND).
+TEST(GeWeightLoaderConsolidatedTest, FormatStrReadFromWeightInfo) {
+  // v2 fixture carries "format": "nd" → format_str propagated to record + holder.
   ValidationResult result{true, {}};
   GeWeightLoader loader = CreateLoader(kConsolidated, result);
   ASSERT_TRUE(result.ok);
 
   const TensorRecordInfo *weight_info = loader.GetTensorRecordInfo("p_weight");
   ASSERT_NE(weight_info, nullptr);
-  // Fixture doesn't have "format" field → empty string (not "NZ")
-  EXPECT_EQ(weight_info->format_str, "");
+  EXPECT_EQ(weight_info->format_str, "nd");
 
   // ReadTensorData should propagate format_str to holder
   TensorHolder holder = loader.ReadTensorData("p_weight", result);
   ASSERT_TRUE(result.ok);
-  EXPECT_EQ(holder.format_str, "");
+  EXPECT_EQ(holder.format_str, "nd");
+}
+
+// ── CLI-014 B: v2 two-level index (graphs/blobs, no version, v1 rejected) ──
+
+// v1 single-level index (no graphs/blobs) is rejected — must re-export with v2.
+TEST(GeWeightLoaderConsolidatedTest, V1IndexRejectedReportsError) {
+  ValidationResult result{true, {}};
+  GeWeightLoader loader = CreateLoader(kV1NoGraphs, result);
+  EXPECT_FALSE(result.ok);
+  const bool found =
+      std::any_of(result.issues.begin(), result.issues.end(),
+                   [](const auto &issue) { return issue.code == "INVALID_CONSOLIDATED_INDEX"; });
+  EXPECT_TRUE(found);
+}
+
+// PD fixture: graphs["prefill"] loads the shared weight blob.
+TEST(GeWeightLoaderConsolidatedTest, PdPrefillGraphLoadsWeight) {
+  ValidationResult result{true, {}};
+  GeWeightLoader loader = CreateLoader(kPdDedup, result, "prefill");
+  ASSERT_TRUE(result.ok);
+  ASSERT_TRUE(loader.HasTensor("p_weight"));
+
+  TensorHolder holder = loader.ReadTensorData("p_weight", result);
+  ASSERT_TRUE(result.ok);
+  AssertWeightMatches(holder, {3}, 7, 7, 12, true);
+  const auto *values = std::get_if<std::vector<float>>(&holder.value);
+  ASSERT_NE(values, nullptr);
+  EXPECT_FLOAT_EQ((*values)[0], 1.0f);
+  EXPECT_FLOAT_EQ((*values)[2], 3.0f);
+}
+
+// PD fixture: graphs["decode"] loads the same shared blob (hash dedup).
+TEST(GeWeightLoaderConsolidatedTest, PdDecodeGraphLoadsSharedWeight) {
+  ValidationResult result{true, {}};
+  GeWeightLoader loader = CreateLoader(kPdDedup, result, "decode");
+  ASSERT_TRUE(result.ok);
+  ASSERT_TRUE(loader.HasTensor("p_weight"));
+
+  TensorHolder holder = loader.ReadTensorData("p_weight", result);
+  ASSERT_TRUE(result.ok);
+  const auto *values = std::get_if<std::vector<float>>(&holder.value);
+  ASSERT_NE(values, nullptr);
+  EXPECT_FLOAT_EQ((*values)[0], 1.0f);  // same blob as prefill
+}
+
+// PD fixture: nonexistent graph_name → error (graphs missing graph).
+TEST(GeWeightLoaderConsolidatedTest, MissingGraphNameReportsError) {
+  ValidationResult result{true, {}};
+  GeWeightLoader loader = CreateLoader(kPdDedup, result, "nonexistent");
+  EXPECT_FALSE(result.ok);
+  const bool found =
+      std::any_of(result.issues.begin(), result.issues.end(),
+                   [](const auto &issue) { return issue.code == "INVALID_CONSOLIDATED_INDEX"; });
+  EXPECT_TRUE(found);
+}
+
+// v2 index must not carry a "version" field — detection is by graphs/blobs presence.
+TEST(GeWeightLoaderConsolidatedTest, V2IndexHasNoVersionField) {
+  ValidationResult result{true, {}};
+  GeWeightLoader loader = CreateLoader(kConsolidated, result);
+  ASSERT_TRUE(result.ok);
+  // If we got here, v2 detection (graphs/blobs) worked without a version field.
+  ASSERT_TRUE(loader.HasTensor("p_weight"));
 }
 
 }  // namespace td

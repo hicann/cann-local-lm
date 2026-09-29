@@ -11,7 +11,7 @@ namespace td {
 class GeWeightLoader {
  public:
   static GeWeightLoader Create(const std::string &weights_index_path, const ParsedModel &model,
-                               ValidationResult &result);
+                               ValidationResult &result, const std::string &graph_name = "");
 
   bool HasTensor(const std::string &name) const noexcept;
   const ParsedTensorMeta *GetTensorMeta(const std::string &name) const noexcept;
@@ -22,7 +22,7 @@ class GeWeightLoader {
 
  private:
   void LoadConsolidated(const std::string &weights_index_path, const ParsedModel &model,
-                        ValidationResult &result);
+                        ValidationResult &result, const std::string &graph_name);
 
   std::unordered_map<std::string, std::string> placeholder_to_logical_name_;
   std::unordered_map<std::string, TensorRecordInfo> logical_name_to_record_;

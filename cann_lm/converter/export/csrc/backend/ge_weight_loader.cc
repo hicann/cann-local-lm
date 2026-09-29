@@ -228,10 +228,10 @@ void BuildConsolidatedLookup(const ParsedModel &model,
 
 
 GeWeightLoader GeWeightLoader::Create(const std::string &weights_index_path, const ParsedModel &model,
-                                                ValidationResult &result) {
+                                                ValidationResult &result, const std::string &graph_name) {
   GeWeightLoader loader;
   BuildConsolidatedLookup(model, loader.placeholder_to_logical_name_);
-  loader.LoadConsolidated(weights_index_path, model, result);
+  loader.LoadConsolidated(weights_index_path, model, result, graph_name);
 
   for (const auto &[placeholder_name, logical_name] : loader.placeholder_to_logical_name_) {
     if (loader.logical_name_to_record_.find(logical_name) == loader.logical_name_to_record_.end()) {
@@ -244,7 +244,7 @@ GeWeightLoader GeWeightLoader::Create(const std::string &weights_index_path, con
 
 
 void GeWeightLoader::LoadConsolidated(const std::string &weights_index_path, const ParsedModel &model,
-                                       ValidationResult &result) {
+                                       ValidationResult &result, const std::string &graph_name) {
   // Parse weight_info.json
   std::ifstream idx_file(weights_index_path);
   if (!idx_file) {
@@ -286,61 +286,73 @@ void GeWeightLoader::LoadConsolidated(const std::string &weights_index_path, con
     logical_to_placeholder[logical] = placeholder;
   }
 
-  for (auto it = root.begin(); it != root.end(); ++it) {
-    // Key is the bin file name (e.g. "weights_0.bin")
-    const std::string bin_filename = it.key();
-    const std::string bin_path = (index_dir / bin_filename).string();
-
-    if (!it.value().is_array()) continue;
-
-    for (const auto &entry : it.value()) {
-      if (!entry.is_object()) continue;
+  // CLI-014 B: v2 two-level index (content-hash dedup): graphs[graph][name]→hash→blobs[hash]
+  if (root.contains("graphs") && root.contains("blobs")) {
+    const auto &graphs = root["graphs"];
+    const auto &blobs = root["blobs"];
+    if (!graphs.contains(graph_name)) {
+      AddError(result, "INVALID_CONSOLIDATED_INDEX",
+               "v2 weight_info graphs missing graph '" + graph_name + "'", weights_index_path);
+      return;
+    }
+    const auto &graph_map = graphs[graph_name];
+    for (auto it = graph_map.begin(); it != graph_map.end(); ++it) {
+      const std::string name = it.key();
+      const std::string hash = it.value().get<std::string>();
+      if (!blobs.contains(hash)) {
+        AddError(result, "INVALID_CONSOLIDATED_INDEX",
+                 "v2 blobs missing hash '" + hash + "' for tensor '" + name + "'", weights_index_path);
+        continue;
+      }
+      const auto &blob = blobs[hash];
+      const std::string bin_filename = blob["bin"].get<std::string>();
+      const std::string bin_path = (index_dir / bin_filename).string();
 
       TensorRecordInfo info;
-      info.logical_name = entry.value("name", std::string());
-      if (info.logical_name.empty()) continue;
-
+      info.logical_name = name;
       info.record_path = bin_path;
-      info.offset = static_cast<size_t>(entry.value("offset", int64_t{0}));
-      info.data_size = static_cast<size_t>(entry.value("size", int64_t{0}));
+      info.offset = static_cast<size_t>(blob.value("offset", int64_t{0}));
+      info.data_size = static_cast<size_t>(blob.value("size", int64_t{0}));
       info.use_pickle = false;
-      info.format_str = entry.value("format", std::string());  // "NZ" =>FORMAT_FRACTAL_NZ (CreateConstNode)
+      info.format_str = blob.value("format", std::string());
 
-    // Prefer the explicit _is_weight field (self-describing weight_info.json);
-    // fall back to input_specs derivation when absent (back-compat with old index).
-    if (entry.contains("_is_weight") && entry["_is_weight"].is_boolean()) {
-      info.is_parameter = entry["_is_weight"].get<bool>();
-    } else {
-      const auto param_it = logical_is_weight.find(info.logical_name);
-      if (param_it != logical_is_weight.end()) {
-        info.is_parameter = param_it->second;
+      if (blob.contains("_is_weight") && blob["_is_weight"].is_boolean()) {
+        info.is_parameter = blob["_is_weight"].get<bool>();
+      } else {
+        const auto param_it = logical_is_weight.find(info.logical_name);
+        if (param_it != logical_is_weight.end()) {
+          info.is_parameter = param_it->second;
+        }
       }
-    }
 
-    // tensor_values may be keyed by placeholder name (e.g. "p_w1");
-    // try logical name first, then fall back to placeholder name.
-    const auto meta_it = model.tensor_values.find(info.logical_name);
-    if (meta_it != model.tensor_values.end()) {
-      info.tensor_meta = meta_it->second;
-    } else {
-      const auto ph_it = logical_to_placeholder.find(info.logical_name);
-      if (ph_it != logical_to_placeholder.end()) {
-        const auto ph_meta_it = model.tensor_values.find(ph_it->second);
-        if (ph_meta_it != model.tensor_values.end()) {
-          info.tensor_meta = ph_meta_it->second;
+      const auto meta_it = model.tensor_values.find(info.logical_name);
+      if (meta_it != model.tensor_values.end()) {
+        info.tensor_meta = meta_it->second;
+      } else {
+        const auto ph_it = logical_to_placeholder.find(info.logical_name);
+        if (ph_it != logical_to_placeholder.end()) {
+          const auto ph_meta_it = model.tensor_values.find(ph_it->second);
+          if (ph_meta_it != model.tensor_values.end()) {
+            info.tensor_meta = ph_meta_it->second;
+          } else {
+            AddError(result, "MISSING_TENSOR_META",
+                     "No tensor metadata found for consolidated weight", info.logical_name);
+          }
         } else {
           AddError(result, "MISSING_TENSOR_META",
                    "No tensor metadata found for consolidated weight", info.logical_name);
         }
-      } else {
-        AddError(result, "MISSING_TENSOR_META",
-                 "No tensor metadata found for consolidated weight", info.logical_name);
       }
-    }
 
-    logical_name_to_record_[info.logical_name] = std::move(info);
+      logical_name_to_record_[info.logical_name] = std::move(info);
     }
+    return;
   }
+
+  // v1 single-level no longer supported (v2 hash-dedup unified)
+  AddError(result, "INVALID_CONSOLIDATED_INDEX",
+           "weight_info.json missing graphs/blobs (v1 no longer supported; re-export with v2 hash-dedup)",
+           weights_index_path);
 }
 
 

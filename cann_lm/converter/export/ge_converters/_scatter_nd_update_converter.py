@@ -18,6 +18,8 @@ Maps directly to ge.ScatterNdUpdate (standard multi-dim coordinate scatter), byp
 the aten.index_copy InplaceUpdate+Transpose path. out-of-place adds ge.TensorMove (in-place
 precision); in-place adds dont_prune_me (prevent graph pruning). Overrides torchair's
 custom/npu_scatter_nd_update.py so behavior is controlled in the torch_npu-absent converter venv.
+Kirinx90 走 KIRINX90_CONVERTER_PATCHES 机制 (见 _kirinx90_converter_patches.py 第 4 条: 直发
+ScatterNdUpdate 跳过 TensorMove; kirinx90 无 TensorMove kernel, 见 kirinx90_compile_workarounds.md B2).
 """
 from typing import Any
 

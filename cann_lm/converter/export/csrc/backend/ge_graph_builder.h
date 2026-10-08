@@ -18,7 +18,7 @@ namespace td {
 class GeGraphBuilder {
  public:
   GeGraphBuilder(const std::string &model_json, const std::string &weights_index_path,
-                 ValidationResult &result);
+                 ValidationResult &result, const std::string &graph_name = "");
 
   // Tap 中间 FX tensor 到 graph 输出: 调用于 Build() 前, 传入要暴露为 graph 额外输出的
   // FX 输出 tensor 名 (单输出 node 用 node.name, 如 "mm"/"add_1"; 多输出用 "name_0").

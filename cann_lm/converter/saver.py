@@ -8,7 +8,7 @@ from pathlib import Path
 import torch
 
 from cann_lm.converter.loader import ModelArtifact
-from cann_lm.converter.export.epair_utils import consolidated_weights_save, inline_fused_attn_seq_constants, inline_weight_scale_dtype
+from cann_lm.converter.export.epair_utils import consolidated_weights_save, consolidated_weights_save_pd, inline_fused_attn_seq_constants, inline_weight_scale_dtype
 
 # Extra aten decomposition whitelist (torchair has no/placeholder GE mapping). Keep in sync across
 # save_epair / save_epair_prefill_decode (a miss leaves ops undecomposed -> placeholder NotImplementedError).
@@ -228,30 +228,12 @@ def save_epair_prefill_decode(
     del artifact.model
     import gc; gc.collect()
 
-    consolidated_weights_save(
-        prefill_epair, output_dir,
+    consolidated_weights_save_pd(
+        prefill_epair, decode_epair, output_dir,
         save_weights=save_weights,
         max_file_size=max_file_size,
-        ep_json_filename="prefill_ep_json_with_ascend_ir.json",
         host_side_weights=host_side_weights,
     )
-    # qlen=kvlen=seq_len (prefill, no past); multi-chunk + kvlen=kv_max caveats — see ops_replacement.md "FIA fallback".
-    inline_fused_attn_seq_constants(
-        output_dir / "prefill_ep_json_with_ascend_ir.json", seq_len)
-    # Sync dtype to DT_INT64, else C++ reads int64 bytes as DT_FLOAT -> WEIGHT_SIZE_MISMATCH.
-    inline_weight_scale_dtype(
-        output_dir / "prefill_ep_json_with_ascend_ir.json")
-
-    consolidated_weights_save(
-        decode_epair, output_dir,
-        save_weights=False,
-        ep_json_filename="decode_ep_json_with_ascend_ir.json",
-    )
-    # decode: qlen=1, kvlen=kv_cache_max_len (kernel reads full buffer; atten_mask decides attend range; kvlen=1 truncates context). See ops_replacement.md "FIA fallback".
-    inline_fused_attn_seq_constants(
-        output_dir / "decode_ep_json_with_ascend_ir.json", 1, kvlen_value=kv_cache_max_len)
-    inline_weight_scale_dtype(
-        output_dir / "decode_ep_json_with_ascend_ir.json")
 
     copy_tokenizer_files(artifact.tokenizer_files, output_dir)
     save_model_config(artifact, output_dir, use_embeddings=use_embeddings,

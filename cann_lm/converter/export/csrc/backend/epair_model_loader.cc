@@ -71,7 +71,14 @@ class EpairModelLoader::Impl {
     const std::string model_json = ss.str();
 
     ValidationResult result{true, {}};
-    GeGraphBuilder builder(model_json, weights_index_path, result);
+    // CLI-014 B: infer graph_name from model_json_path filename (prefill/decode/single) for v2 weight_info
+    std::string graph_name = "single";
+    if (model_json_path) {
+      std::string path(model_json_path);
+      if (path.find("prefill") != std::string::npos) graph_name = "prefill";
+      else if (path.find("decode") != std::string::npos) graph_name = "decode";
+    }
+    GeGraphBuilder builder(model_json, weights_index_path, result, graph_name);
     if (!result.ok) {
       TDLOGE("Initialize failed: builder init failed, issues=%zu", result.issues.size());
       init_status_ = FAILED;

@@ -188,12 +188,12 @@ def consolidated_weights_save(contents, output_dir: str | Path, *,
     output_dir.mkdir(parents=True, exist_ok=True)
 
     if save_weights:
-        weights_index = _pack_weights_to_dir(contents, output_dir, max_file_size)
+        weights_index = _pack_weights_v2(contents, output_dir, "single", max_file_size)
 
         idx_path = output_dir / "weight_info.json"
         with open(idx_path, "w") as f:
             json.dump(weights_index, f, indent=2)
-        print(f"Saved: {idx_path}")
+        print(f"Saved: {idx_path} (v2)")
     else:
         print("  [skip] weights_*.bin + weight_info.json (save_weights=False)")
 
@@ -209,6 +209,201 @@ def consolidated_weights_save(contents, output_dir: str | Path, *,
     with open(ep_json_path, "w") as f:
         json.dump(contents.ep_json, f, indent=2)
     print(f"Saved: {ep_json_path}")
+
+
+def _blob_hash(data: bytes) -> str:
+    """Content hash of tensor bytes (sha256 truncated to 64-bit)."""
+    import hashlib
+    return "h_" + hashlib.sha256(data).hexdigest()[:16]
+
+
+def _extract_state_dict(contents) -> tuple[dict, dict[str, bool]]:
+    """Extract state_dict (params+buffers+lifted constants) + is_weight_of map from EpairContents."""
+    raw_sd = contents.ep.state_dict() if callable(contents.ep.state_dict) else contents.ep.state_dict
+    state_dict = dict(raw_sd)
+    for name, buf in contents.ep.module().named_buffers():
+        if name not in state_dict:
+            state_dict[name] = buf
+    if hasattr(contents.ep, 'constants') and isinstance(contents.ep.constants, dict):
+        for name, tensor in contents.ep.constants.items():
+            if name not in state_dict and isinstance(tensor, torch.Tensor):
+                state_dict[name] = tensor
+    is_weight_of: dict[str, bool] = {}
+    gs = contents.ep.graph_signature
+    for logical_name in gs.inputs_to_parameters.values():
+        is_weight_of[logical_name] = True
+    for logical_name in gs.inputs_to_buffers.values():
+        is_weight_of[logical_name] = True
+    for logical_name in gs.inputs_to_lifted_tensor_constants.values():
+        is_weight_of[logical_name] = False
+    return state_dict, is_weight_of
+
+
+def _pack_weights_pd_dedup(
+    prefill_contents, decode_contents, output_dir: Path, max_file_size: int,
+) -> dict:
+    """Pack PD two graphs' weights with content-hash dedup → v2 two-level index.
+
+    Same bytes → same hash → shared blob (dedup); different bytes → different hash → each stored.
+    Returns v2 index: {blobs:{hash:{bin,offset,size,format,_is_weight}}, graphs:{prefill:{name:hash}, decode:{name:hash}}} (无 version 字段, C++ 检测 graphs/blobs 存在).
+    Bin write + split logic mirrors _pack_weights_to_dir (single tensor not split, cwd bin path).
+    """
+    import os
+    output_dir = Path(output_dir).resolve()
+    blobs: dict[str, dict] = {}
+    graphs: dict[str, dict[str, str]] = {"prefill": {}, "decode": {}}
+    seen: set[str] = set()
+
+    current_file_name = "weights_0.bin"
+    current_file_idx = 0
+    current_offset = 0
+    bin_path = None
+
+    for graph_name, contents in (("prefill", prefill_contents), ("decode", decode_contents)):
+        state_dict, is_weight_of = _extract_state_dict(contents)
+        names = [n for n in state_dict if n in is_weight_of]
+        for name in names:
+            tensor = state_dict[name]
+            raw = tensor.detach().cpu().contiguous()
+            if raw.dtype == torch.bfloat16:
+                raw = raw.view(torch.int16)
+            data = raw.numpy().tobytes()
+            del raw
+            h = _blob_hash(data)
+            graphs[graph_name][name] = h
+            if h not in seen:
+                if current_offset > 0 and current_offset + len(data) > max_file_size:
+                    if bin_path is not None:
+                        bin_path.close()
+                    current_file_idx += 1
+                    current_file_name = f"weights_{current_file_idx}.bin"
+                    current_offset = 0
+                if current_offset == 0:
+                    bin_path = open(os.path.join(str(output_dir), current_file_name), "wb")
+                bin_path.write(data)
+                blobs[h] = {
+                    "bin": current_file_name,
+                    "offset": current_offset,
+                    "size": len(data),
+                    "format": "nd",
+                    "_is_weight": is_weight_of[name],
+                }
+                current_offset += len(data)
+                seen.add(h)
+            del data
+
+    if bin_path is not None:
+        bin_path.close()
+
+    n_prefill = len(graphs["prefill"])
+    n_decode = len(graphs["decode"])
+    print(f"PD dedup packed: {len(blobs)} unique blobs "
+          f"(prefill {n_prefill} / decode {n_decode} tensors, "
+          f"{n_prefill + n_decode - len(blobs)} shared)")
+    return {"blobs": blobs, "graphs": graphs}
+
+
+def _pack_weights_v2(
+    contents, output_dir: Path, graph_name: str = "single", max_file_size: int = 5 * 1024,
+) -> dict:
+    """Pack single-graph weights with content-hash dedup → v2 two-level index.
+
+    Same logic as _pack_weights_pd_dedup but for single-graph export (consolidated_weights_save).
+    Returns {blobs:{hash:{bin,offset,size,format,_is_weight}}, graphs:{graph_name:{name→hash}}}.
+    """
+    import os
+    output_dir = Path(output_dir).resolve()
+    blobs: dict[str, dict] = {}
+    graphs: dict[str, dict[str, str]] = {graph_name: {}}
+    seen: set[str] = set()
+    current_file_name = "weights_0.bin"
+    current_file_idx = 0
+    current_offset = 0
+    bin_path = None
+
+    state_dict, is_weight_of = _extract_state_dict(contents)
+    names = [n for n in state_dict if n in is_weight_of]
+    for name in names:
+        tensor = state_dict[name]
+        raw = tensor.detach().cpu().contiguous()
+        if raw.dtype == torch.bfloat16:
+            raw = raw.view(torch.int16)
+        data = raw.numpy().tobytes()
+        del raw
+        h = _blob_hash(data)
+        graphs[graph_name][name] = h
+        if h not in seen:
+            if current_offset > 0 and current_offset + len(data) > max_file_size:
+                if bin_path is not None:
+                    bin_path.close()
+                current_file_idx += 1
+                current_file_name = f"weights_{current_file_idx}.bin"
+                current_offset = 0
+            if current_offset == 0:
+                bin_path = open(os.path.join(str(output_dir), current_file_name), "wb")
+            bin_path.write(data)
+            blobs[h] = {
+                "bin": current_file_name,
+                "offset": current_offset,
+                "size": len(data),
+                "format": "nd",
+                "_is_weight": is_weight_of[name],
+            }
+            current_offset += len(data)
+            seen.add(h)
+        del data
+
+    if bin_path is not None:
+        bin_path.close()
+
+    print(f"v2 packed: {len(blobs)} unique blobs, {len(graphs[graph_name])} tensors (graph={graph_name})")
+    return {"blobs": blobs, "graphs": graphs}
+
+
+def consolidated_weights_save_pd(
+    prefill_epair, decode_epair, output_dir: str | Path, *,
+    save_weights: bool = True,
+    max_file_size: int = 5 * 1024,
+    host_side_weights: list[tuple[str, torch.Tensor]] | None = None,
+) -> None:
+    """PD split export with content-hash dedup (CLI-014 解法 B).
+
+    Writes v2 two-level ``weight_info.json`` (blobs + graphs) + ``weights_*.bin``
+    (hash-deduped: same bytes shared across PD, different bytes each stored) +
+    PD two ep_json + optional host_weights.
+
+    v2 schema: ``{version:2, blobs:{hash:{bin,offset,size,format,_is_weight}},
+    graphs:{prefill:{name:hash}, decode:{name:hash}}}``.
+    C++ ``GeWeightLoader`` v2 path: ``graphs[graph][name]→hash→blobs[hash]``.
+    """
+    output_dir = Path(output_dir).resolve()
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    if save_weights:
+        index = _pack_weights_pd_dedup(prefill_epair, decode_epair, output_dir, max_file_size)
+        idx_path = output_dir / "weight_info.json"
+        with open(idx_path, "w") as f:
+            json.dump(index, f, indent=2)
+        print(f"Saved: {idx_path} (v2 hash-dedup)")
+    else:
+        print("  [skip] weights_*.bin + weight_info.json (save_weights=False)")
+
+    if host_side_weights:
+        host_index = _pack_host_side_weights_to_dir(host_side_weights, output_dir, max_file_size)
+        host_idx_path = output_dir / "host_weights_info.json"
+        with open(host_idx_path, "w") as f:
+            json.dump(host_index, f, indent=2)
+        print(f"Saved: {host_idx_path}")
+
+    for epair, ep_json_filename in (
+        (prefill_epair, "prefill_ep_json_with_ascend_ir.json"),
+        (decode_epair, "decode_ep_json_with_ascend_ir.json"),
+    ):
+        ep_json_path = output_dir / ep_json_filename
+        _strip_none_input_descs(epair.ep_json)
+        with open(ep_json_path, "w") as f:
+            json.dump(epair.ep_json, f, indent=2)
+        print(f"Saved: {ep_json_path}")
 
 
 def _strip_none_input_descs(ep_json: dict) -> None:

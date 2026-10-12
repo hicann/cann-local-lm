@@ -9,6 +9,7 @@
 | [quant_design.md](./quant_design.md) | W4A8 s8s4 方案 / quant 包架构 / 量化策略 / 端到端两步流程 / `materialize` / `quant_linear` / `swap` / `auto_quant` / `dopt_wrapper` / 路径 C' `npu_quant_matmul`→V4 算子规格 / C++ 注册 / CANN V3/V4 源码分析附录 |
 | [dopt_design.md](./dopt_design.md) | dopt_lm vendored GPTQ 框架（文件树 / 入口 / GPTQ 调用链 / 可设置参数清单 / 历史调试档案） |
 | [embedding_quant_design.md](./embedding_quant_design.md) | embed_tokens 的 W8 host gather 量化子主题（`materialize_int8_per_channel_symmetric` + `swap_embeddings_from_dopt`） |
+| [ppl_compare_usage.md](./ppl_compare_usage.md) | `ppl_compare.py` 使用说明：浮点 vs GPTQ 量化产物 PPL 对比（原理 / 参数 / 实测参考） |
 
 ## 代码文件
 
@@ -23,6 +24,7 @@
 | `config.yaml` | dopt GPTQ 校准训练配置（`--optimize-config`） |
 | `calibrate_sets/` | GPTQ 校准语料（jsonl，由 `download_dataset.py` 下载生成，可替换/多选） |
 | `download_dataset.py` | 校准数据集下载脚本（ultrachat_200k/fineweb_edu/toolbench/bfclv4/c4/coig_cqia/mc4） |
+| `ppl_compare.py` | 浮点 vs GPTQ 量化产物 PPL 对比脚本（用法见 [ppl_compare_usage.md](./ppl_compare_usage.md)） |
 | `dopt_config.json` | dopt 层策略配置（由 `build_layer_strategy` 自动生成到产物目录；converter 侧 `_read_quant_param_map` 从产物目录读） |
 
 ### dopt_lm 子包（vendored GPTQ 框架）

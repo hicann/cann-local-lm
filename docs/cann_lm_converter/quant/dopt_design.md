@@ -459,6 +459,8 @@ dopt_lm 是 vendored 代码，不完全遵循 AGENTS.md 的"单函数 50 行 / �
 
 ## 模型加载约束（gemma4 多模态阻塞）
 
+> **勘误（2026-10-12）**：本节描述的阻塞已解除——`train.py` 的 `model_define` 现已实现 `model.model.language_model` 抽取重挂（`text_config` 重建 ForCausalLM 顶层 + lm_head/tie_word_embeddings 处理），多模态检查点可直接加载。已实测 `gemma-4-E4B-it`（`Gemma4ForConditionalGeneration`）CPU 全量 GPTQ 跑通。以下原文保留作历史记录。
+
 GPTQ 循环写死**文本-only ForCausalLM** 结构假设：
 - `train.py` 的 `model_define` = `AutoModelForCausalLM.from_pretrained(model_path, ...)`——对 `ForConditionalGeneration` 架构（多模态）多半直接找不到类报错；
 - `ptq_loop.py` 的 `get_llama` + `llama_sequential` 取 `model.model.layers` / `model.model.embed_tokens` / `model.model.norm` / `model.lm_head`——多模态模型的文本层在 `model.language_model.layers`（如 gemma4-E4B，42 层），非 `model.model.layers`。

@@ -1,0 +1,104 @@
+__pycache__/
+build/
+
+# OpenCode / 工具 scratch
+.claude/
+.kirinharness/
+.opencode/
+.project/
+.omo/
+.superpowers/
+docs/superpowers/
+AGENTS.md
+PROGRESS.md
+
+# Python 模型权重 / 产物
+*.pt
+*.safetensors
+*.pt2
+*.epair
+*.graph.py
+/models/
+
+# C++ 编译产物
+*.o
+*.so
+*.a
+*.bin
+compile_commands.json
+CTestTestfile.cmake
+cmake_install.cmake
+CMakeCache.txt
+CMakeFiles/
+Testing/
+
+# C++ engine sampler 自验证产物
+cann_lm/engine/core/sample/test/sampler_ut
+
+# 鸿蒙交叉编译 / 测试构建产物
+build_ohos*/
+build_tests/
+build_kx*/
+build_cov/
+output/
+deps/
+.cache/
+
+# 鸿蒙签名工具 (12MB 商业工具, 不入库)
+tools/binary-sign-tool.jar
+
+# 鸿蒙部署包签名 .so (有意入库, 反向放行覆盖上文 *.so)
+!deploy_ohos/libcann_lm_engine.so
+!deploy_ohos/libc++_shared.so
+
+# GE 编译产物
+kernel_meta/
+kernel_meta_*/
+kernel_meta_temp_*/
+ge_check_op.json
+ge_proto_*.txt
+buildPidInfo.json
+task_pid_*.txt
+
+# converter / fixtures 产物
+fixtures/
+epair_model/
+input_*.bin
+*.pbtxt
+*.onnx
+*.om
+fusion_result.json
+weight_info.json
+examples/*/data/
+examples/*/epair_model/
+examples/test_converter/**/epair_*/
+examples/test_converter/dopt_quantization_st/output*/
+examples/test_converter/export_llm_model/e2e_*/
+examples/test_converter/export_llm_model/output/
+examples/test_converter/export_llm_model/build/
+examples/test_converter/export_llm_model/*.export.log
+examples/test_converter/llm_models_run_on_cpu/out/
+examples/test_converter/export_chunk_gated_delta_rule_single_op/
+examples/test_converter/export_kirin_ops_net/
+examples/test_converter/export_quant_matmul_single_op/
+examples/test_converter/run_gemma4_npu/
+
+# 量化产物
+cann_lm/converter/quant/quant_output/
+cann_lm/converter/quant/calibration.json
+*_dump/
+
+# 运行日志 (converter/OM/dopt run artifacts)
+*.log
+
+# 打包产物
+*.egg-info/
+dist/
+
+# converter 生成模型 / 调试脚本
+examples/test_converter/export_epair_and_compile/export_addrmsnorm_model/generate/
+examples/test_converter/export_llm_model/cann_lm_cli_export/.dopt_shim/
+examples/test_converter/export_llm_model/cann_lm_cli_export/extract_dopt_weight.py
+examples/test_converter/export_llm_model/cann_lm_cli_export/extract_node_weight.py
+models/
+!docs/cann_lm_converter/models/

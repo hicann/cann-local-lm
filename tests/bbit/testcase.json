@@ -1,0 +1,21 @@
+{
+    "tokenizer_type": "BPE",
+    "tokenizer_path": "/data/local/tmp/llm_engine_bbit/tokenizer.json",
+    "model_path_prefill": "/data/local/tmp/llm_engine_bbit/model.omc",
+    "model_path_decode": "/data/local/tmp/llm_engine_bbit/model.omc",
+    "model_meta_config": "/data/local/tmp/llm_engine_bbit/model.json",
+    "model_weight_dir_prefill": "/data/local/tmp/llm_engine_bbit/SubGraph_0.weight",
+    "model_weight_dir_decode": "/data/local/tmp/llm_engine_bbit/SubGraph_0.weight",
+    "sentences": [
+        {
+            "prompt": "你好",
+            "seed": 99,
+            "topK": 1,
+            "topP": 1.0,
+            "temperature": 1.0,
+            "maxGenTokens": 50,
+            "repetitionPenalty": 1.0,
+            "stopSeq": ["[unused10]"]
+        }
+    ]
+}

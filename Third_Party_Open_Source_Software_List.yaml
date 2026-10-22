@@ -1,0 +1,9 @@
+json:
+  version: 3.11.3
+  type: run
+googletest:
+  version: 1.14.0
+  type: test
+makeself:
+  version: 2.5.0-patch1
+  type: build

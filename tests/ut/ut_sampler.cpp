@@ -1,0 +1,421 @@
+// 采样器单元测试。关联 docs/ut/SPEC.md §4.5 / docs/ut/DESIGN.md §9。
+// 算法 Real Era：sampler.cpp 已移植 core/sample 参考实现（6 步流水线），双层覆盖：
+//   - 引擎接入层（ITensorBuffer + slot + SamplingParams）：贪心路径确定性断言；
+//   - 算法层（静态纯函数直测）：seeded 采样确定性断言。
+// 2026-09-07 F-SAMPLE 松绑：seed/repetition_penalty 经 SamplingParams 对外，
+// 引擎接口层新增 TC215/216 覆盖（seed 复现 / rep 降权，含 rep=0 零初始化防御）。
+#include "core/component/sampler/sampler.h"
+
+#include <gtest/gtest.h>
+
+#include <cmath>
+#include <cstring>
+#include <memory>
+#include <vector>
+
+namespace cann_lm::engine {
+namespace {
+
+// GetData()==nullptr → 接入层 logits 缺失 FAILURE 路径。
+class NullTensorBuffer : public ITensorBuffer {
+public:
+    void* GetData() override { return nullptr; }
+    size_t GetSize() const override { return 0; }
+    const TensorDesc& GetDesc() const override { return desc_; }
+private:
+    TensorDesc desc_;  // dataType 默认（走不到 dtype 校验，!data 先短路）
+};
+
+// 已知 logits 的 TensorBuffer（host 内存，GetData 返回确定数据）。
+// 用于验证真实采样路径：贪心 argmax 选出确定 token。
+class FixedTensorBuffer : public ITensorBuffer {
+public:
+    explicit FixedTensorBuffer(std::vector<float> logits)
+        : data_(std::move(logits)) {
+        desc_.dataType = DataType::FLOAT32;  // M1：适配层要求 fp32
+    }
+    void* GetData() override { return data_.data(); }
+    size_t GetSize() const override { return data_.size() * sizeof(float); }
+    const TensorDesc& GetDesc() const override { return desc_; }
+private:
+    std::vector<float> data_;
+    TensorDesc desc_;
+};
+
+// GetData() 非空但 size==0 → 接入层空缓冲 INVALID_ARGUMENT 路径。
+class EmptyDataBuffer : public ITensorBuffer {
+public:
+    void* GetData() override { return this; }  // 非空哨指针
+    size_t GetSize() const override { return 0; }
+    const TensorDesc& GetDesc() const override { return desc_; }
+private:
+    TensorDesc desc_;
+};
+
+// 按 desc 分配 host 内存（替代已迁移的 TensorBufferImpl host 回退路径）。
+// GetData 恒非空、GetSize/GetDesc 返回构造 desc——供参数守卫类用例构造受控缓冲。
+class HostBuffer : public ITensorBuffer {
+public:
+    explicit HostBuffer(const TensorDesc& d) : desc_(d), storage_(d.size) {}
+    void* GetData() override { return storage_.data(); }
+    size_t GetSize() const override { return desc_.size; }
+    const TensorDesc& GetDesc() const override { return desc_; }
+private:
+    TensorDesc desc_;
+    std::vector<uint8_t> storage_;
+};
+
+// 构造 host 回退 FLOAT32 logits 缓冲：dims/size 自洽，data 填入 values
+// （values.size() 须等于 dims 总元素数；dtype 可覆盖以测类型校验分支）。
+std::shared_ptr<ITensorBuffer> MakeLogits(const std::vector<int64_t>& dims,
+                                          const std::vector<float>& values,
+                                          DataType dtype = DataType::FLOAT32) {
+    TensorDesc d;
+    d.dataType = dtype;
+    d.dims     = dims;
+    d.size     = values.size() * sizeof(float);
+    auto buf = std::make_shared<HostBuffer>(d);
+    if (buf->GetData()) {
+        std::memcpy(buf->GetData(), values.data(), values.size() * sizeof(float));
+    }
+    return buf;
+}
+
+// ────────────── 引擎接入层：参数守卫（保持 stub 期契约） ──────────────
+
+// UT-TC-SAMPLER-001 (NEW-1): out=nullptr → INVALID_ARGUMENT
+TEST(SamplerTest, SampleWithNullOutReturnsInvalidArgument_TC201) {
+    Sampler sampler;
+    auto logits = MakeLogits({4}, {1.0f, 3.0f, 2.0f, 0.5f});
+    SamplingParams params;
+    EXPECT_EQ(sampler.Sample(*logits, /*slot=*/0, params, /*generated_ids=*/{}, /*out=*/nullptr).code,
+              Status::INVALID_ARGUMENT);
+}
+
+// UT-TC-SAMPLER-002 (NEW-2): slot<0 → INVALID_ARGUMENT
+TEST(SamplerTest, SampleWithNegativeSlotReturnsInvalidArgument_TC202) {
+    Sampler sampler;
+    auto logits = MakeLogits({4}, {1.0f, 3.0f, 2.0f, 0.5f});
+    SamplingParams params;
+    TokenId out = 0;
+    EXPECT_EQ(sampler.Sample(*logits, /*slot=*/-1, params, /*generated_ids=*/{}, &out).code,
+              Status::INVALID_ARGUMENT);
+}
+
+// UT-TC-SAMPLER-003 (NEW-3): GetData()==nullptr → FAILURE（logits 缺失）
+TEST(SamplerTest, SampleWithNullDataReturnsFailure_TC203) {
+    Sampler sampler;
+    NullTensorBuffer empty;  // GetData() = nullptr
+    SamplingParams params;
+    TokenId out = 0;
+    EXPECT_EQ(sampler.Sample(empty, /*slot=*/0, params, /*generated_ids=*/{}, &out).code,
+              Status::FAILURE);
+}
+
+// ────────────── 引擎接入层：真实采样路径 ──────────────
+
+// UT-TC-SAMPLER-004 (NEW-4 改写，算法 Real Era): 默认参数 → SUCCESS + 贪心 argmax
+TEST(SamplerTest, SampleWithDefaultsReturnsGreedyArgmax_TC204) {
+    Sampler sampler;
+    auto logits = MakeLogits({4}, {1.0f, 3.0f, 2.0f, 0.5f});
+    SamplingParams params;  // 默认：temp=1、top_k=0、top_p=1 → 贪心
+    TokenId out = 0;
+    Status st = sampler.Sample(*logits, /*slot=*/0, params, /*generated_ids=*/{}, &out);
+    EXPECT_EQ(st.code, Status::SUCCESS);
+    EXPECT_EQ(out, 1u);  // argmax = index 1（3.0 最大）
+}
+
+// UT-TC-SAMPLER-005: batched dims [N,V] → 按 slot 取行，各行独立 argmax；slot 越界拒绝
+TEST(SamplerTest, SampleBatchedDimsPicksPerSlotRow_TC205) {
+    Sampler sampler;
+    auto logits = MakeLogits({2, 3}, {0.0f, 5.0f, 1.0f,   // slot0 行：argmax=1
+                                       7.0f, 2.0f, 3.0f});  // slot1 行：argmax=0
+    SamplingParams params;
+    TokenId out = 0;
+
+    ASSERT_EQ(sampler.Sample(*logits, 0, params, /*generated_ids=*/{}, &out).code, Status::SUCCESS);
+    EXPECT_EQ(out, 1u);
+    ASSERT_EQ(sampler.Sample(*logits, 1, params, /*generated_ids=*/{}, &out).code, Status::SUCCESS);
+    EXPECT_EQ(out, 0u);
+    // slot >= N（行容量）→ INVALID_ARGUMENT
+    EXPECT_EQ(sampler.Sample(*logits, 2, params, /*generated_ids=*/{}, &out).code, Status::INVALID_ARGUMENT);
+}
+
+// UT-TC-SAMPLER-006: 1-D dims [V]（单行容量）且 slot>0 → INVALID_ARGUMENT
+TEST(SamplerTest, SampleWith1DDimsRejectsSlotBeyondRow_TC206) {
+    Sampler sampler;
+    auto logits = MakeLogits({4}, {1.0f, 3.0f, 2.0f, 0.5f});
+    SamplingParams params;
+    TokenId out = 0;
+    EXPECT_EQ(sampler.Sample(*logits, 1, params, /*generated_ids=*/{}, &out).code, Status::INVALID_ARGUMENT);
+}
+
+// UT-TC-SAMPLER-007: dtype 非 FLOAT32 → INVALID_ARGUMENT（仅支持 FP32，见 sampler.h）
+TEST(SamplerTest, SampleWithNonFloat32ReturnsInvalidArgument_TC207) {
+    Sampler sampler;
+    auto logits = MakeLogits({2}, {1.0f, 2.0f}, DataType::INT32);
+    SamplingParams params;
+    TokenId out = 0;
+    EXPECT_EQ(sampler.Sample(*logits, 0, params, /*generated_ids=*/{}, &out).code, Status::INVALID_ARGUMENT);
+}
+
+// UT-TC-SAMPLER-008: 字节数非 float 对齐（6 字节）→ INVALID_ARGUMENT
+TEST(SamplerTest, SampleWithMisalignedBytesReturnsInvalidArgument_TC208) {
+    Sampler sampler;
+    TensorDesc d;
+    d.dataType = DataType::FLOAT32;
+    d.size     = 6;  // 6 % 4 != 0
+    HostBuffer buf(d);
+    ASSERT_NE(buf.GetData(), nullptr);
+    SamplingParams params;
+    TokenId out = 0;
+    EXPECT_EQ(sampler.Sample(buf, 0, params, /*generated_ids=*/{}, &out).code, Status::INVALID_ARGUMENT);
+}
+
+// UT-TC-SAMPLER-009: 数据指针非空但 size==0 → INVALID_ARGUMENT
+TEST(SamplerTest, SampleWithZeroSizeReturnsInvalidArgument_TC209) {
+    Sampler sampler;
+    EmptyDataBuffer empty;
+    SamplingParams params;
+    TokenId out = 0;
+    EXPECT_EQ(sampler.Sample(empty, 0, params, /*generated_ids=*/{}, &out).code, Status::INVALID_ARGUMENT);
+}
+
+// UT-TC-SAMPLER-010: dims 缺失且 slot>0 → FAILURE（无法安全推导行宽）
+TEST(SamplerTest, SampleWithoutDimsAndSlotPositiveReturnsFailure_TC210) {
+    Sampler sampler;
+    TensorDesc d;
+    d.dataType = DataType::FLOAT32;
+    d.size     = 16;  // 4 floats，dims 空（host 回退缓冲常见形态）
+    HostBuffer buf(d);
+    ASSERT_NE(buf.GetData(), nullptr);
+    SamplingParams params;
+    TokenId out = 0;
+    EXPECT_EQ(sampler.Sample(buf, 1, params, /*generated_ids=*/{}, &out).code, Status::FAILURE);
+}
+
+// UT-TC-SAMPLER-011: 旋钮接线——top_k=2 + temperature=0 → 钳制退化贪心，确定性 argmax
+TEST(SamplerTest, SampleWithTopKAndZeroTemperatureStaysGreedy_TC211) {
+    Sampler sampler;
+    auto logits = MakeLogits({4}, {1.0f, 5.0f, 4.9f, 0.0f});
+    SamplingParams params;
+    params.top_k       = 2;
+    params.temperature = 0.0f;  // → 1e-8 钳制，softmax≈one-hot，采样必取 argmax
+    TokenId out = 0;
+    Status st = sampler.Sample(*logits, 0, params, /*generated_ids=*/{}, &out);
+    EXPECT_EQ(st.code, Status::SUCCESS);
+    EXPECT_EQ(out, 1u);
+}
+
+// UT-TC-SAMPLER-012: top_p=0.9 → 核采样截尾后仍在 top-2 内（概率性，只断言集合）
+TEST(SamplerTest, SampleWithTopPWiresNucleusSampling_TC212) {
+    Sampler sampler;
+    auto logits = MakeLogits({4}, {1.0f, 5.0f, 4.9f, 0.0f});
+    SamplingParams params;
+    params.top_p = 0.9f;  // 截尾后仅剩 {index1, index2}
+    TokenId out = 0;
+    Status st = sampler.Sample(*logits, 0, params, /*generated_ids=*/{}, &out);
+    EXPECT_EQ(st.code, Status::SUCCESS);
+    EXPECT_TRUE(out == 1u || out == 2u);
+}
+
+// UT-TC-SAMPLER-013: desc 与缓冲不符（dims [2,4] 但缓冲仅 2 元素）→ INVALID_ARGUMENT
+TEST(SamplerTest, SampleWithDescBufferMismatchReturnsInvalidArgument_TC213) {
+    Sampler sampler;
+    TensorDesc d;
+    d.dataType = DataType::FLOAT32;
+    d.dims     = {2, 4};  // 声称 8 元素
+    d.size     = 8;       // 实际 2 元素
+    HostBuffer buf(d);
+    ASSERT_NE(buf.GetData(), nullptr);
+    SamplingParams params;
+    TokenId out = 0;
+    EXPECT_EQ(sampler.Sample(buf, 0, params, /*generated_ids=*/{}, &out).code, Status::INVALID_ARGUMENT);
+}
+
+// UT-TC-SAMPLER-014: dims 含非正维（back()<=0 或前缀维<=0）→ INVALID_ARGUMENT
+TEST(SamplerTest, SampleWithNonPositiveDimsReturnsInvalidArgument_TC214) {
+    Sampler sampler;
+    SamplingParams params;
+    TokenId out = 0;
+
+    TensorDesc zero_last;
+    zero_last.dataType = DataType::FLOAT32;
+    zero_last.dims     = {0};
+    zero_last.size     = 4;
+    HostBuffer buf1(zero_last);
+    ASSERT_NE(buf1.GetData(), nullptr);
+    EXPECT_EQ(sampler.Sample(buf1, 0, params, /*generated_ids=*/{}, &out).code, Status::INVALID_ARGUMENT);
+
+    TensorDesc neg_prefix;
+    neg_prefix.dataType = DataType::FLOAT32;
+    neg_prefix.dims     = {2, -3, 4};
+    neg_prefix.size     = 16;
+    HostBuffer buf2(neg_prefix);
+    ASSERT_NE(buf2.GetData(), nullptr);
+    EXPECT_EQ(sampler.Sample(buf2, 0, params, /*generated_ids=*/{}, &out).code, Status::INVALID_ARGUMENT);
+}
+
+// ────────────── 算法层：静态纯函数（确定性断言） ──────────────
+
+TEST(SamplerAlgoTest, ApplyTemperatureDividesLogits) {
+    auto out = Sampler::ApplyTemperature({2.0f, 4.0f}, 2.0f);
+    ASSERT_EQ(out.size(), 2u);
+    EXPECT_FLOAT_EQ(out[0], 1.0f);
+    EXPECT_FLOAT_EQ(out[1], 2.0f);
+}
+
+TEST(SamplerAlgoTest, ApplyTemperatureClampsNonPositive) {
+    auto out = Sampler::ApplyTemperature({1.0f, -2.0f}, 0.0f);  // 钳 1e-8，不除零
+    ASSERT_EQ(out.size(), 2u);
+    EXPECT_TRUE(std::isfinite(out[0]));
+    EXPECT_TRUE(std::isfinite(out[1]));
+}
+
+TEST(SamplerAlgoTest, ApplyTopKKeepsTopKOnly) {
+    auto out = Sampler::ApplyTopK({1.0f, 5.0f, 3.0f, 2.0f}, 2);
+    ASSERT_EQ(out.size(), 4u);
+    EXPECT_FLOAT_EQ(out[1], 5.0f);  // top-2 保留原值
+    EXPECT_FLOAT_EQ(out[2], 3.0f);
+    EXPECT_TRUE(std::isinf(out[0]));  // 其余 -inf
+    EXPECT_TRUE(std::isinf(out[3]));
+}
+
+TEST(SamplerAlgoTest, ApplyTopKNoOpWhenKOutOfRange) {
+    auto out = Sampler::ApplyTopK({1.0f, 2.0f}, 5);  // k >= n → 不启用
+    ASSERT_EQ(out.size(), 2u);
+    EXPECT_FLOAT_EQ(out[0], 1.0f);
+    EXPECT_FLOAT_EQ(out[1], 2.0f);
+}
+
+TEST(SamplerAlgoTest, ApplyPrecomputedTopKMasksOthers) {
+    PrecomputedTopK pre;
+    pre.token_ids = {0, 2};
+    auto out = Sampler::ApplyPrecomputedTopK({1.0f, 2.0f, 3.0f, 4.0f}, pre);
+    ASSERT_EQ(out.size(), 4u);
+    EXPECT_FLOAT_EQ(out[0], 1.0f);
+    EXPECT_FLOAT_EQ(out[2], 3.0f);
+    EXPECT_TRUE(std::isinf(out[1]));
+    EXPECT_TRUE(std::isinf(out[3]));
+}
+
+TEST(SamplerAlgoTest, ApplyTopPKeepsHighestProbability) {
+    auto out = Sampler::ApplyTopP({5.0f, 1.0f, 1.0f, 1.0f}, 0.5f);
+    ASSERT_EQ(out.size(), 4u);
+    EXPECT_FLOAT_EQ(out[0], 5.0f);  // 最高概率项必留
+    for (size_t i = 1; i < out.size(); ++i) {
+        EXPECT_TRUE(std::isinf(out[i]));  // 累计概率已达 p，其余截尾
+    }
+}
+
+TEST(SamplerAlgoTest, ApplyRepetitionPenaltyMirrorsHF) {
+    auto out = Sampler::ApplyRepetitionPenalty({-1.0f, 1.0f, 3.0f}, {0, 1}, 2.0f);
+    ASSERT_EQ(out.size(), 3u);
+    EXPECT_FLOAT_EQ(out[0], -2.0f);  // score<0 → *=p
+    EXPECT_FLOAT_EQ(out[1], 0.5f);   // score>=0 → /=p
+    EXPECT_FLOAT_EQ(out[2], 3.0f);   // 未生成的不动
+}
+
+TEST(SamplerAlgoTest, NormalizeProducesProbabilityDistribution) {
+    auto probs = Sampler::Normalize({1.0f, 2.0f, 3.0f});
+    ASSERT_EQ(probs.size(), 3u);
+    double sum = 0.0;
+    for (float p : probs) {
+        EXPECT_GE(p, 0.0f);
+        sum += p;
+    }
+    EXPECT_NEAR(sum, 1.0, 1e-5);
+    EXPECT_GT(probs[2], probs[1]);  // 概率序随 logit 序
+    EXPECT_GT(probs[1], probs[0]);
+}
+
+TEST(SamplerAlgoTest, PickGreedyReturnsArgmax) {
+    EXPECT_EQ(Sampler::Pick({0.1f, 0.7f, 0.2f}, /*do_sample=*/false, std::nullopt), 1);
+}
+
+TEST(SamplerAlgoTest, PickSeededIsReproducible) {
+    auto a = Sampler::Pick({0.2f, 0.5f, 0.3f}, /*do_sample=*/true, 42);
+    auto b = Sampler::Pick({0.2f, 0.5f, 0.3f}, /*do_sample=*/true, 42);
+    EXPECT_EQ(a, b);
+    EXPECT_GE(a, 0);
+    EXPECT_LE(a, 2);
+}
+
+TEST(SamplerAlgoTest, FullPipelineGreedyPicksArgmax) {
+    SamplerInputs in;
+    in.logits = {1.0f, 3.0f, 2.0f};
+    SamplerConfig cfg;  // 默认贪心
+    SamplerOutput out = Sampler::Sample(std::move(in), cfg);
+    EXPECT_EQ(out.next_token_id, 1);
+    ASSERT_EQ(out.probs.size(), 3u);
+}
+
+TEST(SamplerAlgoTest, FullPipelineSeededSamplingIsReproducible) {
+    SamplerConfig cfg;
+    cfg.do_sample = true;
+    cfg.seed      = 7;
+    SamplerInputs in;
+    in.logits = {1.0f, 5.0f, 4.9f, 0.0f};
+    SamplerOutput a = Sampler::Sample(in, cfg);
+    SamplerOutput b = Sampler::Sample(in, cfg);
+    EXPECT_EQ(a.next_token_id, b.next_token_id);  // 同 seed 可复现
+}
+
+// ── seed / repetition_penalty 经 SamplingParams 对外（F-SAMPLE 松绑，2026-09-07）──
+
+// UT-TC-SAMPLER-215: 概率采样 + 同 seed → 跨调用可复现。
+// 断言强度：单次"两调用同值"在 seed 断裂时仍有 ~0.36 假阳性概率（分布 Σp²），
+// 故循环 20 次全等（假阳性 ≈ 0.36^20 ≈ 4e-9）。
+TEST(SamplerTest, SampleWithSeedReproducesAcrossCalls_TC215) {
+    Sampler sampler;
+    SamplingParams params;
+    params.temperature = 0.8f;   // 任一采样旋钮非默认 → do_sample
+    params.seed        = 99;
+    // FixedTensorBuffer 直持数据：绕开 TensorBufferImpl（HEAD e083635 合并后 host
+    // 分配路径失败，TensorManagerTest.CreateTensor* 在 HEAD 干净构建即失败——非本测试关注点）
+    FixedTensorBuffer logits_buf({1.0f, 2.0f, 0.5f, 1.5f});
+    TokenId first = 0;
+    ASSERT_EQ(sampler.Sample(logits_buf, 0, params, /*generated_ids=*/{}, &first).code,
+              Status::SUCCESS);
+    for (int i = 0; i < 20; ++i) {
+        TokenId again = 0;
+        ASSERT_EQ(sampler.Sample(logits_buf, 0, params, /*generated_ids=*/{}, &again).code,
+                  Status::SUCCESS);
+        EXPECT_EQ(again, first) << "seed 复现断裂于第 " << i << " 次调用";
+    }
+}
+
+// UT-TC-SAMPLER-217: C ABI 零初始化防御——rep=0.0 须视为关闭（H-1 回归锚点：
+// 旧行为 0.0 != 1.0 放行 → penalty=0 除零 → 已生成 token 概率被 softmax 兜底归零）
+TEST(SamplerTest, SampleWithZeroRepetitionPenaltyTreatedAsOff_TC217) {
+    Sampler sampler;
+    FixedTensorBuffer logits_buf({3.0f, 2.9f});
+    TokenId out = 0;
+    SamplingParams zero_init;                 // 模拟 C 侧 = {} 零初始化
+    zero_init.repetition_penalty = 0.0f;      // != 1.0 但非法 → 须关闭
+    // 已生成 token 0，若 0.0 被放行：3.0/0=+inf → softmax 兜底触发 → 0 必被选（永不重复）
+    ASSERT_EQ(sampler.Sample(logits_buf, 0, zero_init, /*generated_ids=*/{0}, &out).code,
+              Status::SUCCESS);
+    EXPECT_EQ(out, 0u);   // rep 关闭 → 贪心照常选最高分 0（而非被除零污染）
+}
+
+// UT-TC-SAMPLER-216: 贪心 + repetition_penalty：已生成的最高分 token 被降权 → 次高胜出
+TEST(SamplerTest, SampleWithRepetitionPenaltyDownweightsGenerated_TC216) {
+    Sampler sampler;
+    FixedTensorBuffer logits_buf({3.0f, 2.9f});
+    TokenId out = 0;
+    // 无 penalty：贪心选 0（3.0 > 2.9）
+    SamplingParams plain;
+    ASSERT_EQ(sampler.Sample(logits_buf, 0, plain, /*generated_ids=*/{0}, &out).code,
+              Status::SUCCESS);
+    EXPECT_EQ(out, 0u);
+    // penalty=2.0：已生成的 0 → 3.0/2=1.5 < 2.9 → 选 1（HF 语义：score>=0 除以 p）
+    SamplingParams rep;
+    rep.repetition_penalty = 2.0f;
+    ASSERT_EQ(sampler.Sample(logits_buf, 0, rep, /*generated_ids=*/{0}, &out).code,
+              Status::SUCCESS);
+    EXPECT_EQ(out, 1u);
+}
+
+}  // namespace
+}  // namespace cann_lm::engine

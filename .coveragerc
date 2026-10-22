@@ -1,0 +1,22 @@
+# .coveragerc — cann_lm Python UT 覆盖率配置
+# 跑: TORCH_DEVICE_BACKEND_AUTOLOAD=0 <converter_venv_python> -m pytest tests/llm_models/ tests/converter/ --cov --cov-report=term-missing
+# dopt_lm (vendored) + engine (空 __init__) 单独/不在 UT 目标, omit 去噪
+
+[run]
+source = cann_lm
+branch = True
+omit =
+    cann_lm/converter/quant/dopt_lm/*
+    cann_lm/engine/*
+    */__init__.py
+    */__pycache__/*
+
+[report]
+show_missing = True
+skip_covered = False
+precision = 0
+exclude_lines =
+    if __name__ == .__main__.:
+    raise NotImplementedError
+    except ImportError:
+    pragma: no cover

@@ -1,0 +1,21 @@
+{
+  "tokenizer_type": "BPE",
+  "tokenizer_path": "tests/fixtures/tokenizer/bpe_fixture_tokenizer.json",
+  "model_path_prefill": "stub.omc",
+  "model_path_decode": "stub.omc",
+  "model_meta_config": "tests/bbit/meta_host.json",
+  "model_weight_dir_prefill": "stub_weight",
+  "model_weight_dir_decode": "stub_weight",
+  "sentences": [
+    {
+      "prompt": "hello",
+      "seed": 99,
+      "topK": 1,
+      "topP": 1.0,
+      "temperature": 1.0,
+      "maxGenTokens": 5,
+      "repetitionPenalty": 1.0,
+      "stopSeq": ["[unused10]"]
+    }
+  ]
+}

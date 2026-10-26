@@ -13,14 +13,14 @@
 
 #include "hiai_ndk_options.h"
 
-#include "hiai_options.h"  // C2 follow-on: HiAI_*Enum + HMS_HiAIOptions_* decltype
+#include "hiai_options.h" // C2 follow-on: HiAI_*Enum + HMS_HiAIOptions_* decltype
 #include "utils/assert.h"
 #include "utils/log.h"
 #include "ndk_proxy.h"
 
 namespace hiai {
-aclError HIAI_NDK_HiAIOptions_SetInputTensorShapes(OH_NNCompilation* compilation, 
-    NN_TensorDesc* inputTensorDescs[], size_t shapeCount)
+aclError HIAI_NDK_HiAIOptions_SetInputTensorShapes(OH_NNCompilation* compilation, NN_TensorDesc* inputTensorDescs[],
+                                                   size_t shapeCount)
 {
     auto setInputTensorShapesFunc = reinterpret_cast<decltype(HMS_HiAIOptions_SetInputTensorShapes)*>(
         NDKProxy::GetSymbol("HMS_HiAIOptions_SetInputTensorShapes"));
@@ -56,13 +56,14 @@ aclError HIAI_NDK_HiAIOptions_SetDynamicShapeMaxCache(OH_NNCompilation* compilat
     return retCode == OH_NN_SUCCESS ? ACL_SUCCESS : ACL_ERROR_FAILURE;
 }
 
-aclError HIAI_NDK_HiAIOptions_SetDynamicShapeCacheMode(OH_NNCompilation* compilation, HiAI_DynamicShapeCacheMode cacheMode)
+aclError HIAI_NDK_HiAIOptions_SetDynamicShapeCacheMode(OH_NNCompilation* compilation,
+                                                       HiAI_DynamicShapeCacheMode cacheMode)
 {
     auto setDynamicShapeCacheModeFunc = reinterpret_cast<decltype(HMS_HiAIOptions_SetDynamicShapeCacheMode)*>(
         NDKProxy::GetSymbol("HMS_HiAIOptions_SetDynamicShapeCacheMode"));
     ACL_EXPECT_NOT_NULL(setDynamicShapeCacheModeFunc);
     OH_NN_ReturnCode retCode = setDynamicShapeCacheModeFunc(compilation, cacheMode);
-    return retCode == OH_NN_SUCCESS ? ACL_SUCCESS : ACL_ERROR_FAILURE; 
+    return retCode == OH_NN_SUCCESS ? ACL_SUCCESS : ACL_ERROR_FAILURE;
 }
 
 // C2 follow-on: SetOperatorDeviceOrder/SetModelDeviceOrder removed (HiAI_ExecuteDevice*; not a ModelOptions field).
@@ -73,11 +74,11 @@ aclError HIAI_NDK_HiAIOptions_SetFallbackMode(OH_NNCompilation* compilation, HiA
         NDKProxy::GetSymbol("HMS_HiAIOptions_SetFallbackMode"));
     ACL_EXPECT_NOT_NULL(setFallbackModeFunc);
     OH_NN_ReturnCode retCode = setFallbackModeFunc(compilation, fallbackMode);
-    return retCode == OH_NN_SUCCESS ? ACL_SUCCESS : ACL_ERROR_FAILURE; 
+    return retCode == OH_NN_SUCCESS ? ACL_SUCCESS : ACL_ERROR_FAILURE;
 }
 
 aclError HIAI_NDK_HiAIOptions_SetDeviceMemoryReusePlan(OH_NNCompilation* compilation,
-    HiAI_DeviceMemoryReusePlan deviceMemoryReusePlan)
+                                                       HiAI_DeviceMemoryReusePlan deviceMemoryReusePlan)
 {
     auto setDeviceMemoryReusePlanFunc = reinterpret_cast<decltype(HMS_HiAIOptions_SetDeviceMemoryReusePlan)*>(
         NDKProxy::GetSymbol("HMS_HiAIOptions_SetDeviceMemoryReusePlan"));

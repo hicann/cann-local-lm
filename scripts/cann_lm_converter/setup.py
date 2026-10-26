@@ -60,7 +60,7 @@ setup(
         "dopt_lm": "../../cann_lm/converter/quant/dopt_lm",
     },
     package_data={
-        "cann_lm.converter.quant": ["*.yaml", "*.json"],
+        "cann_lm.converter.quant": ["*.yaml", "*.json", "calibrate_sets/*.jsonl"],
         "cann_lm.converter.export": ["*.json"],
     },
     zip_safe=False,

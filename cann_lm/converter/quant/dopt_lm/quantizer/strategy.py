@@ -44,16 +44,16 @@ strategy_dict = {
             "bit": 8,
             "per_channel": False,
             "input_algo": "dyn_s8",
-            "unsigned_quant": False
+            "unsigned_quant": False,
         },
     },
-    "Quant_Embed_MinMax" : {
-        "weight" : {
-            "bit"           : 8,
-            "per_channel"   : True,
-            "weight_algo"   : "min_max",
-            "fp16"          : True,
-            "tie_lmhead"    : False
+    "Quant_Embed_MinMax": {
+        "weight": {
+            "bit": 8,
+            "per_channel": True,
+            "weight_algo": "min_max",
+            "fp16": True,
+            "tie_lmhead": False,
         }
     },
     "Quant_Dummy": {"quant_info": "default version"},

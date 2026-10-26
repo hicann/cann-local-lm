@@ -22,6 +22,7 @@
   --atol TOL           allclose 容差(默认 1e-3)
   --device ID          NPU device id(默认 0)
 """
+
 import argparse
 import sys
 
@@ -37,9 +38,9 @@ H2D = 1  # aclrtMemcpyHostToDevice
 D2H = 2  # aclrtMemcpyDeviceToDeviceToHost
 
 DTYPE_MAP = {
-    "float16": (np.float16, 1),   # aclDataType ACL_FLOAT16 = 1
-    "bfloat16": (np.uint16, 9),    # ACL_BF16 = 9 (stored as uint16 bytes)
-    "float32": (np.float32, 0),   # ACL_FLOAT = 0
+    "float16": (np.float16, 1),  # aclDataType ACL_FLOAT16 = 1
+    "bfloat16": (np.uint16, 9),  # ACL_BF16 = 9 (stored as uint16 bytes)
+    "float32": (np.float32, 0),  # ACL_FLOAT = 0
 }
 
 VALUE_MAP = {
@@ -50,12 +51,20 @@ VALUE_MAP = {
 
 
 def parse_args():
-    p = argparse.ArgumentParser(description="NZ vs ND OM NPU output comparison (CLI-015 L2)")
+    p = argparse.ArgumentParser(
+        description="NZ vs ND OM NPU output comparison (CLI-015 L2)"
+    )
     p.add_argument("--nz-om", required=True, help="NZ weight OM path")
     p.add_argument("--nd-om", required=True, help="ND weight OM path (baseline)")
-    p.add_argument("--input-shape", nargs="+", type=int, default=[1, 128], help="Input shape")
-    p.add_argument("--input-dtype", default="float16", choices=list(DTYPE_MAP), help="Input dtype")
-    p.add_argument("--input-value", default="ones", choices=list(VALUE_MAP), help="Input fill")
+    p.add_argument(
+        "--input-shape", nargs="+", type=int, default=[1, 128], help="Input shape"
+    )
+    p.add_argument(
+        "--input-dtype", default="float16", choices=list(DTYPE_MAP), help="Input dtype"
+    )
+    p.add_argument(
+        "--input-value", default="ones", choices=list(VALUE_MAP), help="Input fill"
+    )
     p.add_argument("--atol", type=float, default=1e-3, help="allclose atol")
     p.add_argument("--device", type=int, default=0, help="NPU device id")
     return p.parse_args()
@@ -127,7 +136,9 @@ def main():
     input_arr = VALUE_MAP[args.input_value](args.input_shape, np_dtype)
     input_bytes = input_arr.tobytes()
 
-    print(f"Input: shape={args.input_shape}, dtype={args.input_dtype}, value={args.input_value}")
+    print(
+        f"Input: shape={args.input_shape}, dtype={args.input_dtype}, value={args.input_value}"
+    )
     print(f"NZ OM: {args.nz_om}")
     print(f"ND OM: {args.nd_om}")
 
@@ -135,11 +146,11 @@ def main():
     print(f"Device {args.device} ready")
 
     try:
-        print(f"\n[1/2] Running NZ OM...")
+        print("\n[1/2] Running NZ OM...")
         nz_outputs, nz_n_in, nz_n_out = run_om(args.nz_om, input_bytes, stream)
         print(f"  inputs={nz_n_in}, outputs={nz_n_out}")
 
-        print(f"[2/2] Running ND OM...")
+        print("[2/2] Running ND OM...")
         nd_outputs, nd_n_in, nd_n_out = run_om(args.nd_om, input_bytes, stream)
         print(f"  inputs={nd_n_in}, outputs={nd_n_out}")
 
@@ -150,7 +161,9 @@ def main():
         all_pass = True
         for i, (nz_out, nd_out) in enumerate(zip(nz_outputs, nd_outputs)):
             if len(nz_out) != len(nd_out):
-                print(f"  Output[{i}] size mismatch: NZ={len(nz_out)}B vs ND={len(nd_out)}B")
+                print(
+                    f"  Output[{i}] size mismatch: NZ={len(nz_out)}B vs ND={len(nd_out)}B"
+                )
                 all_pass = False
                 continue
             nz_arr = np.frombuffer(nz_out, dtype=np_dtype)
@@ -158,16 +171,18 @@ def main():
             diff = np.max(np.abs(nz_arr.astype(np.float32) - nd_arr.astype(np.float32)))
             ok = np.allclose(nz_arr, nd_arr, atol=args.atol)
             status = "PASS" if ok else "FAIL"
-            print(f"  Output[{i}]: shape={nz_arr.shape}, max_diff={diff:.6e}, [{status}]")
+            print(
+                f"  Output[{i}]: shape={nz_arr.shape}, max_diff={diff:.6e}, [{status}]"
+            )
             if not ok:
                 print(f"    NZ first5={nz_arr[:5]}")
                 print(f"    ND first5={nd_arr[:5]}")
                 all_pass = False
 
         if all_pass:
-            print(f"\n[PASS] All outputs match (max_diff=0 expected). NZ OM == ND OM.")
+            print("\n[PASS] All outputs match (max_diff=0 expected). NZ OM == ND OM.")
         else:
-            print(f"\n[FAIL] Output mismatch. See details above.")
+            print("\n[FAIL] Output mismatch. See details above.")
             sys.exit(1)
 
     finally:

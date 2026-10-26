@@ -241,7 +241,7 @@ saver 作为底层 API 原默认 `use_embeddings=False`(图内查表,自包含),
 | 字段 | 值 |
 |------|-----|
 | 编号 | CLI-006 |
-| 位置 | `auto_quant.py`(删 `_build_layer_strategy` + `generate_dopt_config` + `_LINEAR/_EMBED_STRATEGY` + 未用 `import json`/`import torch`)、`dopt_wrapper.py`(`_build_layer_strategy` → `build_layer_strategy`,L31 定义 + L67 调用)、`examples/.../run_pd6_cases.sh:gen_dopt_config`(内联)、`tests/py/dopt_lm/test_strategy_generation.py`(改单份)、文档(`quant_design.md` / `quant/INDEX.md` / `cli_design.md` / `adr/0001`) |
+| 位置 | `auto_quant.py`(删 `_build_layer_strategy` + `generate_dopt_config` + `_LINEAR/_EMBED_STRATEGY` + 未用 `import json`/`import torch`)、`dopt_wrapper.py`(`_build_layer_strategy` → `build_layer_strategy`,L31 定义 + L67 调用)、`examples/.../run_pd6_cases.sh:gen_dopt_config`(内联)、`tests/python/dopt_lm/test_strategy_generation.py`(改单份)、文档(`quant_design.md` / `quant/INDEX.md` / `cli_design.md` / `adr/0001`) |
 | 背景 | `generate_dopt_config`(场景1 离线辅助)只被 `run_pd6_cases.sh` 用例用;`_build_layer_strategy` 在 `auto_quant` + `dopt_wrapper` 两份重复(dopt_lm `generate_config_file` 是全 float 模板,逻辑不同不替代)。用户选路径2:删 `generate_dopt_config` + 用例内联 + 改公开名消除重复 |
 | 违反约定 | 无(用户主动清理 + 消除重复) |
 | 发现日期 | 2026-08-31 |
@@ -257,16 +257,16 @@ saver 作为底层 API 原默认 `use_embeddings=False`(图内查表,自包含),
   - `auto_quant.py`:删 `_LINEAR_STRATEGY`/`_EMBED_STRATEGY` + `_build_layer_strategy` + `generate_dopt_config` + 未用 `import json`/`import torch`
   - `dopt_wrapper.py`:`_build_layer_strategy` → `build_layer_strategy`(L31 定义 + L67 调用)
   - `examples/.../run_pd6_cases.sh`:`gen_dopt_config` 内联(删 `from auto_quant import generate_dopt_config`,改 `from dopt_wrapper import build_layer_strategy` + `tempfile`/`os.fdopen`/`json.dump`)
-  - `tests/py/dopt_lm/test_strategy_generation.py`:删 `auto_quant` import,测试改单份(只测 `dopt_wrapper.build_layer_strategy`)
+  - `tests/python/dopt_lm/test_strategy_generation.py`:删 `auto_quant` import,测试改单份(只测 `dopt_wrapper.build_layer_strategy`)
 - **文档**:`quant_design.md`(L236/335/341-342/368/489-490/502/818 + replaceAll `_build_layer_strategy`→`build_layer_strategy`)、`quant/INDEX.md`(L21 删 generate_dopt_config + L22/26 改名)、`cli_design.md`(L173 计划改造段重写删 generate_dopt_config + 合并计划 + L192 改名)、`adr/0001` L44(~~删除线~~ + 已落地标注)
 
 ### 验证
 
-`py_compile auto_quant/dopt_wrapper/cann_lm_converter` 通过;`pytest tests/py/dopt_lm/test_strategy_generation.py` 2 passed;`grep generate_dopt_config|_build_layer_strategy|auto_quant.build_layer_strategy` 在 docs 仅余 TODO_notes 记录 + adr 历史标注。
+`py_compile auto_quant/dopt_wrapper/cann_lm_converter` 通过;`pytest tests/python/dopt_lm/test_strategy_generation.py` 2 passed;`grep generate_dopt_config|_build_layer_strategy|auto_quant.build_layer_strategy` 在 docs 仅余 TODO_notes 记录 + adr 历史标注。
 
 ### 关联
 
-- 源码文件:`cann_lm/converter/quant/auto_quant.py`、`dopt_wrapper.py`、`examples/.../run_pd6_cases.sh`、`tests/py/dopt_lm/test_strategy_generation.py`
+- 源码文件:`cann_lm/converter/quant/auto_quant.py`、`dopt_wrapper.py`、`examples/.../run_pd6_cases.sh`、`tests/python/dopt_lm/test_strategy_generation.py`
 - 设计文档:[cli_design.md](./cli/cli_design.md)「完整调用链」、[quant_design.md](./quant/quant_design.md)「`auto_quant.py`/`dopt_wrapper.py` 签名表」
 - 历史决策:[adr/0001](../adr/0001-load-model-cpu-quant-subprocess-device.md) L44(状态变更 2026-08-31)
 
@@ -1053,4 +1053,3 @@ with lite_export_context(lite_config):
 - 源码:`cann_lm/converter/saver.py`(`save_epair`/`save_epair_prefill_decode`)+ `cann_lm/models/export_wrapper.py`(`make_input_output_names`/`forward` 返回 logits+past_kv_flat+delta_out_flat)
 - 相关:**CLI-014**(PD 权重共享,本条的 output name 不影响共享)、**CLI-016/CLI-019**(权重/const 分离,已部分实现 `_is_weight` 字段——见下注)
 - 注:CLI-016/CLI-019 描述的「weight_info.json 加类别字段」已实现为 `_is_weight`(bool,二态:parameter+buffer=true / const=false),`epair_utils.py:_pack_weights_to_dir` 落盘该字段 + C++ `ge_weight_loader.cc:LoadConsolidated` 读取填 `TensorRecordInfo.is_parameter` + `ge_graph_builder.cc:CreateConstNode` 注入 GE Const 节点私有 attr `_is_weight`(dump 图可见,OM 被 GE OptimizeStage1 清理)。CLI-016/CLI-019 的 NZ 按 kind 分流(NZ 只对 parameter)尚未实现,仍为 TODO
-

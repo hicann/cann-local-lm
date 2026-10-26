@@ -23,6 +23,7 @@ dtype / 数据 / 滑窗, PPL 差值即量化带来的损伤。
   --stride      窗口步长 (默认 = seq-len, 窗口不重叠)
   --dtype       auto (默认: cpu->float32, 其他->float16) | float32 | float16 | bfloat16
 """
+
 import argparse
 import json
 import math
@@ -42,13 +43,24 @@ def parse_args():
     p = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    p.add_argument("--float-model", required=True, help="浮点 HF 模型目录 (同时提供 tokenizer)")
-    p.add_argument("--quant-model", required=True, help="dopt GPTQ 产物目录 (hf-type-save)")
-    p.add_argument("--data", default=os.path.join(here, "calibrate_sets", "calibrate_coig_cqia.jsonl"))
+    p.add_argument(
+        "--float-model", required=True, help="浮点 HF 模型目录 (同时提供 tokenizer)"
+    )
+    p.add_argument(
+        "--quant-model", required=True, help="dopt GPTQ 产物目录 (hf-type-save)"
+    )
+    p.add_argument(
+        "--data",
+        default=os.path.join(here, "calibrate_sets", "calibrate_coig_cqia.jsonl"),
+    )
     p.add_argument("--max-tokens", type=int, default=16384)
     p.add_argument("--seq-len", type=int, default=2048)
-    p.add_argument("--stride", type=int, default=None, help="默认 = seq-len (窗口不重叠)")
-    p.add_argument("--dtype", default="auto", choices=["auto", "float32", "float16", "bfloat16"])
+    p.add_argument(
+        "--stride", type=int, default=None, help="默认 = seq-len (窗口不重叠)"
+    )
+    p.add_argument(
+        "--dtype", default="auto", choices=["auto", "float32", "float16", "bfloat16"]
+    )
     return p.parse_args()
 
 
@@ -97,9 +109,13 @@ def load_model(path: str, dtype: torch.dtype):
     verbosity = hf_logging.get_verbosity()
     hf_logging.set_verbosity_error()
     try:
-        return AutoModelForCausalLM.from_pretrained(
-            path, torch_dtype=dtype, trust_remote_code=True
-        ).to(DEVICE).eval()
+        return (
+            AutoModelForCausalLM.from_pretrained(
+                path, torch_dtype=dtype, trust_remote_code=True
+            )
+            .to(DEVICE)
+            .eval()
+        )
     finally:
         hf_logging.set_verbosity(verbosity)
 
@@ -108,8 +124,10 @@ def main():
     args = parse_args()
     stride = args.stride or args.seq_len
     dtype = resolve_dtype(args.dtype)
-    print(f"[ppl] device={DEVICE} dtype={str(dtype).removeprefix('torch.')} "
-          f"seq={args.seq_len} stride={stride}")
+    print(
+        f"[ppl] device={DEVICE} dtype={str(dtype).removeprefix('torch.')} "
+        f"seq={args.seq_len} stride={stride}"
+    )
 
     tokenizer = AutoTokenizer.from_pretrained(args.float_model, trust_remote_code=True)
     ids = build_tokens(tokenizer, args.data, args.max_tokens)

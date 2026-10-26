@@ -35,7 +35,7 @@ export GEMMA4_HF_PATH=<gemma4 model dir>   # 必填
 | `verify_gemma4_multiturn.py` | 多轮对话(cann/wrapper + chunk) | 跨轮上下文,每轮 prefill(含历史)+ decode |
 | `verify_gemma4_vs_hf.py` | pure-torch vs HF 数值对齐 | logits max_diff/argmax/top5 + greedy token 一致 |
 
-> wrapper 重写验证（host mask==model 4D + bypass vs model.forward）与可导出性（FX 图 masked_fill==0）已抽到 `tests/py/llm_models/test_gemma4.py`（GEMMA4-024/025），示例脚本 `verify_gemma4_wrapper_bypass.py` / `verify_gemma4_wrapper_export.py` 已删。
+> wrapper 重写验证（host mask==model 4D + bypass vs model.forward）与可导出性（FX 图 masked_fill==0）已抽到 `tests/python/llm_models/test_gemma4.py`（GEMMA4-024/025），示例脚本 `verify_gemma4_wrapper_bypass.py` / `verify_gemma4_wrapper_export.py` 已删。
 >
 > `verify_gemma4_epair_quant.py` 已删（quant PLE int8 回环，需 CANN 轻量化工具 GPTQ 产物，从未实际验证过）。quant embeddings 的 sample-inputs 构造已由 `test_gemma4.py::test_wrapper_get_sample_inputs_quant_embeddings_mode`（GEMMA4-015）覆盖；完整 quant epair 回环若需复测，可在 `verify_gemma4_epair.py` 加 `--quant-embeddings` 模式（需轻量化工具产物）。
 >

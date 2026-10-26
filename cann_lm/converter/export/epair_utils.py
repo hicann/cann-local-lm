@@ -7,7 +7,8 @@ from pathlib import Path
 
 import torch
 
-DEFAULT_SPLIT_SIZE = 1024 * 1024 * 1024 * 50 # 50GB
+DEFAULT_SPLIT_SIZE = 1024 * 1024 * 1024 * 50  # 50GB
+
 
 @dataclasses.dataclass
 class ConsolidatedWeights:
@@ -23,11 +24,14 @@ class ConsolidatedWeights:
             to a list of ``{"name": str, "offset": int, "size": int}`` entries
             describing each tensor's location within that file.
     """
+
     bin_files: list[bytes]
     weights_index: dict[str, list[dict]]
 
 
-def pack_weights(contents, *, max_file_size: int = DEFAULT_SPLIT_SIZE) -> ConsolidatedWeights:
+def pack_weights(
+    contents, *, max_file_size: int = DEFAULT_SPLIT_SIZE
+) -> ConsolidatedWeights:
     """Pack weights from EpairContents into ConsolidatedWeights (in memory).
 
     Reads tensor data from ``contents.ep.state_dict()``, concatenates raw
@@ -54,7 +58,11 @@ def pack_weights(contents, *, max_file_size: int = DEFAULT_SPLIT_SIZE) -> Consol
     Returns:
         ConsolidatedWeights with ``bin_files`` and ``weights_index``.
     """
-    raw_sd = contents.ep.state_dict() if callable(contents.ep.state_dict) else contents.ep.state_dict
+    raw_sd = (
+        contents.ep.state_dict()
+        if callable(contents.ep.state_dict)
+        else contents.ep.state_dict
+    )
     state_dict = dict(raw_sd)
 
     # Non-persistent buffers: add from ep.module().named_buffers() (uses module path names)
@@ -63,7 +71,7 @@ def pack_weights(contents, *, max_file_size: int = DEFAULT_SPLIT_SIZE) -> Consol
             state_dict[name] = buf
 
     # Lifted tensor constants: add from ep.constants (uses ep_json tensor_constant_name)
-    if hasattr(contents.ep, 'constants') and isinstance(contents.ep.constants, dict):
+    if hasattr(contents.ep, "constants") and isinstance(contents.ep.constants, dict):
         for name, tensor in contents.ep.constants.items():
             if name not in state_dict and isinstance(tensor, torch.Tensor):
                 state_dict[name] = tensor
@@ -113,15 +121,18 @@ def pack_weights(contents, *, max_file_size: int = DEFAULT_SPLIT_SIZE) -> Consol
         # Open file if not yet open
         if current_offset == 0:
             import os
+
             bin_path = open(os.path.join(".", current_file_name), "wb")
             index[current_file_name] = []
 
-        index[current_file_name].append({
-            "name": name,
-            "offset": current_offset,
-            "size": len(data),
-            "_is_weight": is_weight_of[name],
-        })
+        index[current_file_name].append(
+            {
+                "name": name,
+                "offset": current_offset,
+                "size": len(data),
+                "_is_weight": is_weight_of[name],
+            }
+        )
 
         bin_path.write(data)
         current_offset += len(data)
@@ -133,14 +144,20 @@ def pack_weights(contents, *, max_file_size: int = DEFAULT_SPLIT_SIZE) -> Consol
         bin_path.close()
 
     num_files = current_file_idx + 1
-    print(f"Packed {len(index)} tensors into {num_files} file(s) ({total_written / 1024:.0f} KB)")
+    print(
+        f"Packed {len(index)} tensors into {num_files} file(s) ({total_written / 1024:.0f} KB)"
+    )
 
 
-def consolidated_weights_save(contents, output_dir: str | Path, *,
-                              save_weights: bool = True,
-                              max_file_size: int = 5 * 1024,
-                              ep_json_filename: str = "ep_json_with_ascend_ir.json",
-                              host_side_weights: list[tuple[str, torch.Tensor]] | None = None) -> None:
+def consolidated_weights_save(
+    contents,
+    output_dir: str | Path,
+    *,
+    save_weights: bool = True,
+    max_file_size: int = 5 * 1024,
+    ep_json_filename: str = "ep_json_with_ascend_ir.json",
+    host_side_weights: list[tuple[str, torch.Tensor]] | None = None,
+) -> None:
     """Write epair contents to disk in consolidated weights format.
 
     Writes files directly under ``output_dir`` (no ``data/`` subdirectory):
@@ -199,7 +216,9 @@ def consolidated_weights_save(contents, output_dir: str | Path, *,
         print("  [skip] weights_*.bin + weight_info.json (save_weights=False)")
 
     if host_side_weights:
-        host_index = _pack_host_side_weights_to_dir(host_side_weights, output_dir, max_file_size)
+        host_index = _pack_host_side_weights_to_dir(
+            host_side_weights, output_dir, max_file_size
+        )
         host_idx_path = output_dir / "host_weights_info.json"
         with open(host_idx_path, "w") as f:
             json.dump(host_index, f, indent=2)
@@ -218,17 +237,22 @@ def consolidated_weights_save(contents, output_dir: str | Path, *,
 def _blob_hash(data: bytes) -> str:
     """Content hash of tensor bytes (sha256 truncated to 64-bit)."""
     import hashlib
+
     return "h_" + hashlib.sha256(data).hexdigest()[:16]
 
 
 def _extract_state_dict(contents) -> tuple[dict, dict[str, bool]]:
     """Extract state_dict (params+buffers+lifted constants) + is_weight_of map from EpairContents."""
-    raw_sd = contents.ep.state_dict() if callable(contents.ep.state_dict) else contents.ep.state_dict
+    raw_sd = (
+        contents.ep.state_dict()
+        if callable(contents.ep.state_dict)
+        else contents.ep.state_dict
+    )
     state_dict = dict(raw_sd)
     for name, buf in contents.ep.module().named_buffers():
         if name not in state_dict:
             state_dict[name] = buf
-    if hasattr(contents.ep, 'constants') and isinstance(contents.ep.constants, dict):
+    if hasattr(contents.ep, "constants") and isinstance(contents.ep.constants, dict):
         for name, tensor in contents.ep.constants.items():
             if name not in state_dict and isinstance(tensor, torch.Tensor):
                 state_dict[name] = tensor
@@ -257,13 +281,20 @@ def _transform_weight_tensor(raw, name, *, is_quantized, rules):
     if raw.dtype == torch.bfloat16:
         raw = raw.view(torch.int16)
     elif "weight_scale" in name and raw.dtype == torch.float32:
-        raw = transdata_scale(raw)  # fp32→uint64 bit-pattern; dtype synced by _sync_weight_scale_dtype
+        raw = transdata_scale(
+            raw
+        )  # fp32→uint64 bit-pattern; dtype synced by _sync_weight_scale_dtype
 
     entry_format = "ND"
     # Layout transform: name_pattern guard in rules.json (*.weight_q) — no code-level
     # endswith hack. weight_scale excluded (already dtype-converted, not a layout target).
     if raw.dim() == 2 and "weight_scale" not in name:
-        from cann_lm.converter.export.weight_format import resolve_format, nd2nz, pack_int4_nz
+        from cann_lm.converter.export.weight_format import (
+            resolve_format,
+            nd2nz,
+            pack_int4_nz,
+        )
+
         rule = resolve_format(name, is_quantized, rules=rules)
         if rule.get("format") == "NZ":
             block = rule.get("block", 16)
@@ -282,13 +313,17 @@ def _transform_weight_tensor(raw, name, *, is_quantized, rules):
 def _load_weight_trans_rules(names):
     """Load weight format rules (always; env total switch deprecated, control is per-rule enable)."""
     from cann_lm.converter.export.weight_format import load_rules
+
     rules = load_rules()
     is_quantized = any("weight_scale" in n for n in names)
     return is_quantized, rules
 
 
 def _pack_weights_pd_dedup(
-    prefill_contents, decode_contents, output_dir: Path, max_file_size: int,
+    prefill_contents,
+    decode_contents,
+    output_dir: Path,
+    max_file_size: int,
 ) -> dict:
     """Pack PD two graphs' weights with content-hash dedup → v2 two-level index.
 
@@ -296,7 +331,6 @@ def _pack_weights_pd_dedup(
     Returns v2 index: {blobs:{hash:{bin,offset,size,format,_is_weight}}, graphs:{prefill:{name:hash}, decode:{name:hash}}} (无 version 字段, C++ 检测 graphs/blobs 存在).
     Bin write + split logic mirrors _pack_weights_to_dir (single tensor not split, cwd bin path).
     """
-    import os
     output_dir = Path(output_dir).resolve()
     blobs: dict[str, dict] = {}
     graphs: dict[str, dict[str, str]] = {"prefill": {}, "decode": {}}
@@ -314,14 +348,18 @@ def _pack_weights_pd_dedup(
         all_names.extend(n for n in sd)
     is_quantized, rules = _load_weight_trans_rules(all_names)
 
-    for graph_name, contents in (("prefill", prefill_contents), ("decode", decode_contents)):
+    for graph_name, contents in (
+        ("prefill", prefill_contents),
+        ("decode", decode_contents),
+    ):
         state_dict, is_weight_of = _extract_state_dict(contents)
         names = [n for n in state_dict if n in is_weight_of]
         for name in names:
             tensor = state_dict[name]
             raw = tensor.detach().cpu().contiguous()
             data, entry_format = _transform_weight_tensor(
-                raw, name, is_quantized=is_quantized, rules=rules)
+                raw, name, is_quantized=is_quantized, rules=rules
+            )
             del raw
             h = _blob_hash(data)
             graphs[graph_name][name] = h
@@ -333,7 +371,9 @@ def _pack_weights_pd_dedup(
                     current_file_name = f"weights_{current_file_idx}.bin"
                     current_offset = 0
                 if current_offset == 0:
-                    bin_path = open(os.path.join(str(output_dir), current_file_name), "wb")
+                    bin_path = open(
+                        os.path.join(str(output_dir), current_file_name), "wb"
+                    )
                 bin_path.write(data)
                 blobs[h] = {
                     "bin": current_file_name,
@@ -351,21 +391,25 @@ def _pack_weights_pd_dedup(
 
     n_prefill = len(graphs["prefill"])
     n_decode = len(graphs["decode"])
-    print(f"PD dedup packed: {len(blobs)} unique blobs "
-          f"(prefill {n_prefill} / decode {n_decode} tensors, "
-          f"{n_prefill + n_decode - len(blobs)} shared)")
+    print(
+        f"PD dedup packed: {len(blobs)} unique blobs "
+        f"(prefill {n_prefill} / decode {n_decode} tensors, "
+        f"{n_prefill + n_decode - len(blobs)} shared)"
+    )
     return {"blobs": blobs, "graphs": graphs}
 
 
 def _pack_weights_v2(
-    contents, output_dir: Path, graph_name: str = "single", max_file_size: int = 5 * 1024,
+    contents,
+    output_dir: Path,
+    graph_name: str = "single",
+    max_file_size: int = 5 * 1024,
 ) -> dict:
     """Pack single-graph weights with content-hash dedup → v2 two-level index.
 
     Same logic as _pack_weights_pd_dedup but for single-graph export (consolidated_weights_save).
     Returns {blobs:{hash:{bin,offset,size,format,_is_weight}}, graphs:{graph_name:{name→hash}}}.
     """
-    import os
     output_dir = Path(output_dir).resolve()
     blobs: dict[str, dict] = {}
     graphs: dict[str, dict[str, str]] = {graph_name: {}}
@@ -382,7 +426,8 @@ def _pack_weights_v2(
         tensor = state_dict[name]
         raw = tensor.detach().cpu().contiguous()
         data, entry_format = _transform_weight_tensor(
-            raw, name, is_quantized=is_quantized, rules=rules)
+            raw, name, is_quantized=is_quantized, rules=rules
+        )
         del raw
         h = _blob_hash(data)
         graphs[graph_name][name] = h
@@ -410,12 +455,17 @@ def _pack_weights_v2(
     if bin_path is not None:
         bin_path.close()
 
-    print(f"v2 packed: {len(blobs)} unique blobs, {len(graphs[graph_name])} tensors (graph={graph_name})")
+    print(
+        f"v2 packed: {len(blobs)} unique blobs, {len(graphs[graph_name])} tensors (graph={graph_name})"
+    )
     return {"blobs": blobs, "graphs": graphs}
 
 
 def consolidated_weights_save_pd(
-    prefill_epair, decode_epair, output_dir: str | Path, *,
+    prefill_epair,
+    decode_epair,
+    output_dir: str | Path,
+    *,
     save_weights: bool = True,
     max_file_size: int = 5 * 1024,
     host_side_weights: list[tuple[str, torch.Tensor]] | None = None,
@@ -434,7 +484,9 @@ def consolidated_weights_save_pd(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     if save_weights:
-        index = _pack_weights_pd_dedup(prefill_epair, decode_epair, output_dir, max_file_size)
+        index = _pack_weights_pd_dedup(
+            prefill_epair, decode_epair, output_dir, max_file_size
+        )
         idx_path = output_dir / "weight_info.json"
         with open(idx_path, "w") as f:
             json.dump(index, f, indent=2)
@@ -443,7 +495,9 @@ def consolidated_weights_save_pd(
         print("  [skip] weights_*.bin + weight_info.json (save_weights=False)")
 
     if host_side_weights:
-        host_index = _pack_host_side_weights_to_dir(host_side_weights, output_dir, max_file_size)
+        host_index = _pack_host_side_weights_to_dir(
+            host_side_weights, output_dir, max_file_size
+        )
         host_idx_path = output_dir / "host_weights_info.json"
         with open(host_idx_path, "w") as f:
             json.dump(host_index, f, indent=2)
@@ -481,9 +535,9 @@ def _sync_input_desc_layout(ep_json: dict, weights_index: dict) -> None:
     Maps tensor names: "op.weight_q" → inputDesc name "x2" (QuantBatchMatmulV4).
     """
     # Z layout fractal constants (must match pack_int4_nz in layout.py)
-    _B_FRAC_K = 64           # K方向分形块大小 (int4个数)
-    _B_FRAC_N = 16           # N方向分形块大小
-    _INT4_PER_INT32 = 8      # 8个int4打包进1个int32
+    _B_FRAC_K = 64  # K方向分形块大小 (int4个数)
+    _B_FRAC_N = 16  # N方向分形块大小
+    _INT4_PER_INT32 = 8  # 8个int4打包进1个int32
 
     # Build {tensor_name: format} from v2 index
     name_to_format: dict[str, str] = {}
@@ -563,17 +617,19 @@ def _sync_input_desc_layout(ep_json: dict, weights_index: dict) -> None:
         if K_packed == 0 or N == 0:
             continue
         k1 = K_packed // 8
-        n1 = N //16
+        n1 = N // 16
         c0 = _B_FRAC_K // _INT4_PER_INT32  # 8
         tv["sizes"] = [
-            {"as_int": k1}, {"as_int": n1},
-            {"as_int": _B_FRAC_N}, {"as_int": c0}
+            {"as_int": k1},
+            {"as_int": n1},
+            {"as_int": _B_FRAC_N},
+            {"as_int": c0},
         ]
         tv["strides"] = [
             {"as_int": n1 * _B_FRAC_N * c0},
             {"as_int": _B_FRAC_N * c0},
             {"as_int": c0},
-            {"as_int": 1}
+            {"as_int": 1},
         ]
         fixed_tv += 1
 
@@ -624,7 +680,9 @@ def _sync_weight_scale_dtype(ep_json: dict) -> None:
     _fix_input_desc(ep_json)
 
     if fixed_tv or fixed_id:
-        print(f"Synced weight_scale dtype: {fixed_tv} tensor_values, {fixed_id} inputDesc")
+        print(
+            f"Synced weight_scale dtype: {fixed_tv} tensor_values, {fixed_id} inputDesc"
+        )
 
 
 def _strip_none_input_descs(ep_json: dict) -> None:
@@ -650,21 +708,34 @@ def _strip_none_input_descs(ep_json: dict) -> None:
                 continue
             desc = op.get("inputDesc")
             inp = op.get("input")
-            if isinstance(desc, list) and isinstance(inp, list) and len(desc) == len(inp):
+            if (
+                isinstance(desc, list)
+                and isinstance(inp, list)
+                and len(desc) == len(inp)
+            ):
                 # Only strip entries that are BOTH dtype=None AND input ref is empty
-                keep = [(d, r) for d, r in zip(desc, inp)
-                        if not (d.get("dtype") is None and (r is None or r == ""))]
+                keep = [
+                    (d, r)
+                    for d, r in zip(desc, inp)
+                    if not (d.get("dtype") is None and (r is None or r == ""))
+                ]
                 op["inputDesc"] = [d for d, _ in keep]
                 op["input"] = [r for _, r in keep]
 
 
-def _pack_weights_to_dir(contents, output_dir: Path, max_file_size: int) -> dict[str, list[dict]]:
+def _pack_weights_to_dir(
+    contents, output_dir: Path, max_file_size: int
+) -> dict[str, list[dict]]:
     """Pack weights from EpairContents directly to disk in output_dir.
 
     Streaming write — never accumulates more than one tensor in memory.
     """
 
-    raw_sd = contents.ep.state_dict() if callable(contents.ep.state_dict) else contents.ep.state_dict
+    raw_sd = (
+        contents.ep.state_dict()
+        if callable(contents.ep.state_dict)
+        else contents.ep.state_dict
+    )
     state_dict = dict(raw_sd)
 
     # Non-persistent buffers: add from ep.module().named_buffers()
@@ -673,7 +744,7 @@ def _pack_weights_to_dir(contents, output_dir: Path, max_file_size: int) -> dict
             state_dict[name] = buf
 
     # Lifted tensor constants: add from ep.constants
-    if hasattr(contents.ep, 'constants') and isinstance(contents.ep.constants, dict):
+    if hasattr(contents.ep, "constants") and isinstance(contents.ep.constants, dict):
         for name, tensor in contents.ep.constants.items():
             if name not in state_dict and isinstance(tensor, torch.Tensor):
                 state_dict[name] = tensor
@@ -706,7 +777,8 @@ def _pack_weights_to_dir(contents, output_dir: Path, max_file_size: int) -> dict
         tensor = state_dict[name]
         raw = tensor.detach().cpu().contiguous()
         data, entry_format = _transform_weight_tensor(
-            raw, name, is_quantized=is_quantized, rules=rules)
+            raw, name, is_quantized=is_quantized, rules=rules
+        )
         del raw
 
         if current_offset > 0 and current_offset + len(data) > max_file_size:
@@ -720,13 +792,15 @@ def _pack_weights_to_dir(contents, output_dir: Path, max_file_size: int) -> dict
             bin_fp = open(output_dir / current_file_name, "wb")
             index[current_file_name] = []
 
-        index[current_file_name].append({
-            "name": name,
-            "offset": current_offset,
-            "size": len(data),
-            "format": entry_format,
-            "_is_weight": is_weight_of[name],
-        })
+        index[current_file_name].append(
+            {
+                "name": name,
+                "offset": current_offset,
+                "size": len(data),
+                "format": entry_format,
+                "_is_weight": is_weight_of[name],
+            }
+        )
 
         bin_fp.write(data)
         current_offset += len(data)
@@ -736,8 +810,10 @@ def _pack_weights_to_dir(contents, output_dir: Path, max_file_size: int) -> dict
     if bin_fp is not None:
         bin_fp.close()
 
-    print(f"Packed {len(index)} tensors into {current_file_idx + 1} file(s) "
-          f"({total_written / 1024:.0f} KB)")
+    print(
+        f"Packed {len(index)} tensors into {current_file_idx + 1} file(s) "
+        f"({total_written / 1024:.0f} KB)"
+    )
     return index
 
 
@@ -784,13 +860,15 @@ def _pack_host_side_weights_to_dir(
             bin_fp = open(output_dir / current_file_name, "wb")
             index[current_file_name] = []
 
-        index[current_file_name].append({
-            "name": name,
-            "offset": current_offset,
-            "size": len(data),
-            "dtype": str(dtype).split(".")[-1],
-            "shape": shape,
-        })
+        index[current_file_name].append(
+            {
+                "name": name,
+                "offset": current_offset,
+                "size": len(data),
+                "dtype": str(dtype).split(".")[-1],
+                "shape": shape,
+            }
+        )
 
         bin_fp.write(data)
         current_offset += len(data)
@@ -800,12 +878,16 @@ def _pack_host_side_weights_to_dir(
     if bin_fp is not None:
         bin_fp.close()
 
-    print(f"Packed {len(host_side_weights)} host-side weight(s) into "
-          f"{current_file_idx + 1} file(s) ({total_written / 1024:.0f} KB)")
+    print(
+        f"Packed {len(host_side_weights)} host-side weight(s) into "
+        f"{current_file_idx + 1} file(s) ({total_written / 1024:.0f} KB)"
+    )
     return index
 
 
-def inline_fused_attn_seq_constants(ep_json_path, qlen_value: int, kvlen_value: int | None = None) -> int:
+def inline_fused_attn_seq_constants(
+    ep_json_path, qlen_value: int, kvlen_value: int | None = None
+) -> int:
     """Inline FusedInferAttentionScore actual_seq_qlen/kvlen as ge.Const in ep_json.
 
     prefill-decode shares weights_0.bin: lifted actual_seq constants would be reused by name
@@ -830,11 +912,21 @@ def inline_fused_attn_seq_constants(ep_json_path, qlen_value: int, kvlen_value: 
             "name": name,
             "type": "Const",
             "attr": {
-                "value": {"t": {"desc": {"dtype": "DT_INT64", "shape": {"dim": dim}, "layout": "ND"},
-                                  "data": data}},
+                "value": {
+                    "t": {
+                        "desc": {
+                            "dtype": "DT_INT64",
+                            "shape": {"dim": dim},
+                            "layout": "ND",
+                        },
+                        "data": data,
+                    }
+                },
                 "_readable_value": {"s": readable},
             },
-            "outputDesc": [{"dtype": "DT_INT64", "shape": {"dim": dim}, "layout": "ND"}],
+            "outputDesc": [
+                {"dtype": "DT_INT64", "shape": {"dim": dim}, "layout": "ND"}
+            ],
         }
 
     with open(ep_json_path) as f:
@@ -852,7 +944,9 @@ def inline_fused_attn_seq_constants(ep_json_path, qlen_value: int, kvlen_value: 
             qlen_c = _make_const(f"InlineSeqQLen{inlined}", qlen_value)
             ops.append(qlen_c)
             ins[5] = f"{qlen_c['name']}:0"
-            if ins[6]:  # inline kvlen only if present (old kvlen=const scheme); None/empty (new scheme) -> skip
+            if ins[
+                6
+            ]:  # inline kvlen only if present (old kvlen=const scheme); None/empty (new scheme) -> skip
                 kvlen_c = _make_const(f"InlineSeqKvlen{inlined}", kvlen_value)
                 ops.append(kvlen_c)
                 ins[6] = f"{kvlen_c['name']}:0"

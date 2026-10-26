@@ -12,10 +12,7 @@
 #include "types.h"
 
 namespace hiai {
-bool CheckOffsetValid(const std::shared_ptr<IBuffer>& buffer, size_t offset)
-{
-    return offset <= buffer->GetSize();
-}
+bool CheckOffsetValid(const std::shared_ptr<IBuffer>& buffer, size_t offset) { return offset <= buffer->GetSize(); }
 
 std::shared_ptr<IBuffer> SplitCustomData(const std::shared_ptr<IBuffer>& buffer, CustomModelData& customModelData)
 {
@@ -25,7 +22,8 @@ std::shared_ptr<IBuffer> SplitCustomData(const std::shared_ptr<IBuffer>& buffer,
     HIAI_EXPECT_TRUE_R(CheckOffsetValid(buffer, modelDataOffset + sizeof(int32_t)), nullptr);
 
     if (memcpy_s(&customDataTypeLen, sizeof(int32_t),
-        reinterpret_cast<void*>(reinterpret_cast<char*>(buffer->GetData()) + modelDataOffset), sizeof(int32_t)) != 0) {
+                 reinterpret_cast<void*>(reinterpret_cast<char*>(buffer->GetData()) + modelDataOffset),
+                 sizeof(int32_t)) != 0) {
         CANN_LLM_LOGE("memcpy data failed.");
         return nullptr;
     }
@@ -45,15 +43,17 @@ std::shared_ptr<IBuffer> SplitCustomData(const std::shared_ptr<IBuffer>& buffer,
         return nullptr;
     }
     if (memcpy_s(&customDataValueLen, sizeof(int32_t),
-        reinterpret_cast<void*>(reinterpret_cast<char*>(buffer->GetData()) + modelDataOffset), sizeof(int32_t)) != 0) {
+                 reinterpret_cast<void*>(reinterpret_cast<char*>(buffer->GetData()) + modelDataOffset),
+                 sizeof(int32_t)) != 0) {
         CANN_LLM_LOGE("memcpy data failed.");
         return nullptr;
     }
     modelDataOffset += sizeof(int32_t);
 
     HIAI_EXPECT_TRUE_R(customDataValueLen > 0, nullptr);
-    HIAI_EXPECT_TRUE_R(CheckOffsetValid(
-        buffer, modelDataOffset + static_cast<size_t>(static_cast<uint32_t>(customDataValueLen))), nullptr);
+    HIAI_EXPECT_TRUE_R(
+        CheckOffsetValid(buffer, modelDataOffset + static_cast<size_t>(static_cast<uint32_t>(customDataValueLen))),
+        nullptr);
 
     std::string value((reinterpret_cast<char*>(buffer->GetData()) + modelDataOffset), customDataValueLen);
     customModelData.value = value;
@@ -67,21 +67,22 @@ std::shared_ptr<IBuffer> SplitCustomData(const std::shared_ptr<IBuffer>& buffer,
     HIAI_EXPECT_NOT_NULL_R(outBuffer, nullptr);
 
     if (memcpy_s(outBuffer->GetData(), outBuffer->GetSize(),
-        reinterpret_cast<void*>(reinterpret_cast<char*>(buffer->GetData()) + modelDataOffset), modelDataSize) != 0) {
+                 reinterpret_cast<void*>(reinterpret_cast<char*>(buffer->GetData()) + modelDataOffset),
+                 modelDataSize) != 0) {
         CANN_LLM_LOGE("memcpy data failed.");
         return nullptr;
     }
     return outBuffer;
 }
 
-std::shared_ptr<IBuffer> CustomDataUtil::GetModelData(
-    const std::shared_ptr<IBuffer>& buffer, CustomModelData& customModelData)
+std::shared_ptr<IBuffer> CustomDataUtil::GetModelData(const std::shared_ptr<IBuffer>& buffer,
+                                                      CustomModelData& customModelData)
 {
     HIAI_EXPECT_TRUE_R(buffer->GetSize() > strlen(CUST_DATA_TAG), nullptr);
     HIAI_EXPECT_NOT_NULL_R(buffer->GetData(), nullptr);
 
     if (strncmp(static_cast<const char*>(buffer->GetData()), static_cast<const char*>(CUST_DATA_TAG),
-        strlen(CUST_DATA_TAG)) == 0) {
+                strlen(CUST_DATA_TAG)) == 0) {
         return SplitCustomData(buffer, customModelData);
     }
 
@@ -94,7 +95,7 @@ bool CustomDataUtil::HasCustomData(const char* file)
     HIAI_EXPECT_TRUE_R(buffer != nullptr && buffer->GetSize() == strlen(CUST_DATA_TAG), false);
 
     if (strncmp(reinterpret_cast<const char*>(buffer->MutableData()), static_cast<const char*>(CUST_DATA_TAG),
-        strlen(CUST_DATA_TAG)) != 0) {
+                strlen(CUST_DATA_TAG)) != 0) {
         return false;
     }
 

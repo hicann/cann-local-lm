@@ -1,3 +1,9 @@
+# Pure Python config classes for Qwen3.5 - no transformers dependency.
+#
+# Based on HuggingFace transformers/src/transformers/models/qwen3_5/configuration_qwen3_5.py
+# Copyright 2025 The Qwen Team and The HuggingFace Inc. team. All rights reserved.
+# Licensed under the Apache License, Version 2.0.
+
 from __future__ import annotations
 
 import json
@@ -48,20 +54,23 @@ class Qwen3_5TextConfig:
     layer_types: list[str] | None = None
     full_attention_interval: int = 4
 
-    rope_parameters: dict = field(default_factory=lambda: {
-        "rope_type": "default",
-        "rope_theta": 1000000.0,
-        "partial_rotary_factor": 0.25,
-        "mrope_section": [11, 11, 10],
-        "mrope_interleaved": True,
-    })
+    rope_parameters: dict = field(
+        default_factory=lambda: {
+            "rope_type": "default",
+            "rope_theta": 1000000.0,
+            "partial_rotary_factor": 0.25,
+            "mrope_section": [11, 11, 10],
+            "mrope_interleaved": True,
+        }
+    )
 
     dtype: str | None = None
 
     def __post_init__(self):
         if self.layer_types is None:
             self.layer_types = [
-                "linear_attention" if bool((i + 1) % self.full_attention_interval)
+                "linear_attention"
+                if bool((i + 1) % self.full_attention_interval)
                 else "full_attention"
                 for i in range(self.num_hidden_layers)
             ]
@@ -87,6 +96,7 @@ class Qwen3_5TextConfig:
             config_path = os.path.join(model_name_or_path, "config.json")
         else:
             from huggingface_hub import hf_hub_download
+
             config_path = hf_hub_download(model_name_or_path, "config.json")
         return cls.from_json_file(config_path)
 
@@ -140,7 +150,9 @@ class Qwen3_5Config:
     def from_json_file(cls, path: str) -> Qwen3_5Config:
         with open(path) as f:
             data = json.load(f)
-        return cls(**{k: v for k, v in data.items() if k in {f.name for f in fields(cls)}})
+        return cls(
+            **{k: v for k, v in data.items() if k in {f.name for f in fields(cls)}}
+        )
 
     @classmethod
     def from_pretrained(cls, model_name_or_path: str) -> Qwen3_5Config:
@@ -148,5 +160,6 @@ class Qwen3_5Config:
             config_path = os.path.join(model_name_or_path, "config.json")
         else:
             from huggingface_hub import hf_hub_download
+
             config_path = hf_hub_download(model_name_or_path, "config.json")
         return cls.from_json_file(config_path)

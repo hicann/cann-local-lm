@@ -57,7 +57,8 @@ OH_NN_ReturnCode HMS_HiAITensor_GetCacheStatus(NN_Tensor* tensor, uint8_t* cache
 OH_NN_ReturnCode HMS_HiAITensor_SetCacheStatus(NN_Tensor* tensor, uint8_t cacheStatus);
 
 /**
- * @brief Create NN_Tensor which can only be used by KVCache. The seqlen dimension of KVCache can be dynamically resized.
+ * @brief Create NN_Tensor which can only be used by KVCache. The seqlen dimension of KVCache can be dynamically
+ * resized.
  *
  * @param [in] tensorDesc Pointer to {@link NN_TensorDesc}. The value cannot be null. Otherwise, null is returned.
  * @param [in] tileSize Used when concat multiple kvcache into a single tensor.
@@ -68,11 +69,12 @@ OH_NN_ReturnCode HMS_HiAITensor_SetCacheStatus(NN_Tensor* tensor, uint8_t cacheS
  * @see HIAI_NDK_GetDeviceID
  */
 NN_Tensor* HMS_HiAITensor_CreateKVCache(NN_TensorDesc* tensorDesc, size_t kvCacheNum, size_t tileSize, size_t deviceID);
- 
+
 /**
  * @brief Resize the seqlen dimension of KVCache. New size must be larger than current size.
  *
- * @param [in] tensor Pointer to {@link NN_Tensor}. The value cannot be null. The value must be create by {@link HMS_HiAITensor_CreateKVCache}.
+ * @param [in] tensor Pointer to {@link NN_Tensor}. The value cannot be null. The value must be create by {@link
+ * HMS_HiAITensor_CreateKVCache}.
  * @param [in] size New size for the seqlen dimension.
  * @return Function execution result. Returns OH_NN_SUCCESS if the operation is successful; returns an error code
  * otherwise. For details about the error codes, see {@link OH_NN_ReturnCode}.

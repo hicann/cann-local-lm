@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 算子级 NPU 验证 — Step 2: cann_lm_compile epair → OM (CANN env: source scripts/set_env_cann.sh)
+# 算子级 NPU 验证 — Step 2: cann_lm_compile epair → OM (CANN env: source scripts/cann_lm_compile/set_env_cann.sh)
 set -euo pipefail
 EPAIR_DIR="${1:?usage: compile_om.sh <epair_dir>}"
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)"

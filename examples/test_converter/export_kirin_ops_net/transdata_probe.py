@@ -114,8 +114,13 @@ class BareMatMul(nn.Module):
 
 
 NETS = {
-    "single": SingleLinear, "linear3d": Linear3D, "bmm": Bmm3D, "two_linear": TwoLinear,
-    "add_mm": AddMatMul, "transpose_mm": TransposeMatMul, "bare_matmul": BareMatMul,
+    "single": SingleLinear,
+    "linear3d": Linear3D,
+    "bmm": Bmm3D,
+    "two_linear": TwoLinear,
+    "add_mm": AddMatMul,
+    "transpose_mm": TransposeMatMul,
+    "bare_matmul": BareMatMul,
 }
 
 
@@ -123,7 +128,9 @@ def build_model(net: str, dtype: torch.dtype, device: torch.device) -> nn.Module
     return NETS[net](dtype).to(device).eval()
 
 
-def build_sample_inputs(net: str, dtype: torch.dtype, device: torch.device) -> tuple[Tensor, ...]:
+def build_sample_inputs(
+    net: str, dtype: torch.dtype, device: torch.device
+) -> tuple[Tensor, ...]:
     if net in ("single", "two_linear", "add_mm", "bare_matmul"):
         return (torch.randn(1, K, dtype=dtype, device=device),)
     if net == "transpose_mm":
@@ -131,7 +138,9 @@ def build_sample_inputs(net: str, dtype: torch.dtype, device: torch.device) -> t
     return (torch.randn(2, 8, K, dtype=dtype, device=device),)
 
 
-def export_program(net: str, output_path: Path, dtype: torch.dtype, device_name: str) -> Path:
+def export_program(
+    net: str, output_path: Path, dtype: torch.dtype, device_name: str
+) -> Path:
     device = torch.device(device_name)
     model = build_model(net, dtype, device)
     sample_inputs = build_sample_inputs(net, dtype, device)
@@ -151,16 +160,24 @@ def compile_to_epair(ep_path: Path, output_dir: Path, max_file_size: int) -> Pat
     ep = torch.export.load(Path(ep_path).resolve())
     register_ge_converters()
     epair = torch_delegate.export_to_epair(ep)
-    consolidated_weights_save(epair, output_dir, save_weights=True, max_file_size=max_file_size)
+    consolidated_weights_save(
+        epair, output_dir, save_weights=True, max_file_size=max_file_size
+    )
     return output_dir
 
 
 def _dtype_arg(s: str) -> torch.dtype:
-    return {"float16": torch.float16, "float32": torch.float32, "bfloat16": torch.bfloat16}[s]
+    return {
+        "float16": torch.float16,
+        "float32": torch.float32,
+        "bfloat16": torch.bfloat16,
+    }[s]
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="TransData probe: find smallest net with TransData.")
+    parser = argparse.ArgumentParser(
+        description="TransData probe: find smallest net with TransData."
+    )
     sub = parser.add_subparsers(dest="command", required=True)
     p_e = sub.add_parser("export")
     p_e.add_argument("--net", choices=list(NETS), required=True)
@@ -173,9 +190,13 @@ def main() -> None:
     p_c.add_argument("--max-file-size", type=int, default=512 * 1024 * 1024)
     args = parser.parse_args()
     if args.command == "export":
-        print(f"Exported: {export_program(args.net, Path(args.output), args.dtype, args.device)}")
+        print(
+            f"Exported: {export_program(args.net, Path(args.output), args.dtype, args.device)}"
+        )
     elif args.command == "compile":
-        print(f"Compiled: {compile_to_epair(Path(args.ep_path), Path(args.output_dir), args.max_file_size)}")
+        print(
+            f"Compiled: {compile_to_epair(Path(args.ep_path), Path(args.output_dir), args.max_file_size)}"
+        )
 
 
 if __name__ == "__main__":

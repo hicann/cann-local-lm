@@ -1,6 +1,10 @@
 # !/usr/bin/env python
 # -*- coding: utf-8 -*-
 # Copyright Huawei Technologies Co., Ltd. 2010-2025. All rights reserved.
+#
+# Adapted from NVlabs/EoRA (Copyright (c) 2023-2024 NVIDIA CORPORATION & AFFILIATES,
+#   NVIDIA Source Code License)
+#   https://github.com/NVlabs/EoRA
 import math
 import time
 
@@ -20,8 +24,9 @@ if DEVICE_TYPE == "cuda":
 
 class WeightQuantHessian:
     """
-        GPTQ
+    GPTQ
     """
+
     def __init__(self, layer):
         self.layer = layer
         self.dev = self.layer.weight.device
@@ -39,7 +44,9 @@ class WeightQuantHessian:
         if len(inp.shape) == 2:
             inp = inp.unsqueeze(0)
         tmp = inp.shape[0]
-        if isinstance(self.layer, nn.Linear) or isinstance(self.layer, transformers.Conv1D):
+        if isinstance(self.layer, nn.Linear) or isinstance(
+            self.layer, transformers.Conv1D
+        ):
             if len(inp.shape) == 3:
                 inp = inp.reshape((-1, inp.shape[-1]))
             inp = inp.t()
@@ -48,7 +55,7 @@ class WeightQuantHessian:
                 self.layer.kernel_size,
                 dilation=self.layer.dilation,
                 padding=self.layer.padding,
-                stride=self.layer.stride
+                stride=self.layer.stride,
             )
             inp = unfold(inp)
             inp = inp.permute([1, 0, 2])
@@ -59,7 +66,12 @@ class WeightQuantHessian:
         self.hessian_matrix += inp.matmul(inp.t())
 
     def fasterquant(
-        self, blocksize=128, percdamp=.01, groupsize=-1, actorder=False, static_groups=False
+        self,
+        blocksize=128,
+        percdamp=0.01,
+        groupsize=-1,
+        actorder=False,
+        static_groups=False,
     ):
         if static_groups and groupsize <= 0:
             raise ValueError("static_groups requires groupsize to be greater than zero")
@@ -86,10 +98,13 @@ class WeightQuantHessian:
 
         if static_groups:
             import copy
+
             groups = []
             for i in range(0, self.columns, groupsize):
                 quantizer = copy.deepcopy(self.quantizer)
-                quantizer.find_params(weight_matrix[:, i:(i + groupsize)], weight=True)
+                quantizer.find_params(
+                    weight_matrix[:, i : (i + groupsize)], weight=True
+                )
                 groups.append(quantizer)
             group_scale = [quantizer.scale for quantizer in groups]
             group_zero = [quantizer.zero for quantizer in groups]
@@ -137,7 +152,10 @@ class WeightQuantHessian:
                 if groupsize != -1:
                     if not static_groups:
                         if (i1 + i) % groupsize == 0:
-                            self.quantizer.find_params(weight_matrix[:, (i1 + i):(i1 + i + groupsize)], weight=True)
+                            self.quantizer.find_params(
+                                weight_matrix[:, (i1 + i) : (i1 + i + groupsize)],
+                                weight=True,
+                            )
                             group_scale.append(self.quantizer.scale)
                             group_zero.append(self.quantizer.zero)
                     else:
@@ -146,13 +164,18 @@ class WeightQuantHessian:
                             idx = perm[idx]
                         self.quantizer = groups[idx // groupsize]
                 q = quantize(
-                    w.unsqueeze(1), self.quantizer.scale, self.quantizer.zero, self.quantizer.maxq
+                    w.unsqueeze(1),
+                    self.quantizer.scale,
+                    self.quantizer.zero,
+                    self.quantizer.maxq,
                 ).flatten()
                 quantized_w_matrix_block[:, i] = q
-                losses1[:, i] = (w - q) ** 2 / d ** 2
+                losses1[:, i] = (w - q) ** 2 / d**2
 
                 err1 = (w - q) / d
-                weight_matrix1[:, i:] -= err1.unsqueeze(1).matmul(hinv1[i, i:].unsqueeze(0))
+                weight_matrix1[:, i:] -= err1.unsqueeze(1).matmul(
+                    hinv1[i, i:].unsqueeze(0)
+                )
                 loss_error[:, i] = err1
 
             quantized_w_matrix[:, i1:i2] = quantized_w_matrix_block
@@ -161,25 +184,45 @@ class WeightQuantHessian:
             weight_matrix[:, i2:] -= loss_error.matmul(hinv[i1:i2, i2:])
 
         synchronize_device()
-        Logger.info('time %.2f' % (time.time() - tick))
-        Logger.info('quant loss: %.6f' % (torch.sum(total_losses).item()))
+        Logger.info("time %.2f" % (time.time() - tick))
+        Logger.info("quant loss: %.6f" % (torch.sum(total_losses).item()))
 
         self.quantizer.group_scale = torch.cat(group_scale, dim=1)
         self.quantizer.group_zero = torch.cat(group_zero, dim=1)
         if actorder:
             quantized_w_matrix = quantized_w_matrix[:, invperm]
             if not static_groups:
-                self.quantizer.group_scale = self.quantizer.group_scale.repeat(1, groupsize)
-                self.quantizer.group_zero = self.quantizer.group_zero.repeat(1, groupsize)
-                self.quantizer.group_scale = self.quantizer.group_scale[:, invperm].view(self.rows, -1, groupsize).mean(dim=2)
-                self.quantizer.group_zero = self.quantizer.group_zero[:, invperm].view(self.rows, -1, groupsize).mean(dim=2)
+                self.quantizer.group_scale = self.quantizer.group_scale.repeat(
+                    1, groupsize
+                )
+                self.quantizer.group_zero = self.quantizer.group_zero.repeat(
+                    1, groupsize
+                )
+                self.quantizer.group_scale = (
+                    self.quantizer.group_scale[:, invperm]
+                    .view(self.rows, -1, groupsize)
+                    .mean(dim=2)
+                )
+                self.quantizer.group_zero = (
+                    self.quantizer.group_zero[:, invperm]
+                    .view(self.rows, -1, groupsize)
+                    .mean(dim=2)
+                )
 
-        self.quantizer.group_scale = self.quantizer.group_scale.flatten().unsqueeze(1).cpu()
-        self.quantizer.group_zero = self.quantizer.group_zero.flatten().unsqueeze(1).cpu()
+        self.quantizer.group_scale = (
+            self.quantizer.group_scale.flatten().unsqueeze(1).cpu()
+        )
+        self.quantizer.group_zero = (
+            self.quantizer.group_zero.flatten().unsqueeze(1).cpu()
+        )
 
         if isinstance(self.layer, transformers.Conv1D):
             quantized_w_matrix = quantized_w_matrix.t()
-        self.layer.weight.data = quantized_w_matrix.reshape(self.layer.weight.shape).to(self.layer.weight.data.dtype).to(self.dev)
+        self.layer.weight.data = (
+            quantized_w_matrix.reshape(self.layer.weight.shape)
+            .to(self.layer.weight.data.dtype)
+            .to(self.dev)
+        )
 
     def free(self):
         self.hessian_matrix = None

@@ -1,31 +1,34 @@
 #!/usr/bin/env bash
-#=============================================================================
-# build.sh — CANN-LM 全量构建/打包/UT 入口 (仓库根)
+# =============================================================================
+# build.sh — CANN-LM 顶层 end-to-end 构建入口
 #
-# 用法:
-#   bash build.sh --pkg   编译三部分(compile C++ / converter whl / engine OHOS)
-#                         并打包成两个 .run 分发物 (dist/):
-#                           - cann_lm_compile_converter-<ver>-<arch>.run   (compile + converter)
-#                           - cann_lm_engine_ohos-<ver>-<arch>.run         (engine, OHOS 部署包)
-#   bash build.sh -u      编译含 UT 的部分并运行:
-#                           - engine host C++ UT   (GTest, 13 目标 + bbit)
-#                           - converter C++ UT     (tests/c++/epair_archive, 需 CANN)
-#                           - Python UT            (tests/py/converter + tests/py/llm_models + tests/python)
+# subcommand:
+#   check         校验基底 (CANN / P1 venv / torchair / torch_delegate / cann_lm / third_party), 不构建
+#   deps          装 cann_lm/engine wheels 进 P1 venv (torchair+torch-delegate 为前置条件, 见 docs/build_guide.md)
+#   third_party   自带 C++ 三方库 (nlohmann_json + GTest + makeself) → output/third_party [不需 env]
+#   cpp [flags]   delegate build_cpp.sh (.so + cann_lm_compile, 不含测试)
+#   wheel         delegate converter + engine build_wheel.sh (P1 venv, 不需 CANN)
+#   package       delegate package_run.sh (打 .run 自解压包)
+#   all           deps → third_party → cpp → wheel
 #
-# 依赖/环境:
-#   - CANN toolkit: 先 source 其 set_env.sh 设 ASCEND_HOME_PATH (compile + converter C++ UT 需要)
-#   - C++ 三方库:   output/third_party (json/gtest/makeself), 缺则先 `bash scripts/build.sh third_party`
-#   - engine OHOS 交叉编译: 前置硬依赖(SDK clang + OHOS SDK + 签名 jar + GTest tarball)缺任一即中断
-#   - converter wheel: 系统 pip 即可 (--no-deps 纯源码打包, 不需 torch)
-#
-# 环境覆盖: VERSION / ARCH / THIRD_PARTY / BUILD_DIR / UT_BUILD_DIR / PIP
-#=============================================================================
+# 前置条件 (不本仓构建, 见 docs/build_guide.md):
+#   - CANN toolkit (source 其 set_env.sh 设 ASCEND_HOME_PATH)
+#   - torchair (TORCHAIR_ROOT) + torch-delegate (TORCH_DELEGATE_HOME, 含 .venv [torch+torchair+torch_delegate])
+# converter (①) + compile (②) 复用一套 env: source scripts/cann_lm_compile/set_env.sh (真 CANN, 无 stubs/无 0715)
+#   check / deps / cpp / tests / package 均 source set_env.sh (需先 source CANN set_env.sh 设 ASCEND_HOME_PATH)
+#   ③ NPU 运行: source scripts/cann_lm_compile/set_env_cann.sh --npu
+#   wheel / third_party 不需 env
+# OM 编译 (epair→OM) 属测试/示例, 不在构建流程: 直接跑 examples/test_converter/export_llm_model/run_compile.sh
+# 跨仓路径由 cann_lm_compile/build.conf (TORCHAIR_ROOT / TORCH_DELEGATE_HOME) 提供, 可被环境变量覆盖.
+# 根 build.sh 自包含完整逻辑 (CI 流水线直接用本文件, 内容不可移走); scripts/build.sh 为 thin entry 反向透传到此。
+# =============================================================================
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO="$(cd "$SCRIPT_DIR" && pwd)"
-source "${SCRIPT_DIR}/scripts/build.conf"   # 自定位 PROJECT_ROOT + 版本/路径默认
+REPO="$SCRIPT_DIR"   # 根 build.sh 位于仓库根, SCRIPT_DIR 即 repo root
+source "${SCRIPT_DIR}/scripts/cann_lm_compile/build.conf"   # build.conf 自定位 PROJECT_ROOT (C8 后入 cann_lm_compile/)
 
+# ── pkg/ut 默认值 ──
 VERSION="${VERSION:-0.1.0}"
 ARCH="${ARCH:-$(uname -m)}"
 THIRD_PARTY="${THIRD_PARTY:-$REPO/output/third_party}"
@@ -34,10 +37,110 @@ DIST="$REPO/dist"
 _log()  { printf '\n▶ %s\n' "$*"; }
 _step() { printf '  • %s\n' "$*"; }
 _ok()   { printf '  ✓ %s\n' "$*"; }
-_warn() { printf '  ⚠ %s\n' "$*" >&2; }
 _ng()   { printf '  ✗ %s\n' "$*" >&2; }
+_warn() { printf '  ⚠ %s\n' "$*" >&2; }
+_skip() { printf '  ○ %s\n' "$*"; }
 
-# ── 前置校验: CANN 环境 (compile / converter C++ UT 需要) ────────────────
+src_env()   { source "${SCRIPT_DIR}/scripts/cann_lm_compile/set_env.sh"; }          # converter+compile 统一 env (①②)
+src_npu()   { source "${SCRIPT_DIR}/scripts/cann_lm_compile/set_env_cann.sh" --npu; }  # ③ NPU runtime
+_have()     { ( cd /tmp && "${CONVERTER_PYTHON}" -c "import $1" 2>/dev/null ); }  # 中性 CWD, 避免 CWD 源码树误报已装
+
+# ── check ─────────────────────────────────────────────────────────────────────
+cmd_check() {
+  _log "基底校验 (不构建)"
+  # converter+compile 复用一套 (真 CANN, 无 stubs); 前置须 source CANN set_env.sh
+  src_env >/dev/null 2>&1
+  local fail=0
+  set +e
+  # ── 必需 (converter+compile ①②) ──
+  if [[ -n "${ASCEND_HOME_PATH:-}" && -f "${ASCEND_HOME_PATH}/lib64/libascendcl.so" ]]; then _ok "CANN ${ASCEND_HOME_PATH}"; else _ng "CANN libascendcl.so (source CANN set_env)"; fail=1; fi
+  if [[ -x "${CONVERTER_PYTHON}" ]]; then _ok "P1 venv ${CONVERTER_PYTHON}"; else _ng "P1 venv python (${CONVERTER_PYTHON})"; fail=1; fi
+  if _have torch; then _ok "torch ($("${CONVERTER_PYTHON}" -c 'import torch;print(torch.__version__)' 2>/dev/null))"; else _ng "torch (前置: 见 docs/build_guide.md 安装 torch-delegate)"; fail=1; fi
+  if _have torchair;       then _ok "torchair";       else _ng "torchair (前置: 见 docs/build_guide.md)";        fail=1; fi
+  if _have torch_delegate; then _ok "torch_delegate"; else _ng "torch_delegate (前置: 见 docs/build_guide.md)";  fail=1; fi
+  if _have cann_lm;        then _ok "cann_lm";        else _ng "cann_lm (bash build.sh wheel)";        fail=1; fi
+  if [[ -d "${REPO}/output/third_party/json" ]]; then _ok "third_party json"; else _ng "third_party (bash build.sh third_party)"; fail=1; fi
+  # ── 可选 (仅量化需 NPU 加速时需要, converter/compile 不依赖) ──
+  echo "  可选 (仅量化 NPU 加速):"
+  if [[ -x "${DOPT_PYTHON:-}" ]]; then _ok "P2 ${DOPT_PYTHON} (量化 NPU 加速用)"; else _ng "P2 python ${DOPT_PYTHON:-<未设>} (可选, 仅量化 NPU 加速时需; 见 docs/build_guide.md)"; fi
+  if [[ -x "${DOPT_PYTHON:-}" ]] && "${DOPT_PYTHON}" -c "import torch_npu" 2>/dev/null; then _ok "torch_npu (P2, 量化 NPU 加速用)"; else _ng "torch_npu (可选, 仅量化需 NPU 加速时装; converter/compile 不需)"; fi
+  set -e
+  echo ""
+  if [[ $fail -eq 0 ]]; then _ok "基底齐 (converter+compile ①② 必需项就绪; ③ NPU 量化加速为可选)"; else _ng "缺 ${fail} 项必需项 (按提示补)"; return 1; fi
+}
+
+# ── deps (装 cann_lm wheels 进 P1 venv; torchair/torch-delegate 为前置条件, 见 docs/build_guide.md) ──
+cmd_deps() {
+  _log "deps → 装 cann_lm/engine wheels 进 P1 venv (torchair+torch-delegate 须前置就绪)"
+  src_env >/dev/null 2>&1   # 设 CONVERTER_PYTHON 等; 需先 source CANN set_env.sh
+
+  # 前置条件校验: P1 venv + torchair + torch_delegate 须就绪
+  # 兼容两种来源 (见 docs/build_guide.md): 源码装 (TORCHAIR_ROOT/TORCH_DELEGATE_HOME 有源码根) 或 whl 装 (仅 venv + 预编 whl)
+  # 本仓不构建它们; 只查 CONVERTER_PYTHON 可执行 + torchair/torch_delegate 已装 venv
+  local fail=0
+  if [[ ! -x "${CONVERTER_PYTHON}" ]]; then _ng "P1 venv python 不可执行: ${CONVERTER_PYTHON} (前置: 见 docs/build_guide.md 装上游)"; fail=$((fail+1)); fi
+  if ! _have torchair;        then _ng "torchair 未装 venv (前置: 见 docs/build_guide.md)"; fail=$((fail+1)); fi
+  if ! _have torch_delegate;  then _ng "torch_delegate 未装 venv (前置: 见 docs/build_guide.md)"; fail=$((fail+1)); fi
+  [[ $fail -eq 0 ]] || { _ng "前置条件缺 ${fail} 项, 中止 (补齐后重跑)"; return 1; }
+
+  # 装 cann_lm + cann_lm_engine wheels 进 P1 venv (幂等: 已装则跳)
+  if _have cann_lm; then _skip "cann_lm (已装 → 复用)"; else
+    _step "build + install cann_lm / cann_lm_engine wheels"
+    bash "${REPO}/scripts/cann_lm_converter/build_wheel.sh"
+    bash "${REPO}/scripts/cann_lm_engine/build_wheel.sh"
+    local cw; cw="$(ls "${REPO}"/dist/cann_lm-*.whl 2>/dev/null | grep -v engine | head -1 || true)"
+    local ew; ew="$(ls "${REPO}"/dist/cann_lm_engine-*.whl 2>/dev/null | head -1 || true)"
+    [[ -f "$cw" && -f "$ew" ]] || { _ng "cann_lm whl 未产出 (${REPO}/dist/)"; return 1; }
+    "${CONVERTER_PYTHON}" -m pip install --force-reinstall --no-deps "$cw" "$ew"
+    _ok "cann_lm + cann_lm_engine installed"
+  fi
+  echo ""
+  _ok "converter+compile env 就绪: source scripts/cann_lm_compile/set_env.sh"
+}
+
+# ── third_party (C++ 三方库, 不需 env) ──────────────────────────────────────────
+cmd_third_party() {
+  _log "third_party build (自带 nlohmann_json + GTest + makeself)"
+  bash "${REPO}/scripts/cann_lm_compile/build_third_party.sh" "$@"
+  _ok "third_party → ${REPO}/output/third_party"
+}
+
+# ── cpp (②) ──────────────────────────────────────────────────────────────────
+cmd_cpp() {
+  _log "C++ build (.so + cann_lm_compile, 不含测试; delegate build_cpp.sh)"
+  src_env >/dev/null 2>&1
+  bash "${REPO}/scripts/cann_lm_compile/build_cpp.sh" "$@"
+  _ok "C++ build done (build/)"
+}
+
+# ── wheel (不需 env) ──────────────────────────────────────────────────────────
+cmd_wheel() {
+  _log "wheel build (P1 venv pip, 不需 CANN)"
+  bash "${REPO}/scripts/cann_lm_converter/build_wheel.sh"
+  bash "${REPO}/scripts/cann_lm_engine/build_wheel.sh"
+  _ok "wheels → ${REPO}/dist/"
+}
+
+# ── package (②) ───────────────────────────────────────────────────────────────
+cmd_package() {
+  _log "package .run (②, delegate package_run.sh)"
+  src_env >/dev/null 2>&1
+  bash "${REPO}/scripts/cann_lm_compile/package_run.sh" "$@"
+}
+
+# ── all ───────────────────────────────────────────────────────────────────────
+cmd_all() {
+  _log "all: deps → third_party → cpp → wheel"
+  cmd_deps
+  cmd_third_party
+  cmd_cpp
+  cmd_wheel
+}
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# pkg/ut (C9: 由根 build.sh --pkg/-u 迁入; engine host UT + converter + engine OHOS 打包)
+# ──────────────────────────────────────────────────────────────────────────
 need_cann() {
   if [[ -z "${ASCEND_HOME_PATH:-}" ]]; then
     _ng "ASCEND_HOME_PATH 未设。请先 source CANN 环境:"
@@ -88,89 +191,49 @@ build_converter() {
   _ok "converter whl: $whl ($(du -h "$whl" | cut -f1))"
 }
 
-# ── ③ engine (OHOS 交叉编译, 强制环境检查) ────────────────────────────────
-# 前置硬依赖(缺任一即逐项 ✗ 并中断 --pkg, 不打包/不跳过现有 deploy_ohos/):
-#   1) 编译器: SDK 自带 clang(llvm/bin/clang, 路线A) 或 本机 clang-18/clang++-18 (路线B) 二选一
-#   2) OHOS_SDK_NATIVE 含 sysroot
-#   3) java + binary-sign-tool.jar (tools/ 或 cann_lm/engine/ohos/)
-#   4) GTEST_TAR (googletest 源码 tarball, 默认 /mnt/workspace/gtest-1.14.0.tar.gz, 可 export 覆盖)
-#   5) cmake / make
+# ── ③ engine (OHOS 交叉编译) ───────────────────────
 build_engine() {
-  _log "[3/4] engine: OHOS 交叉编译 (build_package_ohos.sh, 强制环境检查)"
-  local miss=0
-
-  # 1) 编译器: 路线A(SDK clang) 或 路线B(clang-18) 任一满足即可
+  local sign_flag=""
+  if [[ "${NO_SIGN:-0}" == "1" ]]; then
+    sign_flag="--no-signed"
+    _log "[3/4] engine: OHOS 交叉编译 (build_package_ohos.sh --no-signed, 不签名)"
+  else
+    _log "[3/4] engine: OHOS 交叉编译 (build_package_ohos.sh)"
+  fi
+  # 交叉编译编译器: SDK 自带 clang (OHOS_SDK_NATIVE/llvm/bin/clang); OHOS SDK + java/jar;
+  local can_xcompile=1
   if [[ -x "${OHOS_SDK_NATIVE:-/nonexistent}/llvm/bin/clang" && -x "${OHOS_SDK_NATIVE:-/nonexistent}/llvm/bin/clang++" ]]; then
     _ok "编译器: SDK clang (${OHOS_SDK_NATIVE}/llvm/bin/clang)"
-  elif command -v clang-18 >/dev/null 2>&1 && command -v clang++-18 >/dev/null 2>&1; then
-    _ok "编译器: 本机 clang-18/clang++-18 (精简 SDK 路线B)"
   else
-    _ng "缺少编译器 (需二选一):"
-    _ng "  路线A: SDK 自带 clang (${OHOS_SDK_NATIVE:-<未设>}/llvm/bin/clang)"
-    _ng "  路线B: apt install -y --no-install-recommends clang-18 llvm-18"
-    miss=1
+    _warn "缺少 OHOS SDK clang (${OHOS_SDK_NATIVE:-<未设>}/llvm/bin/clang)"
+    _warn "  1. 从 https://developer.huawei.com/consumer/cn/download/command-line-tools-for-hmos 下载 Command Line Tools for Linux(ARM)"
+    _warn "  2. unzip commandline-tools-linux-arm64-*.zip -d /your/ohos-sdk-path"
+    _warn "  3. export OHOS_SDK_NATIVE=/your/ohos-sdk-path/command-line-tools/sdk/default/openharmony/native"
+    can_xcompile=0
+  fi
+  if [[ ! -d "${OHOS_SDK_NATIVE:-/nonexistent}/sysroot" ]]; then
+    _warn "OHOS_SDK_NATIVE 无效 (无 sysroot 子目录)"
+    _warn "  export OHOS_SDK_NATIVE=<解压路径>/command-line-tools/sdk/default/openharmony/native"
+    can_xcompile=0
   fi
 
-  # 2) OHOS SDK
-  if [[ -n "${OHOS_SDK_NATIVE:-}" && -d "${OHOS_SDK_NATIVE}/sysroot" ]]; then
-    _ok "OHOS_SDK_NATIVE: ${OHOS_SDK_NATIVE}"
+  if [[ $can_xcompile -eq 1 ]]; then
+    if bash "${REPO}/scripts/cann_lm_engine/build_package_ohos.sh" $sign_flag; then
+      _ok "engine 交叉编译 + deploy_ohos/ 更新完成"
+    else
+      _ng "engine 交叉编译失败, 终止 --pkg"
+      return 1
+    fi
   else
-    _ng "OHOS_SDK_NATIVE 未设或无效 (无 sysroot 子目录)"
-    _ng "  设置: export OHOS_SDK_NATIVE=<path>/ohos_native/native"
-    miss=1
-  fi
-
-  # 3) java + 签名 jar
-  if ! command -v java >/dev/null 2>&1; then
-    _ng "缺少 java (签名步骤需要)"
-    miss=1
-  else
-    _ok "java: $(command -v java)"
-  fi
-  if [[ -f "$REPO/tools/binary-sign-tool.jar" || -f "$REPO/cann_lm/engine/ohos/binary-sign-tool.jar" ]]; then
-    _ok "binary-sign-tool.jar: 已就绪 (tools/ 或 cann_lm/engine/ohos/)"
-  else
-    _ng "缺少 binary-sign-tool.jar (应放 tools/ 或 cann_lm/engine/ohos/, 见 tools/README.md)"
-    miss=1
-  fi
-
-  # 4) GTest 源码 tarball
-  GTEST_TAR="${GTEST_TAR:-/mnt/workspace/gtest-1.14.0.tar.gz}"
-  if [[ -f "$GTEST_TAR" ]]; then
-    _ok "GTEST_TAR: $GTEST_TAR"
-  else
-    _ng "缺少 GTest 源码 tarball: $GTEST_TAR"
-    _ng "  覆盖: export GTEST_TAR=<path>/googletest-1.14.0.tar.gz"
-    miss=1
-  fi
-
-  # 5) cmake / make
-  if ! command -v cmake >/dev/null 2>&1 || ! command -v make >/dev/null 2>&1; then
-    _ng "缺少 cmake 或 make (构建器需要)"
-    miss=1
-  else
-    _ok "cmake/make: 已就绪"
-  fi
-
-  if [[ $miss -ne 0 ]]; then
-    _ng "engine 交叉编译前置不满足 (见上); 已中断 --pkg, 不会打包现有 deploy_ohos/"
     return 1
   fi
 
-  _ok "engine 交叉编译前置就绪 (SDK clang 或 clang-18 + OHOS SDK + 签名 + GTest)"
-  GTEST_TAR="$GTEST_TAR" bash "${REPO}/scripts/cann_lm_engine/build_package_ohos.sh" \
-    || { _ng "engine 交叉编译/打包失败"; return 1; }
-
-  if [[ ! -f "$REPO/deploy_ohos/libcann_lm_engine.so" ]]; then
-    _ng "交叉编译完成后 deploy_ohos/ 仍无 libcann_lm_engine.so"
-    return 1
-  fi
-  _ok "engine 交叉编译 + 打包完成: deploy_ohos/ (libcann_lm_engine.so + UT/bbit/smoke)"
+  _ok "engine 部署产物就绪: deploy_ohos/ (libcann_lm_engine.so + UT/bbit/smoke)"
 }
 
-# ── ④ 打包 (compile_converter.run + engine_ohos.run) ──────────────────────
+# ── ④ 打包 (compile_converter.run + engine whl) ──────────────────────────
 package_all() {
-  _log "[4/4] 打包 .run (compile_converter + engine_ohos)"
+  _log "[4/4] 打包 (compile_converter.run + engine whl)"
 
   # 4a. compile_converter.run (compile C++ + converter whl)
   if [[ -f "$REPO/build/cann_lm_compile" && -f "$REPO/build/libtorch_delegate_backend.so" ]] \
@@ -181,24 +244,29 @@ package_all() {
     _warn "compile/converter 产物不全, 跳过 compile_converter.run (先 --pkg 完整构建)"
   fi
 
-  # 4b. engine_ohos.run (engine deploy_ohos/)
-  if [[ -f "$REPO/deploy_ohos/libcann_lm_engine.so" ]]; then
-    _step "package_run_ohos.sh → cann_lm_engine_ohos-${VERSION}-${ARCH}.run"
-    bash "${REPO}/scripts/cann_lm_engine/package_run_ohos.sh" \
-      || { _ng "engine_ohos.run 打包失败"; return 1; }
+  # 4b. engine whl（已由 build_engine 阶段产出到 dist/，无需额外打包）
+  local engine_whl
+  engine_whl="$(ls "$DIST"/cann_lm_engine-*.whl 2>/dev/null | head -1 || true)"
+  if [[ -n "$engine_whl" ]]; then
+    _ok "engine whl: $(basename "$engine_whl") ($(du -h "$engine_whl" | cut -f1))"
   else
-    _ng "deploy_ohos/ 无 libcann_lm_engine.so, engine_ohos.run 打包失败 (engine 阶段应已中断)"
-    return 1
+    _warn "engine whl 未产出 (dist/ 无 cann_lm_engine-*.whl)"
   fi
 
   _log "打包结果 (dist/)"
-  ls -lh "$DIST"/*.run 2>/dev/null | awk '{print "  "$5, $9}' || _warn "dist/ 无 .run 产物"
+  ls -lh "$DIST"/*.whl "$DIST"/*.run 2>/dev/null | awk '{print "  "$5, $9}' || _warn "dist/ 无产物"
 }
 
 # ── --pkg: 编译三部分 + 打包 ───────────────────────────────────────────────
 cmd_pkg() {
-  _log "=== CANN-LM 全量构建 + 打包 (--pkg) ==="
-  need_third_party || return 1
+  local args="$*"
+  for a in "$@"; do
+    case "$a" in
+      --no-signed) export NO_SIGN=1; shift;;
+    esac
+  done
+  _log "=== CANN-LM 全量构建 + 打包 (--pkg${NO_SIGN:+ --no-signed}) ==="
+  cmd_third_party || return 1
   build_compile || return 1
   build_converter || return 1
   build_engine || return 1
@@ -206,124 +274,63 @@ cmd_pkg() {
   _log "=== --pkg 完成 ==="
 }
 
-# ── UT 运行环境: 编译 stub .so + LD_LIBRARY_PATH (触碰 NDK 的 UT 需要) ────
-ensure_stub_ndk() {
-  # tests/stub_ndk 提供 libneural_network_core.so + libhiai_foundation.so,
-  # NDKProxy 裸名 dlopen; 需放在 UT exe 目录并用 LD_LIBRARY_PATH 指到。
-  # 注: 项目 CMake 内建 stub_ndk 有路径 bug (../../engine 少一层 cann_lm), 此处直接 g++ 编译。
-  local exe_dir="$1"
-  local ext="$REPO/cann_lm/engine/external_cann"
-  local compat="$REPO/cann_lm/engine/hiai_acl/src/ohos_compat.h"
-  if [[ ! -f "$exe_dir/libneural_network_core.so" ]]; then
-    g++ -std=c++17 -fPIC -shared -I"$ext" -include"$compat" \
-        "$REPO/tests/stub_ndk/stub_neural_network_core.cpp" \
-        -o "$exe_dir/libneural_network_core.so" -lpthread
-  fi
-  if [[ ! -f "$exe_dir/libhiai_foundation.so" ]]; then
-    g++ -std=c++17 -fPIC -shared -I"$ext" -include"$compat" \
-        "$REPO/tests/stub_ndk/stub_hiai_foundation.cpp" \
-        -o "$exe_dir/libhiai_foundation.so"
-  fi
-  _ok "stub NDK .so → $exe_dir/"
-}
+# ── --smoke: 从 examples/test_engine/ 独立构建 smoke + bbit（OHOS clang）──
+cmd_smoke() {
+  _log "=== cann-device-lm smoke 构建 (--smoke) ==="
+  need_cann || return 1
 
-# ── engine host C++ UT ─────────────────────────────────────────────────────
-run_engine_ut() {
-  _log "[UT/1] engine host C++ UT (GTest)"
-  local build_dir="${UT_BUILD_DIR:-/tmp/llm_ut_host/engine}"
-  _step "cmake configure (BUILD_ENGINE=ON, BUILD_CONVERTER=OFF)"
-  cmake -S "$REPO" -B "$build_dir" \
-      -DBUILD_ENGINE=ON -DBUILD_CONVERTER=OFF \
-      -DCMAKE_BUILD_TYPE=Debug \
-      -DGTest_DIR="${THIRD_PARTY}/gtest/lib/cmake/GTest" \
-      -Dnlohmann_json_DIR="${THIRD_PARTY}/json/share/cmake/nlohmann_json" \
-      >/dev/null
-  _step "cmake build (engine + UT 目标)"
-  cmake --build "$build_dir" -j"$(nproc)" >/dev/null
-  local exe_dir="$build_dir/cann_lm/engine"
-  [[ -d "$exe_dir" ]] || exe_dir="$build_dir"
-  ensure_stub_ndk "$exe_dir"
-  export LD_LIBRARY_PATH="$exe_dir:${LD_LIBRARY_PATH:-}"
-
-  _step "运行 UT 二进制 (含 stub NDK)"
-  local fail=0 rc=0
-  local -a bins
-  mapfile -t bins < <(find "$exe_dir" -maxdepth 1 -type f -name 'ut_*' -executable 2>/dev/null | sort)
-  [[ -f "$exe_dir/model_executor_ut" ]] && bins+=("$exe_dir/model_executor_ut")
-  if [[ ${#bins[@]} -eq 0 ]]; then _ng "engine UT 二进制未找到 ($exe_dir)"; return 1; fi
-  for b in "${bins[@]}"; do
-    printf '  == %s\n' "$(basename "$b")"
-    timeout 300 "$b" --gtest_brief=1 >/dev/null 2>&1; rc=$?
-    if [[ $rc -eq 0 ]]; then
-      _ok "  $(basename "$b"): PASS"
-    else
-      _ng "  $(basename "$b"): FAIL (exit=$rc)"
-      fail=1
-    fi
-  done
-
-  # bbit 黑盒: 只跑 --check (默认完整 flow 需设备模型文件, 本机无模型必然非0)
-  _step "bbit --check (黑盒自检)"
-  timeout 300 "$exe_dir/bbit" --check >/dev/null 2>&1; rc=$?
-  if [[ $rc -eq 0 ]]; then
-    _ok "bbit --check: PASS"
-  else
-    _ng "bbit --check: FAIL (exit=$rc)"; fail=1
-  fi
-
-  if [[ $fail -eq 0 ]]; then
-    _ok "engine host UT 全部通过"
-  else
-    _warn "engine host UT 有失败 (见上; 已知 model_executor_ut 3 个 TensorManager/KvCachePool 尺寸断言与 NDK 无关)"
+  # 前置: engine 已编译（build_ohos/ 有 libcann_lm_engine.so）
+  local engine_lib="$REPO/build_ohos/libcann_lm_engine.so"
+  if [[ ! -f "$engine_lib" ]]; then
+    _ng "build_ohos/libcann_lm_engine.so 不存在 (先 bash build.sh --pkg)"
     return 1
   fi
-}
+  _ok "engine .so: $engine_lib"
 
-# ── converter C++ UT (tests/c++/epair_archive) ─────────────────────────────
-run_converter_cpp_ut() {
-  _log "[UT/2] converter C++ UT (tests/c++/epair_archive, 需 CANN)"
-  need_cann || return 1
-  local build_dir="${UT_BUILD_DIR:-/tmp/llm_ut_host}/converter"
-  _step "cmake configure (BUILD_ENGINE=OFF, BUILD_CONVERTER=ON)"
-  cmake -S "$REPO" -B "$build_dir" \
-      -DBUILD_ENGINE=OFF -DBUILD_CONVERTER=ON \
-      -DCMAKE_BUILD_TYPE=Debug \
-      -DGTest_DIR="${THIRD_PARTY}/gtest/lib/cmake/GTest" \
-      -Dnlohmann_json_DIR="${THIRD_PARTY}/json/share/cmake/nlohmann_json" \
-      >/dev/null
-  _step "cmake build (test_* + fixtures)"
-  cmake --build "$build_dir" -j"$(nproc)" >/dev/null
-  _step "ctest"
-  export LD_LIBRARY_PATH="${ASCEND_HOME_PATH}/lib64:${LD_LIBRARY_PATH:-}"
-  ctest --test-dir "$build_dir" --output-on-failure
-}
+  # 前置: OHOS SDK
+  if [[ ! -x "${OHOS_SDK_NATIVE:-/nonexistent}/llvm/bin/clang" ]]; then
+    _ng "缺少 OHOS SDK clang (${OHOS_SDK_NATIVE:-<未设>}/llvm/bin/clang)"
+    _ng "  export OHOS_SDK_NATIVE=<path>/command-line-tools/sdk/default/openharmony/native"
+    return 1
+  fi
+  _ok "编译器: SDK clang (${OHOS_SDK_NATIVE}/llvm/bin/clang)"
 
-# ── Python UT ──────────────────────────────────────────────────────────────
-run_python_ut() {
-  _log "[UT/3] Python UT (pytest)"
-  local fail=0
-  for suite in tests/py/converter tests/py/llm_models tests/python; do
-    if [[ -d "$REPO/$suite" ]]; then
-      _step "pytest $suite"
-      if ( cd "$REPO" && timeout 600 python3 -m pytest "$suite" -q ); then
-        _ok "$suite: PASS"
-      else
-        _ng "$suite: FAIL"; fail=1
+  local toolchain="$REPO/cann_lm/engine/ohos/ohos.toolchain.cmake"
+  local engine_inc="$REPO/cann_lm/engine"
+  local smoke_build="$REPO/build_smoke"
+
+  _step "cmake configure (examples/test_engine/)"
+  cmake -S "$REPO/examples/test_engine" -B "$smoke_build" \
+      -DCMAKE_TOOLCHAIN_FILE="$toolchain" \
+      -DOHOS_SDK_NATIVE="$OHOS_SDK_NATIVE" \
+      -DCANN_LM_ENGINE_LIB="$engine_lib" \
+      -DCANN_LM_ENGINE_INCLUDE="$engine_inc" \
+      -DCMAKE_BUILD_TYPE=Release 2>&1 | grep -vE "warning|WARNING" | tail -5
+
+  _step "cmake build (api_smoke c_api_smoke golden_verify bbit)"
+  cmake --build "$smoke_build" -j"$(nproc)" 2>&1 | grep -E "Built|error|Error" | tail -10
+
+  # 签名（如果有 jar）
+  local jar="$REPO/tools/binary-sign-tool.jar"
+  if [[ -f "$jar" ]] && command -v java >/dev/null 2>&1; then
+    _step "sign smoke binaries"
+    for f in api_smoke c_api_smoke golden_verify bbit; do
+      if [[ -f "$smoke_build/$f" ]]; then
+        java -jar "$jar" -selfSign 1 -i "$smoke_build/$f" 2>/dev/null && _ok "$f signed" || _warn "$f 签名失败（不影响构建）"
       fi
-    fi
-  done
-  return $fail
+    done
+  fi
+
+  _log "=== --smoke 完成 ==="
+  echo "  产物: $smoke_build/"
+  ls -lh "$smoke_build"/api_smoke "$smoke_build"/c_api_smoke "$smoke_build"/bbit 2>/dev/null | awk '{print "  "$5, $9}'
 }
 
 # ── -u: 编译含 UT 的部分并运行 ─────────────────────────────────────────────
 cmd_ut() {
-  _log "=== CANN-LM UT 编译 + 运行 (-u) ==="
-  need_third_party || return 1
-  local fail=0
-  run_engine_ut      || fail=1
-  run_converter_cpp_ut || fail=1
-  run_python_ut      || fail=1
-  if [[ $fail -eq 0 ]]; then
+  _log "=== cann-device-lm UT 编译 + 运行 (-u) ==="
+  cmd_third_party || return 1
+  if bash "${REPO}/scripts/build_test.sh"; then
     _log "=== -u 全部通过 ==="
   else
     _log "=== -u 有失败 (见上) ==="
@@ -334,30 +341,42 @@ cmd_ut() {
 # ── usage ──────────────────────────────────────────────────────────────────
 usage() {
   cat <<'EOF'
-build.sh — CANN-LM 全量构建/打包/UT 入口 (仓库根)
+build.sh — cann-device-lm 顶层 end-to-end 构建入口 (仓库根, 自包含完整逻辑)
 
-用法:
-  bash build.sh --pkg   编译三部分并打包成两个 .run 分发物 (dist/):
-                          - cann_lm_compile_converter-<ver>-<arch>.run  (compile C++ + converter whl)
-                          - cann_lm_engine_ohos-<ver>-<arch>.run        (engine OHOS 部署包)
-  bash build.sh -u      编译含 UT 的部分并运行:
-                          - engine host C++ UT (GTest, stub NDK, 13 目标 + bbit)
-                          - converter C++ UT   (tests/c++/epair_archive, 需 CANN)
-                          - Python UT          (tests/py/converter + llm_models + tests/python)
-  bash build.sh -h      帮助
+subcommand:
+  check         校验基底 (CANN / P1 venv / torchair / torch_delegate / cann_lm / third_party), 不构建
+  deps          装 cann_lm/engine wheels 进 P1 venv (torchair+torch-delegate 为前置条件, 见 docs/build_guide.md)
+  third_party   自带 C++ 三方库 (nlohmann_json + GTest + makeself) → output/third_party
+  cpp [flags]   delegate build_cpp.sh (.so + cann_lm_compile, 不含测试)
+  wheel         delegate converter + engine build_wheel.sh (P1 venv, 不需 CANN)
+  package       delegate package_run.sh (打 .run 自解压包)
+  all           deps → third_party → cpp → wheel
+  pkg|--pkg     全量构建 + 打包: compile C++ / converter whl / engine OHOS → whl + .run (dist/)
+  ut|-u         编译含 UT 的部分并运行: C++ UT (engine+converter ASAN) / Python UT
+  smoke|--smoke  从 examples/test_engine/ 独立构建 smoke + bbit（OHOS clang，需先 --pkg）
+  --no-signed   与 --pkg 连用: engine .so 不签名 (跳过 java/jar 签名步骤)
 
-前置:
-  - source CANN set_env.sh (设 ASCEND_HOME_PATH)   [--pkg 的 compile / -u 的 converter C++ UT 需要]
-  - bash scripts/build.sh third_party              [C++ 三方库 json/gtest/makeself]
-  - engine 交叉编译前置硬依赖(缺任一中断): SDK clang + OHOS SDK(sysroot) + java + binary-sign-tool.jar + GTest tarball(GTEST_TAR)
+env 映射: check·deps·cpp·tests·package→②cann / ①export 仅供日常 source 跑 converter / wheel·third_party 无 env
+  pkg/ut: third_party(json/gtest/makeself) 必需; --pkg 的 compile / -u 的 tests 需先 source CANN set_env.sh;
+          engine OHOS 交叉编译需 OHOS SDK clang, 缺则终止
+路径默认值在 scripts/cann_lm_compile/build.conf (TORCHAIR_ROOT / TORCH_DELEGATE_HOME 等, 可被环境变量覆盖)
+OM 编译 (epair→OM) 属测试/示例, 不在构建流程: 直接跑 examples/test_converter/export_llm_model/run_compile.sh
 
-环境覆盖: VERSION / ARCH / THIRD_PARTY / BUILD_DIR / UT_BUILD_DIR / PIP
+用法: bash build.sh <subcommand> [args]    # 仓库根入口 (CI 直接用); bash scripts/build.sh 等价 (thin 透传到此)
 EOF
 }
 
 case "${1:-help}" in
-  --pkg)      shift; cmd_pkg;;
-  -u)         shift; cmd_ut;;
+  check)        shift; cmd_check "$@";;
+  deps)         shift; cmd_deps "$@";;
+  third_party)  shift; cmd_third_party "$@";;
+  cpp)          shift; cmd_cpp "$@";;
+  wheel)        shift; cmd_wheel "$@";;
+  package)      shift; cmd_package "$@";;
+  all)          shift; cmd_all "$@";;
+  pkg|--pkg)    shift; cmd_pkg "$@";;
+  ut|-u)        shift; cmd_ut "$@";;
+  smoke|--smoke) shift; cmd_smoke "$@";;
   -h|--help|help) usage;;
-  *)          echo "unknown arg: ${1:-}" >&2; usage; exit 1;;
+  *) echo "unknown subcommand: $1" >&2; usage; exit 1;;
 esac

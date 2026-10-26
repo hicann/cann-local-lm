@@ -48,7 +48,7 @@ fi
 # ── 2. source compile env ──
 echo ""
 echo "=== [2/3] source set_env.sh ==="
-source "$REPO/scripts/set_env.sh"
+source "$REPO/scripts/cann_lm_compile/set_env.sh"
 
 # ── 3. 构建 ──
 CHECK_ONLY=0

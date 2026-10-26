@@ -12,7 +12,7 @@
 #define HIAI_ACL_DATA_H
 
 #include <cstdint>
-#include <cstddef>  // size_t (aclmdlIODims) — C3
+#include <cstddef> // size_t (aclmdlIODims) — C3
 #include <vector>
 
 struct aclDataBuffer {
@@ -34,4 +34,4 @@ struct aclmdlDataset {
 // C3: aclmdlIODims / aclmdlIODimsRange / ACL_MAX_DIM_CNT moved to vendored
 // external_acl/acl/acl_mdl.h (PUBLIC) so the backend sees them too.
 
-#endif  // HIAI_ACL_DATA_H
+#endif // HIAI_ACL_DATA_H

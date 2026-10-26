@@ -21,6 +21,7 @@ custom/npu_scatter_nd_update.py so behavior is controlled in the torch_npu-absen
 Kirinx90 走 KIRIN_CONVERTER_PATCHES 机制 (见 _kirin_converter_patches.py 第 4 条: 直发
 ScatterNdUpdate 跳过 TensorMove; kirin 无 TensorMove kernel, 见 kirin_compile_workarounds.md B2).
 """
+
 from typing import Any
 
 
@@ -33,6 +34,7 @@ def convert_scatter_nd_update(
     """npu_scatter_nd_update (out-of-place) -> ge.TensorMove + ge.ScatterNdUpdate."""
     del meta_outputs
     from torchair._ge_concrete_graph import ge_apis as ge
+
     copy = ge.TensorMove(self)
     return ge.ScatterNdUpdate(copy, indices, updates)
 
@@ -47,6 +49,7 @@ def convert_scatter_nd_update_(
     del meta_outputs
     from torchair._ge_concrete_graph import ge_apis as ge
     from torchair.ge._ge_graph import dont_prune_me
+
     op = ge.ScatterNdUpdate(self, indices, updates)
     dont_prune_me(op)
     return op

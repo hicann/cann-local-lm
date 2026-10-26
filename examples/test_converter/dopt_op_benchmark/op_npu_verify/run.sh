@@ -14,16 +14,16 @@ CONV_PY="${CONV_PY:-${PROJECT_ROOT}/deps/torch-delegate/.venv/bin/python}"
 NPU_PY="${NPU_PY:-/opt/buildtools/python-3.12.9/bin/python3}"
 
 echo "=== [1/4] export epair (converter env ①) ==="
-source "${PROJECT_ROOT}/scripts/set_env_export.sh"
+source "${PROJECT_ROOT}/scripts/cann_lm_compile/set_env_export.sh"
 "${CONV_PY}" "${SCRIPT_DIR}/build_epair.py" --op-name "${OP_NAME}" \
     --quant-dir "${DOPT_QUANT_DIR:?set DOPT_QUANT_DIR}" --output-dir "${EPAIR_DIR}" --target-soc "${TARGET_SOC}"
 
 echo "=== [2/4] compile OM (CANN env ②) ==="
-source "${PROJECT_ROOT}/scripts/set_env_cann.sh"
+source "${PROJECT_ROOT}/scripts/cann_lm_compile/set_env_cann.sh"
 bash "${SCRIPT_DIR}/compile_om.sh" "${EPAIR_DIR}"
 
 echo "=== [3/4] run NPU (env ③, system python + torch_npu) ==="
-source "${PROJECT_ROOT}/scripts/set_env_cann.sh" --npu
+source "${PROJECT_ROOT}/scripts/cann_lm_compile/set_env_cann.sh" --npu
 "${NPU_PY}" "${SCRIPT_DIR}/run_npu.py" --om "${EPAIR_DIR}/op_model.om" --op-name "${OP_NAME}"
 
 echo "=== [4/4] compare (CPU, 余弦) ==="

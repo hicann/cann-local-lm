@@ -35,24 +35,12 @@ constexpr Status DATA_OVERFLOW = 12;
 constexpr Status CONNECT_EXCEPTION = 19;
 
 // ── 基础数据类型（原 util/base_types.h）──
-enum class DataType {
-    UINT8,
-    FLOAT32,
-    FLOAT16,
-    INT32,
-    INT8,
-    INT16,
-    BOOL,
-    INT64,
-    UINT32,
-    DOUBLE,
-    RESERVED
-};
+enum class DataType { UINT8, FLOAT32, FLOAT16, INT32, INT8, INT16, BOOL, INT64, UINT32, DOUBLE, RESERVED };
 
 enum class Format {
     NCHW = 0, /* NCHW */
-    NHWC, /* NHWC */
-    ND, /* Nd Tensor */
+    NHWC,     /* NHWC */
+    ND,       /* Nd Tensor */
     RESERVED
 };
 
@@ -69,7 +57,7 @@ struct NDTensorDesc {
     std::vector<int32_t> dims;
     DataType dataType = DataType::FLOAT32;
     Format format = Format::NCHW;
-    std::string tensorName = "";    // 该字段不为空字符串时，表示获取tensorName成功
+    std::string tensorName = ""; // 该字段不为空字符串时，表示获取tensorName成功
 };
 
 // ── 模型管理选项（原 model_manager/model_manager_types.h）──
@@ -101,7 +89,7 @@ struct ModelInitOptions {
 enum class MemoryMode {
     ALL = 0,
     WEIGHT_ALL = 1,
-    WEIGHT_RES = 2,     // resident只恢复常驻内存
+    WEIGHT_RES = 2, // resident只恢复常驻内存
     FEATURE_MAP = 3,
 };
 
@@ -124,20 +112,11 @@ inline std::string Context::GetValue(const std::string& key) const
     return it != paras_.end() ? it->second : "";
 }
 
-inline void Context::SetValue(const std::string& key, const std::string& value)
-{
-    paras_[key] = value;
-}
+inline void Context::SetValue(const std::string& key, const std::string& value) { paras_[key] = value; }
 
-inline void Context::RemoveValue(const std::string& key)
-{
-    paras_.erase(key);
-}
+inline void Context::RemoveValue(const std::string& key) { paras_.erase(key); }
 
-inline const std::map<std::string, std::string>& Context::GetContent() const
-{
-    return paras_;
-}
+inline const std::map<std::string, std::string>& Context::GetContent() const { return paras_; }
 
 // ── NDK 执行选项 C 类型（原 c/hcl/hiai_execute_option_types.h）──
 extern "C" {
@@ -196,14 +175,14 @@ const int MODEL_FILE_RESERVED_LENGTH = 52;
  */
 enum ModelEncryptType {
     UNENCRYPTED, // 不加密
-    ENCRYPTED // 加密
+    ENCRYPTED    // 加密
 };
 
 /*
  * @brief 校验签名
  */
 enum ModelCheckType {
-    CHECK, // 校验签名
+    CHECK,  // 校验签名
     UNCHECK // 不校验
 };
 
@@ -228,17 +207,17 @@ constexpr uint32_t MODEL_VERSION = 0x10000000; /* < 模型版本 1.0 */
  * @brief 模型文件文件头定义
  */
 struct ModelFileHeader {
-    uint32_t magic = MODEL_FILE_MAGIC_NUM; /* 魔数DOMI */
-    uint32_t headsize = MODEL_FILE_HEAD_LEN; /* 模型头长度，固定256 */
-    uint32_t version = MODEL_VERSION; /* *< 版本1.0 */
+    uint32_t magic = MODEL_FILE_MAGIC_NUM;              /* 魔数DOMI */
+    uint32_t headsize = MODEL_FILE_HEAD_LEN;            /* 模型头长度，固定256 */
+    uint32_t version = MODEL_VERSION;                   /* *< 版本1.0 */
     uint8_t checksum[MODEL_FILE_CHECKSUM_LENGTH] = {0}; /* 签名 */
-    uint32_t length = 0; /* 密文长度, 非加密模型为明文长度 */
-    uint8_t isEncrypt = ModelEncryptType::UNENCRYPTED; /* 是否加密 0:不加密，1:加密 */
-    uint8_t isChecksum = ModelCheckType::CHECK; /* *< 是否检查checksum */
+    uint32_t length = 0;                                /* 密文长度, 非加密模型为明文长度 */
+    uint8_t isEncrypt = ModelEncryptType::UNENCRYPTED;  /* 是否加密 0:不加密，1:加密 */
+    uint8_t isChecksum = ModelCheckType::CHECK;         /* *< 是否检查checksum */
     uint8_t modeltype = 0; /* 0：IR模型 1：OM标准模型 2: OM Tiny模型 3:异构分段编译模型 */
-    uint8_t genmode = 0; /*  0：离线生成 1：在线生成 */
-    uint8_t name[MODEL_NAME_LENGTH] = {0}; /* 模型名字32长度 */
-    uint32_t ops = 0; /* 算力，单位Kops */
+    uint8_t genmode = 0;   /*  0：离线生成 1：在线生成 */
+    uint8_t name[MODEL_NAME_LENGTH] = {0};                 /* 模型名字32长度 */
+    uint32_t ops = 0;                                      /* 算力，单位Kops */
     uint8_t userdefineinfo[USER_DEFINE_INFO_LENGTH] = {0}; /* 用户自定义信息 32长度 */
     uint32_t omIrVersion = 0;
     uint8_t platformVersion[PLATFORM_VERSION_LEN] = {0};
@@ -251,18 +230,18 @@ struct ModelFileHeader {
 };
 
 enum ModelType {
-    IR_GRAPH_MODEL = 0, /* 老模型 标准OM模型（异构前） */
-    OM_STANDARD_MODEL, /* 之前没使用地方 */
-    IGS_MODEL, /* 异构前的TINY模型 */
+    IR_GRAPH_MODEL = 0,      /* 老模型 标准OM模型（异构前） */
+    OM_STANDARD_MODEL,       /* 之前没使用地方 */
+    IGS_MODEL,               /* 异构前的TINY模型 */
     STANDARD_IR_GRAPH_MODEL, /* 异构之后的标准IR模型 */
-    HCS_PARTITION_MODEL, /* 异构之后的分段D模型 */
-    ISPNN_MODEL, /* ISPNN模型 */
+    HCS_PARTITION_MODEL,     /* 异构之后的分段D模型 */
+    ISPNN_MODEL,             /* ISPNN模型 */
     SPECIAL_3RD_MODEL,
     IR_API_GRAPH_MODEL, /* IR API构造经序列化后的模型, 无模型头 */
-    UTINY_MODEL, /* Pha模型，枚举值修改后，需要修改sensorhub侧代码 */
+    UTINY_MODEL,        /* Pha模型，枚举值修改后，需要修改sensorhub侧代码 */
     MULTI_SHAPE_MODEL,
-    ENUM_SHAPE_MODEL, /* 枚举Shape模型 */
-    SINGLE_IP_MODEL, /* 单IP模型（SCL简化格式） */
+    ENUM_SHAPE_MODEL,            /* 枚举Shape模型 */
+    SINGLE_IP_MODEL,             /* 单IP模型（SCL简化格式） */
     MULTI_SHAPE_SINGLE_IP_MODEL, /* 枚举Shape模型（SCL简化格式） */
 };
 

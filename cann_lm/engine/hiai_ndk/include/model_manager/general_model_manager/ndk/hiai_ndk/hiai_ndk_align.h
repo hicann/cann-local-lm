@@ -36,6 +36,6 @@ public:
     static HIAI_Format ConvertNNFormatToHIAI(OH_NN_Format format);
     static OH_NN_Format ConvertHIAIFormatToNN(HIAI_Format format);
 };
-}
+} // namespace hiai
 
 #endif

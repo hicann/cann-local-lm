@@ -20,10 +20,7 @@ public:
 
     size_t GetSize() const override;
 
-    const NDTensorDesc& GetTensorDesc() const override
-    {
-        return desc_;
-    }
+    const NDTensorDesc& GetTensorDesc() const override { return desc_; }
 
     void SetCacheStatus(uint8_t status) override;
 
@@ -40,7 +37,7 @@ private:
 
 private:
     NDTensorDesc desc_;
-    NN_Tensor* nnTensor_ {nullptr};
+    NN_Tensor* nnTensor_{nullptr};
 };
 } // namespace hiai
 

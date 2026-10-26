@@ -40,9 +40,9 @@ bool HMS_HiAIOptions_GetAsyncModeEnable(const OH_NNCompilation* compilation);
 
 typedef struct HiAI_NativeHandle HiAI_NativeHandle;
 
-typedef void  (*onAllocate) (void* userData, uint32_t requiredSize, HiAI_NativeHandle* handles[], size_t* handlesSize);
+typedef void (*onAllocate)(void* userData, uint32_t requiredSize, HiAI_NativeHandle* handles[], size_t* handlesSize);
 
-typedef void (*onFree) (void* userData, HiAI_NativeHandle* handles[], size_t handlesSize);
+typedef void (*onFree)(void* userData, HiAI_NativeHandle* handles[], size_t handlesSize);
 
 /**
  * @brief Creates HiAI_NativeHandle with the specified file descriptor, size, and offset.
@@ -114,7 +114,7 @@ OH_NN_ReturnCode HMS_HiAIOptions_SetUserData(OH_NNCompilation* compilation, void
 OH_NN_ReturnCode HMS_HiAIOptions_SetCustomOP(OH_NNCompilation* compilation, const char* customPath);
 
 /**
-* @brief Define the Model Cache Strategy
+ * @brief Define the Model Cache Strategy
  * @since 4.1.0(11)
  */
 typedef enum {
@@ -137,7 +137,8 @@ typedef enum {
  * @since 4.1.0(11)
  */
 
-OH_NN_ReturnCode HMS_HiAIOptions_SetModelCacheStrategy(OH_NNCompilation* compilation, HiAI_ModelCacheStrategy modelCacheStrategy);
+OH_NN_ReturnCode HMS_HiAIOptions_SetModelCacheStrategy(OH_NNCompilation* compilation,
+                                                       HiAI_ModelCacheStrategy modelCacheStrategy);
 
 /**
  * @brief Get the Model Cache Strategy.

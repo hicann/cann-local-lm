@@ -45,9 +45,14 @@ class QuantLinear(nn.Module):
         act_quant: must be True (W4A8 s8s4). False (W4A16) is not supported by this op.
     """
 
-    def __init__(self, weight_q: torch.Tensor, weight_scale: torch.Tensor,
-                 group_size: int, bias: torch.Tensor | None = None,
-                 act_quant: bool = True):
+    def __init__(
+        self,
+        weight_q: torch.Tensor,
+        weight_scale: torch.Tensor,
+        group_size: int,
+        bias: torch.Tensor | None = None,
+        act_quant: bool = True,
+    ):
         super().__init__()
         if not act_quant:
             raise NotImplementedError(
@@ -56,22 +61,34 @@ class QuantLinear(nn.Module):
             )
         self.group_size = group_size
         self.act_quant = act_quant
-        self.register_buffer("weight_q", weight_q)  # int8 nibble [k//2,n] (Ascend910) 或 int32 int4pack [k,n//8] (KirinX90, packed-N)
-        self.register_buffer("weight_scale", weight_scale.to(torch.float32))  # [k//g, n]; serialized as int64 bit-pattern, see quant_design.md
+        self.register_buffer(
+            "weight_q", weight_q
+        )  # int8 nibble [k//2,n] (Ascend910) 或 int32 int4pack [k,n//8] (KirinX90, packed-N)
+        self.register_buffer(
+            "weight_scale", weight_scale.to(torch.float32)
+        )  # [k//g, n]; serialized as int64 bit-pattern, see quant_design.md
         if bias is not None:
             self.register_buffer("bias", bias.to(weight_scale.dtype))
         else:
             self.bias = None
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x_q, x_scale = torch.ops.cann_lm.dynamic_quant(x)  # int8 [..., m, k] + per-token fp32 [..., m]
+        x_q, x_scale = torch.ops.cann_lm.dynamic_quant(
+            x
+        )  # int8 [..., m, k] + per-token fp32 [..., m]
         out = torch.ops.cann_lm.quant_matmul(
-            x_q, self.weight_q, self.weight_scale,
-            pertoken_scale=x_scale,               # per-token act scale from npu_dynamic_quant
-            bias=self.bias,                       # None when source Linear has no bias; GE converter injects dummy zeros[N]
-            group_sizes=[1, 1, self.group_size],  # V4 3-element [m,n,k]; K-group at index [2]
+            x_q,
+            self.weight_q,
+            self.weight_scale,
+            pertoken_scale=x_scale,  # per-token act scale from npu_dynamic_quant
+            bias=self.bias,  # None when source Linear has no bias; GE converter injects dummy zeros[N]
+            group_sizes=[
+                1,
+                1,
+                self.group_size,
+            ],  # V4 3-element [m,n,k]; K-group at index [2]
             output_dtype=_OUT_DTYPE_CODE.get(x.dtype, 5),
             transpose_x1=False,
-            transpose_x2=False,                   # x2 pre-transposed to [k//2, n] in swap; meta takes N=x2.size(-1)
+            transpose_x2=False,  # x2 pre-transposed to [k//2, n] in swap; meta takes N=x2.size(-1)
         )
         return out

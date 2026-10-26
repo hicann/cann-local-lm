@@ -22,13 +22,15 @@ from verify_output import VerificationError, verify_output
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-PROJECT_ROOT = SCRIPT_DIR.parents[2]
-QUANT_DIR = PROJECT_ROOT / "cann_lm" / "converter" / "quant"
 TEMPLATE_PATH = SCRIPT_DIR / "config.yaml.template"
-# Keep the ST self-contained by using the tracked calibration set that the
-# converter's default config also references.
-CALIBRATION_DATA = QUANT_DIR / "calibrate_sets" / "calibrate_coig_cqia.jsonl"
 DEFAULT_OUTPUT_ROOT = SCRIPT_DIR / "output"
+
+# 从已安装的 cann_lm 包查找 quant 目录（包安装模式）
+import cann_lm.converter.quant as _quant_mod
+
+QUANT_DIR = Path(_quant_mod.__path__[0])
+CALIBRATION_DATA = QUANT_DIR / "calibrate_sets" / "calibrate_coig_cqia.jsonl"
+DOPT_WRAPPER = QUANT_DIR / "dopt_wrapper.py"
 PLACEHOLDERS = {
     "__CALIBRATION_DATA__",
     "__PTQ_SAMPLES__",
@@ -155,7 +157,15 @@ def _validate_output_target(output_dir: Path) -> None:
         )
 
 
-_WEIGHT_FILE_SUFFIXES = {".safetensors", ".bin", ".pth", ".pt", ".gguf", ".msgpack", ".h5"}
+_WEIGHT_FILE_SUFFIXES = {
+    ".safetensors",
+    ".bin",
+    ".pth",
+    ".pt",
+    ".gguf",
+    ".msgpack",
+    ".h5",
+}
 
 
 def _truncate_model_layers(
@@ -172,14 +182,19 @@ def _truncate_model_layers(
     import torch
     from transformers import AutoModelForCausalLM
 
-    print(f"[TRUNCATE] loading {model_path} on CPU (fp16) to truncate layers...", flush=True)
+    print(
+        f"[TRUNCATE] loading {model_path} on CPU (fp16) to truncate layers...",
+        flush=True,
+    )
     model = AutoModelForCausalLM.from_pretrained(
         model_path, torch_dtype=torch.float16, trust_remote_code=True
     )
     inner = getattr(model, "model", None)
     language_model = getattr(inner, "language_model", None)
     if language_model is not None:
-        text_config = getattr(model.config, "text_config", None) or language_model.config
+        text_config = (
+            getattr(model.config, "text_config", None) or language_model.config
+        )
         with torch.device("meta"):
             text_only = AutoModelForCausalLM.from_config(
                 text_config, trust_remote_code=True
@@ -268,12 +283,16 @@ def _truncate_model_layers(
         cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
         plc = cfg.get("per_layer_config")
         if isinstance(plc, dict) and any(
-            isinstance(k, str) and k.isdigit() and int(k) >= num_layers
-            or isinstance(k, int) and k >= num_layers
+            isinstance(k, str)
+            and k.isdigit()
+            and int(k) >= num_layers
+            or isinstance(k, int)
+            and k >= num_layers
             for k in plc
         ):
             cfg["per_layer_config"] = {
-                str(k): v for k, v in plc.items()
+                str(k): v
+                for k, v in plc.items()
                 if (int(k) if isinstance(k, str) and k.isdigit() else k) < num_layers
             }
             cfg_path.write_text(
@@ -350,7 +369,7 @@ def _build_quant_command(
     return [
         python,
         "-u",
-        str(QUANT_DIR / "dopt_wrapper.py"),
+        str(DOPT_WRAPPER),
         "--model-path",
         str(model_path),
         "--optimize-config",
@@ -362,9 +381,6 @@ def _build_quant_command(
 
 def _runtime_env(device: str, device_id: str) -> dict[str, str]:
     env = os.environ.copy()
-    env["PYTHONPATH"] = os.pathsep.join(
-        item for item in (str(QUANT_DIR), env.get("PYTHONPATH", "")) if item
-    )
     env["DEVICE"] = device
     env.setdefault("WANDB_DISABLED", "true")
     env.setdefault("HF_DATASETS_OFFLINE", "1")
@@ -380,7 +396,7 @@ def _run_and_tee(command: list[str], env: dict[str, str], log_path: Path) -> Non
     with log_path.open("w", encoding="utf-8") as log_file:
         process = subprocess.Popen(
             command,
-            cwd=QUANT_DIR,
+            cwd=str(SCRIPT_DIR),
             env=env,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
@@ -433,7 +449,9 @@ def _run_model_case(
         ptq_override=args.ptq_samples,
     )
     command = _build_quant_command(args.python, model_path, optimize_config, output_dir)
-    ptq_samples, cutoff_len, _ = _profile_values(model_case, args.profile, args.ptq_samples)
+    ptq_samples, cutoff_len, _ = _profile_values(
+        model_case, args.profile, args.ptq_samples
+    )
     print(
         f"[CASE] {model_case.st_id} model={model_case.display_name} profile={args.profile} "
         f"ptq_samples={ptq_samples} cutoff_len={cutoff_len} device={args.device}{layer_note}",
@@ -506,7 +524,7 @@ def run_check(_: argparse.Namespace) -> int:
             raise STError(
                 f"machine-specific path found in tracked ST source: {source_file}"
             )
-    entrypoint = QUANT_DIR / "dopt_wrapper.py"
+    entrypoint = DOPT_WRAPPER
     if not entrypoint.is_file():
         raise STError(f"dopt entrypoint does not exist: {entrypoint}")
     calibration_data = _validate_calibration_data()

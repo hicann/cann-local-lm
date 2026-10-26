@@ -24,8 +24,8 @@ struct SamplerConfig {
     bool do_sample = false;
     std::optional<float> top_p;
     std::optional<int> top_k;
-    std::optional<float> repetition_penalty;  // >1 降权、1.0 关闭、<1 升权
-    std::optional<uint64_t> seed;             // 给定则 per-call 建 seeded RNG（可复现）
+    std::optional<float> repetition_penalty; // >1 降权、1.0 关闭、<1 升权
+    std::optional<uint64_t> seed;            // 给定则 per-call 建 seeded RNG（可复现）
 };
 
 // NPU 预算的 top-k 结果（数据输入，非旋钮）。
@@ -45,7 +45,7 @@ struct SamplerInputs {
 // 返回：选中的 token + 归一化概率分布（和≈1）
 struct SamplerOutput {
     int32_t next_token_id = 0;
-    std::vector<float> probs;  // [vocab]
+    std::vector<float> probs; // [vocab]
 };
 
 // 无状态采样器：全部静态，无需实例化。
@@ -68,4 +68,4 @@ public:
     static int32_t Pick(const std::vector<float>& probs, bool do_sample, std::optional<uint64_t> seed);
 };
 
-}  // namespace cann_lm::sampler
+} // namespace cann_lm::sampler

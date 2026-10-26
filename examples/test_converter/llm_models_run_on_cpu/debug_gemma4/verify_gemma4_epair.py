@@ -27,7 +27,7 @@ new_kv_cache_pos 指定绝对写位置 (scatter-write)。
   python verify_gemma4_epair.py --use-embeddings       # 纯 embeddings: ep 外置查表 (含 PLE) vs wrapper/HF
 
 环境变量 (先 source 基底):
-  source ../../../../scripts/set_env_export.sh   # 或 source ../check_env.sh
+  source ../../../../scripts/cann_lm_compile/set_env_export.sh   # 或 source ../check_env.sh
   export GEMMA4_HF_PATH=<gemma4 model dir>      # 必填
 """
 
@@ -40,7 +40,9 @@ from pathlib import Path
 
 import torch
 
-_PROJECT_ROOT = next(p for p in Path(__file__).resolve().parents if (p / "cann_lm").is_dir())
+_PROJECT_ROOT = next(
+    p for p in Path(__file__).resolve().parents if (p / "cann_lm").is_dir()
+)
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
@@ -65,6 +67,7 @@ DEFAULT_PROMPTS = [
 # ──────────────────────────────────────────────
 # mask + KV buffer helpers (scatter-write, BOOL)
 # ──────────────────────────────────────────────
+
 
 def make_zero_kv_buffer(wrapper, dtype):
     """零 KV buffer: list[(k,v), ...], per-layer head_dim (gemma4 sliding/full 差异)."""
@@ -122,15 +125,17 @@ def sample_next_token(logits, temperature, top_k, top_p):
     logits = logits[:, -1, :] / temperature
     if top_k > 0:
         indices_to_remove = logits < torch.topk(logits, top_k)[0][..., -1, None]
-        logits = logits.masked_fill(indices_to_remove, float('-inf'))
+        logits = logits.masked_fill(indices_to_remove, float("-inf"))
     if top_p < 1.0:
         sorted_logits, sorted_indices = torch.sort(logits, descending=True)
         cumulative_probs = torch.cumsum(torch.softmax(sorted_logits, dim=-1), dim=-1)
         sorted_indices_to_remove = cumulative_probs > top_p
         sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[..., :-1].clone()
         sorted_indices_to_remove[..., 0] = False
-        indices_to_remove = sorted_indices_to_remove.scatter(1, sorted_indices, sorted_indices_to_remove)
-        logits = logits.masked_fill(indices_to_remove, float('-inf'))
+        indices_to_remove = sorted_indices_to_remove.scatter(
+            1, sorted_indices, sorted_indices_to_remove
+        )
+        logits = logits.masked_fill(indices_to_remove, float("-inf"))
     probs = torch.softmax(logits, dim=-1)
     return torch.multinomial(probs, num_samples=1)
 
@@ -138,6 +143,7 @@ def sample_next_token(logits, temperature, top_k, top_p):
 # ──────────────────────────────────────────────
 # model loading + export
 # ──────────────────────────────────────────────
+
 
 def load_and_export(hf_path, dtype, use_embeddings=False):
     with open(f"{hf_path}/config.json") as f:
@@ -150,8 +156,12 @@ def load_and_export(hf_path, dtype, use_embeddings=False):
     model = Gemma4ForCausalLM(config).to(dtype=dtype).eval()
     model = load_gemma4_weights(model, hf_path, device="cpu", dtype=dtype)
     register_ge_converters()
-    wrapper = Gemma4ExportWrapper(model, kv_cache_max_len=KV_CACHE_MAX_LEN, batch=1).eval()
-    sample_inputs = wrapper.get_sample_inputs(seq_len=EXPORT_SEQ_LEN, use_embeddings=use_embeddings)
+    wrapper = Gemma4ExportWrapper(
+        model, kv_cache_max_len=KV_CACHE_MAX_LEN, batch=1
+    ).eval()
+    sample_inputs = wrapper.get_sample_inputs(
+        seq_len=EXPORT_SEQ_LEN, use_embeddings=use_embeddings
+    )
     ep = torch.export.export(wrapper, sample_inputs, strict=False)
     return ep, wrapper, config, sample_inputs
 
@@ -160,21 +170,35 @@ def load_and_export(hf_path, dtype, use_embeddings=False):
 # host PLE (use_embeddings 模式)
 # ──────────────────────────────────────────────
 
+
 def _host_ple(wrapper, ids, dtype):
     """host 用 embed_tokens_per_layer 查表 + reshape → per_layer_token_identity [b, s, L, h_pl]."""
     m = wrapper.model.model
     cfg = wrapper.config
-    return m.embed_tokens_per_layer(ids).reshape(
-        *ids.shape, cfg.num_hidden_layers, cfg.hidden_size_per_layer_input
-    ).to(dtype).detach()
+    return (
+        m.embed_tokens_per_layer(ids)
+        .reshape(*ids.shape, cfg.num_hidden_layers, cfg.hidden_size_per_layer_input)
+        .to(dtype)
+        .detach()
+    )
 
 
 # ──────────────────────────────────────────────
 # wrapper 模式: wrapper direct (不 pad, scatter-write)
 # ──────────────────────────────────────────────
 
-def generate_wrapper(wrapper, input_ids, num_steps, dtype,
-                     sampling, temp, top_k, top_p, use_embeddings=False):
+
+def generate_wrapper(
+    wrapper,
+    input_ids,
+    num_steps,
+    dtype,
+    sampling,
+    temp,
+    top_k,
+    top_p,
+    use_embeddings=False,
+):
     """wrapper direct prefill (不 pad, 实际 seq_len) + wrapper decode (scatter-write).
 
     无 pad: new_kv_cache_pos = arange(seq_len); decode 写位置 = 序列逻辑位置 = seq_len+n-1。
@@ -191,11 +215,33 @@ def generate_wrapper(wrapper, input_ids, num_steps, dtype,
         if use_embeddings:
             emb = embed_tokens(input_ids).to(dtype).detach()
             ple = _host_ple(wrapper, input_ids, dtype)
-            logits, *kv_flat = wrapper(None, mask_full, mask_sliding, pos_ids, kv, new_kv_pos,
-                                        emb, output_pos, ple, None, None)
+            logits, *kv_flat = wrapper(
+                None,
+                mask_full,
+                mask_sliding,
+                pos_ids,
+                kv,
+                new_kv_pos,
+                emb,
+                output_pos,
+                ple,
+                None,
+                None,
+            )
         else:
-            logits, *kv_flat = wrapper(input_ids, mask_full, mask_sliding, pos_ids, kv, new_kv_pos,
-                                        None, output_pos, None, None, None)
+            logits, *kv_flat = wrapper(
+                input_ids,
+                mask_full,
+                mask_sliding,
+                pos_ids,
+                kv,
+                new_kv_pos,
+                None,
+                output_pos,
+                None,
+                None,
+                None,
+            )
     kv = reconstruct_kv(kv_flat)
 
     tokens = []
@@ -216,11 +262,33 @@ def generate_wrapper(wrapper, input_ids, num_steps, dtype,
             if use_embeddings:
                 dec_emb = embed_tokens(next_token).to(dtype).detach()
                 dec_ple = _host_ple(wrapper, next_token, dtype)
-                logits, *kv_flat = wrapper(None, m_full, m_slide, pos_dec, kv, dec_new_pos,
-                                           dec_emb, None, dec_ple, None, None)
+                logits, *kv_flat = wrapper(
+                    None,
+                    m_full,
+                    m_slide,
+                    pos_dec,
+                    kv,
+                    dec_new_pos,
+                    dec_emb,
+                    None,
+                    dec_ple,
+                    None,
+                    None,
+                )
             else:
-                logits, *kv_flat = wrapper(next_token, m_full, m_slide, pos_dec, kv, dec_new_pos,
-                                            None, None, None, None, None)
+                logits, *kv_flat = wrapper(
+                    next_token,
+                    m_full,
+                    m_slide,
+                    pos_dec,
+                    kv,
+                    dec_new_pos,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
         kv = reconstruct_kv(kv_flat)
     return tokens
 
@@ -229,8 +297,20 @@ def generate_wrapper(wrapper, input_ids, num_steps, dtype,
 # ep 模式: ep.module prefill (padded) + wrapper decode
 # ──────────────────────────────────────────────
 
-def generate_ep(ep, wrapper, sample_inputs, input_ids, num_steps, dtype,
-                sampling, temp, top_k, top_p, use_embeddings=False):
+
+def generate_ep(
+    ep,
+    wrapper,
+    sample_inputs,
+    input_ids,
+    num_steps,
+    dtype,
+    sampling,
+    temp,
+    top_k,
+    top_p,
+    use_embeddings=False,
+):
     """ep.module() prefill (padded to EXPORT_SEQ_LEN) + wrapper decode (scatter-write).
 
     prefill: pad 到 EXPORT_SEQ_LEN, mask 屏蔽 pad 行, output_pos 取最后 real token。
@@ -253,10 +333,13 @@ def generate_ep(ep, wrapper, sample_inputs, input_ids, num_steps, dtype,
     # pad 到 EXPORT_SEQ_LEN
     if real_seq_len < EXPORT_SEQ_LEN:
         pad_len = EXPORT_SEQ_LEN - real_seq_len
-        input_ids_padded = torch.cat([
-            input_ids,
-            torch.full((1, pad_len), PAD_TOKEN_ID, dtype=torch.long),
-        ], dim=1)
+        input_ids_padded = torch.cat(
+            [
+                input_ids,
+                torch.full((1, pad_len), PAD_TOKEN_ID, dtype=torch.long),
+            ],
+            dim=1,
+        )
     else:
         input_ids_padded = input_ids
 
@@ -268,7 +351,9 @@ def generate_ep(ep, wrapper, sample_inputs, input_ids, num_steps, dtype,
     traced_inputs[2] = mask_out_pad_rows(mask_sliding.clone(), real_seq_len)
     traced_inputs[3] = torch.arange(EXPORT_SEQ_LEN, dtype=torch.int32).unsqueeze(0)
     traced_inputs[5] = new_kv_pos_prefill
-    traced_inputs[7] = torch.tensor([real_seq_len - 1], dtype=torch.int32)  # 取最后 real token
+    traced_inputs[7] = torch.tensor(
+        [real_seq_len - 1], dtype=torch.int32
+    )  # 取最后 real token
 
     if use_embeddings:
         traced_inputs[0] = None  # input_ids 不入图
@@ -293,8 +378,10 @@ def generate_ep(ep, wrapper, sample_inputs, input_ids, num_steps, dtype,
         if next_token.item() == 1:  # EOS
             break
         n = len(tokens)
-        write_pos = EXPORT_SEQ_LEN + n - 1   # buffer 写位置 (跳过 pad 槽 real_seq_len..EXPORT_SEQ_LEN-1)
-        seq_pos = real_seq_len + n - 1       # 序列逻辑位置 (跳过 pad 位)
+        write_pos = (
+            EXPORT_SEQ_LEN + n - 1
+        )  # buffer 写位置 (跳过 pad 槽 real_seq_len..EXPORT_SEQ_LEN-1)
+        seq_pos = real_seq_len + n - 1  # 序列逻辑位置 (跳过 pad 位)
         dec_new_pos = torch.tensor([write_pos], dtype=torch.int32)
         m_full, m_slide = build_masks(wrapper, 1, dec_new_pos)
         # 屏蔽 pad 槽 (短 seq 下 sliding==full, 此屏蔽足够)
@@ -305,11 +392,33 @@ def generate_ep(ep, wrapper, sample_inputs, input_ids, num_steps, dtype,
             if use_embeddings:
                 dec_emb = embed_tokens(next_token).to(dtype).detach()
                 dec_ple = _host_ple(wrapper, next_token, dtype)
-                logits, *kv_flat = wrapper(None, m_full, m_slide, pos_id, kv, dec_new_pos,
-                                           dec_emb, None, dec_ple, None, None)
+                logits, *kv_flat = wrapper(
+                    None,
+                    m_full,
+                    m_slide,
+                    pos_id,
+                    kv,
+                    dec_new_pos,
+                    dec_emb,
+                    None,
+                    dec_ple,
+                    None,
+                    None,
+                )
             else:
-                logits, *kv_flat = wrapper(next_token, m_full, m_slide, pos_id, kv, dec_new_pos,
-                                            None, None, None, None, None)
+                logits, *kv_flat = wrapper(
+                    next_token,
+                    m_full,
+                    m_slide,
+                    pos_id,
+                    kv,
+                    dec_new_pos,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
         kv = reconstruct_kv(kv_flat)
     return tokens
 
@@ -318,38 +427,52 @@ def generate_ep(ep, wrapper, sample_inputs, input_ids, num_steps, dtype,
 # HF
 # ──────────────────────────────────────────────
 
+
 def generate_hf(hf_model, input_ids, num_steps, sampling, temp, top_k, top_p):
     with torch.no_grad():
-        kwargs = dict(input_ids=input_ids, max_new_tokens=num_steps,
-                      pad_token_id=PAD_TOKEN_ID)
+        kwargs = dict(
+            input_ids=input_ids, max_new_tokens=num_steps, pad_token_id=PAD_TOKEN_ID
+        )
         if sampling:
             kwargs.update(do_sample=True, temperature=temp, top_k=top_k, top_p=top_p)
         else:
             kwargs["do_sample"] = False
         out = hf_model.generate(**kwargs)
-    return out[0][input_ids.shape[1]:].tolist()
+    return out[0][input_ids.shape[1] :].tolist()
 
 
 # ──────────────────────────────────────────────
 # main
 # ──────────────────────────────────────────────
 
+
 def main():
     parser = argparse.ArgumentParser(description="gemma4 epair/ep 推理验证")
-    parser.add_argument("--mode", choices=["ep", "wrapper"], default="ep",
-                        help="ep: ep.module prefill+wrapper decode (对比回环); "
-                             "wrapper: wrapper direct 推理")
-    parser.add_argument("--sampling", action="store_true", help="sampling (默认 greedy)")
+    parser.add_argument(
+        "--mode",
+        choices=["ep", "wrapper"],
+        default="ep",
+        help="ep: ep.module prefill+wrapper decode (对比回环); "
+        "wrapper: wrapper direct 推理",
+    )
+    parser.add_argument(
+        "--sampling", action="store_true", help="sampling (默认 greedy)"
+    )
     parser.add_argument("--vs-hf", action="store_true", help="加 HF 对比")
     parser.add_argument("--num-steps", type=int, default=10)
-    parser.add_argument("--prompt", type=str, default=None, help="单 prompt (默认三 prompt)")
+    parser.add_argument(
+        "--prompt", type=str, default=None, help="单 prompt (默认三 prompt)"
+    )
     parser.add_argument("--temp", type=float, default=1.0)
     parser.add_argument("--top-k", type=int, default=64)
     parser.add_argument("--top-p", type=float, default=0.95)
-    parser.add_argument("--use-embeddings", action="store_true",
-                        help="纯 embeddings: input_ids 不入图, host 用 embed_tokens / "
-                             "embed_tokens_per_layer 查表喂 embeddings + per_layer_token_identity (PLE)。"
-                             "对比 ep-emb vs wrapper(in-graph) vs HF, 验证 embedding 外置数值一致。")
+    parser.add_argument(
+        "--use-embeddings",
+        action="store_true",
+        help="纯 embeddings: input_ids 不入图, host 用 embed_tokens / "
+        "embed_tokens_per_layer 查表喂 embeddings + per_layer_token_identity (PLE)。"
+        "对比 ep-emb vs wrapper(in-graph) vs HF, 验证 embedding 外置数值一致。",
+    )
     args = parser.parse_args()
 
     dtype = torch.bfloat16
@@ -357,15 +480,22 @@ def main():
     sampling = args.sampling
 
     print("[1/3] Loading + export")
-    ep, wrapper, config, sample_inputs = load_and_export(HF_PATH, dtype, use_embeddings=args.use_embeddings)
+    ep, wrapper, config, sample_inputs = load_and_export(
+        HF_PATH, dtype, use_embeddings=args.use_embeddings
+    )
     print(f"  params: {sum(p.numel() for p in wrapper.model.parameters()):,}")
     print(f"  nodes: {len(ep.graph.nodes)}")
-    print(f"  Layers: {config.num_hidden_layers} (shared: {getattr(config, 'num_kv_shared_layers', 0)})")
-    print(f"  mode: {args.mode}, sampling: {sampling}, use_embeddings: {args.use_embeddings}")
+    print(
+        f"  Layers: {config.num_hidden_layers} (shared: {getattr(config, 'num_kv_shared_layers', 0)})"
+    )
+    print(
+        f"  mode: {args.mode}, sampling: {sampling}, use_embeddings: {args.use_embeddings}"
+    )
 
     hf_model = None
     if args.vs_hf:
         from transformers import Gemma4ForConditionalGeneration as HFModel
+
         print("  Loading HF model (bfloat16)...")
         hf_model = HFModel.from_pretrained(HF_PATH, torch_dtype=dtype).eval()
         print(f"  HF params: {sum(p.numel() for p in hf_model.parameters()):,}")
@@ -375,9 +505,9 @@ def main():
 
     all_pass = True
     for prompt in prompts:
-        print(f"\n{'='*60}")
-        print(f"[2/3] Prompt: \"{prompt}\"")
-        print(f"{'='*60}")
+        print(f"\n{'=' * 60}")
+        print(f'[2/3] Prompt: "{prompt}"')
+        print(f"{'=' * 60}")
         ids = tokenizer.encode(prompt, add_special_tokens=False)
         input_ids = torch.tensor([[BOS_TOKEN_ID] + ids], dtype=torch.long)
         real_seq_len = input_ids.shape[1]
@@ -385,43 +515,80 @@ def main():
 
         if args.mode == "ep":
             # ep 回环 (use_embeddings 时走纯 embeddings, host 查表喂 embeddings+PLE)
-            tokens_ep = generate_ep(ep, wrapper, sample_inputs, input_ids, args.num_steps,
-                                    dtype, sampling, args.temp, args.top_k, args.top_p,
-                                    use_embeddings=args.use_embeddings)
+            tokens_ep = generate_ep(
+                ep,
+                wrapper,
+                sample_inputs,
+                input_ids,
+                args.num_steps,
+                dtype,
+                sampling,
+                args.temp,
+                args.top_k,
+                args.top_p,
+                use_embeddings=args.use_embeddings,
+            )
             text_ep = tokenizer.decode(tokens_ep, skip_special_tokens=True)
             tag = "EP-EMB" if args.use_embeddings else "EP"
-            print(f"\n  {tag} (ep.module prefill + wrapper decode): \"{text_ep}\"")
+            print(f'\n  {tag} (ep.module prefill + wrapper decode): "{text_ep}"')
             # wrapper 基准 (in-graph)
-            tokens_w = generate_wrapper(wrapper, input_ids, args.num_steps,
-                                        dtype, sampling, args.temp, args.top_k, args.top_p,
-                                        use_embeddings=args.use_embeddings)
+            tokens_w = generate_wrapper(
+                wrapper,
+                input_ids,
+                args.num_steps,
+                dtype,
+                sampling,
+                args.temp,
+                args.top_k,
+                args.top_p,
+                use_embeddings=args.use_embeddings,
+            )
             text_w = tokenizer.decode(tokens_w, skip_special_tokens=True)
             wr_tag = "WR-EMB" if args.use_embeddings else "WR"
-            print(f"  {wr_tag} (wrapper direct):                \"{text_w}\"")
+            print(f'  {wr_tag} (wrapper direct):                "{text_w}"')
             match = tokens_ep == tokens_w
             all_pass = all_pass and match
             print(f"\n  {tag}=={wr_tag}: {match}")
         else:
-            tokens_w = generate_wrapper(wrapper, input_ids, args.num_steps,
-                                        dtype, sampling, args.temp, args.top_k, args.top_p,
-                                        use_embeddings=args.use_embeddings)
+            tokens_w = generate_wrapper(
+                wrapper,
+                input_ids,
+                args.num_steps,
+                dtype,
+                sampling,
+                args.temp,
+                args.top_k,
+                args.top_p,
+                use_embeddings=args.use_embeddings,
+            )
             text_w = tokenizer.decode(tokens_w, skip_special_tokens=True)
-            print(f"\n  Output: \"{text_w}\"")
+            print(f'\n  Output: "{text_w}"')
 
         if args.vs_hf:
-            tokens_hf = generate_hf(hf_model, input_ids, args.num_steps,
-                                  sampling, args.temp, args.top_k, args.top_p)
+            tokens_hf = generate_hf(
+                hf_model,
+                input_ids,
+                args.num_steps,
+                sampling,
+                args.temp,
+                args.top_k,
+                args.top_p,
+            )
             text_hf = tokenizer.decode(tokens_hf, skip_special_tokens=True)
-            print(f"  HF:                                     \"{text_hf}\"")
+            print(f'  HF:                                     "{text_hf}"')
             if args.mode == "ep":
                 ep_tag = "EP-EMB" if args.use_embeddings else "EP"
-                print(f"  HF=={ep_tag}: {tokens_hf == tokens_ep}   HF==WR: {tokens_hf == tokens_w}")
+                print(
+                    f"  HF=={ep_tag}: {tokens_hf == tokens_ep}   HF==WR: {tokens_hf == tokens_w}"
+                )
                 all_pass = all_pass and (tokens_hf == tokens_ep)
 
-    print(f"\n{'='*60}")
-    print(f"[3/3] Summary: mode={args.mode}, sampling={sampling}, "
-          f"steps={args.num_steps}, vs_hf={args.vs_hf}, use_embeddings={args.use_embeddings}")
-    print(f"{'='*60}")
+    print(f"\n{'=' * 60}")
+    print(
+        f"[3/3] Summary: mode={args.mode}, sampling={sampling}, "
+        f"steps={args.num_steps}, vs_hf={args.vs_hf}, use_embeddings={args.use_embeddings}"
+    )
+    print(f"{'=' * 60}")
     if args.mode == "ep":
         if all_pass:
             tag = "ep-embeddings 回环" if args.use_embeddings else "ep 回环"

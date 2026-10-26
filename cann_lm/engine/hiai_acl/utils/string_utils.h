@@ -46,4 +46,4 @@ public:
     }
 };
 
-#endif  // UTILS_STRING_UTILS_H
+#endif // UTILS_STRING_UTILS_H

@@ -62,7 +62,7 @@ FILE* OpenFile(const std::string& fileName, const std::string& mode)
     }
     return fopen(pathTemp, mode.c_str());
 }
-}
+} // namespace
 
 Status FileUtilImpl::LoadFileToBuffer(const std::string& fileName, std::shared_ptr<BaseBuffer>& buffer)
 {
@@ -77,7 +77,8 @@ Status FileUtilImpl::LoadFileToBuffer(const std::string& fileName, std::shared_p
     return hiai::SUCCESS;
 }
 
-Status FileUtilImpl::LoadFileToBuffer(const std::string& fileName, std::shared_ptr<BaseBuffer>& buffer, const uint64_t size)
+Status FileUtilImpl::LoadFileToBuffer(const std::string& fileName, std::shared_ptr<BaseBuffer>& buffer,
+                                      const uint64_t size)
 {
     HIAI_EXPECT_TRUE(!fileName.empty());
     HIAI_EXPECT_TRUE(size > 0);
@@ -99,7 +100,7 @@ Status FileUtilImpl::LoadFileAsUint8(const std::string& fileName, uint8_t*& data
     long fileSize = GetFileSize(fp.get());
     HIAI_EXPECT_TRUE(fileSize > 0 && fileSize <= MAX_SUPPORTED_FILE_SIZE);
     size = static_cast<uint64_t>(fileSize);
-    
+
     // 若传入空指针，在函数内部分配资源
     if (data == nullptr) {
         data = new (std::nothrow) uint8_t[size];
@@ -111,14 +112,15 @@ Status FileUtilImpl::LoadFileAsUint8(const std::string& fileName, uint8_t*& data
             return hiai::FAILURE;
         }
     } else {
-    // 若传入的不是空指针，外部需要保证指针分配的长度不会出现内存越界
+        // 若传入的不是空指针，外部需要保证指针分配的长度不会出现内存越界
         uint64_t readSize = fread(data, sizeof(uint8_t), size, fp.get());
         HIAI_EXPECT_TRUE(readSize == size);
     }
     return hiai::SUCCESS;
 }
 
-Status FileUtilImpl::LoadFileAsUint8ByOffsetAndSize(const std::string& fileName, uint8_t*& data, const uint64_t offset, const uint64_t size)
+Status FileUtilImpl::LoadFileAsUint8ByOffsetAndSize(const std::string& fileName, uint8_t*& data, const uint64_t offset,
+                                                    const uint64_t size)
 {
     HIAI_EXPECT_TRUE(!fileName.empty());
     HIAI_EXPECT_TRUE(size > 0);
@@ -129,7 +131,7 @@ Status FileUtilImpl::LoadFileAsUint8ByOffsetAndSize(const std::string& fileName,
     HIAI_EXPECT_TRUE(fileSize > 0);
     HIAI_EXPECT_TRUE(size + offset <= static_cast<uint64_t>(fileSize));
     HIAI_EXPECT_TRUE(fseek(fp.get(), offset, SEEK_SET) == 0);
- 
+
     // 若传入空指针，在函数内部分配资源
     if (data == nullptr) {
         data = new (std::nothrow) uint8_t[size];
@@ -141,7 +143,7 @@ Status FileUtilImpl::LoadFileAsUint8ByOffsetAndSize(const std::string& fileName,
             return hiai::FAILURE;
         }
     } else {
-    // 若传入的不是空指针，外部需要保证指针分配的长度不会出现内存越界
+        // 若传入的不是空指针，外部需要保证指针分配的长度不会出现内存越界
         uint64_t readSize = fread(data, sizeof(uint8_t), size, fp.get());
         HIAI_EXPECT_TRUE(readSize == size);
     }

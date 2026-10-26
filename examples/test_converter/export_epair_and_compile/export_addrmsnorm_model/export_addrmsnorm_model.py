@@ -34,7 +34,6 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import math
 import os
 from pathlib import Path
 
@@ -125,15 +124,21 @@ class AddRmsNormModel(nn.Module):
         self.fc2 = nn.Linear(HIDDEN_DIM, HIDDEN_DIM, bias=False, dtype=torch.float32)
         self.gamma1 = nn.Parameter(torch.ones(HIDDEN_DIM, dtype=torch.float32))
         self.gamma2 = nn.Parameter(torch.ones(HIDDEN_DIM, dtype=torch.float32))
-        self.out_proj = nn.Linear(HIDDEN_DIM, HIDDEN_DIM, bias=False, dtype=torch.float32)
+        self.out_proj = nn.Linear(
+            HIDDEN_DIM, HIDDEN_DIM, bias=False, dtype=torch.float32
+        )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # block 1: y = rms_norm(x + fc1(x))
         t1 = self.fc1(x)
-        y1, _, _ = torch.ops.cann_lm.add_rms_norm.default(x, t1, self.gamma1, epsilon=EPS)
+        y1, _, _ = torch.ops.cann_lm.add_rms_norm.default(
+            x, t1, self.gamma1, epsilon=EPS
+        )
         # block 2: y = rms_norm(y1 + fc2(y1))
         t2 = self.fc2(y1)
-        y2, _, _ = torch.ops.cann_lm.add_rms_norm.default(y1, t2, self.gamma2, epsilon=EPS)
+        y2, _, _ = torch.ops.cann_lm.add_rms_norm.default(
+            y1, t2, self.gamma2, epsilon=EPS
+        )
         return self.out_proj(y2)
 
 
@@ -205,7 +210,9 @@ def compile_ep_to_epair(
     if rewrite_only:
         return rewritten_path
 
-    lite_config = LiteConfig(target_soc=os.environ.get("SOC_VERSION", "Ascend910B"), allow_hf32=False)
+    lite_config = LiteConfig(
+        target_soc=os.environ.get("SOC_VERSION", "Ascend910B"), allow_hf32=False
+    )
     with lite_export_context(lite_config):
         register_ge_converters()
         epair = torch_delegate.export_to_epair(exported_program)
@@ -259,14 +266,17 @@ def main() -> None:
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    export_parser = subparsers.add_parser("export", help="Export ExportedProgram to .pt2")
+    export_parser = subparsers.add_parser(
+        "export", help="Export ExportedProgram to .pt2"
+    )
     _add_export_args(export_parser)
 
     compile_parser = subparsers.add_parser("compile", help="Compile .pt2 to .epair")
     _add_compile_args(compile_parser)
 
     eager_parser = subparsers.add_parser(
-        "eager", help="Run AddRmsNormModel eagerly to verify the CPU add_rms_norm kernel"
+        "eager",
+        help="Run AddRmsNormModel eagerly to verify the CPU add_rms_norm kernel",
     )
     eager_parser.add_argument(
         "--device", choices=("auto", "cpu", "cuda"), default="cpu"
@@ -277,7 +287,9 @@ def main() -> None:
     if args.command == "export":
         output_path = Path(args.output).resolve()
         exported_path, _ = export_sample_program(
-            output_path=output_path, device_name=args.device, print_graph=args.print_graph
+            output_path=output_path,
+            device_name=args.device,
+            print_graph=args.print_graph,
         )
         print(f"Exported program saved to: {exported_path}")
         print(f"Graph text saved to: {exported_path.with_suffix('.graph.py')}")

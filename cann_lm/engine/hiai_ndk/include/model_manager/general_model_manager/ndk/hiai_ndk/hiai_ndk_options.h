@@ -17,14 +17,12 @@ namespace hiai {
 Status HIAI_NDK_HiAIOptions_SetBandMode(OH_NNCompilation* nnCompilation, HiAI_BandMode bandMode);
 
 Status HIAI_NDK_HiAIOptions_SetModelCacheStrategy(OH_NNCompilation* nnCompilation,
-    HiAI_ModelCacheStrategy modelCacheStrategy);
+                                                  HiAI_ModelCacheStrategy modelCacheStrategy);
 
 Status HIAI_NDK_HiAIOptions_SetAsyncModeEnable(OH_NNCompilation* nnCompilation, bool isEnable);
 
 Status HIAI_NDK_HiAIOptions_SetShareWeightsModelId(OH_NNCompilation* nnCompilation, uint32_t srcModelId);
 
-
-
-}
+} // namespace hiai
 
 #endif

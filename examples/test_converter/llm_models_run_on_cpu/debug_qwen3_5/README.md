@@ -40,7 +40,7 @@ export QWEN3_5_HF_PATH=<qwen3.5 model dir>   # 必填
 
 ## 1. `test_modeling_qwen3_5.py` — 单元测试（已移至 tests/）
 
-> 已按「单元测试归 tests/py/」约定移至 [`tests/py/llm_models/test_modeling_qwen3_5.py`](../../../../tests/py/llm_models/test_modeling_qwen3_5.py)（含 68 项：RMSNorm/RoPE/attention/linear_attn/delta_cache/model/generate）。用 converter venv（无 torch_npu）跑：`pytest tests/py/llm_models/test_modeling_qwen3_5.py` 或直接 `python tests/py/llm_models/test_modeling_qwen3_5.py`。
+> 已按「单元测试归 tests/python/」约定移至 [`tests/python/llm_models/test_modeling_qwen3_5.py`](../../../../tests/python/llm_models/test_modeling_qwen3_5.py)（含 68 项：RMSNorm/RoPE/attention/linear_attn/delta_cache/model/generate）。用 converter venv（无 torch_npu）跑：`pytest tests/python/llm_models/test_modeling_qwen3_5.py` 或直接 `python tests/python/llm_models/test_modeling_qwen3_5.py`。
 
 ---
 

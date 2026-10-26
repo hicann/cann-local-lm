@@ -33,7 +33,7 @@ cd "${PROJECT_ROOT}/examples/test_converter/llm_models_run_on_cpu/debug_gemma4"
 ### 第 1 层：单步 forward (单元测试, 已抽到 tests/)
 
 ```bash
-pytest tests/py/llm_models/test_gemma4.py
+pytest tests/python/llm_models/test_gemma4.py
 ```
 
 含 `test_wrapper_vs_model`:验证 wrapper 单步 forward 与原始 model 一致(预期 `max_diff=0.0`,wrapper 是薄封装不引入误差)。合并自 `verify_gemma4_all.py`。

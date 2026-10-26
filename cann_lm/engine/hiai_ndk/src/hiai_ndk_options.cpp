@@ -19,7 +19,7 @@ Status HIAI_NDK_HiAIOptions_SetBandMode(OH_NNCompilation* nnCompilation, HiAI_Ba
 }
 
 Status HIAI_NDK_HiAIOptions_SetModelCacheStrategy(OH_NNCompilation* nnCompilation,
-    HiAI_ModelCacheStrategy modelCacheStrategy)
+                                                  HiAI_ModelCacheStrategy modelCacheStrategy)
 {
     auto setModelCacheStrategyFunc = reinterpret_cast<decltype(HMS_HiAIOptions_SetModelCacheStrategy)*>(
         NDKProxy::GetSymbol("HMS_HiAIOptions_SetModelCacheStrategy"));
@@ -50,6 +50,4 @@ Status HIAI_NDK_HiAIOptions_SetShareWeightsModelId(OH_NNCompilation* nnCompilati
     return retCode == OH_NN_SUCCESS ? SUCCESS : FAILURE;
 }
 
-
-
-}
+} // namespace hiai

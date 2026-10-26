@@ -15,9 +15,12 @@ from pathlib import Path
 
 import torch
 
-_PROJECT_ROOT = Path(__file__).resolve().parents[3]
-if str(_PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(_PROJECT_ROOT))
+try:
+    import dopt_lm  # noqa: F401  # availability check; fallback to sys.path below
+except ImportError:
+    _PROJECT_ROOT = Path(__file__).resolve().parents[3]
+    if str(_PROJECT_ROOT) not in sys.path:
+        sys.path.insert(0, str(_PROJECT_ROOT))
 
 _LINEAR_STRATEGY = "Quant_INT8-4_ECO"
 _EMBED_STRATEGY = "Quant_Embed_MinMax"
@@ -61,6 +64,7 @@ def main() -> None:
     print(f"[wrapper] model_type={model_type}", flush=True)
 
     from dopt_lm.opt_funcs.eco_stage.train import model_define, weight_quant_pipline
+
     print("[wrapper] loading transformers model (fp16)...", flush=True)
     model = model_define(args.model_path, torch_dtype=torch.float16)
 
@@ -68,7 +72,10 @@ def main() -> None:
     dopt_config_path = os.path.join(args.output_dir, "dopt_config.json")
     with open(dopt_config_path, "w") as f:
         json.dump({"layer_strategy": layer_strategy}, f, indent=2)
-    print(f"[wrapper] generated dopt_config: {dopt_config_path} ({len(layer_strategy)} layers)", flush=True)
+    print(
+        f"[wrapper] generated dopt_config: {dopt_config_path} ({len(layer_strategy)} layers)",
+        flush=True,
+    )
 
     # free before GPTQ: weight_quant_pipline reloads the model from model_path internally (avoids 2x peak memory)
     del model

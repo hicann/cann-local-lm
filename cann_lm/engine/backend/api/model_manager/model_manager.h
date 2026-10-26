@@ -15,8 +15,8 @@ class IModelManagerListener {
 public:
     virtual ~IModelManagerListener() = default;
 
-    virtual void OnRunDone(
-        const Context& context, Status result, std::vector<std::shared_ptr<INDTensorBuffer>>& outputs) = 0;
+    virtual void OnRunDone(const Context& context, Status result,
+                           std::vector<std::shared_ptr<INDTensorBuffer>>& outputs) = 0;
 
     virtual void OnServiceDied() = 0;
 };
@@ -26,7 +26,7 @@ public:
     virtual ~IModelManager() = default;
 
     virtual Status Init(const ModelInitOptions& options, const std::shared_ptr<IBuiltModel>& builtModel,
-        const std::shared_ptr<IModelManagerListener>& listener) = 0;
+                        const std::shared_ptr<IModelManagerListener>& listener) = 0;
 
     virtual Status InitWeights(const std::string& weightDir) = 0;
 
@@ -39,13 +39,13 @@ public:
     virtual Status FlushWeight(const std::string& weightName, size_t offset, size_t size) = 0;
 
     // 未使用：引擎链路未调用（权重字节流更新通路预留）。
-    virtual Status UpdateWeight(
-        const std::string& weightName, size_t offset, size_t size, const void* weightBuffer) = 0;
+    virtual Status UpdateWeight(const std::string& weightName, size_t offset, size_t size,
+                                const void* weightBuffer) = 0;
 
     virtual uint32_t GetModelID() = 0;
 
     virtual Status Run(const std::vector<std::shared_ptr<INDTensorBuffer>>& inputs,
-        std::vector<std::shared_ptr<INDTensorBuffer>>& outputs) = 0;
+                       std::vector<std::shared_ptr<INDTensorBuffer>>& outputs) = 0;
 
     // 未使用：引擎链路未调用（内存恢复通路预留，NDK impl 内部亦未触发）。
     virtual Status ReleaseMemory(MemoryMode mode) = 0;

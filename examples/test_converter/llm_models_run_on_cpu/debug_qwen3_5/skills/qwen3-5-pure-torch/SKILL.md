@@ -87,7 +87,7 @@ CANN-LM/cann_lm/models/qwen3_5/
 ├── __init__.py                    # 包导出
 ├── configuration_qwen3_5.py       # 模型配置（纯 dataclass，不继承 PreTrainedConfig）
 ├── modeling_qwen3_5.py            # 纯 PyTorch 模型实现（文本 CausalLM）
-# 单元测试在 tests/py/llm_models/test_modeling_qwen3_5.py（按 tests/py/ 约定）
+# 单元测试在 tests/python/llm_models/test_modeling_qwen3_5.py（按 tests/python/ 约定）
 
 CANN-LM/cann_lm/models/skills/qwen3-5-pure-torch/
 ├── SKILL.md                       # 本文件（技能描述，不含 Python 代码）

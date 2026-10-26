@@ -15,12 +15,16 @@ extern "C" {
 // 返回 0 (GRAPH_SUCCESS) 表示 custom pass 执行成功（no-op 跳过所有 pass）。
 int _ZNK2ge16CustomPassHelper3RunERSt10shared_ptrINS_5GraphEERNS_17CustomPassContextENS_15CustomPassStageE(
     const void* self,
-    void* graph,      // shared_ptr<ge::Graph>&
-    void* ctx,        // ge::CustomPassContext&
-    void* stage       // ge::CustomPassStage
-) {
+    void* graph, // shared_ptr<ge::Graph>&
+    void* ctx,   // ge::CustomPassContext&
+    void* stage  // ge::CustomPassStage
+)
+{
     // No-op: custom passes are optional optimizations, return success
-    (void)self; (void)graph; (void)ctx; (void)stage;
-    return 0;  // GRAPH_SUCCESS
+    (void)self;
+    (void)graph;
+    (void)ctx;
+    (void)stage;
+    return 0; // GRAPH_SUCCESS
 }
 }

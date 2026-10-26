@@ -1,27 +1,30 @@
 #include "pipeline/preprocessor.h"
 #include "infra/log.h"
 #include "utils/common_utils.h"
+#include "utils/debug_tensor_dump.h" // 【临时调试】tokenizer ids dump（golden 对齐）
 
 #include <algorithm>
 #include <cstddef>
 
 namespace cann_lm::engine {
 
-Preprocessor::Preprocessor(TokenizerBase*    tokenizer,
-                           TextEmbedding*  text_embedding,
-                           int             default_chunk_size)
+Preprocessor::Preprocessor(TokenizerBase* tokenizer, TextEmbedding* text_embedding, int default_chunk_size)
     : tokenizer_(tokenizer),
       text_embedding_(text_embedding),
-      default_chunk_size_(default_chunk_size > 0 ? default_chunk_size : 1024) {}
+      default_chunk_size_(default_chunk_size > 0 ? default_chunk_size : 1024)
+{}
 
-Status Preprocessor::PreparePrefill(const Prompt& prompt,
-                                    const std::vector<TokenId>& history,
-                                    std::vector<std::vector<TokenId>>* out_chunks) {
-    if (!out_chunks) return Status::INVALID_ARGUMENT;
+Status Preprocessor::PreparePrefill(const Prompt& prompt, std::vector<std::vector<TokenId>>* out_chunks,
+                                    std::size_t reusable, std::vector<TokenId>* out_ids)
+{
+    if (!out_chunks)
+        return Status::INVALID_ARGUMENT;
     out_chunks->clear();
+    if (out_ids)
+        out_ids->clear();
 
     if (!tokenizer_) {
-        CANN_LLM_LOGW( "preprocess.prefill: tokenizer unavailable");
+        CANN_LLM_LOGW("preprocess.prefill: tokenizer unavailable");
         return Status::INVALID_STATE;
     }
 
@@ -31,40 +34,82 @@ Status Preprocessor::PreparePrefill(const Prompt& prompt,
     std::vector<int> ids;
     Status st = tokenizer_->encode(prompt.text, enc_opts, &ids);
     if (!st.ok()) {
-        CANN_LLM_LOGE( "preprocess.prefill: encode failed (st=%d)", st.code);
+        CANN_LLM_LOGE("preprocess.prefill: encode failed (st=%d)", st.code);
         return st;
     }
 
     // 调试：打印 tokenize 后的 TokenId 结果
-    CANN_LLM_LOGD("preprocess.prefill: prompt tokenized, count=%zu, ids=[%s]",
-                  ids.size(), CvtVectorToStr(ids).c_str());
+    CANN_LLM_LOGD("preprocess.prefill: prompt tokenized, count=%zu, ids=[%s]", ids.size(), CvtVectorToStr(ids).c_str());
 
-    // 2. 拼接历史（历史在前，新 prompt 在后）
-    std::vector<TokenId> all_ids = history;
-    all_ids.insert(all_ids.end(), ids.begin(), ids.end());
+    // 【临时调试代码 — 验证完成后删除】tokenizer encode 结果落盘（DebugDumpTokenizerIds
+    // 同体例：CANN_LM_DEBUG_DUMP_TENSORS=1 总闸 + CANN_LM_DEBUG_DUMP_DIR 共用；
+    // env 未设零行为变化）。产出 prefill_tokenizer_ids.bin（int32 裸数组），
+    // 与 Python 参考 tokenizer.encode 逐值比对；同轮的 prefill_in_* dump 的
+    // embeddings 前 count 行即该 id 序列查表结果（含 pad_token 补齐行=0）。
+    // 增量轮（PromptCache reusable>0）同 dump 同文件名（覆写为当轮全量 ids），
+    // 文件名前缀 prefill 与轮次无关——对精度比对取"最近一次 encode"即够用。
+    DebugDumpTokenizerIds("prefill", ids, "ids");
 
-    if (all_ids.empty()) {
-        out_chunks->clear();
+    // int（tokenizer 面）→ TokenId（engine 面）：历史悠久双型（token id 语义
+    // 值域 [0, vocab)，非负恒成立，窄转无损）
+    std::vector<TokenId> token_ids;
+    token_ids.reserve(ids.size());
+    for (int id : ids)
+        token_ids.push_back(static_cast<TokenId>(id));
+
+    if (out_ids) {
+        *out_ids = token_ids;
+    }
+
+    // 防御：reusable > 输入长 = 调用时序 bug（Match 出参恒 ≤ 台账长 ≤ 输入长）
+    if (reusable > token_ids.size()) {
+        CANN_LLM_LOGE("preprocess.prefill: reusable=%zu > ids=%zu (caller bug)", reusable, token_ids.size());
+        return Status::INVALID_ARGUMENT;
+    }
+
+    return SliceChunks(token_ids, reusable, out_chunks);
+}
+
+Status Preprocessor::SliceChunks(const std::vector<TokenId>& ids, std::size_t reusable,
+                                 std::vector<std::vector<TokenId>>* out_chunks)
+{
+    if (!out_chunks)
+        return Status::INVALID_ARGUMENT;
+    out_chunks->clear();
+
+    // 防御：reusable > 输入长 = 调用时序 bug（Match 出参恒 ≤ 台账长 ≤ 输入长）
+    if (reusable > ids.size()) {
+        CANN_LLM_LOGE("preprocess.slice: reusable=%zu > ids=%zu (caller bug)", reusable, ids.size());
+        return Status::INVALID_ARGUMENT;
+    }
+
+    // 增量切块（R8/REQ-6）：仅作用 [reusable, ids.size())；
+    // reusable == ids.size()（全命中极端）⇒ 空块链，Submit 拒空——上游
+    // Match 全命中场景 reusable-1 已保证至少 1 个真实块。
+    // ids 为空 = 历史 zero-token prompt 行为保持（空块链同旧）。
+    if (ids.empty()) {
         return Status::SUCCESS;
     }
 
-    // 3. 切块（token 级，基于 chunk_size）
     int chunk_size = default_chunk_size_;
-    if (chunk_size <= 0) chunk_size = static_cast<int>(all_ids.size());
+    if (chunk_size <= 0)
+        chunk_size = static_cast<int>(ids.size());
 
-    for (size_t offset = 0; offset < all_ids.size(); offset += static_cast<size_t>(chunk_size)) {
-        size_t end = std::min(offset + static_cast<size_t>(chunk_size), all_ids.size());
-        out_chunks->emplace_back(all_ids.begin() + static_cast<std::ptrdiff_t>(offset),
-                                 all_ids.begin() + static_cast<std::ptrdiff_t>(end));
+    for (size_t offset = reusable; offset < ids.size(); offset += static_cast<size_t>(chunk_size)) {
+        size_t end = std::min(offset + static_cast<size_t>(chunk_size), ids.size());
+        out_chunks->emplace_back(ids.begin() + static_cast<std::ptrdiff_t>(offset),
+                                 ids.begin() + static_cast<std::ptrdiff_t>(end));
     }
 
     return Status::SUCCESS;
 }
 
-Status Preprocessor::PrepareDecodeStep(TokenId id, std::vector<TokenId>* out_input) {
-    if (!out_input) return Status::INVALID_ARGUMENT;
+Status Preprocessor::PrepareDecodeStep(TokenId id, std::vector<TokenId>* out_input)
+{
+    if (!out_input)
+        return Status::INVALID_ARGUMENT;
     *out_input = {id};
     return Status::SUCCESS;
 }
 
-}  // namespace cann_lm::engine
+} // namespace cann_lm::engine

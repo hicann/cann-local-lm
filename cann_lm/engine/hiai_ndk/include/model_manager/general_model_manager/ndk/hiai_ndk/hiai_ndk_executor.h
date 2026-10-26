@@ -17,14 +17,15 @@ Status HIAI_NDK_HiAIExecutor_ReleaseMemory(OH_NNExecutor* executor, HiAI_MemoryM
 
 Status HIAI_NDK_HiAIExecutor_RecoverMemory(OH_NNExecutor* executor, HiAI_MemoryMode mode);
 
-Status HIAI_NDK_HiAIExecutor_GetWeightBuffer(OH_NNExecutor* executor, const char* weightName, void** data, size_t* size);
+Status HIAI_NDK_HiAIExecutor_GetWeightBuffer(OH_NNExecutor* executor, const char* weightName, void** data,
+                                             size_t* size);
 
-Status  HIAI_NDK_HiAIExecutor_FlushWeight(OH_NNExecutor* executor, const char* weightName, size_t offset, size_t size);
+Status HIAI_NDK_HiAIExecutor_FlushWeight(OH_NNExecutor* executor, const char* weightName, size_t offset, size_t size);
 
-Status  HIAI_NDK_HiAIExecutor_UpdateWeight(
-    OH_NNExecutor* executor, const char* weightName, size_t offset, size_t size, const void* weightBuffer);
+Status HIAI_NDK_HiAIExecutor_UpdateWeight(OH_NNExecutor* executor, const char* weightName, size_t offset, size_t size,
+                                          const void* weightBuffer);
 
-Status  HIAI_NDK_HiAIExecutor_GetModelID(OH_NNExecutor* executor, uint32_t* modelId);
-}
+Status HIAI_NDK_HiAIExecutor_GetModelID(OH_NNExecutor* executor, uint32_t* modelId);
+} // namespace hiai
 
 #endif

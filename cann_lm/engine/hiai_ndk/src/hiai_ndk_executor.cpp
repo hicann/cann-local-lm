@@ -60,7 +60,7 @@ Status HIAI_NDK_HiAIExecutor_GetWeightBuffer(OH_NNExecutor* executor, const char
     return retCode == OH_NN_SUCCESS ? SUCCESS : FAILURE;
 }
 
-Status  HIAI_NDK_HiAIExecutor_FlushWeight(OH_NNExecutor* executor, const char* weightName, size_t offset, size_t size)
+Status HIAI_NDK_HiAIExecutor_FlushWeight(OH_NNExecutor* executor, const char* weightName, size_t offset, size_t size)
 {
     HIAI_EXPECT_NOT_NULL(executor);
     HIAI_EXPECT_NOT_NULL(weightName);
@@ -71,8 +71,8 @@ Status  HIAI_NDK_HiAIExecutor_FlushWeight(OH_NNExecutor* executor, const char* w
     return retCode == OH_NN_SUCCESS ? SUCCESS : FAILURE;
 }
 
-Status  HIAI_NDK_HiAIExecutor_UpdateWeight(
-    OH_NNExecutor* executor, const char* weightName, size_t offset, size_t size, const void* weightBuffer)
+Status HIAI_NDK_HiAIExecutor_UpdateWeight(OH_NNExecutor* executor, const char* weightName, size_t offset, size_t size,
+                                          const void* weightBuffer)
 {
     HIAI_EXPECT_NOT_NULL(executor);
     HIAI_EXPECT_NOT_NULL(weightName);
@@ -84,7 +84,8 @@ Status  HIAI_NDK_HiAIExecutor_UpdateWeight(
     } else {
         void* weightData = nullptr;
         size_t weightSize = 0;
-        HIAI_EXPECT_TRUE(HIAI_NDK_HiAIExecutor_GetWeightBuffer(executor, weightName, &weightData, &weightSize) == hiai::SUCCESS);
+        HIAI_EXPECT_TRUE(HIAI_NDK_HiAIExecutor_GetWeightBuffer(executor, weightName, &weightData, &weightSize) ==
+                         hiai::SUCCESS);
         HIAI_EXPECT_NOT_NULL(weightData);
         HIAI_EXPECT_TRUE(weightSize > 0);
         HIAI_EXPECT_TRUE(weightSize >= offset + size);
@@ -95,7 +96,7 @@ Status  HIAI_NDK_HiAIExecutor_UpdateWeight(
     }
 }
 
-Status  HIAI_NDK_HiAIExecutor_GetModelID(OH_NNExecutor* executor, uint32_t* modelId)
+Status HIAI_NDK_HiAIExecutor_GetModelID(OH_NNExecutor* executor, uint32_t* modelId)
 {
     HIAI_EXPECT_NOT_NULL(executor);
     HIAI_EXPECT_NOT_NULL(modelId);
@@ -105,4 +106,4 @@ Status  HIAI_NDK_HiAIExecutor_GetModelID(OH_NNExecutor* executor, uint32_t* mode
     OH_NN_ReturnCode retCode = getModelIDFunc(executor, modelId);
     return retCode == OH_NN_SUCCESS ? SUCCESS : FAILURE;
 }
-}
+} // namespace hiai

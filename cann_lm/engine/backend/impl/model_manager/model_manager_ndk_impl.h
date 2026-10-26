@@ -18,7 +18,7 @@ public:
 
 private:
     Status Init(const ModelInitOptions& options, const std::shared_ptr<IBuiltModel>& builtModel,
-        const std::shared_ptr<IModelManagerListener>& listener) override;
+                const std::shared_ptr<IModelManagerListener>& listener) override;
 
     Status InitWeights(const std::string& weightDir) override;
 
@@ -37,7 +37,7 @@ private:
     uint32_t GetModelID() override;
 
     Status Run(const std::vector<std::shared_ptr<INDTensorBuffer>>& inputs,
-        std::vector<std::shared_ptr<INDTensorBuffer>>& outputs) override;
+               std::vector<std::shared_ptr<INDTensorBuffer>>& outputs) override;
 
     void DeInit() override;
 
@@ -48,12 +48,12 @@ private:
 
 private:
     std::mutex modelManagerMutex_;
-    std::shared_ptr<OH_NNExecutor> executor_ {nullptr};
-    std::shared_ptr<OH_NNCompilation> nnCompilation_ {nullptr};
+    std::shared_ptr<OH_NNExecutor> executor_{nullptr};
+    std::shared_ptr<OH_NNCompilation> nnCompilation_{nullptr};
 
     CustomModelData customModelData_;
 
-    bool isAsyncMode_ {false};
+    bool isAsyncMode_{false};
 };
 } // namespace hiai
 #endif // FRAMEWORK_INC_MODEL_MANAGER_MODEL_MANAGER_NDK_IMPL_H

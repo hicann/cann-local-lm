@@ -5,6 +5,7 @@ The actual generate call needs the engine .so (run on device via
 Here we test resolve_request + add_args + the cann_lm subcommand dispatch —
 pure, no .so.
 """
+
 import argparse
 import os
 
@@ -12,7 +13,12 @@ from bbit import load_config
 from cann_lm.generate import add_args, resolve_request, run
 from cann_lm.config import print_resolved_paths
 
-BBIT_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "..", "tests", "bbit"))
+# bbit 测试用例随 9a4640c 布局重构从 tests/bbit/ 迁至 examples/bbit/;后续加 test_engine 层区分 engine 用例。
+BBIT_DIR = os.path.normpath(
+    os.path.join(
+        os.path.dirname(__file__), "..", "..", "examples", "test_engine", "bbit"
+    )
+)
 TESTCASE = os.path.join(BBIT_DIR, "testcase.json")
 
 
@@ -25,12 +31,12 @@ class TestResolveRequest:
         prompt, mt, stop = resolve_request(_cfg(), prompt="hello world")
         assert prompt == "hello world"
         s0 = _cfg()["sentences"][0]
-        assert mt == s0["max_tokens"]          # not overridden
-        assert stop == s0["stop_strings"]       # not overridden
+        assert mt == s0["max_tokens"]  # not overridden
+        assert stop == s0["stop_strings"]  # not overridden
 
     def test_prompt_defaults_to_config(self):
         prompt, _, _ = resolve_request(_cfg())
-        assert prompt == _cfg()["sentences"][0]["prompt"]   # "你好"
+        assert prompt == _cfg()["sentences"][0]["prompt"]  # "你好"
 
     def test_max_tokens_override(self):
         _, mt, _ = resolve_request(_cfg(), max_tokens=999)
@@ -43,7 +49,11 @@ class TestResolveRequest:
     def test_all_defaults_match_config(self):
         s0 = _cfg()["sentences"][0]
         prompt, mt, stop = resolve_request(_cfg())
-        assert (prompt, mt, stop) == (s0["prompt"], s0["max_tokens"], s0["stop_strings"])
+        assert (prompt, mt, stop) == (
+            s0["prompt"],
+            s0["max_tokens"],
+            s0["stop_strings"],
+        )
 
 
 class TestAddArgs:
@@ -59,21 +69,30 @@ class TestAddArgs:
         a = self._parse("--config", "tc.json", "--prompt", "hi")
         assert a.config == "tc.json"
         assert a.prompt == "hi"
-        assert a.max_tokens is None          # optional, not given
-        assert a.stop_strings is None        # optional, not given
+        assert a.max_tokens is None  # optional, not given
+        assert a.stop_strings is None  # optional, not given
         assert a.lib is None
 
     def test_max_tokens_and_stop(self):
-        a = self._parse("--config", "tc.json", "--max-tokens", "128",
-                        "--stop", "</s>", "--stop", "EOS")
+        a = self._parse(
+            "--config",
+            "tc.json",
+            "--max-tokens",
+            "128",
+            "--stop",
+            "</s>",
+            "--stop",
+            "EOS",
+        )
         assert a.max_tokens == 128
-        assert a.stop_strings == ["</s>", "EOS"]   # repeatable --stop
+        assert a.stop_strings == ["</s>", "EOS"]  # repeatable --stop
 
     def test_missing_config_errors(self):
         # --config is required → argparse raises SystemExit
         p = argparse.ArgumentParser()
         add_args(p)
         import pytest
+
         with pytest.raises(SystemExit):
             p.parse_args([])
 
@@ -85,22 +104,32 @@ class TestGateSurfacesLoadError:
 
     def test_missing_dep_reason_surfaced(self, monkeypatch, capsys):
         import cann_lm
+
         # pretend load_config succeeds (cfg content irrelevant — gate fires next)
-        monkeypatch.setattr("cann_lm.generate.load_config",
-                            lambda c: {"sentences": [{}]})
+        monkeypatch.setattr(
+            "cann_lm.generate.load_config", lambda c: {"sentences": [{}]}
+        )
+
         # pretend the .so is found but its deps are missing (the device failure)
         def boom(lib_path=None):
             raise cann_lm.CannLmError(
                 "libcann_lm_engine.so could not be loaded.\n"
                 "Found but CDLL failed (likely missing runtime deps or wrong arch):\n"
-                "  /storage/x/libcann_lm_engine.so: libhiai_ascendcl.so: cannot open shared object file")
+                "  /storage/x/libcann_lm_engine.so: libhiai_ascendcl.so: cannot open shared object file"
+            )
+
         monkeypatch.setattr(cann_lm, "get_library", boom)
-        args = argparse.Namespace(config="ignored.json", prompt="hi",
-                                  max_tokens=None, stop_strings=None, lib=None)
+        args = argparse.Namespace(
+            config="ignored.json",
+            prompt="hi",
+            max_tokens=None,
+            stop_strings=None,
+            lib=None,
+        )
         rc = run(args)
         assert rc == 2
         err = capsys.readouterr().err
-        assert "libhiai_ascendcl.so" in err        # real reason surfaced, not swallowed
+        assert "libhiai_ascendcl.so" in err  # real reason surfaced, not swallowed
         assert "cannot load" in err
 
 
@@ -110,16 +139,18 @@ class TestShowPaths:
     'I set the paths but the engine says meta_json unreadable' class of mismatch."""
 
     def _cfg(self, tmp_path):
-        f = tmp_path / "tok.json"; f.write_text("")        # exists (file)
-        d = tmp_path / "weights"; d.mkdir()                 # exists (dir)
+        f = tmp_path / "tok.json"  # exists (file)
+        f.write_text("")
+        d = tmp_path / "weights"  # exists (dir)
+        d.mkdir()
         return {
             "tokenizer_type": "BPE",
-            "tokenizer_path": str(f),                       # file ✓
-            "prefill_omc_path": str(d),                      # dir ✓
-            "decode_omc_path": str(tmp_path / "decode.omc"), # MISSING
-            "meta_json_path": str(tmp_path / "model.json"), # MISSING
+            "tokenizer_path": str(f),  # file ✓
+            "prefill_omc_path": str(d),  # dir ✓
+            "decode_omc_path": str(tmp_path / "decode.omc"),  # MISSING
+            "meta_json_path": str(tmp_path / "model.json"),  # MISSING
             "prefill_weight": str(tmp_path / "w_prefill"),  # MISSING
-            "decode_weight": str(tmp_path / "w_decode"),    # MISSING
+            "decode_weight": str(tmp_path / "w_decode"),  # MISSING
             "sentences": [{}],
         }
 
@@ -130,33 +161,42 @@ class TestShowPaths:
         assert "tokenizer_path" in out
         assert "meta_json_path" in out
         assert "prefill_weight" in out
-        assert "file" in out          # the existing file marker
-        assert "dir" in out           # the existing dir marker
-        assert "MISSING" in out       # the missing marker
-        assert missing == 4            # decode_omc, meta_json, prefill_weight, decode_weight
+        assert "file" in out  # the existing file marker
+        assert "dir" in out  # the existing dir marker
+        assert "MISSING" in out  # the missing marker
+        assert missing == 4  # decode_omc, meta_json, prefill_weight, decode_weight
 
     def test_show_paths_flag_exits_before_so_gate(self, monkeypatch, tmp_path, capsys):
         # --show-paths must NOT touch the .so: monkeypatch get_library to explode
         # if it's ever called; if the flag works, run() returns before the gate.
         import cann_lm
+
         def boom(*a, **k):
             raise AssertionError("--show-paths must not call get_library")
+
         monkeypatch.setattr(cann_lm, "get_library", boom)
         cfg = self._cfg(tmp_path)
         monkeypatch.setattr("cann_lm.generate.load_config", lambda c: cfg)
-        args = argparse.Namespace(config="ignored.json", prompt=None,
-                                  max_tokens=None, stop_strings=None, lib=None,
-                                  show_paths=True)
+        args = argparse.Namespace(
+            config="ignored.json",
+            prompt=None,
+            max_tokens=None,
+            stop_strings=None,
+            lib=None,
+            show_paths=True,
+        )
         rc = run(args)
         out = capsys.readouterr().out
         assert "tokenizer_path" in out
         assert "MISSING" in out
-        assert rc == 1                  # missing > 0 → non-zero (actionable)
+        assert rc == 1  # missing > 0 → non-zero (actionable)
 
     def test_show_paths_all_present_returns_zero(self, monkeypatch, tmp_path, capsys):
         # all 6 paths exist → exit 0
-        files = {n: (tmp_path / n) for n in
-                 ("tok.json", "p.omc", "d.omc", "m.json", "wp", "wd")}
+        files = {
+            n: (tmp_path / n)
+            for n in ("tok.json", "p.omc", "d.omc", "m.json", "wp", "wd")
+        }
         for f in files.values():
             f.write_text("")
         cfg = {
@@ -170,7 +210,13 @@ class TestShowPaths:
             "sentences": [{}],
         }
         monkeypatch.setattr("cann_lm.generate.load_config", lambda c: cfg)
-        args = argparse.Namespace(config="x", prompt=None, max_tokens=None,
-                                  stop_strings=None, lib=None, show_paths=True)
+        args = argparse.Namespace(
+            config="x",
+            prompt=None,
+            max_tokens=None,
+            stop_strings=None,
+            lib=None,
+            show_paths=True,
+        )
         rc = run(args)
         assert rc == 0

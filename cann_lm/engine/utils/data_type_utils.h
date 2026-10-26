@@ -15,7 +15,7 @@
 #ifndef CANN_LM_ENGINE_UTILS_DATA_TYPE_UTILS_H
 #define CANN_LM_ENGINE_UTILS_DATA_TYPE_UTILS_H
 
-#include "types.h"   // hiai::DataType（backend/api，include 根经 cann_backend PUBLIC 传递）
+#include "types.h" // hiai::DataType（backend/api，include 根经 cann_backend PUBLIC 传递）
 
 #include <cstddef>
 #include <cstdint>
@@ -58,9 +58,8 @@ struct fp16_t {
 double ReadElemAsDouble(const void* data, DataType t, std::size_t idx);
 
 /// 从 idx0 起 n 个元素格式化为 "v1,v2,..."（%.6g 精度，无尾逗号）。
-std::string FormatElems(const void* data, DataType t, std::size_t idx0,
-                        std::size_t n);
+std::string FormatElems(const void* data, DataType t, std::size_t idx0, std::size_t n);
 
-}  // namespace cann_lm::engine
+} // namespace cann_lm::engine
 
-#endif  // CANN_LM_ENGINE_UTILS_DATA_TYPE_UTILS_H
+#endif // CANN_LM_ENGINE_UTILS_DATA_TYPE_UTILS_H

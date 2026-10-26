@@ -8,7 +8,7 @@ set -euo pipefail
 #   - cann_lm_compile                (csrc/tools/compile_main.cc, epair→OM 编译工具)
 # 测试构建独立: bash scripts/cann_lm_compile/build_test.sh (ASAN, 独立 build_tests 树 + ctest)
 #
-# 前置: source scripts/set_env.sh   (设 ASCEND_HOME_PATH / LD_LIBRARY_PATH / SOC / GE_*)
+# 前置: source scripts/cann_lm_compile/set_env.sh   (设 ASCEND_HOME_PATH / LD_LIBRARY_PATH / SOC / GE_*)
 #
 # 用法:
 #   bash scripts/cann_lm_compile/build_cpp.sh                       # release .so + cann_lm_compile
@@ -29,7 +29,7 @@ THIRD_PARTY="${THIRD_PARTY:-$REPO/output/third_party}"
 
 # ── 校验 env ──
 if [[ -z "${ASCEND_HOME_PATH:-}" ]]; then
-    echo "ERROR: ASCEND_HOME_PATH 未设. 先 source scripts/set_env.sh" >&2
+    echo "ERROR: ASCEND_HOME_PATH 未设. 先 source scripts/cann_lm_compile/set_env.sh" >&2
     exit 1
 fi
 

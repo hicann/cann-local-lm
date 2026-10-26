@@ -23,8 +23,6 @@
 
 #define REAL_FILE_NAME strrchr(__FILE__, '/')
 
-
-
 #ifdef __OHOS__
 
 #undef LOG_DOMAIN

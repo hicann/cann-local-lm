@@ -24,20 +24,24 @@ using namespace hiai;
 
 aclError aclrtGetDeviceCount(uint32_t* count)
 {
-    if (count == nullptr) return ACL_ERROR_INVALID_PARAM;
-    if (gACLManager == nullptr) return ACL_ERROR_INVALID_PARAM;
+    if (count == nullptr)
+        return ACL_ERROR_INVALID_PARAM;
+    if (gACLManager == nullptr)
+        return ACL_ERROR_INVALID_PARAM;
     return gACLManager->GetDeviceCount(count);
 }
 
 aclError aclrtSetDevice(int32_t deviceId)
 {
-    if (gACLManager == nullptr) return ACL_ERROR_INVALID_PARAM;
+    if (gACLManager == nullptr)
+        return ACL_ERROR_INVALID_PARAM;
     return gACLManager->SetDevice(deviceId);
 }
 
 aclError aclrtGetDevice(int32_t* deviceId)
 {
-    if (deviceId == nullptr) return ACL_ERROR_INVALID_PARAM;
+    if (deviceId == nullptr)
+        return ACL_ERROR_INVALID_PARAM;
     if (gACLManager == nullptr) {
         *deviceId = 0;
         return ACL_ERROR_INVALID_PARAM;
@@ -47,7 +51,8 @@ aclError aclrtGetDevice(int32_t* deviceId)
 
 aclError aclrtResetDevice(int32_t deviceId)
 {
-    if (gACLManager == nullptr) return ACL_ERROR_INVALID_PARAM;
+    if (gACLManager == nullptr)
+        return ACL_ERROR_INVALID_PARAM;
     return gACLManager->ResetDevice(deviceId);
 }
 
@@ -55,11 +60,12 @@ aclError aclrtResetDevice(int32_t deviceId)
 
 aclError aclrtCreateContext(aclrtContext* context, int32_t deviceId)
 {
-    if (context == nullptr) return ACL_ERROR_INVALID_PARAM;
+    if (context == nullptr)
+        return ACL_ERROR_INVALID_PARAM;
     // Phase 1: no-op, return a dummy handle. Real context management
     // requires thread_local state tracking.
     (void)deviceId;
-    *context = reinterpret_cast<aclrtContext>(1);  // non-null dummy
+    *context = reinterpret_cast<aclrtContext>(1); // non-null dummy
     return ACL_SUCCESS;
 }
 
@@ -79,20 +85,24 @@ aclError aclrtSetCurrentContext(aclrtContext context)
 
 aclError aclrtCreateStream(aclrtStream* stream)
 {
-    if (stream == nullptr) return ACL_ERROR_INVALID_PARAM;
-    if (gACLManager == nullptr) return ACL_ERROR_INVALID_PARAM;
+    if (stream == nullptr)
+        return ACL_ERROR_INVALID_PARAM;
+    if (gACLManager == nullptr)
+        return ACL_ERROR_INVALID_PARAM;
     return gACLManager->CreateStream(stream);
 }
 
 aclError aclrtDestroyStream(aclrtStream stream)
 {
-    if (gACLManager == nullptr) return ACL_ERROR_INVALID_PARAM;
+    if (gACLManager == nullptr)
+        return ACL_ERROR_INVALID_PARAM;
     return gACLManager->DestroyStream(stream);
 }
 
 aclError aclrtSynchronizeStream(aclrtStream stream)
 {
-    if (gACLManager == nullptr) return ACL_ERROR_INVALID_PARAM;
+    if (gACLManager == nullptr)
+        return ACL_ERROR_INVALID_PARAM;
     return gACLManager->SynchronizeStream(stream);
 }
 
@@ -100,26 +110,31 @@ aclError aclrtSynchronizeStream(aclrtStream stream)
 
 aclError aclrtCreateEvent(aclrtEvent* event)
 {
-    if (event == nullptr) return ACL_ERROR_INVALID_PARAM;
-    if (gACLManager == nullptr) return ACL_ERROR_INVALID_PARAM;
+    if (event == nullptr)
+        return ACL_ERROR_INVALID_PARAM;
+    if (gACLManager == nullptr)
+        return ACL_ERROR_INVALID_PARAM;
     return gACLManager->CreateEvent(event);
 }
 
 aclError aclrtDestroyEvent(aclrtEvent event)
 {
-    if (gACLManager == nullptr) return ACL_ERROR_INVALID_PARAM;
+    if (gACLManager == nullptr)
+        return ACL_ERROR_INVALID_PARAM;
     return gACLManager->DestroyEvent(event);
 }
 
 aclError aclrtRecordEvent(aclrtEvent event, aclrtStream stream)
 {
-    if (gACLManager == nullptr) return ACL_ERROR_INVALID_PARAM;
+    if (gACLManager == nullptr)
+        return ACL_ERROR_INVALID_PARAM;
     return gACLManager->RecordEvent(event, stream);
 }
 
 aclError aclrtSynchronizeEvent(aclrtEvent event)
 {
-    if (gACLManager == nullptr) return ACL_ERROR_INVALID_PARAM;
+    if (gACLManager == nullptr)
+        return ACL_ERROR_INVALID_PARAM;
     return gACLManager->SynchronizeEvent(event);
 }
 
@@ -127,7 +142,8 @@ aclError aclrtSynchronizeEvent(aclrtEvent event)
 
 aclError aclrtSynchronizeDevice()
 {
-    if (gACLManager == nullptr) return ACL_ERROR_INVALID_PARAM;
+    if (gACLManager == nullptr)
+        return ACL_ERROR_INVALID_PARAM;
     return gACLManager->SynchronizeDevice();
 }
 
@@ -135,7 +151,8 @@ aclError aclrtSynchronizeDevice()
 
 aclError aclrtMallocHost(void** hostPtr, size_t size)
 {
-    if (hostPtr == nullptr) return ACL_ERROR_INVALID_PARAM;
+    if (hostPtr == nullptr)
+        return ACL_ERROR_INVALID_PARAM;
     if (size == 0) {
         *hostPtr = nullptr;
         return ACL_ERROR_INVALID_PARAM;
@@ -146,23 +163,26 @@ aclError aclrtMallocHost(void** hostPtr, size_t size)
 
 aclError aclrtFreeHost(void* hostPtr)
 {
-    if (hostPtr == nullptr) return ACL_ERROR_INVALID_PARAM;
+    if (hostPtr == nullptr)
+        return ACL_ERROR_INVALID_PARAM;
     free(hostPtr);
     return ACL_SUCCESS;
 }
 
 // ===== Memcpy =====
 
-aclError aclrtMemcpy(void* dst, size_t destMax, const void* src,
-    size_t count, aclrtMemcpyKind kind)
+aclError aclrtMemcpy(void* dst, size_t destMax, const void* src, size_t count, aclrtMemcpyKind kind)
 {
-    if (dst == nullptr || src == nullptr) return ACL_ERROR_INVALID_PARAM;
-    if (destMax < count) return ACL_ERROR_INVALID_PARAM;
+    if (dst == nullptr || src == nullptr)
+        return ACL_ERROR_INVALID_PARAM;
+    if (destMax < count)
+        return ACL_ERROR_INVALID_PARAM;
     // NDK shared memory: all pointers are host-accessible.
     // H2H, H2D, D2H → memcpy (same pointer space)
     // D2D → no-op (same device pointer, nothing to copy)
-    (void)kind;  // kind doesn't matter for shared memory model
-    if (count == 0) return ACL_SUCCESS;
+    (void)kind; // kind doesn't matter for shared memory model
+    if (count == 0)
+        return ACL_SUCCESS;
     if (memcpy(dst, src, count) != dst) {
         ACL_LOGE("memcpy failed");
         return ACL_ERROR_FAILURE;

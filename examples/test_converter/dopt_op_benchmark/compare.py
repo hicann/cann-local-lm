@@ -11,6 +11,7 @@ implementation divergence (isolated from quantization accuracy).
 Paths via env vars (overridable by CLI): GEMMA4_MODEL_PATH, DOPT_QUANT_DIR.
 Default golden dir: <script_dir>/golden.
 """
+
 import argparse
 import json
 import os
@@ -29,23 +30,40 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 def build_ref_model(model_path, quant_dir, device):
     dopt_cfg = os.path.join(quant_dir, "dopt_config.json")
     runtime_cfg = os.path.join(quant_dir, "runtime_config.yaml")
-    config = yaml.safe_load(open(runtime_cfg)); config["config_path"] = dopt_cfg
-    model = prepare_model(model_path, None, dopt_cfg, config, requires_grad=False, trainable_keys=[])
+    config = yaml.safe_load(open(runtime_cfg))
+    config["config_path"] = dopt_cfg
+    model = prepare_model(
+        model_path, None, dopt_cfg, config, requires_grad=False, trainable_keys=[]
+    )
     set_quant_state(model, weight_state=True, input_state=False)
     set_calibrate_state(model, True)
-    model.load_state_dict(torch.load(os.path.join(quant_dir, "trained_quant_weight.pth"),
-                                     map_location="cpu", weights_only=True), strict=False)
+    model.load_state_dict(
+        torch.load(
+            os.path.join(quant_dir, "trained_quant_weight.pth"),
+            map_location="cpu",
+            weights_only=True,
+        ),
+        strict=False,
+    )
     set_calibrate_state(model, False)
     return model.to(device).eval()
 
 
 def main():
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--op-name", required=True, help="operator name, e.g. model.layers.0.self_attn.q_proj")
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    ap.add_argument(
+        "--op-name",
+        required=True,
+        help="operator name, e.g. model.layers.0.self_attn.q_proj",
+    )
     ap.add_argument("--model-path", default=os.environ.get("GEMMA4_MODEL_PATH"))
     ap.add_argument("--quant-dir", default=os.environ.get("DOPT_QUANT_DIR"))
     ap.add_argument("--golden-dir", default=str(SCRIPT_DIR / "golden"))
-    ap.add_argument("--device", default=os.environ.get("DEVICE", "cpu"), choices=("cpu", "npu"))
+    ap.add_argument(
+        "--device", default=os.environ.get("DEVICE", "cpu"), choices=("cpu", "npu")
+    )
     args = ap.parse_args()
     if not args.model_path:
         ap.error("--model-path required (or set GEMMA4_MODEL_PATH)")
@@ -62,7 +80,9 @@ def main():
 
     device = args.device
     if device == "npu":
-        import torch_npu; torch.npu.set_device(int(os.environ.get("DEVICE_ID", "0")))
+        import torch_npu  # noqa: F401  # NPU env: 注册 torch.npu backend
+
+        torch.npu.set_device(int(os.environ.get("DEVICE_ID", "0")))
     print("loading reference model ...", flush=True)
     model = build_ref_model(args.model_path, args.quant_dir, device)
     qmods = {n: m for n, m in model.named_modules() if isinstance(m, QLinear)}
@@ -79,9 +99,13 @@ def main():
             max_diff, mean_diff = max(max_diff, md), max(mean_diff, mnd)
             ok = md <= atol + rtol * ya_gold.float().abs().max().item()
             allpass &= ok
-            print(f"  [{i}] maxΔ={md:.3e} meanΔ={mnd:.3e} -> {'PASS' if ok else 'FAIL'}")
+            print(
+                f"  [{i}] maxΔ={md:.3e} meanΔ={mnd:.3e} -> {'PASS' if ok else 'FAIL'}"
+            )
 
-    print(f"\n{'PASS' if allpass else 'FAIL'}: op={args.op_name} overall maxΔ={max_diff:.3e} meanΔ={mean_diff:.3e}")
+    print(
+        f"\n{'PASS' if allpass else 'FAIL'}: op={args.op_name} overall maxΔ={max_diff:.3e} meanΔ={mean_diff:.3e}"
+    )
     print("(self-consistency: reference operator reproduces golden from saved inputs)")
 
 

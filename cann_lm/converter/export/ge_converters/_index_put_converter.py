@@ -17,6 +17,7 @@
 torchair's converter is a placeholder (NotImplementedError). Does not support accumulate=True / all-None indices.
 Registered by ge_converter.register_ge_converters.
 """
+
 from typing import Any
 
 
@@ -33,6 +34,7 @@ def convert_index_put(
     from torchair._ge_concrete_graph import ge_apis as ge
     from torchair.ge._ge_graph import DataType
     from torchair._ge_concrete_graph.ge_converter.converter_utils import dtype_promote
+
     if accumulate:
         raise NotImplementedError("index_put with accumulate=True not supported")
     dim = None

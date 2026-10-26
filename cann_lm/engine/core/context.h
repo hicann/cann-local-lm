@@ -9,16 +9,16 @@
 
 namespace cann_lm::engine {
 
-class ContextImpl;  // internal, forward declare（不对用户暴露）
-class AutoregressivePipelineExecutor;  // internal, forward declare（friend 访问）
+class ContextImpl;                    // internal, forward declare（不对用户暴露）
+class AutoregressivePipelineExecutor; // internal, forward declare（friend 访问）
 
 /// Context 标识。用于多会话切换、状态查询、Context 级 cancel（需求 #5 / #3）。对外 API。
 struct ContextId {
     uint64_t value = 0;
-    bool operator==(const ContextId&) const noexcept;            ///< 相等比较
-    bool operator!=(const ContextId&) const noexcept;            ///< 不等比较
-    bool operator<(const ContextId&) const noexcept;             ///< 用于有序容器
-    explicit operator bool() const noexcept;                     ///< value != 0（有效标识）
+    bool operator==(const ContextId&) const noexcept; ///< 相等比较
+    bool operator!=(const ContextId&) const noexcept; ///< 不等比较
+    bool operator<(const ContextId&) const noexcept;  ///< 用于有序容器
+    explicit operator bool() const noexcept;          ///< value != 0（有效标识）
 };
 
 /// 上下文句柄。轻量、可复制（内部状态共享）。对外 API。
@@ -26,10 +26,10 @@ struct ContextId {
 class Context {
 public:
     // ────────────────── 生命周期（对外 API） ──────────────────
-    Context() noexcept;                  ///< 空句柄
-    Context(const Context&) noexcept;    ///< 浅拷贝，共享内部状态
+    Context() noexcept;               ///< 空句柄
+    Context(const Context&) noexcept; ///< 浅拷贝，共享内部状态
     Context& operator=(const Context&) noexcept;
-    Context(Context&&) noexcept;         ///< 可移动
+    Context(Context&&) noexcept; ///< 可移动
     Context& operator=(Context&&) noexcept;
     ~Context();
 
@@ -44,7 +44,7 @@ public:
 private:
     friend class EngineExecutor;
     friend class AutoregressivePipelineExecutor;
-    std::shared_ptr<ContextImpl> impl_;  // 可为空
+    std::shared_ptr<ContextImpl> impl_; // 可为空
     explicit Context(std::shared_ptr<ContextImpl>);
 
     /// 内部工厂：按 id 创建 ContextImpl 并包装为 Context。
@@ -52,8 +52,7 @@ private:
     static Context CreateWithId(ContextId id);
 
     // TODO
-    // historyManager
     // KvCacheHandle
 };
 
-}  // namespace cann_lm::engine
+} // namespace cann_lm::engine

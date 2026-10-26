@@ -14,15 +14,15 @@
 
 #include "infra/status.h"
 
-#include <cstddef>   // size_t, std::byte
+#include <cstddef> // size_t, std::byte
 #include <filesystem>
-#include <map>       // merges rank 表（派生私有成员）
-#include <memory>    // unique_ptr
+#include <map>    // merges rank 表（派生私有成员）
+#include <memory> // unique_ptr
 #include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
-#include <utility>   // pair
+#include <utility> // pair
 #include <variant>
 #include <vector>
 
@@ -36,9 +36,9 @@ enum class Algorithm { BPE, Qwen, SPM };
 // ── 编码选项（REQ-02）──────────────────────────────────────────────────────
 struct EncodeOptions {
     bool add_special_tokens = true;
-    std::optional<size_t> max_length;                       // 截断（special 计入预算）
+    std::optional<size_t> max_length; // 截断（special 计入预算）
     enum class Padding { None, Longest, Fixed } padding = Padding::None;
-    std::optional<size_t> pad_to_length;                    // Padding::Fixed 时生效
+    std::optional<size_t> pad_to_length; // Padding::Fixed 时生效
 };
 
 // ── 解码选项（REQ-03）──────────────────────────────────────────────────────
@@ -52,12 +52,12 @@ struct DecodeOptions {
 // docs/tokenizer/tokenizer_config.md）+ 跨段 pad_token_id（model_config 段）。
 struct TokenizerConfig {
     // —— 词表产物（原 LoadParams.artifact 职责，路径形态）——
-    std::string tokenizer_file;             // tokenizer.json 路径；空 = 不加载（未就绪）
+    std::string tokenizer_file; // tokenizer.json 路径；空 = 不加载（未就绪）
     // —— id 语义（-1 = 未配置；吸收原 SpecialTokenConfig 的 optional 语义为哨兵值）——
-    int  bos_token_id = -1;                 // JSON bos_token_id
-    int  eos_token_id = -1;                 // JSON eos_token_id
-    int  pad_token_id = -1;                 // 跨段：model_config.pad_token_id
-    int  unk_token_id = -1;                 // 承载（schema 无来源，保留通道）
+    int bos_token_id = -1; // JSON bos_token_id
+    int eos_token_id = -1; // JSON eos_token_id
+    int pad_token_id = -1; // 跨段：model_config.pad_token_id
+    int unk_token_id = -1; // 承载（schema 无来源，保留通道）
     // —— 注入开关（零注入缺省）——
     bool add_bos = false;
     bool add_eos = false;
@@ -75,20 +75,15 @@ public:
     virtual ~TokenizerBase() = default;
     // 同步、阻塞至返回；encode 不返回 attention mask（REQ-04）
     // 错误: INVALID_ARGUMENT(非法 UTF-8 或 out_ids==nullptr) | SUCCESS(OOV 映射 unk)
-    virtual Status encode(std::string_view text,
-                          const EncodeOptions& opts,
-                          std::vector<int>* out_ids) = 0;
+    virtual Status encode(std::string_view text, const EncodeOptions& opts, std::vector<int>* out_ids) = 0;
     // 同步；skip_special 时剥离控制 token（剥离集 = 产物 special 全集）
     // 错误: SUCCESS(OOV 跳过/替换，不中断)
-    virtual Status decode(const std::vector<int>& ids,
-                          const DecodeOptions& opts,
-                          std::string* out_text) = 0;
+    virtual Status decode(const std::vector<int>& ids, const DecodeOptions& opts, std::string* out_text) = 0;
     virtual size_t vocab_size() const = 0;
     // 按名称返回 special id，未配置返回 nullopt
     virtual std::optional<int> special_token_id(std::string_view name) const = 0;
     // 默认实现：循环单条 encode + padding 对齐（REQ-05）；单条失败不整批崩
-    virtual Status batch_encode(const std::vector<std::string>& texts,
-                                const EncodeOptions& opts,
+    virtual Status batch_encode(const std::vector<std::string>& texts, const EncodeOptions& opts,
                                 std::vector<std::vector<int>>* out);
 };
 
@@ -99,8 +94,7 @@ public:
     // tokenizer_file 空 → 实例未就绪（词表 0，encode FAILURE）；
     // 文件不可加载 → FAILURE（不发布实例，调用方决定置空降级）
     // 错误: INVALID_ARGUMENT(枚举未注册或 out==nullptr) | FAILURE(加载失败，不发布实例)
-    static Status create(Algorithm algo, const TokenizerConfig& cfg,
-                         std::unique_ptr<TokenizerBase>* out);
+    static Status create(Algorithm algo, const TokenizerConfig& cfg, std::unique_ptr<TokenizerBase>* out);
     // 返回当前已注册算法集合（静态初始化期已填；本期 = {BPE, Qwen, SPM}）
     static std::vector<Algorithm> list_registered();
 };
@@ -113,15 +107,14 @@ public:
     static void register_(Algorithm algo, Ctor ctor);
 };
 
-#define REGISTER_TOKENIZER(algo, Class)                                              \
-    static const bool _reg_##Class = []{                                              \
-        ::cann_lm::engine::Registrar::register_(                                    \
-            algo, [](const ::cann_lm::engine::TokenizerConfig& cfg,                  \
-                     ::cann_lm::engine::Status* st)                                  \
-                ->std::unique_ptr<::cann_lm::engine::TokenizerBase>{                 \
-                return std::make_unique<Class>(cfg, st);                             \
-            });                                                                      \
-        return true; }()
+#define REGISTER_TOKENIZER(algo, Class)                                                                             \
+    static const bool _reg_##Class = [] {                                                                           \
+        ::cann_lm::engine::Registrar::register_(                                                                    \
+            algo,                                                                                                   \
+            [](const ::cann_lm::engine::TokenizerConfig& cfg, ::cann_lm::engine::Status* st)                        \
+                -> std::unique_ptr<::cann_lm::engine::TokenizerBase> { return std::make_unique<Class>(cfg, st); }); \
+        return true;                                                                                                \
+    }()
 
 // ── M-05 VocabStore：tokenizer.json 解析与双向查询（BPE/Qwen 共用）──────────
 struct VocabSource {
@@ -151,16 +144,14 @@ public:
     const std::string& unk_token() const { return unk_token_; }
     // Replace 型 normalizer（gemma 实物：" "→"▁"）；NFC 等归一化不实现（U-4）
     bool has_replace_normalizer() const { return has_replace_normalizer_; }
-    const std::pair<std::string, std::string>& replace_normalizer() const {
-        return replace_normalizer_;
-    }
+    const std::pair<std::string, std::string>& replace_normalizer() const { return replace_normalizer_; }
 
 private:
     std::unordered_map<std::string, int> tok2id_;
-    std::vector<std::string> id2tok_;   // id→token 字面量（含 added overlay）
+    std::vector<std::string> id2tok_; // id→token 字面量（含 added overlay）
     std::vector<std::pair<std::string, std::string>> merges_;
     std::vector<std::pair<std::string, int>> added_tokens_;
-    std::vector<int> special_strip_ids_;  // sorted
+    std::vector<int> special_strip_ids_; // sorted
     std::string model_type_;
     bool byte_fallback_ = false;
     std::string unk_token_;
@@ -179,12 +170,12 @@ public:
     Status inject(std::vector<int>* ids, const EncodeOptions& opts) const;
     // decode 前段：剥离集内的 id 被剔除
     Status strip(const std::vector<int>& ids, std::vector<int>* kept) const;
-    std::optional<int> id(std::string_view name) const;  // bos/eos/pad/unk
+    std::optional<int> id(std::string_view name) const; // bos/eos/pad/unk
     const TokenizerConfig& config() const { return cfg_; }
 
 private:
     TokenizerConfig cfg_;
-    std::vector<int> strip_ids_;  // sorted
+    std::vector<int> strip_ids_; // sorted
 };
 
 // ── M-03 BPETokenizer（手写 BPE，gemma4）───────────────────────────────────
@@ -196,11 +187,9 @@ public:
     explicit BPETokenizer(const TokenizerConfig& cfg, Status* status);
     // AddedToken 提取 → UTF-8 校验 → Replace 归一(▁) → Split 预切分 → BPE 合并
     // → id 查表(byte_fallback/unk) → special 注入（M-06）
-    Status encode(std::string_view text, const EncodeOptions& opts,
-                  std::vector<int>* out_ids) override;
+    Status encode(std::string_view text, const EncodeOptions& opts, std::vector<int>* out_ids) override;
     // id→字面量→▁→空格 还原 + ByteFallback 展开
-    Status decode(const std::vector<int>& ids, const DecodeOptions& opts,
-                  std::string* out_text) override;
+    Status decode(const std::vector<int>& ids, const DecodeOptions& opts, std::string* out_text) override;
     size_t vocab_size() const override;
     std::optional<int> special_token_id(std::string_view name) const override;
 
@@ -219,11 +208,9 @@ public:
     explicit QwenTokenizer(const TokenizerConfig& cfg, Status* status);
     // AddedToken 提取 → UTF-8 校验 → D-10 正则预切分（字节级）→ 字节转 Unicode 映射
     // (wchar_t) → BPE 合并 → subword 转 UTF-8 查表 → special 注入（M-06）
-    Status encode(std::string_view text, const EncodeOptions& opts,
-                  std::vector<int>* out_ids) override;
+    Status encode(std::string_view text, const EncodeOptions& opts, std::vector<int>* out_ids) override;
     // id→字面量→ByteLevel 字节还原
-    Status decode(const std::vector<int>& ids, const DecodeOptions& opts,
-                  std::string* out_text) override;
+    Status decode(const std::vector<int>& ids, const DecodeOptions& opts, std::string* out_text) override;
     size_t vocab_size() const override;
     std::optional<int> special_token_id(std::string_view name) const override;
 
@@ -240,12 +227,10 @@ public:
     // 占位：.model 加载恒失败，status 回传 FAILURE，实例 not-ready
     explicit SPMTokenizer(const TokenizerConfig& cfg, Status* status);
     // 占位：恒返回 FAILURE（not-ready 桩行为）
-    Status encode(std::string_view text, const EncodeOptions& opts,
-                  std::vector<int>* out_ids) override;
-    Status decode(const std::vector<int>& ids, const DecodeOptions& opts,
-                  std::string* out_text) override;
-    size_t vocab_size() const override;                       // 0（未加载）
+    Status encode(std::string_view text, const EncodeOptions& opts, std::vector<int>* out_ids) override;
+    Status decode(const std::vector<int>& ids, const DecodeOptions& opts, std::string* out_text) override;
+    size_t vocab_size() const override; // 0（未加载）
     std::optional<int> special_token_id(std::string_view name) const override;
 };
 
-}  // namespace cann_lm::engine
+} // namespace cann_lm::engine

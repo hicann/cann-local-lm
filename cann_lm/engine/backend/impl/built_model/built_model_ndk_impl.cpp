@@ -21,28 +21,19 @@
 #include "securec.h"
 
 namespace hiai {
-std::atomic<uint64_t> BuiltModelNDKImpl::idGenerator_ {0};
+std::atomic<uint64_t> BuiltModelNDKImpl::idGenerator_{0};
 
-BuiltModelNDKImpl::BuiltModelNDKImpl()
-{
-    builtModelId_ = idGenerator_++;
-}
+BuiltModelNDKImpl::BuiltModelNDKImpl() { builtModelId_ = idGenerator_++; }
 
-BuiltModelNDKImpl::BuiltModelNDKImpl(std::shared_ptr<OH_NNCompilation> builtModel,
-    std::shared_ptr<IBuffer> modelBuffer)
+BuiltModelNDKImpl::BuiltModelNDKImpl(std::shared_ptr<OH_NNCompilation> builtModel, std::shared_ptr<IBuffer> modelBuffer)
     : nnCompilation_(std::move(builtModel)), modelBuffer_(modelBuffer)
 {
     builtModelId_ = idGenerator_++;
 }
 
-BuiltModelNDKImpl::~BuiltModelNDKImpl()
-{
-}
+BuiltModelNDKImpl::~BuiltModelNDKImpl() {}
 
-std::shared_ptr<OH_NNCompilation> BuiltModelNDKImpl::GetNNCompilation()
-{
-    return nnCompilation_;
-}
+std::shared_ptr<OH_NNCompilation> BuiltModelNDKImpl::GetNNCompilation() { return nnCompilation_; }
 
 namespace {
 std::string GetModelNamefromModel(const std::shared_ptr<IBuffer> buffer)
@@ -58,12 +49,11 @@ std::string GetModelNamefromModel(const std::shared_ptr<IBuffer> buffer)
         return "";
     }
     int32_t nameLen = static_cast<int32_t>(strlen(reinterpret_cast<const char*>(header.name)));
-    std::string modelName = namePrefix +
-            std::string(reinterpret_cast<const char*>(header.name), std::min(nameLen, 32));
+    std::string modelName = namePrefix + std::string(reinterpret_cast<const char*>(header.name), std::min(nameLen, 32));
     return modelName;
 }
 
-Status NNTensorDescToNDTensorDesc(const NN_TensorDesc* nntensorDesc, NDTensorDesc &ndTensorDesc)
+Status NNTensorDescToNDTensorDesc(const NN_TensorDesc* nntensorDesc, NDTensorDesc& ndTensorDesc)
 {
     int32_t* shape = nullptr;
     size_t shapeLength = 0;
@@ -90,7 +80,7 @@ Status NNTensorDescToNDTensorDesc(const NN_TensorDesc* nntensorDesc, NDTensorDes
     ndTensorDesc.tensorName = tensorName == nullptr ? "" : std::string(tensorName);
     return SUCCESS;
 }
-}
+} // namespace
 
 // buffer需要用户自己释放内存
 Status BuiltModelNDKImpl::RestoreFromBuffer(const std::shared_ptr<IBuffer>& buffer)
@@ -113,10 +103,7 @@ Status BuiltModelNDKImpl::RestoreFromBuffer(const std::shared_ptr<IBuffer>& buff
         return FAILURE;
     }
 
-    nnCompilation_.reset(nnCompilation,
-        [](OH_NNCompilation* p) {
-            HIAI_NDK_NNCompilation_Destroy(&p);
-        });
+    nnCompilation_.reset(nnCompilation, [](OH_NNCompilation* p) { HIAI_NDK_NNCompilation_Destroy(&p); });
     HIAI_EXPECT_NOT_NULL(nnCompilation_);
 
     modelName_ = GetModelNamefromModel(modelBuffer_);
@@ -132,8 +119,8 @@ Status BuiltModelNDKImpl::RestoreFromFile(const char* file)
         buffer_ = FileUtil::LoadToBuffer(file);
         HIAI_EXPECT_NOT_NULL(buffer_);
 
-        std::shared_ptr<hiai::IBuffer> buffer =
-            CreateLocalBuffer(static_cast<void*>(buffer_->MutableData()), buffer_->GetSize(), false);
+        std::shared_ptr<hiai::IBuffer> buffer = CreateLocalBuffer(static_cast<void*>(buffer_->MutableData()),
+                                                                  buffer_->GetSize(), false);
 
         return RestoreFromBuffer(buffer);
     }
@@ -148,10 +135,7 @@ Status BuiltModelNDKImpl::RestoreFromFile(const char* file)
         return FAILURE;
     }
 
-    nnCompilation_.reset(compilation,
-        [](OH_NNCompilation* p) {
-            HIAI_NDK_NNCompilation_Destroy(&p);
-        });
+    nnCompilation_.reset(compilation, [](OH_NNCompilation* p) { HIAI_NDK_NNCompilation_Destroy(&p); });
     HIAI_EXPECT_NOT_NULL(nnCompilation_);
     return SUCCESS;
 }
@@ -169,7 +153,7 @@ std::shared_ptr<OH_NNExecutor> BuiltModelNDKImpl::GetExecutor() const
     auto nnExecutor = container->GetExecutor(builtModelId_);
     if (nnExecutor == nullptr) {
         nnExecutor = std::shared_ptr<OH_NNExecutor>(HIAI_NDK_NNExecutor_Construct(compilation),
-            [](OH_NNExecutor* p) { HIAI_NDK_NNExecutor_Destroy(&p); });
+                                                    [](OH_NNExecutor* p) { HIAI_NDK_NNExecutor_Destroy(&p); });
         HIAI_EXPECT_NOT_NULL_R(nnExecutor, nullptr);
         container->AddExecutor(builtModelId_, nnExecutor);
     }
@@ -257,18 +241,9 @@ void BuiltModelNDKImpl::SetName(const std::string& name)
     modelName_ = name;
 }
 
-void BuiltModelNDKImpl::SetCustomData(const CustomModelData& customModelData)
-{
-    customModelData_ = customModelData;
-}
+void BuiltModelNDKImpl::SetCustomData(const CustomModelData& customModelData) { customModelData_ = customModelData; }
 
-const CustomModelData& BuiltModelNDKImpl::GetCustomData()
-{
-    return customModelData_;
-}
+const CustomModelData& BuiltModelNDKImpl::GetCustomData() { return customModelData_; }
 
-std::shared_ptr<IBuiltModel> CreateBuiltModelFromNDK()
-{
-    return make_shared_nothrow<BuiltModelNDKImpl>();
-}
-}
+std::shared_ptr<IBuiltModel> CreateBuiltModelFromNDK() { return make_shared_nothrow<BuiltModelNDKImpl>(); }
+} // namespace hiai

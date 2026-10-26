@@ -19,14 +19,14 @@ std::shared_ptr<IModelManager> CreateModelManagerFromNDK();
 
 std::shared_ptr<INDTensorBuffer> CreateNDTensorBufferFromNDK(const NDTensorDesc& tensorDesc);
 
-std::shared_ptr<INDTensorBuffer> CreateNDTensorBufferFromNDK(const NDTensorDesc& tensorDesc,
-    const void* data, size_t dataSize);
+std::shared_ptr<INDTensorBuffer> CreateNDTensorBufferFromNDK(const NDTensorDesc& tensorDesc, const void* data,
+                                                             size_t dataSize);
 
 std::shared_ptr<INDTensorBuffer> CreateNDTensorBufferFromNDK(const NDTensorDesc& tensorDesc,
-    const NativeHandle& handle);
+                                                             const NativeHandle& handle);
 
 std::shared_ptr<INDTensorBuffer> CreateKVCacheBufferFromNDK(const NDTensorDesc& tensorDesc, size_t kvCacheNum,
-    size_t tileSize);
+                                                            size_t tileSize);
 
 Status ResizeKVCacheBufferFromNDK(const std::shared_ptr<INDTensorBuffer>& tensor, size_t size);
 } // namespace hiai

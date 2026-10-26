@@ -19,9 +19,9 @@ function(torch_delegate_package)
     set(options "")
     set(oneValueArgs VERSION BUILD_TYPE OUTPUT_DIR)
     set(multiValueArgs "")
-    
+
     cmake_parse_arguments(PACKAGE "${options}" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
-    
+
     # Required arguments
     if(NOT PACKAGE_VERSION)
         message(FATAL_ERROR "torch_delegate_package: VERSION is required")
@@ -32,7 +32,7 @@ function(torch_delegate_package)
     if(NOT PACKAGE_OUTPUT_DIR)
         set(PACKAGE_OUTPUT_DIR "${CMAKE_SOURCE_DIR}/output/packages")
     endif()
-    
+
     # Detect platform
     if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         if(CMAKE_SYSTEM_PROCESSOR STREQUAL "x86_64")
@@ -47,24 +47,24 @@ function(torch_delegate_package)
     else()
         set(PACKAGE_PLATFORM "${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR}")
     endif()
-    
+
     # Package name
     set(PACKAGE_NAME "torch_delegate-${PACKAGE_VERSION}-${PACKAGE_PLATFORM}-${PACKAGE_BUILD_TYPE}")
-    
+
     # Create package directory
     set(PACKAGE_DIR "${CMAKE_BINARY_DIR}/package/${PACKAGE_NAME}")
     file(MAKE_DIRECTORY "${PACKAGE_DIR}")
-    
+
     # Copy installed files to package directory
     message(STATUS "[Package] Creating package: ${PACKAGE_NAME}")
     message(STATUS "[Package] Package directory: ${PACKAGE_DIR}")
-    
+
     # Copy headers
     file(MAKE_DIRECTORY "${PACKAGE_DIR}/inc")
-    file(COPY "${CMAKE_BINARY_DIR}/install/inc/torch_delegate" 
+    file(COPY "${CMAKE_BINARY_DIR}/install/inc/torch_delegate"
         DESTINATION "${PACKAGE_DIR}/inc"
     )
-    
+
     # Copy delegate libraries and CMake config package only.
     # Do not bundle transitive CANN libraries such as libmetadef.so.
     file(MAKE_DIRECTORY "${PACKAGE_DIR}/lib")
@@ -75,17 +75,17 @@ function(torch_delegate_package)
     file(COPY "${CMAKE_BINARY_DIR}/install/lib/cmake/TorchDelegate"
         DESTINATION "${PACKAGE_DIR}/lib/cmake"
     )
-    
+
     # Create zip package
     set(PACKAGE_ZIP "${PACKAGE_OUTPUT_DIR}/${PACKAGE_NAME}.zip")
     file(MAKE_DIRECTORY "${PACKAGE_OUTPUT_DIR}")
-    
+
     execute_process(
         COMMAND ${CMAKE_COMMAND} -E tar "cf" "${PACKAGE_ZIP}" --format=zip "${PACKAGE_NAME}"
         WORKING_DIRECTORY "${CMAKE_BINARY_DIR}/package"
         RESULT_VARIABLE PACKAGE_RESULT
     )
-    
+
     if(PACKAGE_RESULT EQUAL 0)
         message(STATUS "[Package] Package created: ${PACKAGE_ZIP}")
     else()

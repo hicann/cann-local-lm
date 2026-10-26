@@ -19,7 +19,7 @@
   python verify_gemma4_chunk.py --prompt "Hello" --token-level
 
 环境变量 (先 source 基底):
-  source ../../../../scripts/set_env_export.sh   # 或 source ../check_env.sh
+  source ../../../../scripts/cann_lm_compile/set_env_export.sh   # 或 source ../check_env.sh
   export GEMMA4_HF_PATH=<gemma4 model dir>      # 必填
 """
 
@@ -32,7 +32,9 @@ from pathlib import Path
 
 import torch
 
-_PROJECT_ROOT = next(p for p in Path(__file__).resolve().parents if (p / "cann_lm").is_dir())
+_PROJECT_ROOT = next(
+    p for p in Path(__file__).resolve().parents if (p / "cann_lm").is_dir()
+)
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
@@ -53,6 +55,7 @@ DEFAULT_PROMPTS = [
 # mask helpers (共享)
 # ──────────────────────────────────────────────
 
+
 def make_causal_mask(q_len, k_len, dtype):
     """4D causal mask [1, 1, q_len, k_len] (cat 模式, k_len = 已累积 token 数)."""
     min_val = torch.finfo(dtype).min
@@ -71,7 +74,9 @@ def make_chunk_mask(chunk_len, k_len, dtype):
         return make_causal_mask(chunk_len, chunk_len, dtype)
     total_k = k_len + chunk_len
     mask = torch.zeros(1, 1, chunk_len, total_k, dtype=dtype)
-    mask[:, :, :, k_len:] = make_causal_mask(chunk_len, chunk_len, dtype).squeeze(0).squeeze(0)
+    mask[:, :, :, k_len:] = (
+        make_causal_mask(chunk_len, chunk_len, dtype).squeeze(0).squeeze(0)
+    )
     return mask
 
 
@@ -89,8 +94,12 @@ def make_zero_kv_buffer(wrapper, dtype):
     buf = []
     for i in range(num_layers):
         hd = wrapper._get_layer_head_dim(i)
-        buf.append((torch.zeros(1, num_kv_heads, kv_max, hd, dtype=dtype),
-                   torch.zeros(1, num_kv_heads, kv_max, hd, dtype=dtype)))
+        buf.append(
+            (
+                torch.zeros(1, num_kv_heads, kv_max, hd, dtype=dtype),
+                torch.zeros(1, num_kv_heads, kv_max, hd, dtype=dtype),
+            )
+        )
     return buf
 
 
@@ -107,8 +116,10 @@ def build_masks(wrapper, seq_len, new_kv_cache_pos):
 # cann_lm model.forward (cat KV 累积)
 # ──────────────────────────────────────────────
 
-def generate_cann(model, input_ids, num_steps, dtype, chunked=False, chunk_size=8,
-                  return_logits=False):
+
+def generate_cann(
+    model, input_ids, num_steps, dtype, chunked=False, chunk_size=8, return_logits=False
+):
     """cann_lm 一次性/分 chunk prefill + greedy decode.
 
     return_logits=True (仅非 chunk): 返回 (tokens, [(label, logits), ...]).
@@ -120,7 +131,9 @@ def generate_cann(model, input_ids, num_steps, dtype, chunked=False, chunk_size=
 
     if chunked:
         if return_logits:
-            raise ValueError("return_logits 不支持 chunked 模式 (chunk prefill 多步 logits)")
+            raise ValueError(
+                "return_logits 不支持 chunked 模式 (chunk prefill 多步 logits)"
+            )
         num_chunks = (seq_len + chunk_size - 1) // chunk_size
         for chunk_idx in range(num_chunks):
             start = chunk_idx * chunk_size
@@ -129,8 +142,12 @@ def generate_cann(model, input_ids, num_steps, dtype, chunked=False, chunk_size=
             chunk_len = end - start
             mask = make_chunk_mask(chunk_len, start, dtype)
             with torch.no_grad():
-                out = model(input_ids=chunk, attention_mask=mask,
-                            past_key_values=kv, shared_kv_states=shared)
+                out = model(
+                    input_ids=chunk,
+                    attention_mask=mask,
+                    past_key_values=kv,
+                    shared_kv_states=shared,
+                )
                 logits = out["logits"]
                 kv = out["past_key_values"]
                 shared = out.get("shared_kv_states", {})
@@ -151,13 +168,17 @@ def generate_cann(model, input_ids, num_steps, dtype, chunked=False, chunk_size=
         cached_len = seq_len + len(tokens)
         mask_dec = make_decode_mask(cached_len, dtype)
         with torch.no_grad():
-            out = model(input_ids=next_token, attention_mask=mask_dec,
-                        past_key_values=kv, shared_kv_states=shared)
+            out = model(
+                input_ids=next_token,
+                attention_mask=mask_dec,
+                past_key_values=kv,
+                shared_kv_states=shared,
+            )
             logits = out["logits"]
             kv = out["past_key_values"]
             shared = out.get("shared_kv_states", {})
         if return_logits:
-            logits_list.append((f"decode{i+1}", logits.clone()))
+            logits_list.append((f"decode{i + 1}", logits.clone()))
     return (tokens, logits_list) if return_logits else tokens
 
 
@@ -165,8 +186,16 @@ def generate_cann(model, input_ids, num_steps, dtype, chunked=False, chunk_size=
 # Gemma4ExportWrapper.forward
 # ──────────────────────────────────────────────
 
-def generate_wrapper(wrapper, input_ids, num_steps, dtype, chunked=False, chunk_size=8,
-                     return_logits=False):
+
+def generate_wrapper(
+    wrapper,
+    input_ids,
+    num_steps,
+    dtype,
+    chunked=False,
+    chunk_size=8,
+    return_logits=False,
+):
     """wrapper 一次性/分 chunk prefill + greedy decode (scatter-write, 双 mask BOOL).
 
     适配当前 Gemma4ExportWrapper API (11 参 + mask_full/mask_sliding + 绝对位 new_kv_cache_pos)。
@@ -192,8 +221,18 @@ def generate_wrapper(wrapper, input_ids, num_steps, dtype, chunked=False, chunk_
             pos_ids = torch.arange(start, end, dtype=torch.int32).unsqueeze(0)
             with torch.no_grad():
                 logits, *kv_flat = wrapper(
-                    chunk, mask_full, mask_sliding, pos_ids, kv, nkp,
-                    None, None, None, None, None)
+                    chunk,
+                    mask_full,
+                    mask_sliding,
+                    pos_ids,
+                    kv,
+                    nkp,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
             kv = reconstruct_kv(kv_flat)
     else:
         nkp = torch.arange(seq_len, dtype=torch.int32)
@@ -202,8 +241,18 @@ def generate_wrapper(wrapper, input_ids, num_steps, dtype, chunked=False, chunk_
         output_pos = torch.tensor([seq_len - 1], dtype=torch.int32)
         with torch.no_grad():
             logits, *kv_flat = wrapper(
-                input_ids, mask_full, mask_sliding, pos_ids, kv, nkp,
-                None, output_pos, None, None, None)
+                input_ids,
+                mask_full,
+                mask_sliding,
+                pos_ids,
+                kv,
+                nkp,
+                None,
+                output_pos,
+                None,
+                None,
+                None,
+            )
         kv = reconstruct_kv(kv_flat)
         if return_logits:
             logits_list.append(("prefill", logits.clone()))
@@ -218,11 +267,21 @@ def generate_wrapper(wrapper, input_ids, num_steps, dtype, chunked=False, chunk_
         pos_dec = torch.tensor([[cached_pos]], dtype=torch.int32)
         with torch.no_grad():
             logits, *kv_flat = wrapper(
-                next_token, m_full, m_slide, pos_dec, kv, dec_nkp,
-                None, None, None, None, None)
+                next_token,
+                m_full,
+                m_slide,
+                pos_dec,
+                kv,
+                dec_nkp,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
         kv = reconstruct_kv(kv_flat)
         if return_logits:
-            logits_list.append((f"decode{i+1}", logits.clone()))
+            logits_list.append((f"decode{i + 1}", logits.clone()))
     return (tokens, logits_list) if return_logits else tokens
 
 
@@ -230,13 +289,17 @@ def generate_wrapper(wrapper, input_ids, num_steps, dtype, chunked=False, chunk_
 # HF transformers
 # ──────────────────────────────────────────────
 
+
 def generate_hf(hf_model, input_ids, num_steps):
     """HF model.generate greedy."""
     with torch.no_grad():
         out = hf_model.generate(
-            input_ids=input_ids, max_new_tokens=num_steps,
-            do_sample=False, pad_token_id=0)
-    return out[0][input_ids.shape[1]:].tolist()
+            input_ids=input_ids,
+            max_new_tokens=num_steps,
+            do_sample=False,
+            pad_token_id=0,
+        )
+    return out[0][input_ids.shape[1] :].tolist()
 
 
 def generate_hf_logits(hf_full, input_ids, num_steps, dtype):
@@ -246,14 +309,19 @@ def generate_hf_logits(hf_full, input_ids, num_steps, dtype):
     """
     model_hf = hf_full.model.language_model
     lm_head = hf_full.lm_head
-    softcap = (getattr(getattr(hf_full.config, "text_config", None), "final_logit_softcapping", None)
-               or getattr(hf_full.config, "final_logit_softcapping", None))
+    softcap = getattr(
+        getattr(hf_full.config, "text_config", None), "final_logit_softcapping", None
+    ) or getattr(hf_full.config, "final_logit_softcapping", None)
     seq_len = input_ids.shape[1]
 
     mask = make_causal_mask(seq_len, seq_len, dtype)
     with torch.no_grad():
-        out = model_hf(input_ids=input_ids, attention_mask=mask,
-                       past_key_values=None, use_cache=True)
+        out = model_hf(
+            input_ids=input_ids,
+            attention_mask=mask,
+            past_key_values=None,
+            use_cache=True,
+        )
         logits = lm_head(out.last_hidden_state)
         if softcap:
             logits = torch.tanh(logits / softcap) * softcap
@@ -266,13 +334,17 @@ def generate_hf_logits(hf_full, input_ids, num_steps, dtype):
         cached_len = seq_len + i
         mask_dec = torch.zeros(1, 1, 1, cached_len + 1, dtype=dtype)
         with torch.no_grad():
-            out = model_hf(input_ids=next_token, attention_mask=mask_dec,
-                           past_key_values=kv, use_cache=True)
+            out = model_hf(
+                input_ids=next_token,
+                attention_mask=mask_dec,
+                past_key_values=kv,
+                use_cache=True,
+            )
             logits = lm_head(out.last_hidden_state)
             if softcap:
                 logits = torch.tanh(logits / softcap) * softcap
             kv = out.past_key_values
-        logits_list.append((f"decode{i+1}", logits.clone()))
+        logits_list.append((f"decode{i + 1}", logits.clone()))
         tokens.append(torch.argmax(logits[:, -1, :], dim=-1).item())
     return tokens, logits_list
 
@@ -280,6 +352,7 @@ def generate_hf_logits(hf_full, input_ids, num_steps, dtype):
 # ──────────────────────────────────────────────
 # model loading
 # ──────────────────────────────────────────────
+
 
 def load_cann_model(hf_path, dtype):
     with open(f"{hf_path}/config.json") as f:
@@ -298,17 +371,31 @@ def load_cann_model(hf_path, dtype):
 # main
 # ──────────────────────────────────────────────
 
+
 def main():
-    parser = argparse.ArgumentParser(description="gemma4 chunk 推理验证 (chunk vs 非 chunk + 可选 HF)")
-    parser.add_argument("--mode", choices=["cann", "wrapper"], default="cann",
-                        help="cann_lm model.forward (cat KV) 或 Gemma4ExportWrapper")
+    parser = argparse.ArgumentParser(
+        description="gemma4 chunk 推理验证 (chunk vs 非 chunk + 可选 HF)"
+    )
+    parser.add_argument(
+        "--mode",
+        choices=["cann", "wrapper"],
+        default="cann",
+        help="cann_lm model.forward (cat KV) 或 Gemma4ExportWrapper",
+    )
     parser.add_argument("--vs-hf", action="store_true", help="加 HF transformers 对比")
     parser.add_argument("--chunk-size", type=int, default=8)
     parser.add_argument("--num-steps", type=int, default=10)
-    parser.add_argument("--prompt", type=str, default=None, help="单 prompt (默认三 prompt)")
-    parser.add_argument("--token-level", action="store_true", help="打印 token 级详细对比")
-    parser.add_argument("--logits-diff", action="store_true",
-                        help="逐 step logits 精度对比 vs HF (非 chunk, 隐含 --vs-hf, 用 HF model+lm_head 拆解)")
+    parser.add_argument(
+        "--prompt", type=str, default=None, help="单 prompt (默认三 prompt)"
+    )
+    parser.add_argument(
+        "--token-level", action="store_true", help="打印 token 级详细对比"
+    )
+    parser.add_argument(
+        "--logits-diff",
+        action="store_true",
+        help="逐 step logits 精度对比 vs HF (非 chunk, 隐含 --vs-hf, 用 HF model+lm_head 拆解)",
+    )
     args = parser.parse_args()
 
     if args.logits_diff:
@@ -320,7 +407,9 @@ def main():
     print("[1/3] Loading model")
     model, config = load_cann_model(HF_PATH, dtype)
     print(f"  cann_lm params: {sum(p.numel() for p in model.parameters()):,}")
-    print(f"  Layers: {config.num_hidden_layers} (shared: {getattr(config, 'num_kv_shared_layers', 0)})")
+    print(
+        f"  Layers: {config.num_hidden_layers} (shared: {getattr(config, 'num_kv_shared_layers', 0)})"
+    )
 
     wrapper = None
     if args.mode == "wrapper":
@@ -330,38 +419,48 @@ def main():
     hf_model = None
     if args.vs_hf:
         from transformers import Gemma4ForConditionalGeneration as HFModel
+
         print("  Loading HF model (bfloat16)...")
         hf_model = HFModel.from_pretrained(HF_PATH, torch_dtype=dtype).eval()
         print(f"  HF params: {sum(p.numel() for p in hf_model.parameters()):,}")
 
     from transformers import AutoTokenizer
+
     tokenizer = AutoTokenizer.from_pretrained(HF_PATH)
     print(f"  Tokenizer: {tokenizer.__class__.__name__}")
 
     all_pass = True
     for prompt in prompts:
-        print(f"\n{'='*60}")
-        print(f"[2/3] Prompt: \"{prompt}\"")
-        print(f"{'='*60}")
+        print(f"\n{'=' * 60}")
+        print(f'[2/3] Prompt: "{prompt}"')
+        print(f"{'=' * 60}")
 
         ids = tokenizer.encode(prompt, add_special_tokens=False)
         input_ids = torch.tensor([[BOS_TOKEN_ID] + ids], dtype=torch.long)
         seq_len = input_ids.shape[1]
         num_chunks = (seq_len + args.chunk_size - 1) // args.chunk_size
-        print(f"  tokens: {seq_len} (含 BOS), chunks: {num_chunks} (size={args.chunk_size})")
+        print(
+            f"  tokens: {seq_len} (含 BOS), chunks: {num_chunks} (size={args.chunk_size})"
+        )
 
         if args.logits_diff:
             # logits 精度对比 (非 chunk): cann/wrapper 逐 step vs HF (model+lm_head+softcap 拆解)
             if args.mode == "cann":
-                tokens_a, logits_a = generate_cann(model, input_ids, args.num_steps, dtype, return_logits=True)
+                tokens_a, logits_a = generate_cann(
+                    model, input_ids, args.num_steps, dtype, return_logits=True
+                )
             else:
-                tokens_a, logits_a = generate_wrapper(wrapper, input_ids, args.num_steps, dtype, return_logits=True)
-            tokens_hf, logits_hf = generate_hf_logits(hf_model, input_ids, args.num_steps, dtype)
+                tokens_a, logits_a = generate_wrapper(
+                    wrapper, input_ids, args.num_steps, dtype, return_logits=True
+                )
+            tokens_hf, logits_hf = generate_hf_logits(
+                hf_model, input_ids, args.num_steps, dtype
+            )
             text_a = tokenizer.decode(tokens_a, skip_special_tokens=True)
             text_hf = tokenizer.decode(tokens_hf, skip_special_tokens=True)
-            print(f"\n  A (非 chunk): \"{text_a}\"")
-            print(f"  HF:           \"{text_hf}\"")
-            print(f"  logits 逐 step 对比 (atol=1e-2):")
+            print(f'\n  A (非 chunk): "{text_a}"')
+            print(f'  HF:           "{text_hf}"')
+            print("  logits 逐 step 对比 (atol=1e-2):")
             all_logits_match = True
             for (label_a, la), (_, lh) in zip(logits_a, logits_hf):
                 diff = (la.float() - lh.float()).abs().max().item()
@@ -369,13 +468,19 @@ def main():
                 tok_a = torch.argmax(la[:, -1, :], dim=-1).item()
                 tok_h = torch.argmax(lh[:, -1, :], dim=-1).item()
                 all_logits_match = all_logits_match and match and (tok_a == tok_h)
-                print(f"    {label_a}: max_diff={diff:.6e} allclose={match} "
-                      f"tok_a={tok_a} tok_hf={tok_h} match={tok_a==tok_h}")
+                print(
+                    f"    {label_a}: max_diff={diff:.6e} allclose={match} "
+                    f"tok_a={tok_a} tok_hf={tok_h} match={tok_a == tok_h}"
+                )
             # generate_hf_logits tokens 含 prefill argmax (长度 N+1), 对齐 generate_cann (长度 N, decode only)
-            tok_match = tokens_a == tokens_hf[:len(tokens_a)]
-            all_pass = all_pass and tok_match   # token match 即 PASS (logits allclose 是 bfloat16 精度参考, 非判定)
-            print(f"\n  A==HF tokens: {tok_match}   logits allclose: {all_logits_match} "
-                  f"(bfloat16 数值差异预期, 见 converter_design.md 精度差异分析)")
+            tok_match = tokens_a == tokens_hf[: len(tokens_a)]
+            all_pass = (
+                all_pass and tok_match
+            )  # token match 即 PASS (logits allclose 是 bfloat16 精度参考, 非判定)
+            print(
+                f"\n  A==HF tokens: {tok_match}   logits allclose: {all_logits_match} "
+                f"(bfloat16 数值差异预期, 见 converter_design.md 精度差异分析)"
+            )
             continue
 
         # A: 非 chunk
@@ -384,17 +489,29 @@ def main():
         else:
             tokens_a = generate_wrapper(wrapper, input_ids, args.num_steps, dtype)
         text_a = tokenizer.decode(tokens_a, skip_special_tokens=True)
-        print(f"\n  A (非 chunk): \"{text_a}\"")
+        print(f'\n  A (非 chunk): "{text_a}"')
 
         # B: chunk
         if args.mode == "cann":
-            tokens_b = generate_cann(model, input_ids, args.num_steps, dtype,
-                                     chunked=True, chunk_size=args.chunk_size)
+            tokens_b = generate_cann(
+                model,
+                input_ids,
+                args.num_steps,
+                dtype,
+                chunked=True,
+                chunk_size=args.chunk_size,
+            )
         else:
-            tokens_b = generate_wrapper(wrapper, input_ids, args.num_steps, dtype,
-                                        chunked=True, chunk_size=args.chunk_size)
+            tokens_b = generate_wrapper(
+                wrapper,
+                input_ids,
+                args.num_steps,
+                dtype,
+                chunked=True,
+                chunk_size=args.chunk_size,
+            )
         text_b = tokenizer.decode(tokens_b, skip_special_tokens=True)
-        print(f"  B (chunk):    \"{text_b}\"")
+        print(f'  B (chunk):    "{text_b}"')
 
         ab_match = tokens_a == tokens_b
         all_pass = all_pass and ab_match
@@ -403,7 +520,7 @@ def main():
         if args.vs_hf:
             tokens_hf = generate_hf(hf_model, input_ids, args.num_steps)
             text_hf = tokenizer.decode(tokens_hf, skip_special_tokens=True)
-            print(f"  HF:           \"{text_hf}\"")
+            print(f'  HF:           "{text_hf}"')
             hf_a = tokens_hf == tokens_a
             hf_b = tokens_hf == tokens_b
             all_pass = all_pass and hf_a
@@ -415,10 +532,12 @@ def main():
             if args.vs_hf:
                 print(f"  HF tokens: {tokens_hf}")
 
-    print(f"\n{'='*60}")
-    print(f"[3/3] Summary: mode={args.mode}, chunk_size={args.chunk_size}, "
-          f"steps={args.num_steps}, vs_hf={args.vs_hf}")
-    print(f"{'='*60}")
+    print(f"\n{'=' * 60}")
+    print(
+        f"[3/3] Summary: mode={args.mode}, chunk_size={args.chunk_size}, "
+        f"steps={args.num_steps}, vs_hf={args.vs_hf}"
+    )
+    print(f"{'=' * 60}")
     if all_pass:
         print("[PASS] chunk 推理与非 chunk 一致" + (" + HF 一致" if args.vs_hf else ""))
     else:

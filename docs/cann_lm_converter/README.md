@@ -46,7 +46,7 @@ converter 把 HF 模型导出为 epair，供 C++ 后端加载编译 OM。三阶�
 cann_lm_converter.py (CLI)                                          ← cli_design.md
     │
     ├── parse_args()  ← --hf-path, --output-dir, --target-soc, --mode,
-    │                    --kv-cache-max-len, [--quant-path | --quant-method gptq]
+    │                    [--quant-path | --quant-method gptq]
     ▼
 convert(hf_path, output_dir, dtype, ...)
     │
@@ -67,7 +67,7 @@ loader.load_model(hf_path, dtype, device)                          ← export_de
 saver.save_epair(...) / save_epair_prefill_decode(...)             ← export_design.md
     │   ① register_ge_converters
     │   ② wrapper = artifact.wrapper_cls(model, ...).eval()
-    │   ③ wrapper.get_sample_inputs(seq_len, use_embeddings)
+    │   ③ wrapper.get_sample_inputs(use_embeddings)
     │   ④ (use_embeddings) _extract_host_side_weights + detach_externalized_lookups
     │   ⑤ torch.export.export(wrapper, sample, strict=False)
     │   ⑥ torch_delegate.export_to_epair(ep) → epair
@@ -174,18 +174,6 @@ C++ EpairModelLoader → GetGEGraph → aclgrphBuildModel → .om        ← exp
 
 ## 快速开始
 
-```bash
-source /home/developer/Ascend/cann/set_env.sh
-export LD_LIBRARY_PATH=/mnt/workspace/CANN-LM_5883/deps/torchair/build/stubs:${ASCEND_HOME_PATH}/lib64:${LD_LIBRARY_PATH:-}
-export PYTHONPATH=/mnt/workspace/CANN-LM_5883:${PYTHONPATH:-}
-export TORCH_DEVICE_BACKEND_AUTOLOAD=0
-export TORCH_DELEGATE_ENABLE_FALLBACK_CODEGEN=0
+详见 [快速入门](../QUICKSTART.md)（安装 / 导出 epair / 量化导出 / omc 编译 / 部署到鸿蒙设备）和 [构建指南](../build_guide.md)（构建前置 / 一键构建 / FAQ）。
 
-# 导出 epair（single 模式）
-python cann_lm/converter/cann_lm_converter.py \
-    --hf-path /path/to/qwen3.5-0.8B \
-    --output-dir /path/to/output \
-    --mode single
-```
-
-> 完整使用示例（single / prefill-decode / 量化）见 [cli_design.md](./cli/cli_design.md) "使用示例"。环境配置见 [AGENTS.md](../../AGENTS.md) "运行环境设置"。
+> CLI 参数速查见 [cli/INDEX.md](./cli/INDEX.md)「命令行参数速查」，完整设计见 [cli_design.md](./cli/cli_design.md)。

@@ -23,7 +23,9 @@ class ExportWrapper(nn.Module):
     None placeholder); gemma4 also passes per_layer_token_identity for PLE.
     """
 
-    def __init__(self, model: nn.Module, *, kv_cache_max_len: int = 2048, batch: int = 1):
+    def __init__(
+        self, model: nn.Module, *, kv_cache_max_len: int = 2048, batch: int = 1
+    ):
         super().__init__()
         self.model = model
         self.config = model.config
@@ -33,7 +35,9 @@ class ExportWrapper(nn.Module):
         # quant-embeddings mode: {fqn: (int8_weight, per_channel_scale)} set by set_quant_embeddings
         self._quant_embeddings: dict[str, tuple[torch.Tensor, torch.Tensor]] = {}
 
-    def set_quant_embeddings(self, quant: dict[str, tuple[torch.Tensor, torch.Tensor]]) -> None:
+    def set_quant_embeddings(
+        self, quant: dict[str, tuple[torch.Tensor, torch.Tensor]]
+    ) -> None:
         """Inject host-lookup int8 + per-channel scale (quant-embeddings mode); get_sample_inputs gathers, forward dequants."""
         self._quant_embeddings = dict(quant)
 
@@ -90,8 +94,12 @@ class ExportWrapper(nn.Module):
         """
         raise NotImplementedError
 
-    def get_sample_inputs(self, seq_len: int = 128, use_embeddings: bool = False,
-                          quant_embeddings: bool = False) -> tuple:
+    def get_sample_inputs(
+        self,
+        seq_len: int = 128,
+        use_embeddings: bool = False,
+        quant_embeddings: bool = False,
+    ) -> tuple:
         """Build sample inputs for export (scatter-write: pre-allocated zero KV buffer + causal-over-buffer mask).
 
         Requires attention to use index_copy scatter-write (K dim = kv_cache_max_len); non-scatter
@@ -104,29 +112,41 @@ class ExportWrapper(nn.Module):
         dtype = next(self.model.parameters()).dtype
         kv_max = self.kv_cache_max_len
 
-        input_ids = torch.randint(0, vocab_size, (self.batch, seq_len), dtype=torch.int64)
+        input_ids = torch.randint(
+            0, vocab_size, (self.batch, seq_len), dtype=torch.int64
+        )
 
         # 4D causal mask [batch, 1, seq_len, kv_max] — causal over buffer (scatter-write).
         # BOOL mask (False=attend, True=mask out): kirinx90 无 FP16→BOOL Cast kernel, 须直传 BOOL.
         q_pos = torch.arange(seq_len, dtype=torch.int32).unsqueeze(1)  # [seq_len, 1]
-        k_pos = torch.arange(kv_max, dtype=torch.int32).unsqueeze(0)   # [1, kv_max]
-        mask = k_pos <= q_pos                                           # [seq_len, kv_max] bool (True=attend)
-        attention_mask = (~mask).unsqueeze(0).unsqueeze(0).expand(self.batch, 1, seq_len, kv_max)
+        k_pos = torch.arange(kv_max, dtype=torch.int32).unsqueeze(0)  # [1, kv_max]
+        mask = k_pos <= q_pos  # [seq_len, kv_max] bool (True=attend)
+        attention_mask = (
+            (~mask).unsqueeze(0).unsqueeze(0).expand(self.batch, 1, seq_len, kv_max)
+        )
 
-        position_ids = torch.arange(seq_len, dtype=torch.int32).unsqueeze(0).repeat(self.batch, 1)
+        position_ids = (
+            torch.arange(seq_len, dtype=torch.int32).unsqueeze(0).repeat(self.batch, 1)
+        )
         new_kv_cache_pos = torch.arange(seq_len, dtype=torch.int32)
         output_pos = torch.tensor([seq_len - 1], dtype=torch.int32)
 
         past_key_values = []
         for i in range(num_layers):
             layer_head_dim = self._get_layer_head_dim(i)
-            k = torch.zeros(self.batch, num_kv_heads, kv_max, layer_head_dim, dtype=dtype)
-            v = torch.zeros(self.batch, num_kv_heads, kv_max, layer_head_dim, dtype=dtype)
+            k = torch.zeros(
+                self.batch, num_kv_heads, kv_max, layer_head_dim, dtype=dtype
+            )
+            v = torch.zeros(
+                self.batch, num_kv_heads, kv_max, layer_head_dim, dtype=dtype
+            )
             past_key_values.append((k, v))
 
         if use_embeddings:
             extras = self._build_external_extras(input_ids)
-            ple = extras[0] if extras else None  # per_layer_token_identity (gemma4 PLE; qwen3_5=None)
+            ple = (
+                extras[0] if extras else None
+            )  # per_layer_token_identity (gemma4 PLE; qwen3_5=None)
             if quant_embeddings:
                 # int8 per-channel: host gathers int8_weight[input_ids] + scale[input_ids]; graph entry dequants (base forward).
                 q_w, q_s = self._quant_embeddings["model.model.embed_tokens.weight"]
@@ -175,7 +195,9 @@ class ExportWrapper(nn.Module):
         """KV head dim per layer (default config.head_dim; override for per-layer head_dim e.g. gemma4)."""
         return self.config.head_dim
 
-    def _build_external_extras(self, input_ids: torch.Tensor) -> tuple[torch.Tensor, ...]:
+    def _build_external_extras(
+        self, input_ids: torch.Tensor
+    ) -> tuple[torch.Tensor, ...]:
         """Pure-embeddings extra host-computed graph inputs beyond embeddings (default empty; override for PLE etc.)."""
         return ()
 
@@ -193,7 +215,9 @@ class ExportWrapper(nn.Module):
         if hasattr(text_model, "embed_tokens"):
             del text_model.embed_tokens
 
-    def make_sample_inputs(self, seq_len: int = 8, dtype: torch.dtype | None = None) -> tuple:
+    def make_sample_inputs(
+        self, seq_len: int = 8, dtype: torch.dtype | None = None
+    ) -> tuple:
         """Build sample inputs for ONNX export with pre-allocated KV buffer (unlike get_sample_inputs' past=None)."""
         config = self.config
         num_kv_heads = config.num_key_value_heads
@@ -203,33 +227,55 @@ class ExportWrapper(nn.Module):
         if dtype is None:
             dtype = next(self.model.parameters()).dtype
 
-        input_ids = torch.randint(0, vocab_size, (self.batch, seq_len), dtype=torch.int64)
+        input_ids = torch.randint(
+            0, vocab_size, (self.batch, seq_len), dtype=torch.int64
+        )
 
         # attention_mask [batch, 1, seq_len, kv_max] — causal over buffer (BOOL).
         q_pos = torch.arange(seq_len, dtype=torch.int32).unsqueeze(1)
         k_pos = torch.arange(kv_max, dtype=torch.int32).unsqueeze(0)
         mask = k_pos <= q_pos
-        attention_mask = (~mask).unsqueeze(0).unsqueeze(0).expand(self.batch, 1, seq_len, kv_max)
+        attention_mask = (
+            (~mask).unsqueeze(0).unsqueeze(0).expand(self.batch, 1, seq_len, kv_max)
+        )
 
-        position_ids = torch.arange(seq_len, dtype=torch.int32).unsqueeze(0).repeat(self.batch, 1)
+        position_ids = (
+            torch.arange(seq_len, dtype=torch.int32).unsqueeze(0).repeat(self.batch, 1)
+        )
 
         past_key_values = []
         for i in range(num_layers):
             layer_head_dim = self._get_layer_head_dim(i)
-            k = torch.zeros(self.batch, num_kv_heads, kv_max, layer_head_dim, dtype=dtype)
-            v = torch.zeros(self.batch, num_kv_heads, kv_max, layer_head_dim, dtype=dtype)
+            k = torch.zeros(
+                self.batch, num_kv_heads, kv_max, layer_head_dim, dtype=dtype
+            )
+            v = torch.zeros(
+                self.batch, num_kv_heads, kv_max, layer_head_dim, dtype=dtype
+            )
             past_key_values.append((k, v))
 
         new_kv_cache_pos = torch.arange(seq_len, dtype=torch.int32)
 
         # embeddings=None (in-graph lookup); output_pos=None (return all logits).
-        return (input_ids, attention_mask, position_ids, past_key_values,
-                new_kv_cache_pos, None, None)
+        return (
+            input_ids,
+            attention_mask,
+            position_ids,
+            past_key_values,
+            new_kv_cache_pos,
+            None,
+            None,
+        )
 
     def make_input_output_names(self) -> tuple[list[str], list[str]]:
         """Generate ONNX input/output names (generic; mixed-layer models like qwen3.5 override)."""
         n = self._num_layers()
-        input_names = ["input_ids", "attention_mask", "position_ids", "new_kv_cache_pos"]
+        input_names = [
+            "input_ids",
+            "attention_mask",
+            "position_ids",
+            "new_kv_cache_pos",
+        ]
         for i in range(n):
             input_names.extend([f"past_key_{i}", f"past_value_{i}"])
         output_names = ["logits"]

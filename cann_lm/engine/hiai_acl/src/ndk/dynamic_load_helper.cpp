@@ -15,16 +15,11 @@
 
 namespace hiai {
 
-DynamicLoadHelper::DynamicLoadHelper()
-{
-}
+DynamicLoadHelper::DynamicLoadHelper() {}
 
-DynamicLoadHelper::~DynamicLoadHelper()
-{
-    Deinit();
-}
+DynamicLoadHelper::~DynamicLoadHelper() { Deinit(); }
 
-bool DynamicLoadHelper::Init(const std::string &file, bool isNeedClose)
+bool DynamicLoadHelper::Init(const std::string& file, bool isNeedClose)
 {
     std::lock_guard<std::mutex> lock(funcMapMutex_);
     if (handle_ != nullptr) {
@@ -69,12 +64,9 @@ void DynamicLoadHelper::Deinit()
     funcMap_.clear();
 }
 
-bool DynamicLoadHelper::IsValid() const
-{
-    return handle_ != nullptr;
-}
+bool DynamicLoadHelper::IsValid() const { return handle_ != nullptr; }
 
-void* DynamicLoadHelper::GetSymbol(const std::string &symbol)
+void* DynamicLoadHelper::GetSymbol(const std::string& symbol)
 {
     std::lock_guard<std::mutex> lock(funcMapMutex_);
     if (handle_ == nullptr) {
@@ -94,4 +86,4 @@ void* DynamicLoadHelper::GetSymbol(const std::string &symbol)
     return funcPtr;
 }
 
-}  // namespace hiai
+} // namespace hiai

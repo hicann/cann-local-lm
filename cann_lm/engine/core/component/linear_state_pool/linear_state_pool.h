@@ -13,8 +13,8 @@
 // ═══════════════════════════════════════════════════════════════════════════
 #pragma once
 
-#include "core/component/kv_cache_pool/kv_cache_pool.h"   // SlotId（槽位体系沿用）
-#include "core/tensor_manager.h"   // ITensorBuffer/TensorDesc/DataType/TensorManager
+#include "core/component/kv_cache_pool/kv_cache_pool.h" // SlotId（槽位体系沿用）
+#include "core/tensor_manager.h"                        // ITensorBuffer/TensorDesc/DataType/TensorManager
 #include "infra/status.h"
 
 #include <cstddef>
@@ -65,12 +65,11 @@ private:
     /// 全局层号 → tensors_ 组下标；非 linear 层 → -1（linear_layer_ids_ 升序）。
     int GroupIndex(int layer) const noexcept;
 
-    std::vector<int> linear_layer_ids_;   ///< linear 层全局层号（升序，构造后不可变）
+    std::vector<int> linear_layer_ids_; ///< linear 层全局层号（升序，构造后不可变）
     /// 每已就绪 linear 层一组 [conv, r]（与 linear_layer_ids_ 同序）；
     /// 组内元素未 Ensure 时为空。
-    std::vector<std::pair<std::shared_ptr<ITensorBuffer>,
-                          std::shared_ptr<ITensorBuffer>>> tensors_;
-    mutable std::mutex mtx_;   ///< 保护 tensors_（linear_layer_ids_ 不可变免锁）
+    std::vector<std::pair<std::shared_ptr<ITensorBuffer>, std::shared_ptr<ITensorBuffer>>> tensors_;
+    mutable std::mutex mtx_; ///< 保护 tensors_（linear_layer_ids_ 不可变免锁）
 };
 
-}  // namespace cann_lm::engine
+} // namespace cann_lm::engine

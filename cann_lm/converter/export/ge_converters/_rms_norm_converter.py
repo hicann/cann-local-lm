@@ -17,6 +17,7 @@
 Mirrors torchair custom/npu_rms_norm.py (ge.RmsNorm) so cann_lm::rms_norm (migrated
 from cann_lm::rms_norm to avoid torch_npu duplicate-registration) maps identically.
 """
+
 from typing import Any
 
 
@@ -30,4 +31,5 @@ def convert_rms_norm(
     """cann_lm::rms_norm(Tensor self, Tensor gamma, float epsilon) -> (Tensor y, Tensor rstd)."""
     del meta_outputs
     from torchair._ge_concrete_graph import ge_apis as ge
+
     return ge.RmsNorm(self, gamma, epsilon=epsilon)

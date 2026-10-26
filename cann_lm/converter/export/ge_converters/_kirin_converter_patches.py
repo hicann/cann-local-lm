@@ -26,7 +26,10 @@ def register_kirin_patches() -> None:
     from torchair.ge import attr
     from torchair._ge_concrete_graph.compat_ir import ge_op
     from torchair._ge_concrete_graph.ge_converter.converter_utils import (
-        Tensor, TensorSpec, DataType, dtype_promote,
+        Tensor,
+        TensorSpec,
+        DataType,
+        dtype_promote,
     )
     from torchair.ge._ge_graph import dont_prune_me
 
@@ -56,14 +59,20 @@ def register_kirin_patches() -> None:
     @register_fx_node_ge_converter(torch.ops.aten.mm.default)
     def _kirin_aten_mm(self: Tensor, mat2: Tensor, meta_outputs: TensorSpec = None):
         if self.dtype == DataType.DT_INT8 or mat2.dtype == DataType.DT_INT8:
-            raise RuntimeError("aten.mm default ge_converter is not support int8 dtype!")
+            raise RuntimeError(
+                "aten.mm default ge_converter is not support int8 dtype!"
+            )
         self, mat2 = dtype_promote(self, mat2, target_dtype=meta_outputs.dtype)
         return _matmul_v3(self, mat2)
 
     @register_fx_node_ge_converter(torch.ops.aten.matmul.default)
-    def _kirin_aten_matmul(self: Tensor, other: Tensor, meta_outputs: TensorSpec = None):
+    def _kirin_aten_matmul(
+        self: Tensor, other: Tensor, meta_outputs: TensorSpec = None
+    ):
         if self.dtype == DataType.DT_INT8 or other.dtype == DataType.DT_INT8:
-            raise RuntimeError("aten.matmul default ge_converter is not support int8 dtype!")
+            raise RuntimeError(
+                "aten.matmul default ge_converter is not support int8 dtype!"
+            )
         if self.rank >= 3 or other.rank >= 3:
             self, other = dtype_promote(self, other, target_dtype=meta_outputs.dtype)
             return _batch_matmul_v3(self, other)
@@ -73,7 +82,9 @@ def register_kirin_patches() -> None:
     @register_fx_node_ge_converter(torch.ops.aten.bmm.default)
     def _kirin_aten_bmm(self: Tensor, mat2: Tensor, meta_outputs: TensorSpec = None):
         if self.dtype == DataType.DT_INT8 or mat2.dtype == DataType.DT_INT8:
-            raise RuntimeError("aten.bmm default ge_converter is not support int8 dtype!")
+            raise RuntimeError(
+                "aten.bmm default ge_converter is not support int8 dtype!"
+            )
         self, mat2 = dtype_promote(self, mat2, target_dtype=meta_outputs.dtype)
         return _batch_matmul_v3(self, mat2)
 
@@ -153,7 +164,9 @@ def register_kirin_patches() -> None:
             if end == 9223372036854775807:
                 end = 2147483647
             elif end > 2147483647:
-                raise RuntimeError("StridedSlice does not support shapes exceeding INT32_MAX!")
+                raise RuntimeError(
+                    "StridedSlice does not support shapes exceeding INT32_MAX!"
+                )
         rank = self.rank
         mask = (1 << rank) - 1 - (1 << dim)
         begin_arr = [0] * rank
@@ -166,11 +179,15 @@ def register_kirin_patches() -> None:
         end_t = ge.Const(end_arr, dtype=DataType.DT_INT32)
         strides_t = ge.Const(strides_arr, dtype=DataType.DT_INT32)
         result = ge.StridedSlice(
-            self, begin_t, end_t, strides_t,
-            begin_mask=mask, end_mask=mask,
+            self,
+            begin_t,
+            end_t,
+            strides_t,
+            begin_mask=mask,
+            end_mask=mask,
         )
         # 预填 output shape (避免 IsUnknownShapeNode shape_range 空 → AICPU)
-        if meta_outputs and hasattr(meta_outputs, 'size') and meta_outputs.size:
+        if meta_outputs and hasattr(meta_outputs, "size") and meta_outputs.size:
             del result.desc.shape.dim[:]
             result.desc.shape.dim.extend([int(d) for d in meta_outputs.size])
             result.desc.dtype = self.dtype
@@ -180,17 +197,31 @@ def register_kirin_patches() -> None:
     #    Transpose perm 在 input(Const) 时, GE InferShape 推出 shape 但不填 shape_range
     #    → IsUnknownShapeNode 判定 unknown → AICPU. 预填 output shape 避免.
     @register_fx_node_ge_converter(torch.ops.aten.transpose.int)
-    def _kirin_transpose(self: Tensor, dim0: int = 0, dim1: int = 1, *, meta_outputs: TensorSpec = None):
+    def _kirin_transpose(
+        self: Tensor, dim0: int = 0, dim1: int = 1, *, meta_outputs: TensorSpec = None
+    ):
         self = dtype_promote(self, target_dtype=meta_outputs.dtype)
-        in_dims = list(self.desc.shape.dim) if hasattr(self, 'desc') and self.desc.shape.dim else []
-        rank = len(in_dims) if in_dims else (len(meta_outputs.size) if meta_outputs and hasattr(meta_outputs, 'size') else 2)
+        in_dims = (
+            list(self.desc.shape.dim)
+            if hasattr(self, "desc") and self.desc.shape.dim
+            else []
+        )
+        rank = (
+            len(in_dims)
+            if in_dims
+            else (
+                len(meta_outputs.size)
+                if meta_outputs and hasattr(meta_outputs, "size")
+                else 2
+            )
+        )
         perm = list(range(rank))
         d0 = dim0 if dim0 >= 0 else dim0 + rank
         d1 = dim1 if dim1 >= 0 else dim1 + rank
         perm[d0], perm[d1] = perm[d1], perm[d0]
         perm_t = ge.Const(perm, dtype=DataType.DT_INT64)
         result = ge.Transpose(self, perm_t)
-        if meta_outputs and hasattr(meta_outputs, 'size') and meta_outputs.size:
+        if meta_outputs and hasattr(meta_outputs, "size") and meta_outputs.size:
             del result.desc.shape.dim[:]
             result.desc.shape.dim.extend([int(d) for d in meta_outputs.size])
             result.desc.dtype = self.dtype
@@ -204,7 +235,9 @@ def register_kirin_patches() -> None:
     #    kirin aicore 只有 ConcatD (非 ConcatV2); V2 全落 aicpu。
     @register_fx_node_ge_converter(torch.ops.aten.cat.default)
     def _kirin_aten_cat(tensors: list, dim: int = 0, meta_outputs: TensorSpec = None):
-        tensors = [dtype_promote(arg, target_dtype=meta_outputs.dtype) for arg in tensors]
+        tensors = [
+            dtype_promote(arg, target_dtype=meta_outputs.dtype) for arg in tensors
+        ]
         return ge.ConcatD(tensors, concat_dim=dim, N=len(tensors))
 
     # ── 7. Conv2D -> Conv2DV2 (kirin aicore 只有 Conv2DV2, 无 plain Conv2D) ──
@@ -228,9 +261,17 @@ def register_kirin_patches() -> None:
         # Conv2DV2 InferShape 要求 NCHW format (不是 ND), 否则 group check 用错索引
         x4.desc.layout = "NCHW"
         w4.desc.layout = "NCHW"
-        w_dims = list(weight.desc.shape.dim) if hasattr(weight, "desc") and weight.desc.shape.dim else [1]
+        w_dims = (
+            list(weight.desc.shape.dim)
+            if hasattr(weight, "desc") and weight.desc.shape.dim
+            else [1]
+        )
         out_channels = w_dims[0] if w_dims else 1
-        bias_in = bias if bias is not None else ge.Const([0] * out_channels, dtype=DataType.DT_FLOAT16)
+        bias_in = (  # noqa: F841  # ge.Const builds graph node; keep call
+            bias
+            if bias is not None
+            else ge.Const([0] * out_channels, dtype=DataType.DT_FLOAT16)
+        )
         out4 = ge_op(
             op_type="Conv2DV2",
             inputs={"x": x4, "filter": w4},

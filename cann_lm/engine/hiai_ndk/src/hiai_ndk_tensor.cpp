@@ -30,7 +30,7 @@ Status HIAI_NDK_HiAITensor_GetCacheStatus(NN_Tensor* tensor, uint8_t* cacheStatu
     return SUCCESS;
 }
 
-NN_Tensor* HIAI_NDK_HiAITensor_CreateKVCache(NN_TensorDesc *tensorDesc, size_t kvCacheNum, size_t tileSize)
+NN_Tensor* HIAI_NDK_HiAITensor_CreateKVCache(NN_TensorDesc* tensorDesc, size_t kvCacheNum, size_t tileSize)
 {
     HIAI_EXPECT_NOT_NULL_R(tensorDesc, nullptr);
     auto createFunc = reinterpret_cast<decltype(HMS_HiAITensor_CreateKVCache)*>(
@@ -41,7 +41,7 @@ NN_Tensor* HIAI_NDK_HiAITensor_CreateKVCache(NN_TensorDesc *tensorDesc, size_t k
     return createFunc(tensorDesc, kvCacheNum, tileSize, id);
 }
 
-Status HIAI_NDK_HiAITensor_ResizeKVCache(NN_Tensor *tensor, size_t size)
+Status HIAI_NDK_HiAITensor_ResizeKVCache(NN_Tensor* tensor, size_t size)
 {
     HIAI_EXPECT_NOT_NULL(tensor);
     auto resizeFunc = reinterpret_cast<decltype(HMS_HiAITensor_ResizeKVCache)*>(
@@ -53,4 +53,4 @@ Status HIAI_NDK_HiAITensor_ResizeKVCache(NN_Tensor *tensor, size_t size)
     return SUCCESS;
 }
 
-}  // namespace hiai
+} // namespace hiai

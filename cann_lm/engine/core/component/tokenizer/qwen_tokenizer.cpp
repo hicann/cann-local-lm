@@ -24,10 +24,11 @@ namespace {
 // [a-zA-Z]ü 分支）。字节级匹配。**钉死 classic locale 编译**（外审 F-07）：
 // 否则 std::regex 按构造时全局 locale 分类 [:alpha:]——宿主进程切到单字节
 // 扩展字符集（如 ISO-8859-1）时 0x80-0xFF 字节分类改变，切分静默分叉。
-const std::regex& PretokRegex() {
+const std::regex& PretokRegex()
+{
     static const std::regex re = [] {
         std::regex r;
-        r.imbue(std::locale::classic());  // 先钉 locale 再编译
+        r.imbue(std::locale::classic()); // 先钉 locale 再编译
         r.assign(
             R"('s|'t|'re|'ve|'m|'ll|'d|[a-zA-Z]ü|[^\r\n[:alpha:][:digit:]]?[[:alpha:]]+|[[:digit:]]| ?[^\s[:alpha:][:digit:]]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+)");
         return r;
@@ -37,42 +38,44 @@ const std::regex& PretokRegex() {
 
 // ByteLevel byte→unicode 映射（GPT-2 标准）：可打印区间恒等，其余映射到
 // U+0100 起的 68 个码点。byte_encoder[b] = 映射码点；byte_decoder 反查。
-const std::array<unsigned, 256>& ByteEncoder() {
+const std::array<unsigned, 256>& ByteEncoder()
+{
     static const std::array<unsigned, 256> tbl = [] {
         std::array<unsigned, 256> t{};
         int n = 0;
         for (int b = 0; b < 256; ++b) {
-            const bool identity =
-                (b >= 33 && b <= 126) || (b >= 161 && b <= 172) || (b >= 174 && b <= 255);
-            t[static_cast<size_t>(b)] = identity ? static_cast<unsigned>(b)
-                                                  : static_cast<unsigned>(256 + n++);
+            const bool identity = (b >= 33 && b <= 126) || (b >= 161 && b <= 172) || (b >= 174 && b <= 255);
+            t[static_cast<size_t>(b)] = identity ? static_cast<unsigned>(b) : static_cast<unsigned>(256 + n++);
         }
         return t;
     }();
     return tbl;
 }
 
-const std::unordered_map<unsigned, unsigned>& ByteDecoder() {
+const std::unordered_map<unsigned, unsigned>& ByteDecoder()
+{
     static const std::unordered_map<unsigned, unsigned> tbl = [] {
         std::unordered_map<unsigned, unsigned> t;
         const auto& enc = ByteEncoder();
-        for (int b = 0; b < 256; ++b) t.emplace(enc[static_cast<size_t>(b)], static_cast<unsigned>(b));
+        for (int b = 0; b < 256; ++b)
+            t.emplace(enc[static_cast<size_t>(b)], static_cast<unsigned>(b));
         return t;
     }();
     return tbl;
 }
 
-}  // namespace
+} // namespace
 
-QwenTokenizer::QwenTokenizer(const TokenizerConfig& cfg, Status* status) {
+QwenTokenizer::QwenTokenizer(const TokenizerConfig& cfg, Status* status)
+{
     VocabSource src;
-    src.artifact = std::filesystem::path(cfg.tokenizer_file);   // D-14：词表路径入配置
+    src.artifact = std::filesystem::path(cfg.tokenizer_file); // D-14：词表路径入配置
     // special 通道与词表可用性解耦（SR20260903001 4.1.4）
     const Status vocab_st = vocab_.load(src);
-    specials_.configure(cfg, vocab_st.ok() ? vocab_.special_strip_ids()
-                                           : std::vector<int>{});
+    specials_.configure(cfg, vocab_st.ok() ? vocab_.special_strip_ids() : std::vector<int>{});
     if (!vocab_st.ok()) {
-        if (status) *status = vocab_st;
+        if (status)
+            *status = vocab_st;
         return;
     }
     // merges → wstring 域 rank 表（构造期一次性，用户拍板口径）
@@ -80,25 +83,29 @@ QwenTokenizer::QwenTokenizer(const TokenizerConfig& cfg, Status* status) {
         std::wstring a, b;
         for (size_t i = 0; i < vocab_.merges().size(); ++i) {
             const auto& m = vocab_.merges()[i];
-            if (!tokenizer_detail::Utf8ToWide(m.first, &a) ||
-                !tokenizer_detail::Utf8ToWide(m.second, &b)) {
-                if (status) *status = Status::FAILURE;  // merges 条目非法 UTF-8
+            if (!tokenizer_detail::Utf8ToWide(m.first, &a) || !tokenizer_detail::Utf8ToWide(m.second, &b)) {
+                if (status)
+                    *status = Status::FAILURE; // merges 条目非法 UTF-8
                 return;
             }
             merge_ranks_.emplace(std::make_pair(a, b), static_cast<int>(i));
         }
     }
-    if (status) *status = Status::SUCCESS;
+    if (status)
+        *status = Status::SUCCESS;
 }
 
-Status QwenTokenizer::encode(std::string_view text, const EncodeOptions& opts,
-                              std::vector<int>* out_ids) {
-    if (!out_ids) return Status::INVALID_ARGUMENT;
+Status QwenTokenizer::encode(std::string_view text, const EncodeOptions& opts, std::vector<int>* out_ids)
+{
+    if (!out_ids)
+        return Status::INVALID_ARGUMENT;
     out_ids->clear();
-    if (vocab_.vocab_size() == 0) return Status::FAILURE;  // not-ready
+    if (vocab_.vocab_size() == 0)
+        return Status::FAILURE; // not-ready
 
     // UTF-8 校验（非法 → 不产生半截结果）
-    if (!tokenizer_detail::ValidUtf8(text)) return Status::INVALID_ARGUMENT;
+    if (!tokenizer_detail::ValidUtf8(text))
+        return Status::INVALID_ARGUMENT;
 
     // ① AddedToken 提取（左最长，先于预切分，作用于原文）
     std::vector<tokenizer_detail::AddedSegment> segments;
@@ -114,10 +121,10 @@ Status QwenTokenizer::encode(std::string_view text, const EncodeOptions& opts,
         // ② D-10 正则预切分（字节级）
         const char* begin = seg.text.data();
         const char* end = begin + seg.text.size();
-        for (auto it = std::cregex_iterator(begin, end, PretokRegex());
-             it != std::cregex_iterator(); ++it) {
+        for (auto it = std::cregex_iterator(begin, end, PretokRegex()); it != std::cregex_iterator(); ++it) {
             const std::string piece = it->str();
-            if (piece.empty()) continue;
+            if (piece.empty())
+                continue;
             // ③ 字节转 Unicode 映射：逐字节 → 码点 → wchar_t wtoken
             std::vector<std::wstring> word;
             word.reserve(piece.size());
@@ -141,19 +148,23 @@ Status QwenTokenizer::encode(std::string_view text, const EncodeOptions& opts,
     }
 
     // ⑥ special 注入/截断/padding（M-06，零注入缺省）
-    if (Status st = specials_.inject(out_ids, opts); !st.ok()) return st;
+    if (Status st = specials_.inject(out_ids, opts); !st.ok())
+        return st;
     return Status::SUCCESS;
 }
 
-Status QwenTokenizer::decode(const std::vector<int>& ids, const DecodeOptions& opts,
-                              std::string* out_text) {
-    if (!out_text) return Status::INVALID_ARGUMENT;
+Status QwenTokenizer::decode(const std::vector<int>& ids, const DecodeOptions& opts, std::string* out_text)
+{
+    if (!out_text)
+        return Status::INVALID_ARGUMENT;
     out_text->clear();
-    if (vocab_.vocab_size() == 0) return Status::FAILURE;  // not-ready
+    if (vocab_.vocab_size() == 0)
+        return Status::FAILURE; // not-ready
 
     std::vector<int> kept = ids;
     if (opts.skip_special_tokens) {
-        if (Status st = specials_.strip(ids, &kept); !st.ok()) return st;
+        if (Status st = specials_.strip(ids, &kept); !st.ok())
+            return st;
     }
 
     // id→字面量→ByteLevel 字节还原（映射码点 → 原字节；非映射码点按原样输出）
@@ -161,9 +172,10 @@ Status QwenTokenizer::decode(const std::vector<int>& ids, const DecodeOptions& o
     std::wstring literal;
     for (const int id : kept) {
         auto lit = vocab_.id_to_token(id);
-        if (!lit) continue;  // 词表外 id：跳过（不中断）
+        if (!lit)
+            continue; // 词表外 id：跳过（不中断）
         if (!tokenizer_detail::Utf8ToWide(*lit, &literal)) {
-            *out_text += std::string(*lit);  // 非法 UTF-8 字面量：原样追加
+            *out_text += std::string(*lit); // 非法 UTF-8 字面量：原样追加
             continue;
         }
         for (const wchar_t wc : literal) {
@@ -182,8 +194,6 @@ Status QwenTokenizer::decode(const std::vector<int>& ids, const DecodeOptions& o
 
 size_t QwenTokenizer::vocab_size() const { return vocab_.vocab_size(); }
 
-std::optional<int> QwenTokenizer::special_token_id(std::string_view name) const {
-    return specials_.id(name);
-}
+std::optional<int> QwenTokenizer::special_token_id(std::string_view name) const { return specials_.id(name); }
 
-}  // namespace cann_lm::engine
+} // namespace cann_lm::engine

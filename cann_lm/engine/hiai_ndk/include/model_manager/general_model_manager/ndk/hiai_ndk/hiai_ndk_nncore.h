@@ -19,7 +19,7 @@ OH_NNCompilation* HIAI_NDK_NNCompilation_ConstructWithOfflineModelBuffer(const v
 Status HIAI_NDK_NNCompilation_SetDevice(OH_NNCompilation* nnCompilation);
 
 Status HIAI_NDK_NNCompilation_SetPerformanceMode(OH_NNCompilation* nnCompilation,
-    OH_NN_PerformanceMode performanceMode);
+                                                 OH_NN_PerformanceMode performanceMode);
 
 OH_NNCompilation* HIAI_NDK_NNCompilation_ConstructForCache();
 
@@ -70,9 +70,9 @@ NN_TensorDesc* HIAI_NDK_NNExecutor_CreateInputTensorDesc(const OH_NNExecutor* ex
 NN_TensorDesc* HIAI_NDK_NNExecutor_CreateOutputTensorDesc(const OH_NNExecutor* executor, size_t index);
 
 Status HIAI_NDK_NNExecutor_RunSync(OH_NNExecutor* executor, std::vector<NN_Tensor*> inputs,
-    std::vector<NN_Tensor*> outputs);
+                                   std::vector<NN_Tensor*> outputs);
 
 // 内部调用闭包：NNTensor_Create/CreateWithFd 与 HiAITensor_CreateKVCache 的设备 ID 前置
 size_t HIAI_NDK_GetDeviceID();
-}
+} // namespace hiai
 #endif

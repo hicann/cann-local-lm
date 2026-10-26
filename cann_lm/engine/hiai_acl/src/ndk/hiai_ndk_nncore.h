@@ -26,13 +26,17 @@ OH_NNCompilation* HIAI_NDK_NNCompilation_ConstructWithOfflineModelFile(const cha
 OH_NNCompilation* HIAI_NDK_NNCompilation_ConstructWithOfflineModelBuffer(const void* modelBuffer, size_t modelSize);
 OH_NNCompilation* HIAI_NDK_NNCompilation_ConstructForCache();
 aclError HIAI_NDK_NNCompilation_SetDevice(OH_NNCompilation* nnCompilation);
-aclError HIAI_NDK_NNCompilation_SetPerformanceMode(OH_NNCompilation* nnCompilation, OH_NN_PerformanceMode performanceMode);
+aclError HIAI_NDK_NNCompilation_SetPerformanceMode(OH_NNCompilation* nnCompilation,
+                                                   OH_NN_PerformanceMode performanceMode);
 aclError HIAI_NDK_NNCompilation_SetPriority(OH_NNCompilation* nnCompilation, OH_NN_Priority priority);
 aclError HIAI_NDK_NNCompilation_SetCache(OH_NNCompilation* nnCompilation, const char* cachePath, uint32_t version);
 aclError HIAI_NDK_NNCompilation_EnableFloat16(OH_NNCompilation* compilation, bool enableFloat16);
-aclError HIAI_NDK_NNCompilation_AddExtensionConfig(OH_NNCompilation* compilation, const char* configName, const void* configValue, size_t configValueSize);
-aclError HIAI_NDK_NNCompilation_ExportCacheToBuffer(OH_NNCompilation* nnCompilation, const void* buffer, size_t length, size_t* modelSize);
-aclError HIAI_NDK_NNCompilation_ImportCacheFromBuffer(OH_NNCompilation* nnCompilation, const void* buffer, size_t modelSize);
+aclError HIAI_NDK_NNCompilation_AddExtensionConfig(OH_NNCompilation* compilation, const char* configName,
+                                                   const void* configValue, size_t configValueSize);
+aclError HIAI_NDK_NNCompilation_ExportCacheToBuffer(OH_NNCompilation* nnCompilation, const void* buffer, size_t length,
+                                                    size_t* modelSize);
+aclError HIAI_NDK_NNCompilation_ImportCacheFromBuffer(OH_NNCompilation* nnCompilation, const void* buffer,
+                                                      size_t modelSize);
 aclError HIAI_NDK_NNCompilation_Build(OH_NNCompilation* compilation);
 void HIAI_NDK_NNCompilation_Destroy(OH_NNCompilation** compilation);
 
@@ -65,12 +69,17 @@ aclError HIAI_NDK_NNExecutor_GetInputCount(const OH_NNExecutor* executor, size_t
 aclError HIAI_NDK_NNExecutor_GetOutputCount(const OH_NNExecutor* executor, size_t* outputCount);
 NN_TensorDesc* HIAI_NDK_NNExecutor_CreateInputTensorDesc(const OH_NNExecutor* executor, size_t index);
 NN_TensorDesc* HIAI_NDK_NNExecutor_CreateOutputTensorDesc(const OH_NNExecutor* executor, size_t index);
-aclError HIAI_NDK_NNExecutor_GetInputDimRange(const OH_NNExecutor* executor, size_t index, size_t** minInputDims, size_t** maxInputDims, size_t* shapeLength);
-aclError HIAI_NDK_NNExecutor_GetOutputShape(OH_NNExecutor* executor, uint32_t outputIndex, int32_t** shape, uint32_t* shapeLength);  // C3: non-const (matches CANNKit OH_NNExecutor_GetOutputShape)
+aclError HIAI_NDK_NNExecutor_GetInputDimRange(const OH_NNExecutor* executor, size_t index, size_t** minInputDims,
+                                              size_t** maxInputDims, size_t* shapeLength);
+aclError HIAI_NDK_NNExecutor_GetOutputShape(
+    OH_NNExecutor* executor, uint32_t outputIndex, int32_t** shape,
+    uint32_t* shapeLength); // C3: non-const (matches CANNKit OH_NNExecutor_GetOutputShape)
 aclError HIAI_NDK_NNExecutor_SetOnRunDone(OH_NNExecutor* executor, NN_OnRunDone onRunDone);
 aclError HIAI_NDK_NNExecutor_SetOnServiceDied(OH_NNExecutor* executor, NN_OnServiceDied onServiceDied);
-aclError HIAI_NDK_NNExecutor_RunSync(OH_NNExecutor* executor, std::vector<NN_Tensor*> inputs, std::vector<NN_Tensor*> outputs);
-aclError HIAI_NDK_NNExecutor_RunAsync(OH_NNExecutor* executor, std::vector<NN_Tensor*> inputs, std::vector<NN_Tensor*> outputs, int32_t timeout, void* userData);
+aclError HIAI_NDK_NNExecutor_RunSync(OH_NNExecutor* executor, std::vector<NN_Tensor*> inputs,
+                                     std::vector<NN_Tensor*> outputs);
+aclError HIAI_NDK_NNExecutor_RunAsync(OH_NNExecutor* executor, std::vector<NN_Tensor*> inputs,
+                                      std::vector<NN_Tensor*> outputs, int32_t timeout, void* userData);
 
 // ===== Device =====
 aclError HIAI_NDK_NNDevice_GetAllDevicesID(const size_t** allDevicesID, uint32_t* deviceCount);
@@ -78,6 +87,6 @@ aclError HIAI_NDK_NNDevice_GetName(size_t deviceID, const char** name);
 aclError HIAI_NDK_NNDevice_GetType(size_t deviceID, OH_NN_DeviceType* deviceType);
 size_t HIAI_NDK_GetDeviceID();
 
-}  // namespace hiai
+} // namespace hiai
 
-#endif  // HIAI_ACL_NDK_NNCORE_H
+#endif // HIAI_ACL_NDK_NNCORE_H

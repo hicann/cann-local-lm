@@ -20,17 +20,17 @@ public:
     // 当前引擎零调用（CANNKit 上游移植 API surface，保留待复用）
     static Status RealpathUtil(const std::string& path, std::string& resolvedPath);
 
-    static long GetFileSize(const std::string &filePath);
+    static long GetFileSize(const std::string& filePath);
 
     // 实链通路：built_model_ndk_impl.cpp(图文件加载) / customdata_util.cpp(自定义数据)
-    static std::shared_ptr<BaseBuffer> LoadToBuffer(const std::string &filePath);
-    static std::shared_ptr<BaseBuffer> LoadToBuffer(const std::string &filePath, uint64_t size);
+    static std::shared_ptr<BaseBuffer> LoadToBuffer(const std::string& filePath);
+    static std::shared_ptr<BaseBuffer> LoadToBuffer(const std::string& filePath, uint64_t size);
 
     // 当前引擎零调用（CANNKit 上游移植 API surface，保留待复用）
     static Status LoadAsUint8(const std::string filePath, uint64_t& size, uint8_t*& buffer);
 
-    static Status LoadAsUint8ByOffsetAndSize(
-        const std::string &filePath, const uint64_t offset, const uint64_t size, uint8_t*& data);
+    static Status LoadAsUint8ByOffsetAndSize(const std::string& filePath, const uint64_t offset, const uint64_t size,
+                                             uint8_t*& data);
 
     static Status CheckFilePath(std::string& resolvedPathStr)
     {
@@ -109,7 +109,7 @@ private:
             CANN_LLM_LOGE("filePath is null.");
             return nullptr;
         }
- 
+
         HIAI_EXPECT_TRUE_R(filePath.size() < PATH_MAX, nullptr);
         char pathTemp[PATH_MAX + 1] = {0x00};
         if (realpath(filePath.c_str(), pathTemp) == nullptr) {

@@ -10,7 +10,7 @@ from dopt_lm.common_tools.log import Logger as logger
 
 
 class Register:
-    """ Register """
+    """Register"""
 
     def __init__(self, name=None):
         self.name = name
@@ -23,12 +23,8 @@ class Register:
         return item in self.__feature_func_dict.keys()
 
     @staticmethod
-    def file_import(
-        file_path,
-        recursive=False,
-        skip_libs_set=tuple()
-    ):
-        """ register file import """
+    def file_import(file_path, recursive=False, skip_libs_set=tuple()):
+        """register file import"""
         pwd = os.path.realpath(file_path)
 
         def get_pkg_path(path):
@@ -36,26 +32,19 @@ class Register:
             for sys_path in sys.path:
                 sys_path = os.path.realpath(sys_path)
                 if path.startswith(sys_path):
-                    name = path[len(sys_path) + 1:]
+                    name = path[len(sys_path) + 1 :]
                     break
 
             name_list = name.split(os.path.sep)
-            while (name_list and name_list[0] == ''):
+            while name_list and name_list[0] == "":
                 name_list = name_list[1:]
-            pkg_name = '.'.join(name_list)
+            pkg_name = ".".join(name_list)
             return pkg_name
 
         def import_py_so_file(py_file):
-            pkg_name = get_pkg_path(
-                os.path.dirname(py_file)
-            )
+            pkg_name = get_pkg_path(os.path.dirname(py_file))
             if pkg_name:
-                name_module = '.'.join(
-                    [
-                        pkg_name,
-                        os.path.basename(py_file)[:-3]
-                    ]
-                )
+                name_module = ".".join([pkg_name, os.path.basename(py_file)[:-3]])
             else:
                 name_module = os.path.basename(py_file)[:-3]
 
@@ -64,26 +53,22 @@ class Register:
             except Exception as ex:
                 logger.warning(ex)
             finally:
-                skip_warning = True
+                skip_warning = True  # noqa: F841
 
         if os.path.isfile(pwd):
             import_py_so_file(pwd)
             return
 
         for root, _, py_files in os.walk(pwd, topdown=True):
-            if root.endswith('__pycache__'):
+            if root.endswith("__pycache__"):
                 continue
 
             for py_file in py_files:
-                if not (
-                    py_file.endswith('.py')
-                    or
-                    py_file.endswith('.so')
-                ):
+                if not (py_file.endswith(".py") or py_file.endswith(".so")):
                     continue
                 if py_file in skip_libs_set:
                     continue
-                if (not py_file.endswith('__.py')) and (py_file != __file__):
+                if (not py_file.endswith("__.py")) and (py_file != __file__):
                     py_file = os.path.join(root, py_file)
                     import_py_so_file(py_file)
 
@@ -91,7 +76,8 @@ class Register:
                 break
 
     def register_func(self, strategy_name=None):
-        """ Register function"""
+        """Register function"""
+
         def decorator(func):
             if not callable(func):
                 raise Exception("registerd {} should be callable".format(func))
@@ -99,13 +85,12 @@ class Register:
             name = strategy_name if strategy_name else func.__name__
             self.__feature_func_dict[name] = func
             return func
+
         return decorator
 
     def get(self, key):
         if key not in self.__feature_func_dict.keys():
-            raise Exception(
-                "not supported {}".format(key)
-            )
+            raise Exception("not supported {}".format(key))
         return self.__feature_func_dict.get(key)
 
     def get_keys(self):

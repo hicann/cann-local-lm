@@ -41,6 +41,8 @@ build_ohos*/
 build_tests/
 build_kx*/
 build_cov/
+# host native 构建树 (验证用, 不入库; 见 docs/adr/0003)
+build_host*/
 output/
 deps/
 .cache/
@@ -48,9 +50,12 @@ deps/
 # 鸿蒙签名工具 (12MB 商业工具, 不入库)
 tools/binary-sign-tool.jar
 
-# 鸿蒙部署包签名 .so (有意入库, 反向放行覆盖上文 *.so)
-!deploy_ohos/libcann_lm_engine.so
-!deploy_ohos/libc++_shared.so
+# 鸿蒙部署包产物 (编译输出, 不入库; 本地保留供部署, 见 docs/adr/0003)
+deploy_ohos/
+
+# bbit host stub 端到端用例 (本机 host 验证, 不入库; clone 后缺文件则 ctest 不注册 bbit_host_flow)
+examples/test_engine/bbit/testcase_host.json
+examples/test_engine/bbit/meta_host.json
 
 # GE 编译产物
 kernel_meta/
@@ -62,7 +67,9 @@ buildPidInfo.json
 task_pid_*.txt
 
 # converter / fixtures 产物
-fixtures/
+# tokenizer fixture 生成物（由 gen_fixture.py 生成，gitignored）
+tests/cpp/engine/bpe_fixture_*.json
+tests/cpp/engine/qwen_fixture_*.json
 epair_model/
 input_*.bin
 *.pbtxt
@@ -103,3 +110,5 @@ examples/test_converter/export_llm_model/cann_lm_cli_export/extract_dopt_weight.
 examples/test_converter/export_llm_model/cann_lm_cli_export/extract_node_weight.py
 models/
 !docs/cann_lm_converter/models/
+build_smoke/
+deploy_ohos/

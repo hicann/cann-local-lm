@@ -31,7 +31,8 @@ aclError HIAI_NDK_NNCompilation_SetPriority(OH_NNCompilation* nnCompilation, OH_
     return retCode == OH_NN_SUCCESS ? ACL_SUCCESS : ACL_ERROR_FAILURE;
 }
 
-aclError HIAI_NDK_NNCompilation_SetPerformanceMode(OH_NNCompilation* nnCompilation, OH_NN_PerformanceMode PerformanceMode)
+aclError HIAI_NDK_NNCompilation_SetPerformanceMode(OH_NNCompilation* nnCompilation,
+                                                   OH_NN_PerformanceMode PerformanceMode)
 {
     auto setPerformanceModeFunc = reinterpret_cast<decltype(OH_NNCompilation_SetPerformanceMode)*>(
         NDKProxy::GetSymbol("OH_NNCompilation_SetPerformanceMode"));
@@ -64,28 +65,27 @@ OH_NNExecutor* HIAI_NDK_NNExecutor_Construct(OH_NNCompilation* nnCompilation)
 }
 
 aclError HIAI_NDK_NNExecutor_RunSync(OH_NNExecutor* executor, std::vector<NN_Tensor*> inputs,
-    std::vector<NN_Tensor*> outputs)
+                                     std::vector<NN_Tensor*> outputs)
 {
-    auto RunSyncFunc = reinterpret_cast<decltype(OH_NNExecutor_RunSync)*>(
-        NDKProxy::GetSymbol("OH_NNExecutor_RunSync"));
+    auto RunSyncFunc = reinterpret_cast<decltype(OH_NNExecutor_RunSync)*>(NDKProxy::GetSymbol("OH_NNExecutor_RunSync"));
     ACL_EXPECT_NOT_NULL(RunSyncFunc);
     OH_NN_ReturnCode retCode = RunSyncFunc(executor, inputs.data(), inputs.size(), outputs.data(), outputs.size());
     return retCode == OH_NN_SUCCESS ? ACL_SUCCESS : ACL_ERROR_FAILURE;
 }
 
 aclError HIAI_NDK_NNExecutor_RunAsync(OH_NNExecutor* executor, std::vector<NN_Tensor*> inputs,
-    std::vector<NN_Tensor*> outputs, int32_t timeout, void* userData)
+                                      std::vector<NN_Tensor*> outputs, int32_t timeout, void* userData)
 {
     auto RunAsyncFunc = reinterpret_cast<decltype(OH_NNExecutor_RunAsync)*>(
         NDKProxy::GetSymbol("OH_NNExecutor_RunAsync"));
     ACL_EXPECT_NOT_NULL(RunAsyncFunc);
     OH_NN_ReturnCode retCode = RunAsyncFunc(executor, inputs.data(), inputs.size(), outputs.data(), outputs.size(),
-        timeout, userData);
+                                            timeout, userData);
     return retCode == OH_NN_SUCCESS ? ACL_SUCCESS : ACL_ERROR_FAILURE;
 }
 
-aclError HIAI_NDK_NNCompilation_ExportCacheToBuffer(OH_NNCompilation* nnCompilation, const void* buffer, 
-    size_t length, size_t* modelSize)
+aclError HIAI_NDK_NNCompilation_ExportCacheToBuffer(OH_NNCompilation* nnCompilation, const void* buffer, size_t length,
+                                                    size_t* modelSize)
 {
     auto ExportCacheToBufferFunc = reinterpret_cast<decltype(OH_NNCompilation_ExportCacheToBuffer)*>(
         NDKProxy::GetSymbol("OH_NNCompilation_ExportCacheToBuffer"));
@@ -94,7 +94,8 @@ aclError HIAI_NDK_NNCompilation_ExportCacheToBuffer(OH_NNCompilation* nnCompilat
     return retCode == OH_NN_SUCCESS ? ACL_SUCCESS : ACL_ERROR_FAILURE;
 }
 
-aclError HIAI_NDK_NNCompilation_ImportCacheFromBuffer(OH_NNCompilation* nnCompilation, const void* buffer, size_t modelSize)
+aclError HIAI_NDK_NNCompilation_ImportCacheFromBuffer(OH_NNCompilation* nnCompilation, const void* buffer,
+                                                      size_t modelSize)
 {
     auto importFunc = reinterpret_cast<decltype(OH_NNCompilation_ImportCacheFromBuffer)*>(
         NDKProxy::GetSymbol("OH_NNCompilation_ImportCacheFromBuffer"));
@@ -115,56 +116,48 @@ void HIAI_NDK_NNCompilation_Destroy(OH_NNCompilation** compilation)
 
 size_t HIAI_NDK_GetDeviceID()
 {
-    if (g_deviceID != 0)
-    {
+    if (g_deviceID != 0) {
         return g_deviceID;
     }
     size_t deviceID = 0;
     auto getAllDeviceIdFunc = reinterpret_cast<decltype(OH_NNDevice_GetAllDevicesID)*>(
         NDKProxy::GetSymbol("OH_NNDevice_GetAllDevicesID"));
     auto getTypeFunc = reinterpret_cast<decltype(OH_NNDevice_GetType)*>(NDKProxy::GetSymbol("OH_NNDevice_GetType"));
-    if (getAllDeviceIdFunc == nullptr || getTypeFunc == nullptr)
-    {
+    if (getAllDeviceIdFunc == nullptr || getTypeFunc == nullptr) {
         ACL_LOGE("getAllDeviceIdFunc or getTypeFunc is nullptr");
         return deviceID;
     }
-    
+
     const size_t* allDevicesID = nullptr;
     uint32_t deviceCount = 0;
     OH_NN_ReturnCode ret = getAllDeviceIdFunc(&allDevicesID, &deviceCount);
-    if (ret != OH_NN_SUCCESS)
-    {
+    if (ret != OH_NN_SUCCESS) {
         ACL_LOGE("OH_NNDevice_GetAllDevicesID failed");
         return deviceID;
     }
-    if (deviceCount == 0)
-    {
+    if (deviceCount == 0) {
         // 原实现此处静默返回 0，上层只报 "deviceID != 0 false"，无法定位。
         ACL_LOGE("OH_NNDevice_GetAllDevicesID returned 0 device (no NNDevice visible)");
         return deviceID;
     }
-    
+
     // 选首个 ACCELERATOR(NPU)设备;不再硬编码设备名字符串("HIAI_F")做选择键。
     // 真机 NNRt 可能枚举多个设备(CPU+NPU),按 OH_NNDevice_GetType 筛 ACCELERATOR 正确取 NPU;
     // 无 ACCELERATOR 时回退首个枚举设备(单设备场景)。
-    for (uint32_t i = 0; i < deviceCount; i++)
-    {
+    for (uint32_t i = 0; i < deviceCount; i++) {
         OH_NN_DeviceType dt = OH_NN_CPU;
         ret = getTypeFunc(allDevicesID[i], &dt);
-        if (ret != OH_NN_SUCCESS)
-        {
+        if (ret != OH_NN_SUCCESS) {
             ACL_LOGE("OH_NNDevice_GetType failed");
-            continue;  // 跳过该设备,继续试下一个(非致命)
+            continue; // 跳过该设备,继续试下一个(非致命)
         }
-        if (dt == OH_NN_ACCELERATOR)
-        {
+        if (dt == OH_NN_ACCELERATOR) {
             deviceID = allDevicesID[i];
             break;
         }
     }
-    if (deviceID == 0 && deviceCount > 0)
-    {
-        deviceID = allDevicesID[0];  // 回退:无 ACCELERATOR,取首个枚举设备
+    if (deviceID == 0 && deviceCount > 0) {
+        deviceID = allDevicesID[0]; // 回退:无 ACCELERATOR,取首个枚举设备
     }
     g_deviceID = deviceID;
     return deviceID;
@@ -189,8 +182,8 @@ OH_NNCompilation* HIAI_NDK_NNCompilation_ConstructWithOfflineModelBuffer(const v
     return constructCompilationFunc == nullptr ? nullptr : constructCompilationFunc(modelBuffer, modelSize);
 }
 
-aclError HIAI_NDK_NNCompilation_AddExtensionConfig(OH_NNCompilation *compilation,
-    const char *configName, const void *configValue, const size_t configValueSize)
+aclError HIAI_NDK_NNCompilation_AddExtensionConfig(OH_NNCompilation* compilation, const char* configName,
+                                                   const void* configValue, const size_t configValueSize)
 {
     auto addExtensionConfigFunc = reinterpret_cast<decltype(OH_NNCompilation_AddExtensionConfig)*>(
         NDKProxy::GetSymbol("OH_NNCompilation_AddExtensionConfig"));
@@ -203,8 +196,7 @@ aclError HIAI_NDK_NNCompilation_Build(OH_NNCompilation* compilation)
 {
     ACL_EXPECT_EXEC(HIAI_NDK_NNCompilation_SetDevice(compilation));
 
-    auto buildFunc = reinterpret_cast<decltype(OH_NNCompilation_Build)*>(
-        NDKProxy::GetSymbol("OH_NNCompilation_Build"));
+    auto buildFunc = reinterpret_cast<decltype(OH_NNCompilation_Build)*>(NDKProxy::GetSymbol("OH_NNCompilation_Build"));
     ACL_EXPECT_NOT_NULL(buildFunc);
     OH_NN_ReturnCode retCode = buildFunc(compilation);
     return retCode == OH_NN_SUCCESS ? ACL_SUCCESS : ACL_ERROR_FAILURE;
@@ -273,12 +265,10 @@ aclError HIAI_NDK_NNExecutor_GetOutputCount(const OH_NNExecutor* executor, size_
 
 void HIAI_NDK_NNExecutor_Destroy(OH_NNExecutor** executor)
 {
-    if (executor != nullptr)
-    {
+    if (executor != nullptr) {
         auto executorDestroyFunc = reinterpret_cast<decltype(OH_NNExecutor_Destroy)*>(
             NDKProxy::GetSymbol("OH_NNExecutor_Destroy"));
-        if (executorDestroyFunc != nullptr)
-        {
+        if (executorDestroyFunc != nullptr) {
             executorDestroyFunc(executor);
             executor = nullptr;
         }
@@ -328,8 +318,7 @@ aclError HIAI_NDK_NNDevice_GetAllDevicesID(const size_t** allDevicesID, uint32_t
 
 aclError HIAI_NDK_NNDevice_GetName(size_t deviceID, const char** name)
 {
-    auto GetNameFunc = reinterpret_cast<decltype(OH_NNDevice_GetName)*>(
-        NDKProxy::GetSymbol("OH_NNDevice_GetName"));
+    auto GetNameFunc = reinterpret_cast<decltype(OH_NNDevice_GetName)*>(NDKProxy::GetSymbol("OH_NNDevice_GetName"));
     ACL_EXPECT_NOT_NULL(GetNameFunc);
     OH_NN_ReturnCode retCode = GetNameFunc(deviceID, name);
     return retCode == OH_NN_SUCCESS ? ACL_SUCCESS : ACL_ERROR_FAILURE;
@@ -337,11 +326,9 @@ aclError HIAI_NDK_NNDevice_GetName(size_t deviceID, const char** name)
 
 void HIAI_NDK_NNTensorDesc_Destroy(NN_TensorDesc** TensorDesc)
 {
-
     auto TensorDescDestroyFunc = reinterpret_cast<decltype(OH_NNTensorDesc_Destroy)*>(
         NDKProxy::GetSymbol("OH_NNTensorDesc_Destroy"));
-    if (TensorDescDestroyFunc != nullptr)
-    {
+    if (TensorDescDestroyFunc != nullptr) {
         TensorDescDestroyFunc(TensorDesc);
         TensorDesc = nullptr;
     }
@@ -397,8 +384,7 @@ NN_Tensor* HIAI_NDK_NNTensor_Create(NN_TensorDesc* tensorDesc)
     size_t deviceID = HIAI_NDK_GetDeviceID();
     ACL_EXPECT_TRUE_R(deviceID != 0, nullptr);
 
-    auto TensorCreateFunc = reinterpret_cast<decltype(OH_NNTensor_Create)*>(
-        NDKProxy::GetSymbol("OH_NNTensor_Create"));
+    auto TensorCreateFunc = reinterpret_cast<decltype(OH_NNTensor_Create)*>(NDKProxy::GetSymbol("OH_NNTensor_Create"));
     return TensorCreateFunc == nullptr ? nullptr : TensorCreateFunc(deviceID, tensorDesc);
 }
 
@@ -422,13 +408,11 @@ NN_Tensor* HIAI_NDK_NNTensor_CreateWithFd(NN_TensorDesc* tensorDesc, int fd, siz
     return TensorCreateWithFdFunc == nullptr ? nullptr : TensorCreateWithFdFunc(deviceID, tensorDesc, fd, size, offset);
 }
 
-
 void HIAI_NDK_NNTensor_Destroy(NN_Tensor** nnTensor)
 {
     auto destroyNNTensorFunc = reinterpret_cast<decltype(OH_NNTensor_Destroy)*>(
         NDKProxy::GetSymbol("OH_NNTensor_Destroy"));
-    if (destroyNNTensorFunc != nullptr)
-    {
+    if (destroyNNTensorFunc != nullptr) {
         destroyNNTensorFunc(nnTensor);
     }
 }
@@ -442,14 +426,13 @@ void* HIAI_NDK_NNTensor_GetDataBuffer(NN_Tensor* nnTensor)
 
 aclError HIAI_NDK_NNTensor_GetSize(NN_Tensor* nnTensor, size_t* size)
 {
-    auto GetSizeFunc = reinterpret_cast<decltype(OH_NNTensor_GetSize)*>(
-        NDKProxy::GetSymbol("OH_NNTensor_GetSize"));
+    auto GetSizeFunc = reinterpret_cast<decltype(OH_NNTensor_GetSize)*>(NDKProxy::GetSymbol("OH_NNTensor_GetSize"));
     ACL_EXPECT_NOT_NULL(GetSizeFunc);
     OH_NN_ReturnCode retCode = GetSizeFunc(nnTensor, size);
     return retCode == OH_NN_SUCCESS ? ACL_SUCCESS : ACL_ERROR_FAILURE;
 }
 
-aclError HIAI_NDK_NNTensorDesc_GetByteSize(const NN_TensorDesc* tensorDesc, size_t *byteSize)
+aclError HIAI_NDK_NNTensorDesc_GetByteSize(const NN_TensorDesc* tensorDesc, size_t* byteSize)
 {
     auto GetByteSizeFunc = reinterpret_cast<decltype(OH_NNTensorDesc_GetByteSize)*>(
         NDKProxy::GetSymbol("OH_NNTensorDesc_GetByteSize"));
@@ -462,8 +445,7 @@ aclError HIAI_NDK_NNTensorDesc_GetByteSize(const NN_TensorDesc* tensorDesc, size
 
 aclError HIAI_NDK_NNTensor_GetFd(const NN_Tensor* nnTensor, int* fd)
 {
-    auto GetFdFunc = reinterpret_cast<decltype(OH_NNTensor_GetFd)*>(
-        NDKProxy::GetSymbol("OH_NNTensor_GetFd"));
+    auto GetFdFunc = reinterpret_cast<decltype(OH_NNTensor_GetFd)*>(NDKProxy::GetSymbol("OH_NNTensor_GetFd"));
     ACL_EXPECT_NOT_NULL(GetFdFunc);
     OH_NN_ReturnCode retCode = GetFdFunc(nnTensor, fd);
     return retCode == OH_NN_SUCCESS ? ACL_SUCCESS : ACL_ERROR_FAILURE;
@@ -478,8 +460,8 @@ aclError HIAI_NDK_NNTensor_GetOffset(const NN_Tensor* nnTensor, size_t* offset)
     return retCode == OH_NN_SUCCESS ? ACL_SUCCESS : ACL_ERROR_FAILURE;
 }
 
-aclError HIAI_NDK_NNExecutor_GetInputDimRange(const OH_NNExecutor* executor, size_t index,
-    size_t** minInputDims, size_t** maxInputDims, size_t* shapeLength)
+aclError HIAI_NDK_NNExecutor_GetInputDimRange(const OH_NNExecutor* executor, size_t index, size_t** minInputDims,
+                                              size_t** maxInputDims, size_t* shapeLength)
 {
     auto GetInputDimRangeFunc = reinterpret_cast<decltype(OH_NNExecutor_GetInputDimRange)*>(
         NDKProxy::GetSymbol("OH_NNExecutor_GetInputDimRange"));
@@ -488,8 +470,8 @@ aclError HIAI_NDK_NNExecutor_GetInputDimRange(const OH_NNExecutor* executor, siz
     return retCode == OH_NN_SUCCESS ? ACL_SUCCESS : ACL_ERROR_FAILURE;
 }
 
-aclError HIAI_NDK_NNExecutor_GetOutputShape(OH_NNExecutor* executor, uint32_t outputIndex,
-    int32_t** shape, uint32_t* shapeLength)
+aclError HIAI_NDK_NNExecutor_GetOutputShape(OH_NNExecutor* executor, uint32_t outputIndex, int32_t** shape,
+                                            uint32_t* shapeLength)
 {
     auto GetOutputShapeFunc = reinterpret_cast<decltype(OH_NNExecutor_GetOutputShape)*>(
         NDKProxy::GetSymbol("OH_NNExecutor_GetOutputShape"));
@@ -500,11 +482,10 @@ aclError HIAI_NDK_NNExecutor_GetOutputShape(OH_NNExecutor* executor, uint32_t ou
 
 aclError HIAI_NDK_NNDevice_GetType(size_t deviceID, OH_NN_DeviceType* deviceType)
 {
-    auto GetTypeFunc = reinterpret_cast<decltype(OH_NNDevice_GetType)*>(
-        NDKProxy::GetSymbol("OH_NNDevice_GetType"));
+    auto GetTypeFunc = reinterpret_cast<decltype(OH_NNDevice_GetType)*>(NDKProxy::GetSymbol("OH_NNDevice_GetType"));
     ACL_EXPECT_NOT_NULL(GetTypeFunc);
     OH_NN_ReturnCode retCode = GetTypeFunc(deviceID, deviceType);
     return retCode == OH_NN_SUCCESS ? ACL_SUCCESS : ACL_ERROR_FAILURE;
 }
 
-}
+} // namespace hiai

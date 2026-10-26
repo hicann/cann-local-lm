@@ -102,7 +102,11 @@ def _chunk_gated_delta_rule_cpu(
     init_bshd = initial_state.transpose(-1, -2)
 
     out_bshd, final_state = torch_chunk_gated_delta_rule(
-        q_bshd, k_bshd, v_bshd, g=g_bshd, beta=beta_bshd,
+        q_bshd,
+        k_bshd,
+        v_bshd,
+        g=g_bshd,
+        beta=beta_bshd,
         initial_state=init_bshd,
         output_final_state=True,
         use_qk_l2norm_in_kernel=False,
@@ -112,5 +116,9 @@ def _chunk_gated_delta_rule_cpu(
     # out BSHD (B,seq,Nv,Dv) -> THD (T,Nv,Dv)
     out = out_bshd.reshape(t, out_bshd.shape[2], out_bshd.shape[3])
     # final_state torch_chunk (B,Nv,Dk,Dv) -> NPU (B,Nv,Dv,Dk)
-    final_state_npu = final_state.transpose(-1, -2).contiguous() if final_state is not None else initial_state
+    final_state_npu = (
+        final_state.transpose(-1, -2).contiguous()
+        if final_state is not None
+        else initial_state
+    )
     return out, final_state_npu

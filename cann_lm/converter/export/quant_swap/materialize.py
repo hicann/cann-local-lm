@@ -73,14 +73,16 @@ def pack_int4_int32(q: torch.Tensor) -> torch.Tensor:
     if q.shape[-1] % 8 != 0:
         raise ValueError(f"last dim {q.shape[-1]} must be multiple of 8 for int4pack")
     q = (q.to(torch.int8) & 0x0F).to(torch.int32)
-    packed = (q[..., 0::8] |
-              (q[..., 1::8] << 4) |
-              (q[..., 2::8] << 8) |
-              (q[..., 3::8] << 12) |
-              (q[..., 4::8] << 16) |
-              (q[..., 5::8] << 20) |
-              (q[..., 6::8] << 24) |
-              (q[..., 7::8] << 28))
+    packed = (
+        q[..., 0::8]
+        | (q[..., 1::8] << 4)
+        | (q[..., 2::8] << 8)
+        | (q[..., 3::8] << 12)
+        | (q[..., 4::8] << 16)
+        | (q[..., 5::8] << 20)
+        | (q[..., 6::8] << 24)
+        | (q[..., 7::8] << 28)
+    )
     return packed.to(torch.int32)
 
 
@@ -117,17 +119,21 @@ def materialize_int4_per_group_symmetric(
     w = weight.detach().float()
     out_f, in_f = w.shape
     if in_f % group_size != 0:
-        raise ValueError(f"in_features ({in_f}) not divisible by group_size ({group_size})")
+        raise ValueError(
+            f"in_features ({in_f}) not divisible by group_size ({group_size})"
+        )
     if scale.shape != (out_f, in_f // group_size):
         raise ValueError(
             f"scale shape {tuple(scale.shape)} != ({out_f}, {in_f // group_size})"
         )
     qmax = (1 << (nbits - 1)) - 1  # signed positive max: 7 for 4-bit
-    qmin = -(1 << (nbits - 1))     # signed negative min: -8 (two's-complement full range, matches dopt qmin_max)
+    qmin = -(
+        1 << (nbits - 1)
+    )  # signed negative min: -8 (two's-complement full range, matches dopt qmin_max)
     scale_exp = scale.float().repeat_interleave(group_size, dim=-1)  # [out, in]
     q = torch.round(w / scale_exp)
     if signed:
-        q = q.clamp(qmin, qmax)    # [-8, 7] standard signed int4 (was [-7,7], dropped -8)
+        q = q.clamp(qmin, qmax)  # [-8, 7] standard signed int4 (was [-7,7], dropped -8)
     else:
         q = q.clamp(0, 2 * qmax + 1)
     q = q.to(torch.int8)

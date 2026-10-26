@@ -10,7 +10,7 @@
 #include "acl_data.h"
 
 #include "acl/acl_base.h"
-#include "acl/acl_mdl.h"  // C3: aclmdl*Dataset* extern "C" decls — so the definitions below inherit C linkage (matches the backend's C-linkage calls via acl_mdl.h)
+#include "acl/acl_mdl.h" // C3: aclmdl*Dataset* extern "C" decls — so the definitions below inherit C linkage (matches the backend's C-linkage calls via acl_mdl.h)
 #include "utils/assert.h"
 
 #include <new>
@@ -26,8 +26,7 @@ aclDataBuffer* aclCreateDataBuffer(void* data, size_t size)
 
 aclError aclDestroyDataBuffer(const aclDataBuffer* dataBuffer)
 {
-    ACL_EXPECT_TRUE_R_WITH_LOG(dataBuffer != nullptr, ACL_ERROR_INVALID_PARAM,
-        "the dataBuffer to destroy is nullptr");
+    ACL_EXPECT_TRUE_R_WITH_LOG(dataBuffer != nullptr, ACL_ERROR_INVALID_PARAM, "the dataBuffer to destroy is nullptr");
     delete dataBuffer;
     return ACL_SUCCESS;
 }
@@ -66,30 +65,27 @@ aclmdlDataset* aclmdlCreateDataset()
 
 aclError aclmdlAddDatasetBuffer(aclmdlDataset* dataset, aclDataBuffer* dataBuffer)
 {
-    ACL_EXPECT_TRUE_R_WITH_LOG(dataBuffer != nullptr && dataset != nullptr,
-        ACL_ERROR_INVALID_PARAM, "the dataset or dataBuffer is nullptr");
-    dataset->buffers.push_back(dataBuffer);  // C1: raw, non-owning (matches real ACL)
+    ACL_EXPECT_TRUE_R_WITH_LOG(dataBuffer != nullptr && dataset != nullptr, ACL_ERROR_INVALID_PARAM,
+                               "the dataset or dataBuffer is nullptr");
+    dataset->buffers.push_back(dataBuffer); // C1: raw, non-owning (matches real ACL)
     return ACL_SUCCESS;
 }
 
 aclError aclmdlDestroyDataset(const aclmdlDataset* dataset)
 {
-    ACL_EXPECT_TRUE_R_WITH_LOG(dataset != nullptr, ACL_ERROR_INVALID_PARAM,
-        "the dataset to destroy is nullptr");
+    ACL_EXPECT_TRUE_R_WITH_LOG(dataset != nullptr, ACL_ERROR_INVALID_PARAM, "the dataset to destroy is nullptr");
     delete dataset;
     return ACL_SUCCESS;
 }
 
 size_t aclmdlGetDatasetNumBuffers(const aclmdlDataset* dataset)
 {
-    ACL_EXPECT_TRUE_R_WITH_LOG(dataset != nullptr, 0,
-        "the dataset to get num is nullptr");
+    ACL_EXPECT_TRUE_R_WITH_LOG(dataset != nullptr, 0, "the dataset to get num is nullptr");
     return dataset->buffers.size();
 }
 
 aclDataBuffer* aclmdlGetDatasetBuffer(const aclmdlDataset* dataset, size_t index)
 {
-    ACL_EXPECT_TRUE_R_WITH_LOG(dataset != nullptr, nullptr,
-        "the dataset to get buffer is nullptr");
-    return (index < dataset->buffers.size()) ? dataset->buffers[index] : nullptr;  // C1: raw ptr (no shared_ptr wrap)
+    ACL_EXPECT_TRUE_R_WITH_LOG(dataset != nullptr, nullptr, "the dataset to get buffer is nullptr");
+    return (index < dataset->buffers.size()) ? dataset->buffers[index] : nullptr; // C1: raw ptr (no shared_ptr wrap)
 }

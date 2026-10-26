@@ -1,11 +1,10 @@
 // cann_lm/engine/core/component/sampler/sampler.h — L3 Sampler 组件
 //
-// 算法本体自 core/sample/ 参考实现（v0.10）移植，接口形态不变：无状态静态 6 步纯函数
-// 流水线 ①ApplyRepetitionPenalty → ②ApplyTemperature → ③TopK（precomputed 在场则复用，
+// 算法本体（6 步流水线，无状态静态纯函数，接口形态不变）：
+// ①ApplyRepetitionPenalty → ②ApplyTemperature → ③TopK（precomputed 在场则复用，
 // 覆盖 cfg.top_k）→ ④ApplyTopP → ⑤Normalize → ⑥Pick。①必须在 ③④ 之前（rep 改变
-// top-k 截断集）；①②可交换（均为标量乘）。期望行为双锚定：core/sample/test/sampler_ut.cc
-// （参考实现侧，scripts/build_sample.sh）与 tests/ut/ut_sampler.cpp（引擎组件侧），
-// 修改任一份时勿让另一份漂移。
+// top-k 截断集）；①②可交换（均为标量乘）。期望行为锚定：tests/cpp/engine/test_sampler.cpp。
+// 历史：算法层曾移植自 core/sample/ 参考原型（v0.10，2026-10-19 随原型目录删除移除双锚定）。
 //
 // 引擎接入层（成员 Sample，PipelineExecutor 后处理调用）与参考实现的差异，
 // 对齐 docs/pipeline+engine_executor/SPEC.md §4.1.5（F-SAMPLE）：
@@ -26,10 +25,10 @@
 // 已知限制：logits 支持 FLOAT32 与 FLOAT16（fp16 行内展开为 float 再进算法层）。
 #pragma once
 
-#include "core/tensor_manager.h"   // ITensorBuffer / TensorDesc / DataType（ModelConfig 已迁 model_executor.h，D-06）
-#include "core/component/model_executor/model_executor.h"  // ModelConfig（Configure 注入 vocab_size）
+#include "core/tensor_manager.h" // ITensorBuffer / TensorDesc / DataType（ModelConfig 已迁 model_executor.h，D-06）
+#include "core/component/model_executor/model_executor.h" // ModelConfig（Configure 注入 vocab_size）
 #include "infra/status.h"
-#include "api/cpp/types.h"         // SamplingParams / TokenId
+#include "api/cpp/types.h" // SamplingParams / TokenId
 
 #include <cstdint>
 #include <optional>
@@ -37,7 +36,7 @@
 
 namespace cann_lm::engine {
 
-// ────────────── 算法层类型（自 core/sample 移植，形态不变） ──────────────
+// ────────────── 算法层类型 ──────────────
 
 // 采样旋钮（不含 max_new_tokens——停止计数归上层 SamplingParams/Context）
 struct SamplerConfig {
@@ -45,8 +44,8 @@ struct SamplerConfig {
     bool do_sample = false;
     std::optional<float> top_p;
     std::optional<int> top_k;
-    std::optional<float> repetition_penalty;  // >1 降权、1.0 关闭、<1 升权
-    std::optional<uint64_t> seed;             // 给定则 per-call 建 seeded RNG（可复现）
+    std::optional<float> repetition_penalty; // >1 降权、1.0 关闭、<1 升权
+    std::optional<uint64_t> seed;            // 给定则 per-call 建 seeded RNG（可复现）
 };
 
 // NPU 预算的 top-k 结果（数据输入，非旋钮）。给了就复用、跳过 ApplyTopK 重算
@@ -66,7 +65,7 @@ struct SamplerInputs {
 // 返回：选中的 token + 归一化概率分布（和≈1）
 struct SamplerOutput {
     int32_t next_token_id = 0;
-    std::vector<float> probs;  // [vocab]
+    std::vector<float> probs; // [vocab]
 };
 
 // Sampler：算法层（静态纯函数，无需实例化）+ 引擎接入层（成员方法，pipeline 按值持有）。
@@ -85,8 +84,7 @@ public:
     //                       size==0 / dims 异常 / slot 越界；
     //   FAILURE          —— GetData()==nullptr（logits 缺失）/ dims 缺失且 slot>0
     //                       （无法安全推导行宽）。
-    Status Sample(ITensorBuffer& batch_logits, int slot,
-                  const SamplingParams& params,
+    Status Sample(ITensorBuffer& batch_logits, int slot, const SamplingParams& params,
                   const std::vector<TokenId>& generated_ids, TokenId* out);
 
     // ── 算法层（对外唯一入口 + 6 步纯函数；公开以供独立单测。均不改输入语义：
@@ -105,7 +103,7 @@ public:
     static int32_t Pick(const std::vector<float>& probs, bool do_sample, std::optional<uint64_t> seed);
 
 private:
-    size_t vocab_size_ = 0;   // ModelConfig 注入（Configure，pipeline Load 期）
+    size_t vocab_size_ = 0; // ModelConfig 注入（Configure，pipeline Load 期）
 };
 
-}  // namespace cann_lm::engine
+} // namespace cann_lm::engine

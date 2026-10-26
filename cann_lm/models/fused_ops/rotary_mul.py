@@ -25,7 +25,7 @@ from ._library import NPU_LIB, safe_define, _HAS_TORCH_NPU, register_cpu_impl
 
 if NPU_LIB is not None:
     safe_define(
-        "rotary_mul(Tensor self, Tensor r1, Tensor r2, str rotary_mode=\"half\") -> Tensor out"
+        'rotary_mul(Tensor self, Tensor r1, Tensor r2, str rotary_mode="half") -> Tensor out'
     )
 
 if not _HAS_TORCH_NPU:

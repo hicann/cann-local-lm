@@ -8,11 +8,11 @@
 #include "model/built_model.h"
 
 namespace hiai {
-const char *const CUST_DATA_TAG = "CUST";
+const char* const CUST_DATA_TAG = "CUST";
 class CustomDataUtil {
 public:
-    static std::shared_ptr<IBuffer> GetModelData(
-        const std::shared_ptr<IBuffer>& buffer, CustomModelData& customModelData);
+    static std::shared_ptr<IBuffer> GetModelData(const std::shared_ptr<IBuffer>& buffer,
+                                                 CustomModelData& customModelData);
 
     static bool HasCustomData(const char* file);
 };

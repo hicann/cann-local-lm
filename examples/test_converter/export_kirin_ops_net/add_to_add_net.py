@@ -57,11 +57,15 @@ class AddToAddNet(nn.Module):
         self.norm_weight = nn.Parameter(torch.ones(HIDDEN, dtype=dtype))
 
     def forward(self, x: Tensor) -> Tensor:
-        pos = torch.index_select(self.pos_table, 0, self.pos_ids).unsqueeze(0)  # GatherV2
-        h, _ = torch.ops.npu.npu_rms_norm.default(x + pos, self.norm_weight, epsilon=self.eps)  # Add + RmsNorm
-        gate = torch.sigmoid(h)                       # Sigmoid
-        ffn = F.gelu(h, approximate="tanh")           # Gelu
-        return h + gate * ffn                         # Mul + Add (残差)
+        pos = torch.index_select(self.pos_table, 0, self.pos_ids).unsqueeze(
+            0
+        )  # GatherV2
+        h, _ = torch.ops.npu.npu_rms_norm.default(
+            x + pos, self.norm_weight, epsilon=self.eps
+        )  # Add + RmsNorm
+        gate = torch.sigmoid(h)  # Sigmoid
+        ffn = F.gelu(h, approximate="tanh")  # Gelu
+        return h + gate * ffn  # Mul + Add (残差)
 
 
 def build_sample_inputs(dtype: torch.dtype, device: torch.device) -> tuple[Tensor, ...]:
@@ -94,14 +98,20 @@ def export_air(output_path: Path, dtype: torch.dtype, device_name: str) -> Path:
     """torchair.dynamo_export -> .air (npu_rms_norm 由 torchair npu:: converter 处理)."""
     import torchair
     from torchair.configs.compiler_config import CompilerConfig
+
     device = select_device(device_name)
     torch.manual_seed(0)  # 固定 seed: 模型参数 + 输入都可复现 (须与 gen_golden 一致)
     model = build_model(dtype, device).eval()
     sample_inputs = build_sample_inputs(dtype, device)
     out = Path(output_path)
     out.parent.mkdir(parents=True, exist_ok=True)
-    torchair.dynamo_export(*sample_inputs, model=model, export_path=str(out.parent),
-                           export_name=out.stem, config=CompilerConfig())
+    torchair.dynamo_export(
+        *sample_inputs,
+        model=model,
+        export_path=str(out.parent),
+        export_name=out.stem,
+        config=CompilerConfig(),
+    )
     air_file = Path(str(out) + ".air")
     print(f"AIR saved: {air_file}")
     return air_file
@@ -136,7 +146,9 @@ def compile_to_epair(ep_path: Path, output_dir: Path, max_file_size: int) -> Pat
         register_ge_converters()
         epair = torch_delegate.export_to_epair(ep)
 
-    consolidated_weights_save(epair, output_dir, save_weights=True, max_file_size=max_file_size)
+    consolidated_weights_save(
+        epair, output_dir, save_weights=True, max_file_size=max_file_size
+    )
     return output_dir
 
 
@@ -162,21 +174,36 @@ def gen_golden(output_dir: Path, dtype: torch.dtype) -> Path:
     for name, t in tensors.items():
         path = output_dir / f"{name}.bin"
         t.cpu().detach().numpy().tofile(path)
-        meta.append({"name": name, "file": path.name,
-                     "shape": list(t.shape), "dtype": str(t.dtype)})
+        meta.append(
+            {
+                "name": name,
+                "file": path.name,
+                "shape": list(t.shape),
+                "dtype": str(t.dtype),
+            }
+        )
         print(f"  {name}: shape={list(t.shape)} dtype={t.dtype} -> {path.name}")
     meta_path = output_dir / "golden_meta.json"
-    meta_path.write_text(json.dumps(meta, indent=2, ensure_ascii=False), encoding="utf-8")
+    meta_path.write_text(
+        json.dumps(meta, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
     print(f"golden meta -> {meta_path}")
     return output_dir
 
 
 def _dtype_arg(s: str) -> torch.dtype:
-    return {"float16": torch.float16, "fp16": torch.float16, "float32": torch.float32, "fp32": torch.float32}[s]
+    return {
+        "float16": torch.float16,
+        "fp16": torch.float16,
+        "float32": torch.float32,
+        "fp32": torch.float32,
+    }[s]
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="AddToAddNet — 从 Add 到 Add (无 L2Normalize/ScatterNdUpdate).")
+    parser = argparse.ArgumentParser(
+        description="AddToAddNet — 从 Add 到 Add (无 L2Normalize/ScatterNdUpdate)."
+    )
     sub = parser.add_subparsers(dest="command", required=True)
     pe = sub.add_parser("eager", help="Run eagerly.")
     pe.add_argument("--dtype", type=_dtype_arg, default=torch.float16)
@@ -206,7 +233,9 @@ def main() -> None:
         out_path = export_program(Path(args.output), args.dtype, args.device)
         print(f"Exported program saved to: {out_path}")
     elif args.command == "compile":
-        d = compile_to_epair(Path(args.ep_path), Path(args.output_dir), args.max_file_size)
+        d = compile_to_epair(
+            Path(args.ep_path), Path(args.output_dir), args.max_file_size
+        )
         print(f"Consolidated epair written to: {d}")
     elif args.command == "golden":
         d = gen_golden(Path(args.output_dir), args.dtype)

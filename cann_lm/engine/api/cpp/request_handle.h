@@ -11,17 +11,17 @@
 
 namespace cann_lm::engine {
 
-class RequestImpl;  // internal, forward declare（不对用户暴露）
-class AutoregressivePipelineExecutor;  // internal, forward declare（friend 访问）
+class RequestImpl;                    // internal, forward declare（不对用户暴露）
+class AutoregressivePipelineExecutor; // internal, forward declare（friend 访问）
 
 /// 请求状态枚举（对外 API）。GetStatus 返回值。
 enum class RequestStatus {
-    Queued,        ///< 已入队，等待 Prefill
-    Prefilling,    ///< Prefill 进行中
-    Decoding,      ///< 已加入 decode 池，Decode 进行中
-    Completed,     ///< 完成（Result 可取）
-    Canceled,      ///< 已取消
-    Failed,        ///< 失败（配合返回 Status::FAILURE，Result 可能含部分 token）
+    Queued,     ///< 已入队，等待 Prefill
+    Prefilling, ///< Prefill 进行中
+    Decoding,   ///< 已加入 decode 池，Decode 进行中
+    Completed,  ///< 完成（Result 可取）
+    Canceled,   ///< 已取消
+    Failed,     ///< 失败（配合返回 Status::FAILURE，Result 可能含部分 token）
 };
 
 /// 请求句柄。轻量、move-only（持有请求槽所有权）。对外 API。
@@ -29,10 +29,10 @@ enum class RequestStatus {
 class RequestHandle {
 public:
     // ────────────────── 生命周期（对外 API） ──────────────────
-    RequestHandle() noexcept;                                  ///< 空句柄
-    RequestHandle(const RequestHandle&)            = delete;    ///< 不可拷贝（持请求槽所有权）
+    RequestHandle() noexcept;                     ///< 空句柄
+    RequestHandle(const RequestHandle&) = delete; ///< 不可拷贝（持请求槽所有权）
     RequestHandle& operator=(const RequestHandle&) = delete;
-    RequestHandle(RequestHandle&&) noexcept;                    ///< 可移动
+    RequestHandle(RequestHandle&&) noexcept; ///< 可移动
     RequestHandle& operator=(RequestHandle&&) noexcept;
     ~RequestHandle();
 
@@ -69,8 +69,8 @@ public:
 private:
     friend class EngineExecutor;
     friend class AutoregressivePipelineExecutor;
-    std::shared_ptr<RequestImpl> impl_;   // RequestImpl internal, forward declared
+    std::shared_ptr<RequestImpl> impl_; // RequestImpl internal, forward declared
     explicit RequestHandle(std::shared_ptr<RequestImpl>);
 };
 
-}  // namespace cann_lm::engine
+} // namespace cann_lm::engine

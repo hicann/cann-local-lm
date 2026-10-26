@@ -10,7 +10,7 @@
  * Apache License for more details at
  * http://www.apache.org/licenses/LICENSE-2.0
  */
- 
+
 #include "hiai_ndk_executor.h"
 
 #include "utils/log.h"
@@ -18,11 +18,12 @@
 #include "ndk_proxy.h"
 
 extern "C" {
-OH_NN_ReturnCode HMS_HiAIExecutor_GetModelID(OH_NNExecutor *executor, uint32_t* modelId);
+OH_NN_ReturnCode HMS_HiAIExecutor_GetModelID(OH_NNExecutor* executor, uint32_t* modelId);
 }
 
 namespace hiai {
-aclError HIAI_NDK_HiAIExecutor_GetModelID(OH_NNExecutor *executor, uint32_t* modelId) {
+aclError HIAI_NDK_HiAIExecutor_GetModelID(OH_NNExecutor* executor, uint32_t* modelId)
+{
     ACL_EXPECT_NOT_NULL(executor);
     ACL_EXPECT_NOT_NULL(modelId);
     auto getModelIDFunc = reinterpret_cast<decltype(HMS_HiAIExecutor_GetModelID)*>(

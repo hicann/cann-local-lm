@@ -28,7 +28,7 @@ public:
      * Path + file name such as /data/local/tmp/name.om or current working directory + file name such as ./name.om
      * or just the filename without the path eg name.om
      * @return Return success or other value.
-    */
+     */
     virtual Status RestoreFromFile(const char* file) = 0;
 
     virtual void SetName(const std::string& name) = 0;

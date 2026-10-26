@@ -90,6 +90,7 @@ def load_dopt_state_dict(dopt_path: str | Path) -> dict:
         raise FileNotFoundError(f"dopt output not found: {p}")
     if p.suffix == ".safetensors":
         from safetensors import safe_open
+
         sd: dict = {}
         with safe_open(str(p), "pt") as sf:
             for k in sf.keys():
@@ -103,8 +104,9 @@ def load_dopt_state_dict(dopt_path: str | Path) -> dict:
     # for both, matching cann_lm's text-only model.* layout.
     if any(k.startswith("model.language_model.") for k in sd):
         sd = {
-            ("model." + k[len("model.language_model."):])
-            if k.startswith("model.language_model.") else k: v
+            ("model." + k[len("model.language_model.") :])
+            if k.startswith("model.language_model.")
+            else k: v
             for k, v in sd.items()
         }
     return sd
@@ -143,8 +145,11 @@ def _read_dopt_quant_meta(
 # dopt 53ad5ec changed Quant_INT8-4_ECO group_size from 256 to 128; synced here.
 _STRATEGY_DEFAULT_PARAMS: dict[str, dict] = {
     "Quant_INT8-4_ECO": {
-        "group_size": 128, "bit": 4, "blocksize": 128,
-        "per_channel": True, "weight_algo": "omni_group_min_max",
+        "group_size": 128,
+        "bit": 4,
+        "blocksize": 128,
+        "per_channel": True,
+        "weight_algo": "omni_group_min_max",
     },
 }
 
@@ -322,11 +327,19 @@ def _swap_linear_from_sd(
         weight_q, weight_scale = materialize_int4_per_group_symmetric(
             w_gptq, scale2d, group_size, signed=True, nbits=bit, packed=packed
         )
-        weight_scale = weight_scale.transpose(-1, -2).contiguous()  # [n,k//g]->[k//g,n] (两路径都 transpose)
+        weight_scale = weight_scale.transpose(
+            -1, -2
+        ).contiguous()  # [n,k//g]->[k//g,n] (两路径都 transpose)
         if not is_kirin:
-            weight_q = weight_q.transpose(-1, -2).contiguous()  # int8 nibble [n,k//2]->[k//2,n]; int4pack 已 [k,n//8]
+            weight_q = weight_q.transpose(
+                -1, -2
+            ).contiguous()  # int8 nibble [n,k//2]->[k//2,n]; int4pack 已 [k,n//8]
         ql = QuantLinear(
-            weight_q, weight_scale, group_size, bias=m.bias, act_quant=True,
+            weight_q,
+            weight_scale,
+            group_size,
+            bias=m.bias,
+            act_quant=True,
         )
         parent, child = _resolve_parent(model, name)
         setattr(parent, child, ql)
@@ -370,7 +383,11 @@ def swap_from_dopt(
     sd = load_dopt_state_dict(dopt_path)
     param_map = _read_quant_param_map(dopt_path)
     info = _swap_linear_from_sd(
-        model, sd, skip=DEFAULT_SKIP, param_map=param_map, target_soc=target_soc,
+        model,
+        sd,
+        skip=DEFAULT_SKIP,
+        param_map=param_map,
+        target_soc=target_soc,
     )
     info["dopt_path"] = str(dopt_path)
     embed_quant = swap_embeddings_from_dopt(sd, model)

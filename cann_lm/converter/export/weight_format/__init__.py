@@ -9,4 +9,3 @@ from .layout import nd2nz, pack_int4_nz
 from .rules import load_rules, resolve_format
 
 __all__ = ["nd2nz", "pack_int4_nz", "load_rules", "resolve_format"]
-

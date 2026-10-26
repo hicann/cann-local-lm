@@ -39,12 +39,9 @@ from __future__ import annotations
 import argparse
 import inspect
 import json
-import os
-import sys
 from pathlib import Path
 from typing import Any
 
-import numpy as np
 import torch
 import torch.nn as nn
 from torch.fx import Interpreter
@@ -64,9 +61,14 @@ class DumpInterpreter(Interpreter):
 
 
 def _dtype_arg(s: str) -> torch.dtype:
-    dt = {"float16": torch.float16, "fp16": torch.float16,
-          "bfloat16": torch.bfloat16, "bf16": torch.bfloat16,
-          "float32": torch.float32, "fp32": torch.float32}
+    dt = {
+        "float16": torch.float16,
+        "fp16": torch.float16,
+        "bfloat16": torch.bfloat16,
+        "bf16": torch.bfloat16,
+        "float32": torch.float32,
+        "fp32": torch.float32,
+    }
     if s not in dt:
         raise ValueError(f"Unsupported dtype: {s}")
     return dt[s]
@@ -94,8 +96,7 @@ def _save_tensor(t: torch.Tensor, path: Path) -> dict:
         t = t.to(torch.float32)
     arr = t.numpy()
     arr.tofile(path)
-    return {"file": path.name, "shape": list(arr.shape),
-            "dtype": str(arr.dtype)}
+    return {"file": path.name, "shape": list(arr.shape), "dtype": str(arr.dtype)}
 
 
 def _get_sample_inputs(wrapper, seq_len: int, use_embeddings: bool):
@@ -148,29 +149,40 @@ def gen_golden_with_dump(
     # ── 量化接入: dopt fakequant (W4A8: 权重 int4 反量化 + 激活 int8 量化) ──
     quant_info: dict[str, Any] | None = None
     if quant_path:
-        from cann_lm.converter.quant_entry import swap_from_dopt
         from cann_lm.converter.swap import load_dopt_state_dict, _read_quant_param_map
 
         quant_path = Path(quant_path).resolve()
-        dopt_config = quant_path / "dopt_config.json"
         weight_pth = quant_path / "trained_quant_weight.pth"
 
         print(f"[quant] loading dopt weights: {weight_pth}")
         # 手动调 swap 组件 (swap_from_dopt 内部 load_dopt_state_dict + _read_quant_param_map 用同一 path
         # 但 load_dopt_state_dict 要 .pth 文件, _read_quant_param_map 要 dopt_config.json 目录)
-        import cann_lm.converter.quant.dopt_lm.quantizer.qmin_max  # noqa: 注册量化器
-        import cann_lm.converter.quant.dopt_lm.quantizer.qeval  # noqa
-        from cann_lm.converter.swap import load_dopt_state_dict, _read_quant_param_map, _swap_linear_from_sd, swap_embeddings_from_dopt, DEFAULT_SKIP
-        from cann_lm.converter.quant.dopt_lm.do_opt import set_quant_state, set_calibrate_state
+        import cann_lm.converter.quant.dopt_lm.quantizer.qmin_max  # noqa: F401  # 注册量化器
+        import cann_lm.converter.quant.dopt_lm.quantizer.qeval  # noqa: F401
+        from cann_lm.converter.swap import (
+            _swap_linear_from_sd,
+            swap_embeddings_from_dopt,
+            DEFAULT_SKIP,
+        )
+        from cann_lm.converter.quant.dopt_lm.do_opt import (
+            set_quant_state,
+            set_calibrate_state,
+        )
+
         sd = load_dopt_state_dict(str(weight_pth))
         param_map = _read_quant_param_map(str(quant_path))
         # gen_golden_with_dump 在 CPU 跑 DumpInterpreter → cann_lm::quant_matmul CPU impl 要 unpacked [K,N] int8
         # 所以 swap 用 packed=False (不走 nibble-packed), 产出 unpacked int8 weight_q [K,N]
-        swap_info = _swap_linear_from_sd(artifact.model, sd, skip=DEFAULT_SKIP, param_map=param_map)
+        swap_info = _swap_linear_from_sd(
+            artifact.model, sd, skip=DEFAULT_SKIP, param_map=param_map
+        )
         # swap 默认 packed=True (int8 nibble [K//2,N]); CPU DumpInterpreter 要 unpacked
         # 手动 re-materialize 每个 QLinear 的 weight 为 unpacked
-        from cann_lm.converter.export.quant_swap.materialize import materialize_int4_per_group_symmetric
+        from cann_lm.converter.export.quant_swap.materialize import (
+            materialize_int4_per_group_symmetric,
+        )
         from cann_lm.converter.export.quant_swap.quant_linear import QuantLinear
+
         for name, m in artifact.model.named_modules():
             if isinstance(m, QuantLinear):
                 # 从 QLinear 的现有 packed weight_q 解 nibble → unpacked
@@ -184,17 +196,26 @@ def gen_golden_with_dump(
                     gs = in_f // groups
                     scale2d = sd[skey].reshape(out_f, groups)
                     wq_unpacked, wsc = materialize_int4_per_group_symmetric(
-                        w_fp, scale2d, gs, signed=True, nbits=4, packed=False)
-                    m.weight_q = torch.nn.Parameter(wq_unpacked.transpose(-1, -2).contiguous(), requires_grad=False)
-                    m.weight_scale = torch.nn.Parameter(wsc.transpose(-1, -2).contiguous().to(torch.float32), requires_grad=False)
-        embed_quant = swap_embeddings_from_dopt(sd, artifact.model)
+                        w_fp, scale2d, gs, signed=True, nbits=4, packed=False
+                    )
+                    m.weight_q = torch.nn.Parameter(
+                        wq_unpacked.transpose(-1, -2).contiguous(), requires_grad=False
+                    )
+                    m.weight_scale = torch.nn.Parameter(
+                        wsc.transpose(-1, -2).contiguous().to(torch.float32),
+                        requires_grad=False,
+                    )
+        _ = swap_embeddings_from_dopt(
+            sd, artifact.model
+        )  # 副作用: swap model embeddings to int8; 返回值未用
         swap_info["dopt_path"] = str(quant_path)
 
         set_quant_state(artifact.model, weight_state=True, input_state=True)
         set_calibrate_state(artifact.model, True)
         artifact.model.load_state_dict(
             torch.load(str(weight_pth), map_location="cpu", weights_only=True),
-            strict=False)
+            strict=False,
+        )
         set_calibrate_state(artifact.model, False)
 
         # 跳过 embedding 量化 (vocab×10752 的 fakequant 中间张量 ~11GB, CPU 也重)
@@ -213,24 +234,30 @@ def gen_golden_with_dump(
             "input_state": True,
             "skip_embed_quant": skip_embed_quant,
         }
-        print(f"[quant] {swap_info.get('n_quantized')} linears quantized, "
-              f"skip_embed_quant={skip_embed_quant}")
+        print(
+            f"[quant] {swap_info.get('n_quantized')} linears quantized, "
+            f"skip_embed_quant={skip_embed_quant}"
+        )
 
     sample_inputs = _get_sample_inputs(wrapper, seq_len, use_embeddings)
 
     if use_embeddings:
         wrapper.detach_externalized_lookups()
 
-    print(f"[1/4] torch.export ({model_type}, seq_len={seq_len}, "
-          f"layers={num_layers or 'all'})")
+    print(
+        f"[1/4] torch.export ({model_type}, seq_len={seq_len}, "
+        f"layers={num_layers or 'all'})"
+    )
     with torch.no_grad():
         ep = torch.export.export(wrapper, sample_inputs, strict=False)
     gm = ep.module()
 
     input_names = _get_input_names(wrapper)
 
-    print(f"[2/4] {'DumpInterpreter' if dump_intermediates else 'forward (no-intermediates)'}: "
-          f"{len(list(gm.graph.nodes))} FX nodes")
+    print(
+        f"[2/4] {'DumpInterpreter' if dump_intermediates else 'forward (no-intermediates)'}: "
+        f"{len(list(gm.graph.nodes))} FX nodes"
+    )
     with torch.no_grad():
         if dump_intermediates:
             interp = DumpInterpreter(gm)
@@ -287,12 +314,14 @@ def gen_golden_with_dump(
                 suffix = f"_{j}" if len(tensors) > 1 else ""
                 fname = f"node_{node.name}{suffix}.bin"
                 info = _save_tensor(t, output_dir / fname)
-                info.update({
-                    "node_name": node.name,
-                    "op": node.op,
-                    "target": str(node.target),
-                    "sub_index": j,
-                })
+                info.update(
+                    {
+                        "node_name": node.name,
+                        "op": node.op,
+                        "target": str(node.target),
+                        "sub_index": j,
+                    }
+                )
                 node_meta.append(info)
         meta["intermediates"] = node_meta
         print(f"       {len(node_meta)} intermediate tensors saved")
@@ -300,11 +329,14 @@ def gen_golden_with_dump(
         print("[4/4] Skipping intermediates (--no-intermediates)")
 
     meta_path = output_dir / "golden_meta.json"
-    meta_path.write_text(json.dumps(meta, indent=2, ensure_ascii=False),
-                         encoding="utf-8")
+    meta_path.write_text(
+        json.dumps(meta, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
     print(f"\nDone. Golden data -> {output_dir}")
-    print(f"  Inputs: {len(meta['inputs'])}, Outputs: {len(meta['outputs'])}, "
-          f"Intermediates: {len(meta['intermediates'])}")
+    print(
+        f"  Inputs: {len(meta['inputs'])}, Outputs: {len(meta['outputs'])}, "
+        f"Intermediates: {len(meta['intermediates'])}"
+    )
     print(f"  Meta: {meta_path}")
     return output_dir
 
@@ -313,26 +345,47 @@ def main() -> None:
     pa = argparse.ArgumentParser(
         description="Generate golden reference data with per-op intermediate dump."
     )
-    pa.add_argument("--model-type", required=True,
-                    choices=["gemma4", "qwen3_5"],
-                    help="Model type")
+    pa.add_argument(
+        "--model-type", required=True, choices=["gemma4", "qwen3_5"], help="Model type"
+    )
     pa.add_argument("--hf-path", required=True, help="HF model directory")
     pa.add_argument("--output-dir", required=True, help="Output directory")
-    pa.add_argument("--seq-len", type=int, default=128,
-                    help="Sequence length (default: 128)")
-    pa.add_argument("--dtype", type=_dtype_arg, default=torch.float16,
-                    help="Data type (float16/float32, default: float16)")
-    pa.add_argument("--num-layers", type=int, default=None,
-                    help="Truncate to N layers (default: all)")
-    pa.add_argument("--no-embeddings", action="store_true",
-                    help="Use input_ids in-graph (default: embeddings out-of-graph)")
-    pa.add_argument("--no-intermediates", action="store_true",
-                    help="Skip per-op intermediate dump (only inputs/outputs)")
-    pa.add_argument("--quant-path", default=None,
-                    help="Path to dopt quantized output dir (trained_quant_weight.pth + dopt_config.json). "
-                         "When provided, applies fakequant W4A8 to the model before dump.")
-    pa.add_argument("--no-skip-embed-quant", action="store_true",
-                    help="Do NOT skip embedding quantization (default: skip to avoid OOM from huge embedding tables)")
+    pa.add_argument(
+        "--seq-len", type=int, default=128, help="Sequence length (default: 128)"
+    )
+    pa.add_argument(
+        "--dtype",
+        type=_dtype_arg,
+        default=torch.float16,
+        help="Data type (float16/float32, default: float16)",
+    )
+    pa.add_argument(
+        "--num-layers",
+        type=int,
+        default=None,
+        help="Truncate to N layers (default: all)",
+    )
+    pa.add_argument(
+        "--no-embeddings",
+        action="store_true",
+        help="Use input_ids in-graph (default: embeddings out-of-graph)",
+    )
+    pa.add_argument(
+        "--no-intermediates",
+        action="store_true",
+        help="Skip per-op intermediate dump (only inputs/outputs)",
+    )
+    pa.add_argument(
+        "--quant-path",
+        default=None,
+        help="Path to dopt quantized output dir (trained_quant_weight.pth + dopt_config.json). "
+        "When provided, applies fakequant W4A8 to the model before dump.",
+    )
+    pa.add_argument(
+        "--no-skip-embed-quant",
+        action="store_true",
+        help="Do NOT skip embedding quantization (default: skip to avoid OOM from huge embedding tables)",
+    )
     args = pa.parse_args()
 
     gen_golden_with_dump(

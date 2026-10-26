@@ -52,6 +52,6 @@ private:
     void* handle_ = nullptr;
 };
 
-}  // namespace hiai
+} // namespace hiai
 
-#endif  // HIAI_ACL_DYNAMIC_LOADER_H
+#endif // HIAI_ACL_DYNAMIC_LOADER_H

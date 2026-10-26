@@ -197,7 +197,7 @@ NZ 转换默认**关闭**（等价现状，全 ND，零字节变化）。导出�
 | `epair_utils.py:273`（v2 transform） | `trans_enabled` 参数删除；guard 完全移入 name_pattern（`*.weight_q`） |
 | `epair_utils.py:725-748`（v1 `_pack_weights_to_dir`） | 不再各自内联 transform，**复用 `_transform_weight_tensor`**——顺路修复 v1 缺 guard 的 `"*"` 误伤 bug（见 wildcard 陷阱第 2 点） |
 | `ge_converters/_quant_matmul_converter.py:103` | 去 env；`is_s8s4` 且 `resolve_format(...).format=="Z"` 时设 `x2.desc.layout`（与 packer 同源决策） |
-| `tests/py/converter/test_weight_format.py` | `env-off` 两用例改为"空 rules json"用例；`env-on` 用例去 monkeypatch（ND/NZ 字节断言不变）；新增 `enable: false` 规则跳过用例（含匹配后续规则的顺序语义） |
+| `tests/python/converter/test_weight_format.py` | `env-off` 两用例改为"空 rules json"用例；`env-on` 用例去 monkeypatch（ND/NZ 字节断言不变）；新增 `enable: false` 规则跳过用例（含匹配后续规则的顺序语义） |
 | 文档 | 本文（本节 + [ep_json 标注同步机制](#ep_json-标注同步机制_sync_-补录)）、`TODO_notes.md` env 总开关注记、`op_npu_verify/GUIDE_kirinx90_board.md` §1.2 与故障速查 #2（标"上游已修"）；`export_design.md` 经查无 env 提及、无需改 |
 
 ### 回归验收
@@ -207,7 +207,7 @@ NZ 转换默认**关闭**（等价现状，全 ND，零字节变化）。导出�
 1. **fp16 零行为变化**（MatMul `enable:false`）：非量化模型新链导出 vs 迁移前 env=0 旧链——weights bin + ep_json **逐位一致**（新链下 MatMul 规则关闭 → 全 ND，与"不转换"完全等价）。
 2. **单算子逐位复现**（QuantBatchMatmulV4 `enable:true`）：q_proj 去 env 重导（无 `CANN_LM_ENABLE_WEIGHT_TRANS`）→ 五产物 md5 与 2026-10-20 env=1 基线**逐位一致**（omc `65be769d…`、SubGraph_0.weight `2366b036…`、输入 `4f6b5f3…`）→ 板跑 output_0 md5 复现 `b1344d8e…`（免重算 cos）。
 3. **e2e 全模对账**：同输入双路径（env=1 旧链 vs 去 env 新链）的**量化模型**导出，weights bin + ep_json diff 为空。
-4. **单测**：`pytest tests/py/converter/test_weight_format.py` 全绿（"空 rules → 全 ND"逃生门、`enable:false` 跳过两族用例）。
+4. **单测**：`pytest tests/python/converter/test_weight_format.py` 全绿（"空 rules → 全 ND"逃生门、`enable:false` 跳过两族用例）。
 
 ### 决策点记录
 

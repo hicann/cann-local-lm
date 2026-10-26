@@ -10,9 +10,9 @@
 
 namespace hiai {
 namespace {
-    std::mutex intanceMutex;
-    std::shared_ptr<ExecutorContainer> ptrInstance;
-}
+std::mutex intanceMutex;
+std::shared_ptr<ExecutorContainer> ptrInstance;
+} // namespace
 
 ExecutorContainer* ExecutorContainer::GetInstance()
 {
@@ -41,7 +41,7 @@ void ExecutorContainer::AddExecutor(uint64_t builtModelId, const std::shared_ptr
     std::lock_guard<std::mutex> lock(containerMutex_);
     auto it = executorMap_.find(builtModelId);
     if (it != executorMap_.end()) {
-        CANN_LLM_LOGW("builtModel has been added ");     // builtmodel和executor是一对一的关系
+        CANN_LLM_LOGW("builtModel has been added "); // builtmodel和executor是一对一的关系
         return;
     }
     executorMap_.insert(std::pair<uint64_t, std::shared_ptr<OH_NNExecutor>>(builtModelId, executor));

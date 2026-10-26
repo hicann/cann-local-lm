@@ -90,13 +90,12 @@ static aclError SetOutputTensorData(std::vector<NN_Tensor*> outputTensors, const
 }
 
 static aclError PrepareNormalModelInputs(OH_NNExecutor* executor, const aclmdlDataset* input,
-    std::vector<NN_Tensor*>& inputTensors)
+                                         std::vector<NN_Tensor*>& inputTensors)
 {
     size_t inputCount = 0;
     auto ret = HIAI_NDK_NNExecutor_GetInputCount(executor, &inputCount);
     if (ret != ACL_SUCCESS || inputCount != input->buffers.size()) {
-        ACL_LOGE("OH_NNExecutor_GetInputCount failed or size mismatch: %zu vs %zu",
-            inputCount, input->buffers.size());
+        ACL_LOGE("OH_NNExecutor_GetInputCount failed or size mismatch: %zu vs %zu", inputCount, input->buffers.size());
         return ACL_ERROR_INVALID_PARAM;
     }
 
@@ -127,7 +126,8 @@ static aclError PrepareNormalModelInputs(OH_NNExecutor* executor, const aclmdlDa
 
 static aclError WriteBufferToFile(const void* data, uint32_t size, const char* file)
 {
-    if (file == nullptr) return ACL_ERROR_INVALID_PARAM;
+    if (file == nullptr)
+        return ACL_ERROR_INVALID_PARAM;
     FILE* fp = fopen(file, "wb");
     if (fp == nullptr) {
         ACL_LOGE("open file failed: %s", file);
@@ -156,11 +156,9 @@ static aclError WriteBufferToFile(const void* data, uint32_t size, const char* f
 
 aclError ACLManager::LoadModel(OH_NNCompilation* compilation, uint32_t* modelId)
 {
-    ACL_EXPECT_TRUE_R_WITH_LOG(compilation != nullptr, ACL_ERROR_INVALID_PARAM,
-        "the compilation to load is nullptr");
-    auto executor = std::shared_ptr<OH_NNExecutor>(
-        HIAI_NDK_NNExecutor_Construct(compilation),
-        [](OH_NNExecutor* p) { HIAI_NDK_NNExecutor_Destroy(&p); });
+    ACL_EXPECT_TRUE_R_WITH_LOG(compilation != nullptr, ACL_ERROR_INVALID_PARAM, "the compilation to load is nullptr");
+    auto executor = std::shared_ptr<OH_NNExecutor>(HIAI_NDK_NNExecutor_Construct(compilation),
+                                                   [](OH_NNExecutor* p) { HIAI_NDK_NNExecutor_Destroy(&p); });
     ACL_EXPECT_TRUE_R(executor != nullptr, ACL_ERROR_INVALID_PARAM);
     auto ptr = executor.get();
     auto ret = HIAI_NDK_HiAIExecutor_GetModelID(ptr, modelId);
@@ -179,8 +177,7 @@ aclError SetBuildConfig(OH_NNCompilation* compilation, const aclmdlConfigHandle*
 {
     aclError ret = ACL_ERROR_FAILURE;
     if (handle->priority != UNDEFINED_CONFIG) {
-        ACL_EXPECT_TRUE(handle->priority <= static_cast<int32_t>(OH_NN_PRIORITY_HIGH) &&
-            handle->priority >= 0);
+        ACL_EXPECT_TRUE(handle->priority <= static_cast<int32_t>(OH_NN_PRIORITY_HIGH) && handle->priority >= 0);
         OH_NN_Priority priority = static_cast<OH_NN_Priority>(handle->priority);
         ret = HIAI_NDK_NNCompilation_SetPriority(compilation, priority);
         if (ret != ACL_SUCCESS) {
@@ -202,7 +199,7 @@ aclError SetBuildConfig(OH_NNCompilation* compilation, const aclmdlConfigHandle*
 // C3: SetLoadConfig removed — referenced ACL_MDL_LOAD_FROM_FILE/MEM (ACL graph
 // constants not vendored). Was only called by the removed LoadModel(handle) overload.
 // Re-implement in C2 with the config-handle path.
-}  // anonymous namespace
+} // anonymous namespace
 
 // C3: ACLManager::LoadModel(const aclmdlConfigHandle*, uint32_t*) removed — called
 // the removed SetLoadConfig (ACL_MDL_LOAD_FROM_FILE/MEM). Only caller was the stubbed
@@ -213,11 +210,11 @@ aclError SetBuildConfig(OH_NNCompilation* compilation, const aclmdlConfigHandle*
 aclError ACLManager::RunModel(uint32_t modelId, const aclmdlDataset* input, aclmdlDataset* output)
 {
     ACL_EXPECT_TRUE_R_WITH_LOG(input != nullptr && output != nullptr, ACL_ERROR_INVALID_PARAM,
-        "input or output is nullptr");
+                               "input or output is nullptr");
 
     auto executorPtr = GetExecutorByModelId(modelId);
     ACL_EXPECT_NOT_NULL_R(executorPtr, ACL_ERROR_INVALID_PARAM);
-    OH_NNExecutor* executor = executorPtr.get();  // H2(a): raw ptr, executorPtr keeps executor alive
+    OH_NNExecutor* executor = executorPtr.get(); // H2(a): raw ptr, executorPtr keeps executor alive
 
     // Create output tensors
     std::vector<NN_Tensor*> outputTensors;
@@ -250,7 +247,7 @@ aclError ACLManager::RunModel(uint32_t modelId, const aclmdlDataset* input, aclm
     if (hasDynamic) {
         ret = HIAI_NDK_NNExecutor_RunSync(executor, dynamicTensors, outputTensors);
         DestroyTensors(dynamicTensors);
-        if (ret != ACL_SUCCESS) {  // S4: dynamic path — RunSync failure must not be swallowed
+        if (ret != ACL_SUCCESS) { // S4: dynamic path — RunSync failure must not be swallowed
             ACL_LOGE("RunSync failed (dynamic path)");
             DestroyTensors(outputTensors);
             return ACL_ERROR_INVALID_PARAM;
@@ -265,7 +262,7 @@ aclError ACLManager::RunModel(uint32_t modelId, const aclmdlDataset* input, aclm
         }
         ret = HIAI_NDK_NNExecutor_RunSync(executor, inputTensors, outputTensors);
         DestroyTensors(inputTensors);
-        if (ret != ACL_SUCCESS) {  // S3: non-dynamic path — destroy outputTensors on RunSync failure
+        if (ret != ACL_SUCCESS) { // S3: non-dynamic path — destroy outputTensors on RunSync failure
             ACL_LOGE("RunSync failed");
             DestroyTensors(outputTensors);
             return ACL_ERROR_INVALID_PARAM;
@@ -281,15 +278,15 @@ aclError ACLManager::RunModel(uint32_t modelId, const aclmdlDataset* input, aclm
 // (sync) per H1. The success path leaks input/output tensors because SetOnRunDone is
 // a stub (the NDK callback that should DestroyTensors isn't wired). Do NOT call until
 // §15.5 real async (RunAsync + callback forwarding + virtual stream queue) is implemented.
-aclError ACLManager::RunModelAsync(uint32_t modelId, const aclmdlDataset* input,
-    aclmdlDataset* output, int32_t timeoutMs, void* userData)
+aclError ACLManager::RunModelAsync(uint32_t modelId, const aclmdlDataset* input, aclmdlDataset* output,
+                                   int32_t timeoutMs, void* userData)
 {
     ACL_EXPECT_TRUE_R_WITH_LOG(input != nullptr && output != nullptr, ACL_ERROR_INVALID_PARAM,
-        "input or output is nullptr");
+                               "input or output is nullptr");
 
     auto executorPtr = GetExecutorByModelId(modelId);
     ACL_EXPECT_NOT_NULL_R(executorPtr, ACL_ERROR_INVALID_PARAM);
-    OH_NNExecutor* executor = executorPtr.get();  // H2(a): raw ptr, executorPtr keeps executor alive
+    OH_NNExecutor* executor = executorPtr.get(); // H2(a): raw ptr, executorPtr keeps executor alive
 
     // Prepare input tensors (same as RunModel)
     std::vector<NN_Tensor*> inputTensors;
@@ -331,16 +328,16 @@ std::shared_ptr<OH_NNExecutor> ACLManager::GetExecutorByModelId(uint32_t modelId
     std::lock_guard<std::mutex> lock(mutex_);
     const auto iter = executorMap_.find(modelId);
     ACL_EXPECT_TRUE_R_WITH_LOG(iter != executorMap_.end(), nullptr, "modelId not found");
-    return iter->second;  // H2(a): shared_ptr copy — keeps executor alive beyond the lock
+    return iter->second; // H2(a): shared_ptr copy — keeps executor alive beyond the lock
 }
 
 aclError ACLManager::GetTensorDesc(aclmdlDesc* modelDesc, uint32_t modelId)
 {
     auto executorPtr = GetExecutorByModelId(modelId);
     ACL_EXPECT_NOT_NULL_R(executorPtr, ACL_ERROR_INVALID_PARAM);
-    OH_NNExecutor* executor = executorPtr.get();  // H2(a): raw ptr, executorPtr keeps executor alive
+    OH_NNExecutor* executor = executorPtr.get(); // H2(a): raw ptr, executorPtr keeps executor alive
 
-    modelDesc->modelId = modelId;  // store for GetCurOutputDims lookup
+    modelDesc->modelId = modelId; // store for GetCurOutputDims lookup
 
     size_t inputCount = 0;
     size_t outCount = 0;
@@ -369,22 +366,20 @@ aclError ACLManager::GetTensorDesc(aclmdlDesc* modelDesc, uint32_t modelId)
     return ACL_SUCCESS;
 }
 
-aclError ACLManager::SetInputDynamic(uint32_t modelId, aclmdlDataset* dataset,
-    size_t index, const aclmdlIODims* dims)
+aclError ACLManager::SetInputDynamic(uint32_t modelId, aclmdlDataset* dataset, size_t index, const aclmdlIODims* dims)
 {
     (void)index;
-    ACL_EXPECT_TRUE_R_WITH_LOG(dataset != nullptr, ACL_ERROR_INVALID_PARAM,
-        "dataset is nullptr");
+    ACL_EXPECT_TRUE_R_WITH_LOG(dataset != nullptr, ACL_ERROR_INVALID_PARAM, "dataset is nullptr");
 
     auto executorPtr = GetExecutorByModelId(modelId);
     ACL_EXPECT_NOT_NULL_R(executorPtr, ACL_ERROR_INVALID_PARAM);
-    OH_NNExecutor* executor = executorPtr.get();  // H2(a): raw ptr, executorPtr keeps executor alive
+    OH_NNExecutor* executor = executorPtr.get(); // H2(a): raw ptr, executorPtr keeps executor alive
 
     std::vector<NN_Tensor*> inputTensors;
     size_t inputCount = 0;
     auto ret = HIAI_NDK_NNExecutor_GetInputCount(executor, &inputCount);
-    ACL_EXPECT_TRUE_R_WITH_LOG(ret == ACL_SUCCESS && inputCount == dataset->buffers.size(),
-        ACL_ERROR_INVALID_PARAM, "GetInputCount failed or size mismatch");
+    ACL_EXPECT_TRUE_R_WITH_LOG(ret == ACL_SUCCESS && inputCount == dataset->buffers.size(), ACL_ERROR_INVALID_PARAM,
+                               "GetInputCount failed or size mismatch");
 
     size_t descCount = 0;
     for (size_t i = 0; i < inputCount; ++i) {
@@ -392,7 +387,7 @@ aclError ACLManager::SetInputDynamic(uint32_t modelId, aclmdlDataset* dataset,
         int32_t* shape = nullptr;
         size_t shapeLength = 0;
         ret = HIAI_NDK_NNTensorDesc_GetShape(tensorDesc, &shape, &shapeLength);
-        if (ret != ACL_SUCCESS) {  // S5: clean up tensorDesc + accumulated inputTensors
+        if (ret != ACL_SUCCESS) { // S5: clean up tensorDesc + accumulated inputTensors
             HIAI_NDK_NNTensorDesc_Destroy(&tensorDesc);
             DestroyTensors(inputTensors);
             return ACL_ERROR_INVALID_PARAM;
@@ -400,7 +395,7 @@ aclError ACLManager::SetInputDynamic(uint32_t modelId, aclmdlDataset* dataset,
         if (descCount + shapeLength > dims->dimCount) {
             ACL_LOGE("dynamic dims too small");
             HIAI_NDK_NNTensorDesc_Destroy(&tensorDesc);
-            DestroyTensors(inputTensors);  // S5: free prior-iteration tensors
+            DestroyTensors(inputTensors); // S5: free prior-iteration tensors
             return ACL_ERROR_INVALID_PARAM;
         }
         std::vector<int32_t> tmpShapes;
@@ -462,7 +457,8 @@ ACLManager::~ACLManager()
 
 aclError ACLManager::GetDeviceCount(uint32_t* count)
 {
-    if (count == nullptr) return ACL_ERROR_INVALID_PARAM;
+    if (count == nullptr)
+        return ACL_ERROR_INVALID_PARAM;
     const size_t* allDevicesID = nullptr;
     uint32_t deviceCount = 0;
     auto ret = HIAI_NDK_NNDevice_GetAllDevicesID(&allDevicesID, &deviceCount);
@@ -483,7 +479,8 @@ aclError ACLManager::SetDevice(int32_t deviceId)
 
 aclError ACLManager::GetDevice(int32_t* deviceId)
 {
-    if (deviceId == nullptr) return ACL_ERROR_INVALID_PARAM;
+    if (deviceId == nullptr)
+        return ACL_ERROR_INVALID_PARAM;
     *deviceId = currentDeviceId_;
     return ACL_SUCCESS;
 }
@@ -499,7 +496,8 @@ aclError ACLManager::ResetDevice(int32_t deviceId)
 
 aclError ACLManager::CreateStream(aclrtStream* stream)
 {
-    if (stream == nullptr) return ACL_ERROR_INVALID_PARAM;
+    if (stream == nullptr)
+        return ACL_ERROR_INVALID_PARAM;
     std::lock_guard<std::mutex> lock(mutex_);
     auto vs = std::make_unique<VirtualStream>();
     uint64_t id = nextStreamId_++;
@@ -540,7 +538,8 @@ aclError ACLManager::SynchronizeStream(aclrtStream stream)
 
 aclError ACLManager::CreateEvent(aclrtEvent* event)
 {
-    if (event == nullptr) return ACL_ERROR_INVALID_PARAM;
+    if (event == nullptr)
+        return ACL_ERROR_INVALID_PARAM;
     std::lock_guard<std::mutex> lock(mutex_);
     auto ve = std::make_unique<VirtualEvent>();
     uint64_t id = nextEventId_++;
@@ -570,7 +569,7 @@ aclError ACLManager::RecordEvent(aclrtEvent event, aclrtStream stream)
         iter->second->promise.set_value();
         iter->second->recorded = true;
     }
-    (void)stream;  // stream not used in phase 1
+    (void)stream; // stream not used in phase 1
     return ACL_SUCCESS;
 }
 
@@ -602,7 +601,7 @@ aclError ACLManager::QueryEventStatus(aclrtEvent event)
         return ACL_ERROR_INVALID_PARAM;
     }
     if (!iter->second->future.valid()) {
-        return ACL_ERROR_INVALID_PARAM;  // not recorded yet
+        return ACL_ERROR_INVALID_PARAM; // not recorded yet
     }
     auto status = iter->second->future.wait_for(std::chrono::milliseconds(0));
     return (status == std::future_status::ready) ? ACL_SUCCESS : ACL_ERROR_FAILURE;
@@ -630,4 +629,3 @@ VirtualStream* ACLManager::GetStream(aclrtStream stream)
 // (from aclmdlConstructFromFile/FromMem) until aclmdlFinishLoad (which Build+LoadModel
 // + EraseCompilation). EraseCompilation destroys the compilation (matches the existing
 // aclmdlLoadFromFile's destroy-after-LoadModel pattern; the executor doesn't hold it).
-

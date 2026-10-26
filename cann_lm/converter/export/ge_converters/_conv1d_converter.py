@@ -18,6 +18,7 @@ Custom converter required: decomposition leaves the Conv2D inputDesc empty (torc
 auto_generated only sets name="y"), and GE infershape won't infer empty desc -> OM compile
 fails. This manually fills Unsqueeze/Conv2D outputDesc shape/dtype. Registered by ge_converter.register_ge_converters.
 """
+
 from typing import Any
 
 
@@ -34,11 +35,14 @@ def convert_conv1d(
 ) -> Any:
     """aten.conv1d -> Unsqueeze + Conv2D + Squeeze; manually fill outputDesc to avoid GE infershape on empty desc."""
     from torchair._ge_concrete_graph import ge_apis as ge
-    from torchair._ge_concrete_graph.ge_converter.aten.convolution import _npu_convolution
+    from torchair._ge_concrete_graph.ge_converter.aten.convolution import (
+        _npu_convolution,
+    )
+
     s = stride[0] if isinstance(stride, (list, tuple)) and stride else 1
     p = padding[0] if isinstance(padding, (list, tuple)) and padding else 0
     d = dilation[0] if isinstance(dilation, (list, tuple)) and dilation else 1
-    x4 = ge.Unsqueeze(x, axes=[2])       # [B,C,L] -> [B,C,1,L]
+    x4 = ge.Unsqueeze(x, axes=[2])  # [B,C,L] -> [B,C,1,L]
     w4 = ge.Unsqueeze(weight, axes=[2])  # [O,C,K] -> [O,C,1,K]
     # Manually fill Unsqueeze outputDesc shape/dtype so the downstream Conv2D inputDesc (CopyFrom)
     # is non-empty, avoiding GE infershape skipping empty desc (torchair auto_generated only sets name="y")

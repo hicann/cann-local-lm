@@ -29,7 +29,6 @@
 | `--output-dir`　　　 | (必填)　　　　　 | epair 输出目录　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　 |
 | `--target-soc`　　　 | `KirinX90`　　　| 目标 SoC（决定 dtype 派生 + swap 打包格式；Ascend→bfloat16, Kirin→float16）　 |
 | `--max-file-size`　　| 50GB　　　　　　 | 单 bin 最大字节数（默认 50GB）　　　　　　　　　　　　　　　　　　　　　　　 |
-| `--kv-cache-max-len` | 2048　　　　　　 | KV buffer 第一维　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　|
 | `--mode`　　　　　　 | `prefill-decode` | `single` / `prefill-decode`　　　　　　　　　　　　　　　　　　　　　　　　　　|
 | `--num-layers`　　　 | —　　　　　　　　| 仅导出前 N 层（切片/调试，None=全部）　　　　　　　　　　　　　　　　　　　　 |
 | `--quant-path`　　　 | —　　　　　　　　| CANN 轻量化工具 GPTQ 产物路径（量化接入，详见 [INDEX.md](../quant/INDEX.md)）　　　　　　 |

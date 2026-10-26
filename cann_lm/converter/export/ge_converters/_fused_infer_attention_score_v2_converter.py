@@ -1,4 +1,10 @@
-# Copyright 2026 The xLLM Authors. All Rights Reserved.
+# Copyright (c) 2023-2026 Huawei Technologies Co., Ltd. All rights reserved.
+#
+# Adapted from torchair (Copyright (c) 2023, Huawei Technologies Co., Ltd, BSD License):
+#   - torchair/python/torchair/_ge_concrete_graph/ge_converter/custom/fused_infer_attention_score_v2.py
+#   - torchair/python/torchair/ops/_npu_fused_infer_attention_score_v2.py
+#   - torchair/python/torchair/_ge_concrete_graph/auto_generated_ge_raw_ops.py
+# and torch_npu (Copyright (c) Huawei Technologies Co., Ltd, BSD License).
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -18,6 +24,7 @@ cann_lm self-registers in the npu namespace (torchair's is in the air namespace,
 applicable). Simplified: only the params gemma4 uses are passed; quant/antiquant/rope/
 shared_prefix etc. are None. Registered by ge_converter.register_ge_converters.
 """
+
 from typing import Any
 
 
@@ -52,6 +59,7 @@ def convert_fused_infer_attention_score_v2(
             return None
         try:
             import torch
+
             if isinstance(x, torch.Tensor) and x.numel() <= 8:
                 return ge.Const(x.tolist())
         except Exception:

@@ -9,6 +9,7 @@
   - weight_info 的 bin 文件名与实际一致
   - model_config 含必要字段
 """
+
 import json
 import sys
 from pathlib import Path
@@ -40,17 +41,20 @@ def verify(model: str) -> bool:
     json_names = {p.name for p in jsons}
     # ep_json: single -> ep_json_with_ascend_ir.json; prefill-decode -> prefill_/decode_
     ep_jsons = [p for p in jsons if "ascend_ir" in p.name]
-    all_ok &= _check("ep_json_with_ascend_ir present", len(ep_jsons) >= 1,
-                     f"{len(ep_jsons)} file(s)")
+    all_ok &= _check(
+        "ep_json_with_ascend_ir present", len(ep_jsons) >= 1, f"{len(ep_jsons)} file(s)"
+    )
     for j in ep_jsons:
         try:
             data = json.loads(j.read_text())
-            has_ir = "ascend_ir" in j.name or any(
-                "ascend" in str(v).lower() for v in data.values()
-            ) if isinstance(data, dict) else False
-            n_nodes = len(data.get("graph", {}).get("nodes", [])) if isinstance(data, dict) else 0
-            all_ok &= _check(f"{j.name} parseable ({n_nodes} nodes)", True,
-                             f"nodes={n_nodes}")
+            n_nodes = (
+                len(data.get("graph", {}).get("nodes", []))
+                if isinstance(data, dict)
+                else 0
+            )
+            all_ok &= _check(
+                f"{j.name} parseable ({n_nodes} nodes)", True, f"nodes={n_nodes}"
+            )
         except Exception as e:
             all_ok &= _check(f"{j.name} parseable", False, str(e))
 
@@ -65,14 +69,17 @@ def verify(model: str) -> bool:
             sub = cfg.get("config", cfg)  # 字段在 config 子键 (qwen3.5) 或顶层
             keys = ["model_type", "hidden_size", "num_hidden_layers", "vocab_size"]
             missing = [k for k in keys if k not in sub]
-            all_ok &= _check("model_config fields", not missing,
-                             f"missing={missing}" if missing else "")
+            all_ok &= _check(
+                "model_config fields",
+                not missing,
+                f"missing={missing}" if missing else "",
+            )
         except Exception as e:
             all_ok &= _check("model_config parseable", False, str(e))
 
     # 3. weights_*.bin
     bins = sorted(out.glob("weights_*.bin"))
-    all_ok &= _check(f"weights_*.bin present", len(bins) >= 1, f"{len(bins)} file(s)")
+    all_ok &= _check("weights_*.bin present", len(bins) >= 1, f"{len(bins)} file(s)")
 
     # 4. weight_info bin 文件名与实际一致
     wi = out / "weight_info.json"
@@ -83,8 +90,11 @@ def verify(model: str) -> bool:
             ref_names = {p.name for p in bins}
             info_names = set(info.keys()) if isinstance(info, dict) else set()
             match = ref_names == info_names
-            all_ok &= _check("weight_info bin names match", match,
-                             f"ref={sorted(ref_names)} info={sorted(info_names)}")
+            all_ok &= _check(
+                "weight_info bin names match",
+                match,
+                f"ref={sorted(ref_names)} info={sorted(info_names)}",
+            )
             # 至少有若干权重条目
             total = sum(len(v) for v in info.values()) if isinstance(info, dict) else 0
             all_ok &= _check(f"weight entries ({total})", total > 0)
@@ -93,12 +103,17 @@ def verify(model: str) -> bool:
 
     # 5. tokenizer 文件
     tok_files = []
-    for n in ["tokenizer.json", "tokenizer_config.json", "special_tokens_map.json",
-              "tokenizer.model"]:
+    for n in [
+        "tokenizer.json",
+        "tokenizer_config.json",
+        "special_tokens_map.json",
+        "tokenizer.model",
+    ]:
         if (out / n).exists():
             tok_files.append(n)
-    all_ok &= _check(f"tokenizer files ({len(tok_files)})", len(tok_files) >= 1,
-                     ", ".join(tok_files))
+    all_ok &= _check(
+        f"tokenizer files ({len(tok_files)})", len(tok_files) >= 1, ", ".join(tok_files)
+    )
 
     # 6. 目录大小
     total_size = sum(p.stat().st_size for p in out.rglob("*") if p.is_file())

@@ -1,4 +1,8 @@
-# Copyright 2026 The xLLM Authors. All Rights Reserved.
+# Copyright (c) 2023-2026 Huawei Technologies Co., Ltd. All rights reserved.
+#
+# Adapted from torchair (Copyright (c) 2023, Huawei Technologies Co., Ltd, BSD License):
+#   - torchair/python/torchair/_ge_concrete_graph/ge_converter/custom/quant_matmul.py
+# and torch_npu (Copyright (c) Huawei Technologies Co., Ltd, BSD License).
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -26,7 +30,9 @@ from typing import List, Optional
 
 import torch
 from torchair._ge_concrete_graph import ge_apis as ge
-from torchair._ge_concrete_graph.ge_converter.converter_utils import GROUP_SIZE_MAX_VALUE
+from torchair._ge_concrete_graph.ge_converter.converter_utils import (
+    GROUP_SIZE_MAX_VALUE,
+)
 from torchair.ge._ge_graph import (
     DataType,
     Tensor,
@@ -62,10 +68,13 @@ def convert_quant_matmul(
     dtype = torch_dtype_value_to_ge_type(output_dtype)
     # a8w4: x1=FP8 + x2=FP4/FP32; s8s4: x1=int8 + x2=int4 (nibble-packed int8). 两者 per-group 只在 K 维 -> group_size=group_k
     # (绕过 torch_npu.float4_e2m1fn_x2, 用 x1/x2.dtype 判断; Bitcast 前判断, x2 此时仍是 packed int8=DT_INT8)
-    is_a8w4 = x1.dtype == DataType.DT_FLOAT8_E4M3FN and (
+    is_a8w4 = x1.dtype == DataType.DT_FLOAT8_E4M3FN and (  # noqa: F841
         x2.dtype in (DataType.DT_FLOAT4_E2M1, DataType.DT_FLOAT)
     )
-    is_s8s4 = x1.dtype == DataType.DT_INT8 and x2.dtype in (DataType.DT_INT8, DataType.DT_INT32)
+    is_s8s4 = x1.dtype == DataType.DT_INT8 and x2.dtype in (
+        DataType.DT_INT8,
+        DataType.DT_INT32,
+    )
 
     if x1_dtype is not None and x1 is not None:
         x1 = ge.Bitcast(x1, type=torch_dtype_value_to_ge_type(x1_dtype))
@@ -77,7 +86,9 @@ def convert_quant_matmul(
         pertoken_scale = ge.Bitcast(
             pertoken_scale, type=torch_dtype_value_to_ge_type(pertoken_scale_dtype)
         )
-        pertoken_scale.desc.dtype = torch_dtype_value_to_ge_proto_type(pertoken_scale_dtype)
+        pertoken_scale.desc.dtype = torch_dtype_value_to_ge_proto_type(
+            pertoken_scale_dtype
+        )
     if scale_dtype is not None:
         # scale_dtype 直接作 CANN DataType 值 (如 DT_UINT64=10); torch 无 uint64 ScalarType,
         # torch_dtype_value_to_ge_type 会把 10 误解析为 complex128(17), 故直接用值.
@@ -102,8 +113,12 @@ def convert_quant_matmul(
     # Decision sourced from the same rules.json the packer reads (resolve_format).
     if is_s8s4:
         from cann_lm.converter.export.weight_format import load_rules, resolve_format
+
         _rules = load_rules()
-        if resolve_format("op.weight_q", is_quantized=True, rules=_rules).get("format") == "Z":
+        if (
+            resolve_format("op.weight_q", is_quantized=True, rules=_rules).get("format")
+            == "Z"
+        ):
             x2.desc.layout = "Z"
     # Use ge.QuantBatchMatmulV4 (full IR with all inputs incl None placeholders) so the
     # V4→V3 TBE fusion correctly maps x2_scale to V3's required scale input.
@@ -115,7 +130,7 @@ def convert_quant_matmul(
         # to N, failing with "dimensions a(M) and b(N) must be same".
         # Workaround: create a dummy bias (zeros [N], float32) so InferShape passes.
         # The bias value (0) does not affect the matmul result (out = x1@x2*scale + 0).
-        n = x2.shape[-1] if hasattr(x2, 'shape') else None
+        n = x2.shape[-1] if hasattr(x2, "shape") else None
         if n is not None and x2.dtype == DataType.DT_INT32:
             n = n * 8  # int4pack 沿 N (8 int4/int32): N = last_dim * 8 (Kirin packed-N)
         bias = ge.Const([0.0] * int(n), dtype=1) if n else None

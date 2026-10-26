@@ -13,18 +13,18 @@
 
 namespace hiai {
 
-template<typename T, typename... Ts>
+template <typename T, typename... Ts>
 std::shared_ptr<T> make_shared_nothrow(Ts&&... params)
 {
     return std::shared_ptr<T>(new (std::nothrow) T(std::forward<Ts>(params)...));
 }
 
-template<typename T, typename... Ts>
+template <typename T, typename... Ts>
 std::unique_ptr<T> make_unique_nothrow(Ts&&... params)
 {
     return std::unique_ptr<T>(new (std::nothrow) T(std::forward<Ts>(params)...));
 }
 
-}  // namespace hiai
+} // namespace hiai
 
-#endif  // UTILS_SECURESTL_H
+#endif // UTILS_SECURESTL_H

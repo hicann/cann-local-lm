@@ -12,7 +12,7 @@ set -euo pipefail
 # 流程: build_cpp.sh(--no-tests --target cann_lm_compile) + build_wheel.sh
 #       → stage (binary+lib+cfg+whl+set_env) → patchelf rpath → makeself
 # 产物: dist/cann_lm_compile_converter-<ver>-<arch>.run
-# 安装: bash <pkg>.run --target /opt/cann-lm
+# 安装: bash <pkg>.run --extract=/opt/cann-lm
 # 运行: source <CANN set_env.sh> && source /opt/cann-lm/set_env.sh
 #       && pip install /opt/cann-lm/wheels/cann_lm-*.whl   # converter (仅需 torch 时)
 #       && /opt/cann-lm/cann_lm_compile <ep_json> <weight_info> [out]  # compile
@@ -60,21 +60,64 @@ cp "$SO"  "$STAGE/lib/libtorch_delegate_backend.so"
 cp "$CFG" "$STAGE/fusion_autoub_off.cfg"
 cp "$WHL" "$STAGE/wheels/"
 
-# 生成 set_env.sh (安装后 source; 设 LD_LIBRARY_PATH + GE_FUSION_SWITCH_FILE)
-cat > "$STAGE/set_env.sh" <<'EOF'
+# 生成 set_env.sh (安装后 source; 设 LD_LIBRARY_PATH + GE_FUSION_SWITCH_FILE; --npu 模式额外设 DEVICE + 探测 DOPT_PYTHON)
+cat > "$STAGE/set_env.sh" <<'SCRIPT'
 #!/bin/bash
-# set_env.sh — cann_lm_compile + cann-lm converter 整合包 env (安装后 source)
-# 前置: 安装机需先 source CANN set_env.sh (提供 CANN lib64/simulator/driver/opp)
-# converter 仅需 torch 环境, 不依赖 CANN (见下 "converter 安装/运行")
+# set_env.sh — cann-device-lm 整合包 env (安装后 source)
+# 前置: 安装机需先 source CANN set_env.sh (提供 CANN lib64/driver/opp)
+#
+# 用法:
+#   source /opt/cann-device-lm/set_env.sh          # 编译/导出模式
+#   source /opt/cann-device-lm/set_env.sh --npu   # NPU 量化模式 (额外设 DEVICE + 探测 DOPT_PYTHON)
+
 INSTALL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export LD_LIBRARY_PATH="${INSTALL_DIR}/lib:${LD_LIBRARY_PATH:-}"
 export GE_FUSION_SWITCH_FILE="${INSTALL_DIR}/fusion_autoub_off.cfg"
 export SOC_VERSION="${SOC_VERSION:-Ascend910_9362}"
-echo "[cann_lm_compile+converter] env ready (INSTALL_DIR=$INSTALL_DIR, SOC=${SOC_VERSION})"
+export TORCH_DEVICE_BACKEND_AUTOLOAD=0
+
+if [[ "${1:-}" == "--npu" ]]; then
+    export DEVICE=npu
+    # 探测装了 torch_npu 的 python
+    _detect_dopt_python() {
+        # 收集候选 python: PATH 里的 + 常见路径
+        local candidates=()
+        local p
+        # PATH 里所有 python3
+        while IFS= read -r p; do candidates+=("$p"); done < <(command -v python3 2>/dev/null; which -a python3 2>/dev/null)
+        # 常见路径
+        for p in /usr/local/bin/python3 /usr/bin/python3 "$HOME/.conda/envs/*/bin/python3" "$HOME/miniconda3/bin/python3" "$HOME/anaconda3/bin/python3"; do
+            for match in $p; do [[ -x "$match" ]] && candidates+=("$match"); done
+        done
+        # 去重
+        local -A seen=()
+        local plib
+        for p in "${candidates[@]}"; do
+            [[ -n "${seen[$p]:-}" ]] && continue
+            seen[$p]=1
+            [[ -x "$p" ]] || continue
+            plib="$(dirname "$(dirname "$p")")/lib"; [[ -d "$plib" ]] || plib=""
+            if LD_LIBRARY_PATH="${plib:+${plib}:}${ASCEND_HOME_PATH:-}/lib64:${LD_LIBRARY_PATH:-}" \
+               "$p" -c "import torch_npu" 2>/dev/null; then
+                export DOPT_PYTHON="$p"
+                [[ -n "$plib" ]] && export LD_LIBRARY_PATH="${plib}:${LD_LIBRARY_PATH:-}"
+                return 0
+            fi
+        done
+        return 1
+    }
+    if _detect_dopt_python; then
+        echo "[cann-device-lm] NPU mode: DEVICE=npu, DOPT_PYTHON=$DOPT_PYTHON"
+    else
+        echo "[cann-device-lm] NPU mode: DEVICE=npu, DOPT_PYTHON 未探测到 (需手动 export DOPT_PYTHON=/path/to/python3)"
+    fi
+fi
+
+echo "[cann-device-lm] env ready (INSTALL_DIR=$INSTALL_DIR, SOC=${SOC_VERSION})"
 echo "  OM 编译: $INSTALL_DIR/cann_lm_compile <model_json> <weights_index> [output_name]"
 echo "  converter 安装: pip install $INSTALL_DIR/wheels/cann_lm-*.whl"
 echo "  converter 运行: cann-lm-converter --help (需 torch 环境)"
-EOF
+SCRIPT
 chmod +x "$STAGE/set_env.sh"
 
 # ── 4. patchelf .so rpath → $ORIGIN (去 build 机绝对路径, 可重定位; 运行靠 set_env 的 LD_LIBRARY_PATH) ──
@@ -110,6 +153,6 @@ fi
 echo ""
 echo "=== package ==="
 ls -lh "$DIST/$PKG_NAME.run" | awk '{print "  "$5, $9}'
-echo "  安装: bash $DIST/$PKG_NAME.run --target /opt/cann-lm"
+echo "  安装: bash $DIST/$PKG_NAME.run --extract=/opt/cann-lm"
 echo "  运行: source /opt/cann-lm/set_env.sh && /opt/cann-lm/cann_lm_compile <ep_json> <weight_info> [out]"
 echo "  converter: pip install /opt/cann-lm/wheels/cann_lm-*.whl && cann-lm-converter --help"

@@ -5,9 +5,8 @@
 
 import os
 import logging
-logging.basicConfig(
-    format='%(asctime)s [%(levelname)-6s] - %(message)s'
-)
+
+logging.basicConfig(format="%(asctime)s [%(levelname)-6s] - %(message)s")
 
 
 class Logger(object):
@@ -81,7 +80,7 @@ class Logger(object):
         Logger.logger("error", *msg)
 
 
-class FileTxtLogger():
+class FileTxtLogger:
     loggers = dict()
     logger_files = dict()
     output_path = ""
@@ -114,8 +113,7 @@ def set_record_mode(model, output_path, name_list=None):
     for name, m in model.named_modules():
         if hasattr(m, "layer_name") and m.layer_name is not None:
             FileTxtLogger.add_recoder(m.layer_name, m.layer_name)
-            FileTxtLogger.add_recoder(
-                f"{m.layer_name}_out", f"{m.layer_name}_out")
+            FileTxtLogger.add_recoder(f"{m.layer_name}_out", f"{m.layer_name}_out")
 
 
 def visualize_dist(ckpt):

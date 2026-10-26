@@ -40,4 +40,4 @@ aclError HIAI_NDK_HiAITensor_GetCacheStatus(NN_Tensor* tensor, uint8_t* cacheSta
     ACL_EXPECT_TRUE(getCacheStatusFunc(tensor, cacheStatus) == OH_NN_SUCCESS);
     return ACL_SUCCESS;
 }
-}
+} // namespace hiai

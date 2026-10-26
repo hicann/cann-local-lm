@@ -19,7 +19,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
-source "${REPO}/scripts/build.conf"
+source "${REPO}/scripts/cann_lm_compile/build.conf"
 
 DEFAULT_THIRD_PARTY_PATH="${REPO}/output/third_party"
 THIRD_PARTY_PATH="${DEFAULT_THIRD_PARTY_PATH}"

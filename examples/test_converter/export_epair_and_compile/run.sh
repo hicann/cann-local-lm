@@ -2,8 +2,9 @@
 #
 # run.sh — epair 导出 + OM 编译 (cann_lm_compile) 一键式验证
 #
+# 前置: .run 包已安装到 /opt/cann-device-lm/, cann_lm whl 已装进 P1 venv
+#
 # 流程: [1] 环境检查 → [2] 导出 epair → [3] cann_lm_compile 编译 OM
-# OM 编译统一走 cann_lm_compile (csrc/tools/compile_main.cc), 不再用 main.cpp
 #
 # 用法:  bash run.sh [simple|addrmsnorm]   (默认 simple)
 #
@@ -12,12 +13,18 @@ set -euo pipefail
 MODEL="${1:-simple}"
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "${ROOT_DIR}/../common/check_env.sh"   # NPU 探测+CANN 自动 source+路径派生+ensure 依赖+LD
-PYTHON="${CONVERTER_PYTHON}"
-COMPILE_BIN="${PROJECT_ROOT}/build/cann_lm_compile"
-PHASE=0
 
-phase() { PHASE=$((PHASE + 1)); echo ""; echo "==== [${PHASE}] $1 ===="; }
+# ── 环境设置 (从已安装的 .run 包) ──
+CANN_DEVICE_LM="${CANN_DEVICE_LM:-/opt/cann-device-lm}"
+source "$HOME/Ascend/cann/set_env.sh"
+source "${CANN_DEVICE_LM}/set_env.sh"
+export TORCH_DEVICE_BACKEND_AUTOLOAD=0
+export CONVERTER_PYTHON="${CONVERTER_PYTHON:-/path/to/venv/bin/python}"
+
+PYTHON="${CONVERTER_PYTHON}"
+COMPILE_BIN="${CANN_DEVICE_LM}/cann_lm_compile"
+
+phase() { echo ""; echo "==== $1 ===="; }
 ok()   { echo "  [✓] $1"; }
 warn() { echo "  [!] $1"; }
 die()  { echo "  [✗] $1"; exit 1; }
@@ -43,22 +50,20 @@ case "${MODEL}" in
 esac
 
 # =========================================================
-phase "环境检查 (${MODEL}) [NPU_MODE=${NPU_MODE}]"
+phase "环境检查 (${MODEL})"
 # =========================================================
 ok "CANN ${ASCEND_HOME_PATH}"
-if [[ "$NPU_MODE" == "1" ]]; then ok "NPU 可见"; else warn "无 NPU (CPU 交叉编译, lite 模式)"; fi
 ok "SOC_VERSION=${SOC_VERSION}"
-[[ -x "${PYTHON}" ]] || die "venv python 不存在: ${PYTHON}"
-ok "venv python: ${PYTHON}"
+[[ -x "${PYTHON}" ]] || die "CONVERTER_PYTHON 不存在: ${PYTHON} (export CONVERTER_PYTHON=/path/to/venv/bin/python)"
+ok "python: ${PYTHON}"
 "${PYTHON}" - <<'PY' 2>&1 | while IFS= read -r line; do echo "  ${line}"; done
 import torch, importlib.util as u
 print(f"[✓] torch {torch.__version__}")
-for m in ("torchair", "torch_delegate"):
+for m in ("torchair", "torch_delegate", "cann_lm"):
     print(f"[{'✓' if u.find_spec(m) else '✗'}] {m} {'importable' if u.find_spec(m) else 'MISSING'}")
 PY
-ok "backend lib: ${BACKEND_LIB##*/}"
-[[ -x "${COMPILE_BIN}" ]] || die "cann_lm_compile 未构建: ${COMPILE_BIN} (跑 bash scripts/build.sh cpp)"
-ok "cann_lm_compile: ${COMPILE_BIN##*/}"
+[[ -x "${COMPILE_BIN}" ]] || die "cann_lm_compile 不存在: ${COMPILE_BIN} (先装 .run 包)"
+ok "cann_lm_compile: ${COMPILE_BIN}"
 
 # =========================================================
 phase "导出模型 → epair"
@@ -73,7 +78,7 @@ ok "epair: ${EPAIR_DIR}"
 # =========================================================
 phase "OM 编译 (cann_lm_compile: epair → OM)"
 # =========================================================
-# cann_lm_compile 退出时 GE teardown 可能 abort, 用 || true 容错, 以 .om 存在判定成功
+# cann_lm_compile 退出时可能 abort (GE 库已知问题), 用 || true 容错, 以 .om 存在判定成功
 "${COMPILE_BIN}" \
   "${EPAIR_DIR}/ep_json_with_ascend_ir.json" \
   "${EPAIR_DIR}/weight_info.json" \

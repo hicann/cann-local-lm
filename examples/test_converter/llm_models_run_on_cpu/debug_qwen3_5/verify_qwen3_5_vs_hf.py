@@ -22,16 +22,24 @@ from pathlib import Path
 import torch
 
 THIS_DIR = os.path.dirname(os.path.abspath(__file__))
-_PROJECT_ROOT = next(p for p in Path(__file__).resolve().parents if (p / "cann_lm").is_dir())
+_PROJECT_ROOT = next(
+    p for p in Path(__file__).resolve().parents if (p / "cann_lm").is_dir()
+)
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-_LLM_ENGINE_DIR = os.path.dirname(THIS_DIR)  # llm_models_run_on_cpu/ holds sibling hf_cpu.py
+_LLM_ENGINE_DIR = os.path.dirname(
+    THIS_DIR
+)  # llm_models_run_on_cpu/ holds sibling hf_cpu.py
 if _LLM_ENGINE_DIR not in sys.path:
     sys.path.insert(0, _LLM_ENGINE_DIR)
 import hf_cpu  # noqa: F401  disables torch_npu probe before importing transformers
 
-from cann_lm.models.qwen3_5 import Qwen3_5ForCausalLM, Qwen3_5TextConfig, load_qwen3_5_weights
+from cann_lm.models.qwen3_5 import (
+    Qwen3_5ForCausalLM,
+    Qwen3_5TextConfig,
+    load_qwen3_5_weights,
+)
 from transformers import AutoTokenizer, Qwen3_5ForCausalLM as HFQwen3_5ForCausalLM
 
 
@@ -44,7 +52,9 @@ def load_mine(model_path, dtype):
 
 def load_hf(model_path, dtype):
     m = HFQwen3_5ForCausalLM.from_pretrained(
-        model_path, torch_dtype=dtype, attn_implementation="eager",
+        model_path,
+        torch_dtype=dtype,
+        attn_implementation="eager",
     )
     m.eval()
     return m
@@ -61,10 +71,14 @@ def compare_logits(name, mine_logits, hf_logits):
     argmatch = (mine_arg == hf_arg).float().mean().item()
     _, mt5 = torch.topk(mine_logits, 5, dim=-1)
     _, ht5 = torch.topk(hf_logits, 5, dim=-1)
-    sets = [set(mt5[0, i].tolist()) & set(ht5[0, i].tolist()) for i in range(mt5.shape[1])]
+    sets = [
+        set(mt5[0, i].tolist()) & set(ht5[0, i].tolist()) for i in range(mt5.shape[1])
+    ]
     top5 = sum(len(s) for s in sets) / (5 * len(sets))
-    print(f"  [{name}] max|Δ|={max_abs:.3e}  mean|Δ|={mean_abs:.3e}  rel={rel:.2e}  "
-          f"argmax_match={argmatch*100:.1f}%  top5_overlap={top5*100:.1f}%")
+    print(
+        f"  [{name}] max|Δ|={max_abs:.3e}  mean|Δ|={mean_abs:.3e}  rel={rel:.2e}  "
+        f"argmax_match={argmatch * 100:.1f}%  top5_overlap={top5 * 100:.1f}%"
+    )
     return max_abs, argmatch
 
 
@@ -87,7 +101,9 @@ def main():
 
     me = mine.model.embed_tokens.weight
     he = hf.model.embed_tokens.weight
-    print(f"  embed_tokens identical: {torch.equal(me, he)}  (max|Δ|={(me-he).abs().max().item():.3e})")
+    print(
+        f"  embed_tokens identical: {torch.equal(me, he)}  (max|Δ|={(me - he).abs().max().item():.3e})"
+    )
 
     messages = [{"role": "user", "content": args.prompt}]
     text = tok.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
@@ -109,22 +125,36 @@ def main():
 
     # prefill-with-cache == prefill-without-cache (mine internal invariant)
     from cann_lm.models.qwen3_5 import SimpleKVCache, SimpleDeltaNetCache
+
     gdn = mine.model.layers[0].linear_attn
     kv = SimpleKVCache()
-    dc = SimpleDeltaNetCache(num_layers=mine.config.num_hidden_layers, conv_dim=gdn.conv_dim,
-                             conv_kernel_size=gdn.conv_kernel_size, k_head_dim=gdn.head_k_dim,
-                             v_head_dim=gdn.head_v_dim, num_v_heads=gdn.num_v_heads,
-                             batch_size=1, device="cpu", dtype=dtype)
+    dc = SimpleDeltaNetCache(
+        num_layers=mine.config.num_hidden_layers,
+        conv_dim=gdn.conv_dim,
+        conv_kernel_size=gdn.conv_kernel_size,
+        k_head_dim=gdn.head_k_dim,
+        v_head_dim=gdn.head_v_dim,
+        num_v_heads=gdn.num_v_heads,
+        batch_size=1,
+        device="cpu",
+        dtype=dtype,
+    )
     with torch.no_grad():
-        cached = mine(input_ids=ids, past_key_values=kv, delta_states=dc, use_cache=True)["logits"]
-    print(f"\nPrefill cache-vs-nocache max|Δ|: {(cached - my_logits).abs().max().item():.3e}")
+        cached = mine(
+            input_ids=ids, past_key_values=kv, delta_states=dc, use_cache=True
+        )["logits"]
+    print(
+        f"\nPrefill cache-vs-nocache max|Δ|: {(cached - my_logits).abs().max().item():.3e}"
+    )
 
     n = args.gen_tokens
     with torch.no_grad():
         hf_gen = hf.generate(ids, max_new_tokens=n, do_sample=False)
-        my_gen = mine.generate(ids, max_new_tokens=n, do_sample=False, eos_token_id=tok.eos_token_id)
-    hf_new = hf_gen[0, ids.shape[1]:].tolist()
-    my_new = my_gen[0, ids.shape[1]:].tolist()
+        my_gen = mine.generate(
+            ids, max_new_tokens=n, do_sample=False, eos_token_id=tok.eos_token_id
+        )
+    hf_new = hf_gen[0, ids.shape[1] :].tolist()
+    my_new = my_gen[0, ids.shape[1] :].tolist()
     match = hf_new == my_new
     print(f"\nGreedy generation ({n} tokens):  identical={match}")
     print(f"  hf : {hf_new}")
@@ -138,7 +168,10 @@ def main():
 
     print("\n" + "=" * 50)
     ok = match and (my_logits.argmax(-1) == hf_logits.argmax(-1)).all().item()
-    print("VERDICT:", "PASS — pure-torch matches HF reference" if ok else "MISMATCH — investigate")
+    print(
+        "VERDICT:",
+        "PASS — pure-torch matches HF reference" if ok else "MISMATCH — investigate",
+    )
     print("=" * 50)
 
 

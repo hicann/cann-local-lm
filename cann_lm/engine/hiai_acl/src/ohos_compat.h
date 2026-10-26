@@ -31,4 +31,4 @@
 #define __availability__(...)
 #endif
 
-#endif  // HIAI_ACL_OHOS_COMPAT_H
+#endif // HIAI_ACL_OHOS_COMPAT_H

@@ -85,12 +85,18 @@ def compile_to_epair(ep_path: Path, output_dir: Path, max_file_size: int) -> Pat
     ep = torch.export.load(Path(ep_path).resolve())
     register_ge_converters()
     epair = torch_delegate.export_to_epair(ep)
-    consolidated_weights_save(epair, output_dir, save_weights=True, max_file_size=max_file_size)
+    consolidated_weights_save(
+        epair, output_dir, save_weights=True, max_file_size=max_file_size
+    )
     return output_dir
 
 
 def _dtype_arg(s: str) -> torch.dtype:
-    return {"float16": torch.float16, "float32": torch.float32, "bfloat16": torch.bfloat16}[s]
+    return {
+        "float16": torch.float16,
+        "float32": torch.float32,
+        "bfloat16": torch.bfloat16,
+    }[s]
 
 
 def main() -> None:
@@ -104,7 +110,10 @@ def main() -> None:
     p_exp.add_argument("--dtype", type=_dtype_arg, default=torch.float16)
     p_exp.add_argument("--device", choices=("cpu", "cuda"), default="cpu")
 
-    p_cmp = sub.add_parser("compile", help=".pt2 -> consolidated .epair (env CANN_LM_ENABLE_WEIGHT_TRANS=1 for NZ)")
+    p_cmp = sub.add_parser(
+        "compile",
+        help=".pt2 -> consolidated .epair (env CANN_LM_ENABLE_WEIGHT_TRANS=1 for NZ)",
+    )
     p_cmp.add_argument("--ep-path", default="out/matmul_single.pt2")
     p_cmp.add_argument("--output-dir", default="out/matmul_single_epair")
     p_cmp.add_argument("--max-file-size", type=int, default=512 * 1024 * 1024)
@@ -114,7 +123,9 @@ def main() -> None:
         out_path = export_program(Path(args.output), args.dtype, args.device)
         print(f"Exported program saved to: {out_path}")
     elif args.command == "compile":
-        d = compile_to_epair(Path(args.ep_path), Path(args.output_dir), args.max_file_size)
+        d = compile_to_epair(
+            Path(args.ep_path), Path(args.output_dir), args.max_file_size
+        )
         print(f"Consolidated epair written to: {d}")
 
 

@@ -2,14 +2,27 @@
 # 对 OHOS 交叉编译产物逐一自签名(-selfSign 1,照 harmony_acl)。
 # 用法: ./sign_ohos.sh [BUILD_DIR] [JAR]
 #   BUILD_DIR 产物目录,默认 ./build_ohos
-#   JAR       binary-sign-tool.jar 路径,默认 ./cann_lm/engine/ohos/binary-sign-tool.jar
+#   JAR       binary-sign-tool.jar 路径,缺省按下述探测链自动取
 set -euo pipefail
 
 THIS_DIR="$(dirname "$(readlink -f "$0")")"
 REPO_ROOT="$(cd "${THIS_DIR}/../.." && pwd)"
 BUILD_DIR="${1:-${REPO_ROOT}/build_ohos}"
-# jar 优先用 tools/(见 tools/README.md),回退到 cann_lm/engine/ohos/
-JAR="${2:-}"
+# jar 探测链(优先级从高到低,命中即用):
+#   ① $2 命令行参数 / $BINARY_SIGN_TOOL 环境变量 (显式指定,最高优先)
+#   ② $OHOS_SDK_NATIVE 派生: <sdk>/../toolchains/lib/binary-sign-tool.jar
+#      —— jar 是 command-line-tools SDK 自带物, 与 native/ 平级 (toolchains/
+#      是 openharmony/ 的兄弟目录); 交叉编译机必装 SDK, 零拷贝。
+#   ③ 仓内 tools/binary-sign-tool.jar (旧约定, 见 tools/README.md)
+#   ④ 仓内 cann_lm/engine/ohos/binary-sign-tool.jar (最老回退)
+# 闭源二进制不入库, 探测链保证: 只要装了 SDK 就能签, 无需任何手工拷贝。
+JAR="${2:-${BINARY_SIGN_TOOL:-}}"
+if [ -z "$JAR" ] && [ -n "${OHOS_SDK_NATIVE:-}" ]; then
+  for _jar in "${OHOS_SDK_NATIVE}/../toolchains/lib/binary-sign-tool.jar" \
+              "${OHOS_SDK_NATIVE}/toolchains/lib/binary-sign-tool.jar"; do
+    [ -f "$_jar" ] && JAR="$_jar" && break
+  done
+fi
 if [ -z "$JAR" ]; then
   if [ -f "${REPO_ROOT}/tools/binary-sign-tool.jar" ]; then
     JAR="${REPO_ROOT}/tools/binary-sign-tool.jar"
@@ -24,9 +37,23 @@ fi
 [ -f "$JAR" ] || { echo "ERROR: 找不到 jar: $JAR" >&2; exit 1; }
 [ -d "$BUILD_DIR" ] || { echo "ERROR: 产物目录不存在: $BUILD_DIR" >&2; exit 1; }
 
-# 待签名产物:两个 .so + 9 个可执行
+# 待签名产物:两个 .so + UT 可执行（在 tests/cpp/engine/ 子目录）
 SO_FILES=(libcann_lm_engine.so libc++_shared.so)
-EXE_FILES=(model_executor_ut ut_engine_executor ut_tokenizer ut_c_api ut_scheduler ut_text_embedding bbit api_smoke c_api_smoke)
+UT_DIR="tests/cpp/engine"
+EXE_FILES=()
+if [ -d "$BUILD_DIR/$UT_DIR" ]; then
+    while IFS= read -r f; do
+        EXE_FILES+=("$UT_DIR/$f")
+    done < <(ls "$BUILD_DIR/$UT_DIR" 2>/dev/null | grep -E '^ut_|^model_executor_ut$')
+fi
+
+# 签名产物放独立子目录 signed/ —— 裸名原件永不被改写。
+# 契约(build_ohos.sh / build_package_ohos.sh 消费):
+#   build_ohos/<name>        = 编译原产物 (未签名) — 永远是原文, 模式切换无黏滞
+#   build_ohos/signed/<name> = 签名版 (本脚本产出; 存在即"当前是签名模式")
+SIGNED_SUBDIR="signed"
+mkdir -p "${BUILD_DIR}/${SIGNED_SUBDIR}"
+
 
 sign_one() {
   local infile="$1" outfile="$2" log rc=0
@@ -53,9 +80,9 @@ echo "  产物目录: $BUILD_DIR"
 echo "  java     : $(java -version 2>&1 | head -1)"
 
 echo "-- .so --"
-sign_one libcann_lm_engine.so libcann_lm_engine_signed.so
-sign_one libc++_shared.so     libc++_shared_signed.so
-echo "-- 可执行 --"
-for t in "${EXE_FILES[@]}"; do sign_one "$t" "${t}_signed"; done
+sign_one libcann_lm_engine.so "${SIGNED_SUBDIR}/libcann_lm_engine.so"
+sign_one libc++_shared.so     "${SIGNED_SUBDIR}/libc++_shared.so"
+echo "-- UT 可执行 (${UT_DIR}/) --"
+for t in "${EXE_FILES[@]}"; do sign_one "$t" "${SIGNED_SUBDIR}/$t"; done
 
-echo "=== 完成。签名产物在 $BUILD_DIR (*_signed / *_signed.so) ==="
+echo "=== 完成。签名产物在 $BUILD_DIR/$SIGNED_SUBDIR/ (裸名原件未动) ==="

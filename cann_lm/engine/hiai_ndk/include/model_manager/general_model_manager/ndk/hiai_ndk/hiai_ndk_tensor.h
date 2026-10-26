@@ -13,14 +13,11 @@
 namespace hiai {
 Status HIAI_NDK_HiAITensor_SetCacheStatus(NN_Tensor* tensor, uint8_t cacheStatus);
 
-
 Status HIAI_NDK_HiAITensor_GetCacheStatus(NN_Tensor* tensor, uint8_t* cacheStatus);
 
+NN_Tensor* HIAI_NDK_HiAITensor_CreateKVCache(NN_TensorDesc* tensorDesc, size_t kvCacheNum, size_t tileSize);
 
-NN_Tensor* HIAI_NDK_HiAITensor_CreateKVCache(NN_TensorDesc *tensorDesc, size_t kvCacheNum, size_t tileSize);
-
-
-Status HIAI_NDK_HiAITensor_ResizeKVCache(NN_Tensor *tensor, size_t size);
-}
+Status HIAI_NDK_HiAITensor_ResizeKVCache(NN_Tensor* tensor, size_t size);
+} // namespace hiai
 
 #endif

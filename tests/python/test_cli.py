@@ -4,7 +4,6 @@ Pure: only the argparse dispatch is exercised (parse `cann_lm generate ...` →
 command=generate, args.func is generate.run, args wired). The actual generate
 run needs the .so (device).
 """
-import argparse
 
 from cann_lm import generate
 from cann_lm import cli
@@ -18,7 +17,7 @@ class TestCliDispatch:
     def test_generate_subcommand_routes_to_generate_run(self):
         args = _parse("generate", "--config", "tc.json", "--prompt", "hi")
         assert args.command == "generate"
-        assert args.func is generate.run          # dispatcher → generate.run
+        assert args.func is generate.run  # dispatcher → generate.run
         assert args.config == "tc.json"
         assert args.prompt == "hi"
 
@@ -30,10 +29,12 @@ class TestCliDispatch:
 
     def test_no_subcommand_errors(self):
         import pytest
+
         with pytest.raises(SystemExit):
-            _parse()      # subcommand required
+            _parse()  # subcommand required
 
     def test_unknown_subcommand_errors(self):
         import pytest
+
         with pytest.raises(SystemExit):
             _parse("bogus", "--config", "x")

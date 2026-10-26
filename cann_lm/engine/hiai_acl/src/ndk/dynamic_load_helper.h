@@ -27,7 +27,8 @@ public:
     bool IsValid() const;
 
     template <typename T>
-    T* GetFunction(const std::string& symbol) {
+    T* GetFunction(const std::string& symbol)
+    {
         auto funcPtr = GetSymbol(symbol);
         return reinterpret_cast<T*>(funcPtr);
     }
@@ -41,6 +42,6 @@ private:
     std::map<std::string, void*> funcMap_;
 };
 
-}  // namespace hiai
+} // namespace hiai
 
-#endif  // HIAI_ACL_DYNAMIC_LOAD_HELPER_H
+#endif // HIAI_ACL_DYNAMIC_LOAD_HELPER_H

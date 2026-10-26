@@ -10,7 +10,9 @@ SUPPORTED_DEVICE_TYPES = {"cpu", "cuda", "npu"}
 DEVICE_TYPE = os.getenv("DEVICE", "cuda").strip().lower()
 if DEVICE_TYPE not in SUPPORTED_DEVICE_TYPES:
     supported = ", ".join(sorted(SUPPORTED_DEVICE_TYPES))
-    raise ValueError(f"Unsupported DEVICE={DEVICE_TYPE!r}; expected one of: {supported}")
+    raise ValueError(
+        f"Unsupported DEVICE={DEVICE_TYPE!r}; expected one of: {supported}"
+    )
 if DEVICE_TYPE == "npu":
     import torch_npu  # noqa: F401 - registers the torch.npu backend
 
@@ -31,16 +33,16 @@ def synchronize_device():
         torch.cuda.synchronize()
 
 
-def find_layers(module, layers=None, name=''): 
-    if layers is None: 
+def find_layers(module, layers=None, name=""):
+    if layers is None:
         layers = [nn.Conv2d, nn.Linear]
-    if type(module) in layers: 
+    if type(module) in layers:
         return {name: module}
     res = {}
-    for name1, child in module.named_children(): 
-        res.update(find_layers(
-                child, layers=layers,
-                name=name + '.' + name1 if name != '' else name1
+    for name1, child in module.named_children():
+        res.update(
+            find_layers(
+                child, layers=layers, name=name + "." + name1 if name != "" else name1
             )
         )
     return res

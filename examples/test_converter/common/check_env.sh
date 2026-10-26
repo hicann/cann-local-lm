@@ -42,7 +42,7 @@ export TORCHAIR_ROOT="${TORCHAIR_ROOT:-${PROJECT_ROOT}/deps/torchair}"
 export CONVERTER_PYTHON="${CONVERTER_PYTHON:-${TORCH_DELEGATE_HOME}/.venv/bin/python}"
 export STUBS_DIR="${TORCHAIR_ROOT}/build/stubs"
 export BACKEND_LIB="${PROJECT_ROOT}/build/libtorch_delegate_backend.so"
-export DOPT_PYTHON="${DOPT_PYTHON:-}"  # 装 torch_npu 的系统 python; 由 scripts/_env_common.sh 自动探测 (source set_env_cann.sh --npu 后已设)
+export DOPT_PYTHON="${DOPT_PYTHON:-}"  # 装 torch_npu 的系统 python; 由 scripts/cann_lm_compile/_env_common.sh 自动探测 (source set_env_cann.sh --npu 后已设)
 export SOC_VERSION="${SOC_VERSION:-$([[ $NPU_MODE == 1 ]] && echo Ascend910_9362 || echo kirinx90)}"
 
 # ── ensure 共享依赖 (幂等, 缺失自动建) ──

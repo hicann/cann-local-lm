@@ -24,7 +24,7 @@ Status ConvertOHStatusToHIAI(OH_NN_ReturnCode ohStatus)
         {OH_NN_MEMORY_ERROR, DATA_OVERFLOW},
         {OH_NN_CONNECTION_EXCEPTION, CONNECT_EXCEPTION},
     };
- 
+
     auto iter = NNtohiaiStatus.find(ohStatus);
     if (iter == NNtohiaiStatus.end()) {
         return FAILURE;
@@ -69,7 +69,7 @@ OH_NNExecutor* HIAI_NDK_NNExecutor_Construct(OH_NNCompilation* nnCompilation)
 }
 
 Status HIAI_NDK_NNExecutor_RunSync(OH_NNExecutor* executor, std::vector<NN_Tensor*> inputs,
-    std::vector<NN_Tensor*> outputs)
+                                   std::vector<NN_Tensor*> outputs)
 {
     auto runSyncFunc = reinterpret_cast<decltype(OH_NNExecutor_RunSync)*>(NDKProxy::GetSymbol("OH_NNExecutor_RunSync"));
     HIAI_EXPECT_NOT_NULL(runSyncFunc);
@@ -154,8 +154,7 @@ Status HIAI_NDK_NNCompilation_Build(OH_NNCompilation* compilation)
 {
     HIAI_EXPECT_EXEC(HIAI_NDK_NNCompilation_SetDevice(compilation));
 
-    auto buildFunc = reinterpret_cast<decltype(OH_NNCompilation_Build)*>(
-        NDKProxy::GetSymbol("OH_NNCompilation_Build"));
+    auto buildFunc = reinterpret_cast<decltype(OH_NNCompilation_Build)*>(NDKProxy::GetSymbol("OH_NNCompilation_Build"));
     HIAI_EXPECT_NOT_NULL(buildFunc);
 
     OH_NN_ReturnCode ret = buildFunc(compilation);
@@ -314,7 +313,7 @@ NN_Tensor* HIAI_NDK_NNTensor_CreateWithFd(NN_TensorDesc* tensorDesc, int fd, siz
     auto createNNTensorWithFdFunc = reinterpret_cast<decltype(OH_NNTensor_CreateWithFd)*>(
         NDKProxy::GetSymbol("OH_NNTensor_CreateWithFd"));
     return createNNTensorWithFdFunc == nullptr ? nullptr :
-        createNNTensorWithFdFunc(deviceID, tensorDesc, fd, size, offset);
+                                                 createNNTensorWithFdFunc(deviceID, tensorDesc, fd, size, offset);
 }
 
 void HIAI_NDK_NNTensor_Destroy(NN_Tensor** nnTensor)
@@ -337,12 +336,11 @@ void* HIAI_NDK_NNTensor_GetDataBuffer(NN_Tensor* nnTensor)
 
 Status HIAI_NDK_NNTensor_GetSize(NN_Tensor* nnTensor, size_t* size)
 {
-    auto getSizeFunc = reinterpret_cast<decltype(OH_NNTensor_GetSize)*>(
-        NDKProxy::GetSymbol("OH_NNTensor_GetSize"));
+    auto getSizeFunc = reinterpret_cast<decltype(OH_NNTensor_GetSize)*>(NDKProxy::GetSymbol("OH_NNTensor_GetSize"));
     HIAI_EXPECT_NOT_NULL(getSizeFunc);
 
     OH_NN_ReturnCode retCode = getSizeFunc(nnTensor, size);
     return retCode == OH_NN_SUCCESS ? SUCCESS : FAILURE;
 }
 
-}
+} // namespace hiai

@@ -4,6 +4,7 @@
 
 #include "model_manager/general_model_manager/ndk/hiai_ndk/ndk_proxy.h"
 
+#include <cstdlib> // std::getenv（host UT 经 CANN_LM_NDK_LIB_DIR 注入 stub .so 目录）
 #include <dlfcn.h>
 
 #include <vector>
@@ -25,6 +26,20 @@ void* DlopenFirstFound(const std::vector<std::string>& dirs, const std::string& 
     }
     return nullptr;
 }
+
+/// host UT 注入目录：CANN_LM_NDK_LIB_DIR 非空时置于候选路径最前，使 build 目录的
+/// stub .so（libneural_network_core.so / libhiai_foundation.so）被 dlopen 命中
+/// （绝对路径，无需 LD_LIBRARY_PATH）。真机未设该 env → 系统路径照旧。
+std::vector<std::string> ResolveNdkSearchDirs()
+{
+    std::vector<std::string> dirs = hiai_ndk::GetNdkSearchPaths();
+    if (const char* env = std::getenv("CANN_LM_NDK_LIB_DIR")) {
+        if (env[0] != '\0') {
+            dirs.insert(dirs.begin(), env);
+        }
+    }
+    return dirs;
+}
 } // namespace
 
 NDKProxy* NDKProxy::GetInstance()
@@ -33,7 +48,7 @@ NDKProxy* NDKProxy::GetInstance()
     // 懒加载：首次 GetSymbol 触发；两个 magic static 保证线程安全。
     static const bool handlesInited = []() {
         CANN_LLM_LOGI("NDKProxy: hzy.");
-        const std::vector<std::string> dirs = hiai_ndk::GetNdkSearchPaths();
+        const std::vector<std::string> dirs = ResolveNdkSearchDirs();
         instance.hiaiHandle_ = DlopenFirstFound(dirs, "libhiai_foundation.so");
         instance.nncoreHandle_ = DlopenFirstFound(dirs, "libneural_network_core.so");
         if (instance.hiaiHandle_ == nullptr && instance.nncoreHandle_ == nullptr) {

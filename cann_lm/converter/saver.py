@@ -8,19 +8,28 @@ from pathlib import Path
 import torch
 
 from cann_lm.converter.loader import ModelArtifact
-from cann_lm.converter.export.epair_utils import consolidated_weights_save, consolidated_weights_save_pd, inline_fused_attn_seq_constants, inline_weight_scale_dtype
+from cann_lm.converter.export.epair_utils import (
+    consolidated_weights_save,
+    consolidated_weights_save_pd,
+    inline_fused_attn_seq_constants,
+    inline_weight_scale_dtype,
+)
 
 # Extra aten decomposition whitelist (torchair has no/placeholder GE mapping). Keep in sync across
 # save_epair / save_epair_prefill_decode (a miss leaves ops undecomposed -> placeholder NotImplementedError).
-_EXTRA_DECOMPOSITION_OPS: frozenset = frozenset({
-    torch.ops.aten.eye.default,
-    torch.ops.aten.type_as.default,
-    torch.ops.aten.index_copy.default,
-    torch.ops.aten.index_put.default,
-})
+_EXTRA_DECOMPOSITION_OPS: frozenset = frozenset(
+    {
+        torch.ops.aten.eye.default,
+        torch.ops.aten.type_as.default,
+        torch.ops.aten.index_copy.default,
+        torch.ops.aten.index_put.default,
+    }
+)
 
 
-def _extract_host_side_weights(wrapper, use_embeddings: bool) -> list[tuple[str, torch.Tensor]]:
+def _extract_host_side_weights(
+    wrapper, use_embeddings: bool
+) -> list[tuple[str, torch.Tensor]]:
     """Additionally pack embedding-lookup weights as host-side extras (no dedup; use_embeddings only)."""
     if not use_embeddings:
         return []
@@ -33,7 +42,11 @@ def _assert_externalized_not_lifted(ep, names: list[str]) -> None:
     """Assert detach worked: externalized lookup weights must not be lifted (else weights_*.bin carries redundant lookup weights, C++ builds Data nodes -> != OM)."""
     lifted: set[str] = set()
     gs = ep.graph_signature
-    for mapping in (gs.inputs_to_parameters, gs.inputs_to_buffers, gs.inputs_to_lifted_tensor_constants):
+    for mapping in (
+        gs.inputs_to_parameters,
+        gs.inputs_to_buffers,
+        gs.inputs_to_lifted_tensor_constants,
+    ):
         for _placeholder, logical_name in mapping.items():
             lifted.add(logical_name)
     leaked = [n for n in names if n in lifted]
@@ -88,15 +101,15 @@ def save_epair(
         wrapper.set_quant_embeddings(embed_quant)
 
     sample_inputs = wrapper.get_sample_inputs(
-        seq_len=seq_len, use_embeddings=use_embeddings, quant_embeddings=quant_embeddings
+        seq_len=seq_len,
+        use_embeddings=use_embeddings,
+        quant_embeddings=quant_embeddings,
     )
 
     if quant_embeddings:
         host_side_weights = [
             (fqn + "_q", int8) for fqn, (int8, _) in embed_quant.items()
-        ] + [
-            (fqn + "_scale", scale) for fqn, (_, scale) in embed_quant.items()
-        ]
+        ] + [(fqn + "_scale", scale) for fqn, (_, scale) in embed_quant.items()]
     else:
         host_side_weights = _extract_host_side_weights(wrapper, use_embeddings)
 
@@ -119,18 +132,26 @@ def save_epair(
     # Release model memory (OOM guard); epair.ep holds an independent ExportedProgram ref.
     del ep, wrapper
     del artifact.model
-    import gc; gc.collect()
+    import gc
+
+    gc.collect()
 
     consolidated_weights_save(
-        epair, output_dir,
+        epair,
+        output_dir,
         save_weights=save_weights,
         max_file_size=max_file_size,
         host_side_weights=host_side_weights,
     )
 
     copy_tokenizer_files(artifact.tokenizer_files, output_dir)
-    save_model_config(artifact, output_dir, use_embeddings=use_embeddings,
-                      quant_embeddings=quant_embeddings)
+    save_model_config(
+        artifact,
+        output_dir,
+        use_embeddings=use_embeddings,
+        quant_embeddings=quant_embeddings,
+    )
+
 
 def save_epair_prefill_decode(
     artifact: ModelArtifact,
@@ -189,7 +210,9 @@ def save_epair_prefill_decode(
         wrapper.set_quant_embeddings(embed_quant)
 
     prefill_sample = wrapper.get_sample_inputs(
-        seq_len=seq_len, use_embeddings=use_embeddings, quant_embeddings=quant_embeddings
+        seq_len=seq_len,
+        use_embeddings=use_embeddings,
+        quant_embeddings=quant_embeddings,
     )
     decode_sample = wrapper.get_sample_inputs(
         seq_len=1, use_embeddings=use_embeddings, quant_embeddings=quant_embeddings
@@ -198,9 +221,7 @@ def save_epair_prefill_decode(
     if quant_embeddings:
         host_side_weights = [
             (fqn + "_q", int8) for fqn, (int8, _) in embed_quant.items()
-        ] + [
-            (fqn + "_scale", scale) for fqn, (_, scale) in embed_quant.items()
-        ]
+        ] + [(fqn + "_scale", scale) for fqn, (_, scale) in embed_quant.items()]
     else:
         host_side_weights = _extract_host_side_weights(wrapper, use_embeddings)
 
@@ -226,23 +247,35 @@ def save_epair_prefill_decode(
     # Release model memory (OOM guard); epair.ep holds an independent ExportedProgram ref.
     del decode_ep, wrapper
     del artifact.model
-    import gc; gc.collect()
+    import gc
+
+    gc.collect()
 
     consolidated_weights_save_pd(
-        prefill_epair, decode_epair, output_dir,
+        prefill_epair,
+        decode_epair,
+        output_dir,
         save_weights=save_weights,
         max_file_size=max_file_size,
         host_side_weights=host_side_weights,
     )
 
     copy_tokenizer_files(artifact.tokenizer_files, output_dir)
-    save_model_config(artifact, output_dir, use_embeddings=use_embeddings,
-                      quant_embeddings=quant_embeddings)
+    save_model_config(
+        artifact,
+        output_dir,
+        use_embeddings=use_embeddings,
+        quant_embeddings=quant_embeddings,
+    )
 
 
-def save_model_config(artifact: ModelArtifact, output_dir: Path, *,
-                      use_embeddings: bool = False,
-                      quant_embeddings: bool = False) -> None:
+def save_model_config(
+    artifact: ModelArtifact,
+    output_dir: Path,
+    *,
+    use_embeddings: bool = False,
+    quant_embeddings: bool = False,
+) -> None:
     config_obj = artifact.config
     if hasattr(config_obj, "to_dict"):
         config_dict = config_obj.to_dict()

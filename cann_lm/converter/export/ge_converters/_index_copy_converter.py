@@ -17,6 +17,7 @@
 torchair's converter is a placeholder (NotImplementedError); InplaceUpdate only supports
 dim=0, so transpose ``dim`` to axis 0, write, then transpose back. Registered by ge_converter.register_ge_converters.
 """
+
 from typing import Any
 
 
@@ -32,6 +33,7 @@ def convert_index_copy(
     from torchair._ge_concrete_graph import ge_apis as ge
     from torchair.ge._ge_graph import DataType
     from torchair._ge_concrete_graph.ge_converter.converter_utils import dtype_promote
+
     # InplaceUpdate requires DT_INT32 indices (see REG_OP InplaceUpdate input)
     if index.dtype != DataType.DT_INT32:
         index = ge.Cast(index, dst_type=int(DataType.DT_INT32))

@@ -13,14 +13,11 @@
 #include "model_manager/general_model_manager/ndk/hiai_ndk/hiai_ndk_nncore.h"
 namespace hiai {
 
-NDTensorBufferNDKImpl::NDTensorBufferNDKImpl(NN_Tensor* nnTensor) : nnTensor_(nnTensor)
-{
-}
+NDTensorBufferNDKImpl::NDTensorBufferNDKImpl(NN_Tensor* nnTensor) : nnTensor_(nnTensor) {}
 
 NDTensorBufferNDKImpl::NDTensorBufferNDKImpl(NN_Tensor* nnTensor, const NDTensorDesc& desc)
     : desc_(desc), nnTensor_(nnTensor)
-{
-}
+{}
 
 NDTensorBufferNDKImpl::~NDTensorBufferNDKImpl()
 {
@@ -29,10 +26,7 @@ NDTensorBufferNDKImpl::~NDTensorBufferNDKImpl()
     }
 }
 
-NN_Tensor* NDTensorBufferNDKImpl::GetNNTensor()
-{
-    return nnTensor_;
-}
+NN_Tensor* NDTensorBufferNDKImpl::GetNNTensor() { return nnTensor_; }
 
 void* NDTensorBufferNDKImpl::GetData()
 {
@@ -43,10 +37,7 @@ void* NDTensorBufferNDKImpl::GetData()
     return HIAI_NDK_NNTensor_GetDataBuffer(nnTensor_);
 }
 
-void NDTensorBufferNDKImpl::SetCacheStatus(uint8_t status)
-{
-    HIAI_NDK_HiAITensor_SetCacheStatus(nnTensor_, status);
-}
+void NDTensorBufferNDKImpl::SetCacheStatus(uint8_t status) { HIAI_NDK_HiAITensor_SetCacheStatus(nnTensor_, status); }
 
 uint8_t NDTensorBufferNDKImpl::GetCacheStatus()
 {
@@ -74,13 +65,11 @@ std::shared_ptr<NN_TensorDesc> Convert2NNTensorDesc(const NDTensorDesc& tensorDe
     }
 
     std::shared_ptr<NN_TensorDesc> nnTensorDesc(HIAI_NDK_NNTensorDesc_Create(),
-        [](NN_TensorDesc* p) {
-            HIAI_NDK_NNTensorDesc_Destroy(&p);
-        });
+                                                [](NN_TensorDesc* p) { HIAI_NDK_NNTensorDesc_Destroy(&p); });
     HIAI_EXPECT_NOT_NULL_R(nnTensorDesc, nullptr);
 
-    HIAI_EXPECT_EXEC_R(HIAI_NDK_NNTensorDesc_SetShape(nnTensorDesc.get(), tensorDesc.dims.data(),
-        tensorDesc.dims.size()), nullptr);
+    HIAI_EXPECT_EXEC_R(
+        HIAI_NDK_NNTensorDesc_SetShape(nnTensorDesc.get(), tensorDesc.dims.data(), tensorDesc.dims.size()), nullptr);
 
     HIAI_EXPECT_TRUE_R(tensorDesc.dataType <= DataType::UINT32, nullptr);
     OH_NN_DataType dataType = HIAIAlign::ConvertHIAIDataTypeToNN(static_cast<HIAI_DataType>(tensorDesc.dataType));
@@ -92,10 +81,10 @@ std::shared_ptr<NN_TensorDesc> Convert2NNTensorDesc(const NDTensorDesc& tensorDe
 
     return nnTensorDesc;
 }
-}
+} // namespace
 
-std::shared_ptr<INDTensorBuffer> CreateKVCacheBufferFromNDK(const NDTensorDesc& tensorDesc,
-    size_t kvCacheNum, size_t tileSize)
+std::shared_ptr<INDTensorBuffer> CreateKVCacheBufferFromNDK(const NDTensorDesc& tensorDesc, size_t kvCacheNum,
+                                                            size_t tileSize)
 {
     auto nnTensorDesc = Convert2NNTensorDesc(tensorDesc);
     HIAI_EXPECT_NOT_NULL_R(nnTensorDesc, nullptr);
@@ -104,7 +93,7 @@ std::shared_ptr<INDTensorBuffer> CreateKVCacheBufferFromNDK(const NDTensorDesc& 
     return make_shared_nothrow<NDTensorBufferNDKImpl>(nnTensor, tensorDesc);
 }
 
-Status ResizeKVCacheBufferFromNDK(const std::shared_ptr<INDTensorBuffer> &tensor, size_t size)
+Status ResizeKVCacheBufferFromNDK(const std::shared_ptr<INDTensorBuffer>& tensor, size_t size)
 {
     HIAI_EXPECT_NOT_NULL(tensor);
     auto tensorImpl = std::dynamic_pointer_cast<NDTensorBufferNDKImpl>(tensor);
@@ -123,8 +112,8 @@ std::shared_ptr<INDTensorBuffer> CreateNDTensorBufferFromNDK(const NDTensorDesc&
     return make_shared_nothrow<NDTensorBufferNDKImpl>(nnTensor, tensorDesc);
 }
 
-std::shared_ptr<INDTensorBuffer> CreateNDTensorBufferFromNDK(const NDTensorDesc& tensorDesc,
-    const void* data, size_t dataSize)
+std::shared_ptr<INDTensorBuffer> CreateNDTensorBufferFromNDK(const NDTensorDesc& tensorDesc, const void* data,
+                                                             size_t dataSize)
 {
     auto nnTensorDesc = Convert2NNTensorDesc(tensorDesc);
     HIAI_EXPECT_NOT_NULL_R(nnTensorDesc, nullptr);
@@ -149,8 +138,7 @@ std::shared_ptr<INDTensorBuffer> CreateNDTensorBufferFromNDK(const NDTensorDesc&
     return make_shared_nothrow<NDTensorBufferNDKImpl>(nnTensor, tensorDesc);
 }
 
-std::shared_ptr<INDTensorBuffer> CreateNDTensorBufferFromNDK(const NDTensorDesc& tensorDesc,
-    const NativeHandle& handle)
+std::shared_ptr<INDTensorBuffer> CreateNDTensorBufferFromNDK(const NDTensorDesc& tensorDesc, const NativeHandle& handle)
 {
     auto nnTensorDesc = Convert2NNTensorDesc(tensorDesc);
     HIAI_EXPECT_NOT_NULL_R(nnTensorDesc, nullptr);

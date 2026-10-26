@@ -5,6 +5,7 @@ status": Python cannot silently ignore failure, so a non-SUCCESS status must
 raise CannLmStatusError carrying the code + the C function name (so the error
 points back at the exact boundary call that failed).
 """
+
 import pytest
 
 from cann_lm._enums import Status
@@ -17,10 +18,16 @@ class TestRaiseForStatus:
         raise_for_status(Status.SUCCESS, "ExecutorCreate")
         raise_for_status(0, "ContextCreate")  # raw int 0 also accepted
 
-    @pytest.mark.parametrize("status", [
-        Status.FAILURE, Status.INVALID_ARGUMENT, Status.INVALID_STATE,
-        Status.NOT_FOUND, Status.CANCELED,
-    ])
+    @pytest.mark.parametrize(
+        "status",
+        [
+            Status.FAILURE,
+            Status.INVALID_ARGUMENT,
+            Status.INVALID_STATE,
+            Status.NOT_FOUND,
+            Status.CANCELED,
+        ],
+    )
     def test_non_success_raises(self, status):
         with pytest.raises(CannLmStatusError) as exc:
             raise_for_status(status, "ExecutorGenerate")

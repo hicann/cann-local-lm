@@ -13,7 +13,7 @@ from pathlib import Path
 def _dopt_python() -> str:
     """③ NPU 阶段装 torch_npu 的系统 python (与 converter P1 venv 隔离).
 
-    正常由 scripts/_env_common.sh 的 _resolve_dopt_python 自动探测并 export;
+    正常由 scripts/cann_lm_compile/_env_common.sh 的 _resolve_dopt_python 自动探测并 export;
     兜底用 PATH 里的 python3 (此时多半未 source env 脚本, subprocess 会失败并报错).
     """
     return os.environ.get("DOPT_PYTHON") or shutil.which("python3") or "python3"
@@ -25,10 +25,14 @@ def _run_dopt_subprocess(hf_path: str, device: str) -> str:
     dopt_python = _dopt_python()
     tmp_out = tempfile.mkdtemp(prefix="dopt_gptq_", dir=os.environ.get("DOPT_TMP_DIR"))
     cmd = [
-        dopt_python, str(wrapper_path),
-        "--model-path", hf_path,
-        "--optimize-config", str(quant_dir / "config.yaml"),
-        "--output-dir", tmp_out,
+        dopt_python,
+        str(wrapper_path),
+        "--model-path",
+        hf_path,
+        "--optimize-config",
+        str(quant_dir / "config.yaml"),
+        "--output-dir",
+        tmp_out,
         "--hf-type-save",
     ]
     env = os.environ.copy()
@@ -63,13 +67,19 @@ def _detect_device_type() -> str:
     env["ASCEND_SLOG_PRINT_TO_STDOUT"] = "0"
     try:
         result = subprocess.run(
-            [dopt_python, "-c",
-             "import torch\n"
-             "dev='none'\n"
-             "try:\n    import torch_npu\n    if torch.npu.is_available(): dev='npu'\nexcept: pass\n"
-             "if dev=='none' and torch.cuda.is_available(): dev='cuda'\n"
-             "print(dev)"],
-            capture_output=True, text=True, timeout=15, env=env,
+            [
+                dopt_python,
+                "-c",
+                "import torch\n"
+                "dev='none'\n"
+                "try:\n    import torch_npu\n    if torch.npu.is_available(): dev='npu'\nexcept: pass\n"
+                "if dev=='none' and torch.cuda.is_available(): dev='cuda'\n"
+                "print(dev)",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            env=env,
         )
         out = result.stdout.strip()
         if out == "npu":
@@ -90,7 +100,9 @@ def run_auto_quant(hf_path: str) -> str:
     """
     dev = _detect_device_type()
     if dev == "cpu":
-        print("      [warn] CPU GPTQ: dopt_lm supports CPU (float32) but 7B+ Hessian is very slow; "
-              "prefer NPU/GPU or --quant-path to consume offline output")
+        print(
+            "      [warn] CPU GPTQ: dopt_lm supports CPU (float32) but 7B+ Hessian is very slow; "
+            "prefer NPU/GPU or --quant-path to consume offline output"
+        )
     print(f"   spawn dopt subprocess (device={dev})")
     return _run_dopt_subprocess(hf_path, dev)

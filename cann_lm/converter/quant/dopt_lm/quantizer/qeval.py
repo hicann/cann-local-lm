@@ -12,7 +12,16 @@ class QuantizerFuncIntOffset(torch.autograd.Function):
     """Round With Grad"""
 
     @staticmethod
-    def forward(ctx, input_tensor, s_tensor, offset_tensor, negative_clip, positive_clip, min_scale_value=1.e-5, convert_to_fp32=True):
+    def forward(
+        ctx,
+        input_tensor,
+        s_tensor,
+        offset_tensor,
+        negative_clip,
+        positive_clip,
+        min_scale_value=1.0e-5,
+        convert_to_fp32=True,
+    ):
         dtype = input_tensor.dtype
         input_tensor = input_tensor.to(torch.float32)
         s_tensor = s_tensor.clamp(min_scale_value)
@@ -31,10 +40,18 @@ class QuantizerFuncFpOffset(torch.autograd.Function):
     """Round With Grad"""
 
     @staticmethod
-    def forward(ctx, input_tensor, s_tensor, offset_tensor, negative_clip, positive_clip, convert_to_fp32=True):
+    def forward(
+        ctx,
+        input_tensor,
+        s_tensor,
+        offset_tensor,
+        negative_clip,
+        positive_clip,
+        convert_to_fp32=True,
+    ):
         dtype = input_tensor.dtype
         input_tensor = input_tensor.to(torch.float32)
-        s_tensor = s_tensor.clamp(1.e-5)
+        s_tensor = s_tensor.clamp(1.0e-5)
         rounded = torch.round((input_tensor + offset_tensor) / s_tensor)
         clamped = torch.clamp(rounded, negative_clip, positive_clip)
         out = clamped * s_tensor - offset_tensor
@@ -49,18 +66,18 @@ class QuantizerFuncFpOffset(torch.autograd.Function):
 class DynIntSymQuantizer(torch.autograd.Function):
     @staticmethod
     def forward(ctx, x):
-        positive_clip = torch.tensor(127.).to(x.device).to(torch.float16)
+        positive_clip = torch.tensor(127.0).to(x.device).to(torch.float16)
 
         x_fp16 = x.to(torch.float16)
         s_fp16 = torch.amax(x.abs(), dim=-1, keepdim=True)  # b, token
-        s_fp16 = s_fp16.clamp(min=2.e-5)
-        s_inv_fp16 = 1. / s_fp16
+        s_fp16 = s_fp16.clamp(min=2.0e-5)
+        s_inv_fp16 = 1.0 / s_fp16
         qx_normalized = x_fp16 * s_inv_fp16  # [-1, 1]
         qx_fp16 = qx_normalized * positive_clip
         rounded = torch.round(qx_fp16)
-        clamped = torch.clamp(rounded, - positive_clip - 1, positive_clip)
+        clamped = torch.clamp(rounded, -positive_clip - 1, positive_clip)
         normalized = clamped / positive_clip
-        return normalized.to(x), 1. / s_inv_fp16
+        return normalized.to(x), 1.0 / s_inv_fp16
 
     @staticmethod
     def backward(ctx, grad, grad_s):
@@ -74,10 +91,10 @@ class DynEvalGridS8(torch.nn.Module):
         self.quant_dtype = "dyn_s8"
         self.do_calibrate = True
 
-        self.register_buffer('s', torch.tensor(1. / 127.).to(torch.float16))
-        self.register_buffer('offset', torch.tensor(0.).to(torch.float16))
-        self.register_buffer('bit', torch.tensor(8.))
-        self.register_buffer("unsigned_quant", torch.tensor(0.))
+        self.register_buffer("s", torch.tensor(1.0 / 127.0).to(torch.float16))
+        self.register_buffer("offset", torch.tensor(0.0).to(torch.float16))
+        self.register_buffer("bit", torch.tensor(8.0))
+        self.register_buffer("unsigned_quant", torch.tensor(0.0))
 
     @classmethod
     def init_from_quantizer(cls, quantizer):

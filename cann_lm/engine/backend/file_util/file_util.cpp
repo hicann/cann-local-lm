@@ -25,7 +25,7 @@ Status FileUtil::RealpathUtil(const std::string& path, std::string& resolvedPath
     return hiai::SUCCESS;
 }
 
-long FileUtil::GetFileSize(const std::string &filePath)
+long FileUtil::GetFileSize(const std::string& filePath)
 {
     long fileSize = 0;
 
@@ -36,7 +36,7 @@ long FileUtil::GetFileSize(const std::string &filePath)
     return fileSize;
 }
 
-std::shared_ptr<BaseBuffer> FileUtil::LoadToBuffer(const std::string &filePath)
+std::shared_ptr<BaseBuffer> FileUtil::LoadToBuffer(const std::string& filePath)
 {
     std::shared_ptr<BaseBuffer> buffer = make_shared_nothrow<BaseBuffer>();
     HIAI_EXPECT_NOT_NULL_R(buffer, nullptr);
@@ -44,7 +44,7 @@ std::shared_ptr<BaseBuffer> FileUtil::LoadToBuffer(const std::string &filePath)
     return buffer;
 }
 
-std::shared_ptr<BaseBuffer> FileUtil::LoadToBuffer(const std::string &filePath, uint64_t size)
+std::shared_ptr<BaseBuffer> FileUtil::LoadToBuffer(const std::string& filePath, uint64_t size)
 {
     std::shared_ptr<BaseBuffer> buffer = make_shared_nothrow<BaseBuffer>();
     HIAI_EXPECT_NOT_NULL_R(buffer, nullptr);
@@ -59,8 +59,8 @@ Status FileUtil::LoadAsUint8(const std::string filePath, uint64_t& size, uint8_t
     return hiai::SUCCESS;
 }
 
-Status FileUtil::LoadAsUint8ByOffsetAndSize(
-    const std::string &filePath, const uint64_t offset, const uint64_t size, uint8_t*& data)
+Status FileUtil::LoadAsUint8ByOffsetAndSize(const std::string& filePath, const uint64_t offset, const uint64_t size,
+                                            uint8_t*& data)
 {
     HIAI_EXPECT_EXEC(FileUtilImpl::LoadFileAsUint8ByOffsetAndSize(filePath, data, offset, size));
     return hiai::SUCCESS;

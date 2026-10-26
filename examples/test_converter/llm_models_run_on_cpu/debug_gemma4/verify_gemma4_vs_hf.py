@@ -26,11 +26,15 @@ from pathlib import Path
 
 import torch
 
-_PROJECT_ROOT = next(p for p in Path(__file__).resolve().parents if (p / "cann_lm").is_dir())
+_PROJECT_ROOT = next(
+    p for p in Path(__file__).resolve().parents if (p / "cann_lm").is_dir()
+)
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-_LLM_ENGINE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # llm_models_run_on_cpu/ (hf_cpu)
+_LLM_ENGINE_DIR = os.path.dirname(
+    os.path.dirname(os.path.abspath(__file__))
+)  # llm_models_run_on_cpu/ (hf_cpu)
 if _LLM_ENGINE_DIR not in sys.path:
     sys.path.insert(0, _LLM_ENGINE_DIR)
 import hf_cpu  # noqa: F401  disables torch_npu probe before importing transformers
@@ -45,7 +49,11 @@ BOS_TOKEN_ID = 2
 def make_causal_mask(q_len, k_len, dtype):
     """4D causal mask [1, 1, q_len, k_len] (cat 模式)."""
     min_val = torch.finfo(dtype).min
-    return torch.triu(torch.full((q_len, k_len), min_val, dtype=dtype), diagonal=1).unsqueeze(0).unsqueeze(0)
+    return (
+        torch.triu(torch.full((q_len, k_len), min_val, dtype=dtype), diagonal=1)
+        .unsqueeze(0)
+        .unsqueeze(0)
+    )
 
 
 def load_mine(model_path, dtype):
@@ -63,6 +71,7 @@ def load_mine(model_path, dtype):
 
 def load_hf(model_path, dtype):
     from transformers import Gemma4ForConditionalGeneration as HFModel
+
     return HFModel.from_pretrained(model_path, torch_dtype=dtype).eval()
 
 
@@ -70,11 +79,17 @@ def hf_forward(hf_full, input_ids, dtype):
     """HF text-only forward: language_model + lm_head + softcap 拆解."""
     model_hf = hf_full.model.language_model
     lm_head = hf_full.lm_head
-    softcap = (getattr(getattr(hf_full.config, "text_config", None), "final_logit_softcapping", None)
-               or getattr(hf_full.config, "final_logit_softcapping", None))
+    softcap = getattr(
+        getattr(hf_full.config, "text_config", None), "final_logit_softcapping", None
+    ) or getattr(hf_full.config, "final_logit_softcapping", None)
     mask = make_causal_mask(input_ids.shape[1], input_ids.shape[1], dtype)
     with torch.no_grad():
-        out = model_hf(input_ids=input_ids, attention_mask=mask, past_key_values=None, use_cache=True)
+        out = model_hf(
+            input_ids=input_ids,
+            attention_mask=mask,
+            past_key_values=None,
+            use_cache=True,
+        )
         logits = lm_head(out.last_hidden_state)
         if softcap:
             logits = torch.tanh(logits / softcap) * softcap
@@ -85,8 +100,12 @@ def mine_forward(mine, input_ids, dtype):
     """cann_lm Gemma4ForCausalLM forward (手动 4D mask + shared_kv_states PLE)."""
     mask = make_causal_mask(input_ids.shape[1], input_ids.shape[1], dtype)
     with torch.no_grad():
-        out = mine(input_ids=input_ids, attention_mask=mask,
-                   past_key_values=None, shared_kv_states={})
+        out = mine(
+            input_ids=input_ids,
+            attention_mask=mask,
+            past_key_values=None,
+            shared_kv_states={},
+        )
     return out["logits"]
 
 
@@ -101,10 +120,14 @@ def compare_logits(name, mine_logits, hf_logits):
     argmatch = (mine_arg == hf_arg).float().mean().item()
     _, mt5 = torch.topk(mine_logits, 5, dim=-1)
     _, ht5 = torch.topk(hf_logits, 5, dim=-1)
-    sets = [set(mt5[0, i].tolist()) & set(ht5[0, i].tolist()) for i in range(mt5.shape[1])]
+    sets = [
+        set(mt5[0, i].tolist()) & set(ht5[0, i].tolist()) for i in range(mt5.shape[1])
+    ]
     top5 = sum(len(s) for s in sets) / (5 * len(sets))
-    print(f"  [{name}] max|Δ|={max_abs:.3e}  mean|Δ|={mean_abs:.3e}  rel={rel:.2e}  "
-          f"argmax_match={argmatch*100:.1f}%  top5_overlap={top5*100:.1f}%")
+    print(
+        f"  [{name}] max|Δ|={max_abs:.3e}  mean|Δ|={mean_abs:.3e}  rel={rel:.2e}  "
+        f"argmax_match={argmatch * 100:.1f}%  top5_overlap={top5 * 100:.1f}%"
+    )
     return max_abs, argmatch
 
 
@@ -118,17 +141,22 @@ def main():
     dtype = torch.bfloat16
     print(f"Loading tokenizer + mine + HF (bfloat16) from {args.model}")
     from transformers import AutoTokenizer
+
     tok = AutoTokenizer.from_pretrained(args.model)
 
     mine = load_mine(args.model, dtype)
     hf = load_hf(args.model, dtype)
-    print(f"  mine params={sum(p.numel() for p in mine.parameters()):,}  "
-          f"hf params={sum(p.numel() for p in hf.parameters()):,}")
+    print(
+        f"  mine params={sum(p.numel() for p in mine.parameters()):,}  "
+        f"hf params={sum(p.numel() for p in hf.parameters()):,}"
+    )
 
     # embed_tokens 对比
     me = mine.model.embed_tokens.weight
     he = hf.model.language_model.embed_tokens.weight
-    print(f"  embed_tokens identical: {torch.equal(me, he)}  (max|Δ|={(me-he).abs().max().item():.3e})")
+    print(
+        f"  embed_tokens identical: {torch.equal(me, he)}  (max|Δ|={(me - he).abs().max().item():.3e})"
+    )
 
     # chat prompt logits (chat_template, 含 BOS)
     messages = [{"role": "user", "content": args.prompt}]
@@ -151,15 +179,21 @@ def main():
 
     # deterministic re-forward invariant (mine 内部一致性, gemma4 forward 无 use_cache 开关)
     my_logits2 = mine_forward(mine, ids, dtype)
-    print(f"\nDeterministic re-forward max|Δ|: {(my_logits2 - my_logits).abs().max().item():.3e}")
+    print(
+        f"\nDeterministic re-forward max|Δ|: {(my_logits2 - my_logits).abs().max().item():.3e}"
+    )
 
     # greedy generation 一致
     n = args.gen_tokens
     with torch.no_grad():
-        hf_gen = hf.generate(input_ids=ids, max_new_tokens=n, do_sample=False, pad_token_id=0)
-        my_gen = mine.generate(ids, max_new_tokens=n, do_sample=False, eos_token_id=tok.eos_token_id)
-    hf_new = hf_gen[0, ids.shape[1]:].tolist()
-    my_new = my_gen[0, ids.shape[1]:].tolist()
+        hf_gen = hf.generate(
+            input_ids=ids, max_new_tokens=n, do_sample=False, pad_token_id=0
+        )
+        my_gen = mine.generate(
+            ids, max_new_tokens=n, do_sample=False, eos_token_id=tok.eos_token_id
+        )
+    hf_new = hf_gen[0, ids.shape[1] :].tolist()
+    my_new = my_gen[0, ids.shape[1] :].tolist()
     match = hf_new == my_new
     print(f"\nGreedy generation ({n} tokens):  identical={match}")
     print(f"  hf : {hf_new}")
@@ -173,7 +207,10 @@ def main():
 
     print("\n" + "=" * 50)
     ok = match and (my_logits.argmax(-1) == hf_logits.argmax(-1)).all().item()
-    print("VERDICT:", "PASS — pure-torch matches HF reference" if ok else "MISMATCH — investigate")
+    print(
+        "VERDICT:",
+        "PASS — pure-torch matches HF reference" if ok else "MISMATCH — investigate",
+    )
     print("=" * 50)
 
 

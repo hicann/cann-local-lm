@@ -18,6 +18,7 @@ Mirrors torchair custom/npu_rotary_mul.py: arch35 (davinci 3.5) -> ge.RotaryPosi
 (mode), else -> ge.RotaryMul. cann_lm::rotary_mul migrated from cann_lm::rotary_mul (avoid
 torch_npu duplicate-registration); CPU impl only supports rotary_mode='half'.
 """
+
 from typing import Any
 
 
@@ -33,9 +34,12 @@ def convert_rotary_mul(
     del meta_outputs
     from torchair._ge_concrete_graph import ge_apis as ge
     from torchair._utils.check_platform import is_arch35
+
     if is_arch35():
         modes = {"half": 0, "interleave": 1, "quarter": 2, "interleave-half": 3}
         if rotary_mode not in modes:
-            raise NotImplementedError("rotary_mode only support half/interleave/quarter/interleave-half now!")
+            raise NotImplementedError(
+                "rotary_mode only support half/interleave/quarter/interleave-half now!"
+            )
         return ge.RotaryPositionEmbedding(self, r1, r2, mode=modes[rotary_mode])
     return ge.RotaryMul(self, r1, r2)

@@ -12,12 +12,13 @@
 // 的 dump 逐 tensor 比对，定位「输入不对」还是「模型输出不对」。
 //
 // ── 文件格式（裸 dump，无文件头，行优先，可直接 numpy fromfile）──────────────
-//   文件名：{side}_{mode}_s{step}_{idx}_{name}.bin
+//   文件名：{mode}_{side}_{轮次}_{name}.bin
+//     mode = prefill | decode（由 ForwardOptions.chunk_len 判别；ForwardRaw 传 "raw"）
 //     side = in | out      （输入工位 / 输出工位）
-//     mode = prefill | decode（由 ForwardOptions.chunk_len 判别）
-//     step = 本步步进序号（仅用于避免同名覆盖，不参与正确性）
-//     idx  = 工位下标（重名工位靠它区分，不覆盖）
-//     name = TensorDesc.tensorName（空则 unnamed）
+//     轮次 = 调用方（ModelExecutor）的前向轮次计数，每次前向自增——
+//            同一轮前向的输入与输出 dump 同号（比对时 in/out 配对成套）
+//     name = TensorDesc.tensorName（空则 unnamed；KV 工位 kv_k{layer}/kv_v{layer}）
+//   同侧同名工位自动追加 _2/_3… 后缀防覆盖（unnamed 重名常见于输出侧）。
 //   内容：GetData() 起 GetSize() 字节原样写出。
 //
 // ── KV 工位单列开关（重要）───────────────────────────────────────────────────
@@ -33,8 +34,8 @@
 #ifndef CANN_LM_ENGINE_UTILS_DEBUG_TENSOR_DUMP_H
 #define CANN_LM_ENGINE_UTILS_DEBUG_TENSOR_DUMP_H
 
-#include "core/tensor_manager.h"                    // ITensorBuffer
-#include "core/component/kv_cache_pool/kv_cache_pool.h"  // KvCachePool（KV 工位识别）
+#include "core/tensor_manager.h"                        // ITensorBuffer
+#include "core/component/kv_cache_pool/kv_cache_pool.h" // KvCachePool（KV 工位识别）
 
 #include <cstddef>
 #include <memory>
@@ -48,14 +49,24 @@ bool DebugDumpEnabled();
 /// dump 一组工位。未开启时立即返回（no-op）。
 ///   tensors : 工位列表（输入侧或输出侧）
 ///   side    : "in" / "out"（文件名用）
-///   mode    : "prefill" / "decode"（文件名用）
-///   step    : 本步步进序号（文件名用，不参与正确性）
+///   mode    : "prefill" / "decode" / "raw"（文件名用）
+///   step    : 前向轮次号（文件名用；同一轮 in/out 同号，不参与正确性）
 ///   kv_pool : KV 池（识别 KV 工位用；可为 null = 无法识别，全部按普通工位处理）
 /// 不抛异常、不返回错误：单个工位失败只打日志跳过（调试件不阻断推理）。
-void DebugDumpTensors(const std::vector<std::shared_ptr<ITensorBuffer>>& tensors,
-                      const char* side, const char* mode, std::size_t step,
-                      const std::shared_ptr<KvCachePool>& kv_pool);
+void DebugDumpTensors(const std::vector<std::shared_ptr<ITensorBuffer>>& tensors, const char* side, const char* mode,
+                      std::size_t step, const std::shared_ptr<KvCachePool>& kv_pool);
 
-}  // namespace cann_lm::engine
+/// dump tokenizer encode 结果（int32 裸数组，golden 对齐用）。
+/// 遵循主开关 CANN_LM_DEBUG_DUMP_TENSORS（与工位 dump 同一总闸——tokenizer 是
+/// 输入面最上游，与 in 工位 dump 成套比对：ids.bin ↔ prefill_in_*_embeddings 前
+/// N 行的查表源）。
+///   mode : "prefill" / "decode"（文件名用；decode 侧传单 token）
+///   ids  : encode 后 token id 序列（int32 值域 [0, vocab)，裸写 sizeof(int32_t)×n）
+/// 文件名 {mode}_tokenizer_{name}.bin（如 prefill_tokenizer_ids.bin），落在与
+/// 工位 dump 相同的 CANN_LM_DEBUG_DUMP_DIR。空序列跳过（写空文件无比对价值）；
+/// 写失败只打日志，不返回错误（同 DebugDumpTensors 调试件口径）。
+void DebugDumpTokenizerIds(const char* mode, const std::vector<int32_t>& ids, const char* name);
 
-#endif  // CANN_LM_ENGINE_UTILS_DEBUG_TENSOR_DUMP_H
+} // namespace cann_lm::engine
+
+#endif // CANN_LM_ENGINE_UTILS_DEBUG_TENSOR_DUMP_H

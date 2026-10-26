@@ -21,29 +21,50 @@ namespace {
 class TokenizerJsonSax {
 public:
     // nlohmann SAX 接口
-    bool null() {
-        if (state_ == State::kSkip) { ExitSkipOnScalar(); return true; }
+    bool null()
+    {
+        if (state_ == State::kSkip) {
+            ExitSkipOnScalar();
+            return true;
+        }
         // 已识别键的 null 值（"normalizer": null、"unk_token": null 等）→ 统一回退父态
         switch (state_) {
             case State::kRootKeyAdded:
             case State::kRootKeyModel:
-            case State::kRootKeyNormalizer: state_ = State::kRoot; break;
+            case State::kRootKeyNormalizer:
+                state_ = State::kRoot;
+                break;
             case State::kAddedId:
             case State::kAddedContent:
-            case State::kAddedSpecial: state_ = State::kAddedElem; break;
+            case State::kAddedSpecial:
+                state_ = State::kAddedElem;
+                break;
             case State::kModelType:
             case State::kModelByteFallback:
-            case State::kModelUnk: state_ = State::kModel; break;
-            case State::kVocabValue: state_ = State::kVocab; break;
+            case State::kModelUnk:
+                state_ = State::kModel;
+                break;
+            case State::kVocabValue:
+                state_ = State::kVocab;
+                break;
             case State::kNormalizerType:
-            case State::kNormalizerContent: state_ = State::kNormalizer; break;
-            case State::kNormalizerPattern: state_ = State::kNormalizerPatternObj; break;
-            default: break;
+            case State::kNormalizerContent:
+                state_ = State::kNormalizer;
+                break;
+            case State::kNormalizerPattern:
+                state_ = State::kNormalizerPatternObj;
+                break;
+            default:
+                break;
         }
         return true;
     }
-    bool boolean(bool v) {
-        if (state_ == State::kSkip) { ExitSkipOnScalar(); return true; }
+    bool boolean(bool v)
+    {
+        if (state_ == State::kSkip) {
+            ExitSkipOnScalar();
+            return true;
+        }
         if (state_ == State::kAddedSpecial) {
             added_special_ = v;
             state_ = State::kAddedElem;
@@ -54,105 +75,181 @@ public:
         return true;
     }
     bool number_integer(std::int64_t v) { return HandleNumber(v); }
-    bool number_unsigned(std::uint64_t v) {
-        return HandleNumber(static_cast<std::int64_t>(v));
-    }
+    bool number_unsigned(std::uint64_t v) { return HandleNumber(static_cast<std::int64_t>(v)); }
     bool number_float(double, const std::string&) { return true; }
-    bool string(std::string& v) {
-        if (state_ == State::kSkip) { ExitSkipOnScalar(); return true; }
+    bool string(std::string& v)
+    {
+        if (state_ == State::kSkip) {
+            ExitSkipOnScalar();
+            return true;
+        }
         switch (state_) {
-            case State::kModelType: model_type_ = v; state_ = State::kModel; break;
-            case State::kModelUnk: unk_token_ = v; state_ = State::kModel; break;
-            case State::kAddedContent: added_content_ = v; state_ = State::kAddedElem; break;
-            case State::kMergesItem: merges_raw_.push_back(v); break;  // 字符串格式 "A B"
-            case State::kMergesPair: merge_pair_.push_back(v); break;  // 数组格式 ["A","B"]
-            case State::kNormalizerType: normalizer_type_ = v; state_ = State::kNormalizer; break;
-            case State::kNormalizerContent: normalizer_content_ = v; state_ = State::kNormalizer; break;
+            case State::kModelType:
+                model_type_ = v;
+                state_ = State::kModel;
+                break;
+            case State::kModelUnk:
+                unk_token_ = v;
+                state_ = State::kModel;
+                break;
+            case State::kAddedContent:
+                added_content_ = v;
+                state_ = State::kAddedElem;
+                break;
+            case State::kMergesItem:
+                merges_raw_.push_back(v);
+                break; // 字符串格式 "A B"
+            case State::kMergesPair:
+                merge_pair_.push_back(v);
+                break; // 数组格式 ["A","B"]
+            case State::kNormalizerType:
+                normalizer_type_ = v;
+                state_ = State::kNormalizer;
+                break;
+            case State::kNormalizerContent:
+                normalizer_content_ = v;
+                state_ = State::kNormalizer;
+                break;
             case State::kNormalizerPattern:
                 normalizer_pattern_ = v;
                 state_ = State::kNormalizerPatternObj;
                 break;
-            default: break;  // 其余字符串（version 等）丢弃
+            default:
+                break; // 其余字符串（version 等）丢弃
         }
         return true;
     }
     bool binary(nlohmann::json::binary_t&) { return true; }
-    bool start_object(std::size_t) {
-        if (state_ == State::kSkip) { ++skip_depth_; return true; }
+    bool start_object(std::size_t)
+    {
+        if (state_ == State::kSkip) {
+            ++skip_depth_;
+            return true;
+        }
         switch (state_) {
-            case State::kRootKeyAdded: state_ = State::kAddedElem; break;
-            case State::kRootKeyModel: state_ = State::kModel; break;
-            case State::kRootKeyNormalizer: state_ = State::kNormalizer; break;
-            case State::kNormalizerPatternObj: break;  // pattern 对象内层，保持
-            default: break;
+            case State::kRootKeyAdded:
+                state_ = State::kAddedElem;
+                break;
+            case State::kRootKeyModel:
+                state_ = State::kModel;
+                break;
+            case State::kRootKeyNormalizer:
+                state_ = State::kNormalizer;
+                break;
+            case State::kNormalizerPatternObj:
+                break; // pattern 对象内层，保持
+            default:
+                break;
         }
         return true;
     }
-    bool key(std::string& k) {
-        if (state_ == State::kSkip) return true;
+    bool key(std::string& k)
+    {
+        if (state_ == State::kSkip)
+            return true;
         switch (state_) {
             case State::kRoot:
-                if (k == "added_tokens") state_ = State::kRootKeyAdded;
-                else if (k == "model") state_ = State::kRootKeyModel;
-                else if (k == "normalizer") state_ = State::kRootKeyNormalizer;
-                else if (!k.empty()) EnterSkip();  // version/truncation/padding/pre_tokenizer/... 跳过
+                if (k == "added_tokens")
+                    state_ = State::kRootKeyAdded;
+                else if (k == "model")
+                    state_ = State::kRootKeyModel;
+                else if (k == "normalizer")
+                    state_ = State::kRootKeyNormalizer;
+                else if (!k.empty())
+                    EnterSkip(); // version/truncation/padding/pre_tokenizer/... 跳过
                 break;
             case State::kAddedElem:
-                if (k == "id") state_ = State::kAddedId;
-                else if (k == "content") state_ = State::kAddedContent;
-                else if (k == "special") state_ = State::kAddedSpecial;
-                else EnterSkip();  // lstrip/rstrip/single_word/normalized 等跳过
+                if (k == "id")
+                    state_ = State::kAddedId;
+                else if (k == "content")
+                    state_ = State::kAddedContent;
+                else if (k == "special")
+                    state_ = State::kAddedSpecial;
+                else
+                    EnterSkip(); // lstrip/rstrip/single_word/normalized 等跳过
                 break;
             case State::kModel:
-                if (k == "type") state_ = State::kModelType;
-                else if (k == "byte_fallback") state_ = State::kModelByteFallback;
-                else if (k == "unk_token") state_ = State::kModelUnk;
-                else if (k == "vocab") state_ = State::kVocab;
-                else if (k == "merges") state_ = State::kMerges;
-                else EnterSkip();  // ignore_merges/dropout/continuing_subword 等跳过
+                if (k == "type")
+                    state_ = State::kModelType;
+                else if (k == "byte_fallback")
+                    state_ = State::kModelByteFallback;
+                else if (k == "unk_token")
+                    state_ = State::kModelUnk;
+                else if (k == "vocab")
+                    state_ = State::kVocab;
+                else if (k == "merges")
+                    state_ = State::kMerges;
+                else
+                    EnterSkip(); // ignore_merges/dropout/continuing_subword 等跳过
                 break;
             case State::kVocab:
                 vocab_key_ = k;
                 state_ = State::kVocabValue;
                 break;
             case State::kNormalizer:
-                if (k == "type") state_ = State::kNormalizerType;
-                else if (k == "content") state_ = State::kNormalizerContent;
-                else if (k == "pattern") state_ = State::kNormalizerPatternObj;
-                else EnterSkip();
+                if (k == "type")
+                    state_ = State::kNormalizerType;
+                else if (k == "content")
+                    state_ = State::kNormalizerContent;
+                else if (k == "pattern")
+                    state_ = State::kNormalizerPatternObj;
+                else
+                    EnterSkip();
                 break;
             case State::kNormalizerPatternObj:
-                if (k == "String") state_ = State::kNormalizerPattern;
-                else EnterSkip();  // Regex 类型 pattern（本模块不实现）跳过
+                if (k == "String")
+                    state_ = State::kNormalizerPattern;
+                else
+                    EnterSkip(); // Regex 类型 pattern（本模块不实现）跳过
                 break;
-            default: break;
+            default:
+                break;
         }
         return true;
     }
-    bool end_object() {
-        if (state_ == State::kSkip) { ExitSkipOnEnd(); return true; }
+    bool end_object()
+    {
+        if (state_ == State::kSkip) {
+            ExitSkipOnEnd();
+            return true;
+        }
         switch (state_) {
             case State::kAddedElem:
                 if (added_id_ >= 0) {
                     added_tokens_.emplace_back(added_content_, added_id_);
-                    if (added_special_) special_ids_.push_back(added_id_);
+                    if (added_special_)
+                        special_ids_.push_back(added_id_);
                 }
                 added_id_ = -1;
                 added_content_.clear();
                 added_special_ = false;
-                state_ = State::kRootKeyAdded;  // 数组内继续或由 end_array 收尾
+                state_ = State::kRootKeyAdded; // 数组内继续或由 end_array 收尾
                 break;
-            case State::kVocab: state_ = State::kModel; break;
-            case State::kModel: state_ = State::kRoot; break;
-            case State::kNormalizer: state_ = State::kRoot; break;
-            case State::kNormalizerPatternObj: state_ = State::kNormalizer; break;
-            default: break;
+            case State::kVocab:
+                state_ = State::kModel;
+                break;
+            case State::kModel:
+                state_ = State::kRoot;
+                break;
+            case State::kNormalizer:
+                state_ = State::kRoot;
+                break;
+            case State::kNormalizerPatternObj:
+                state_ = State::kNormalizer;
+                break;
+            default:
+                break;
         }
         return true;
     }
-    bool start_array(std::size_t) {
-        if (state_ == State::kSkip) { ++skip_depth_; return true; }
-        if (state_ == State::kMerges) state_ = State::kMergesItem;
+    bool start_array(std::size_t)
+    {
+        if (state_ == State::kSkip) {
+            ++skip_depth_;
+            return true;
+        }
+        if (state_ == State::kMerges)
+            state_ = State::kMergesItem;
         else if (state_ == State::kMergesItem) {
             // 数组格式 merges：元素为 ["A","B"] 二元组（tokenizers≥0.20 保存形态）
             merge_pair_.clear();
@@ -161,8 +258,12 @@ public:
         // kRootKeyAdded（added_tokens 数组）保持，元素对象由 start_object 处理
         return true;
     }
-    bool end_array() {
-        if (state_ == State::kSkip) { ExitSkipOnEnd(); return true; }
+    bool end_array()
+    {
+        if (state_ == State::kSkip) {
+            ExitSkipOnEnd();
+            return true;
+        }
         if (state_ == State::kMergesPair) {
             if (merge_pair_.size() == 2) {
                 // 数组格式直接产出 pair（F-04：免拼接，token 含空格也不失真）
@@ -177,7 +278,8 @@ public:
         }
         return true;
     }
-    bool parse_error(std::size_t, const std::string&, const nlohmann::detail::exception&) {
+    bool parse_error(std::size_t, const std::string&, const nlohmann::detail::exception&)
+    {
         parse_ok_ = false;
         return false;
     }
@@ -186,13 +288,12 @@ public:
     bool parse_ok() const { return parse_ok_; }
     const std::vector<std::pair<std::string, std::int64_t>>& added_tokens() const { return added_tokens_; }
     const std::vector<std::int64_t>& special_ids() const { return special_ids_; }
-    const std::vector<std::string>& merges_raw() const { return merges_raw_; }   // 字符串格式
-    const std::vector<std::pair<std::string, std::string>>& merge_pairs() const {
-        return merge_pairs_;                                                      // 数组格式
+    const std::vector<std::string>& merges_raw() const { return merges_raw_; } // 字符串格式
+    const std::vector<std::pair<std::string, std::string>>& merge_pairs() const
+    {
+        return merge_pairs_; // 数组格式
     }
-    const std::vector<std::pair<std::string, std::int64_t>>& vocab_pairs() const {
-        return vocab_pairs_;
-    }
+    const std::vector<std::pair<std::string, std::int64_t>>& vocab_pairs() const { return vocab_pairs_; }
     const std::string& model_type() const { return model_type_; }
     bool byte_fallback() const { return byte_fallback_; }
     const std::string& unk_token() const { return unk_token_; }
@@ -201,10 +302,14 @@ public:
     const std::string& normalizer_content() const { return normalizer_content_; }
 
 private:
-    bool HandleNumber(std::int64_t v) {
-        if (state_ == State::kSkip) { ExitSkipOnScalar(); return true; }
+    bool HandleNumber(std::int64_t v)
+    {
+        if (state_ == State::kSkip) {
+            ExitSkipOnScalar();
+            return true;
+        }
         if (state_ == State::kAddedId) {
-            added_id_ = v;  // int64 原样保存，范围校验在 load 期（F-01）
+            added_id_ = v; // int64 原样保存，范围校验在 load 期（F-01）
             state_ = State::kAddedElem;
         } else if (state_ == State::kVocabValue && !vocab_key_.empty()) {
             vocab_pairs_.emplace_back(vocab_key_, v);
@@ -217,26 +322,48 @@ private:
     // 退出规则（外审 F-05 修复）：仅 end_object/end_array 递减深度；
     // 标量事件在 depth==0 时（值为标量）立即退出，depth>0（嵌套容器内）忽略——
     // 若标量也递减，嵌套对象内部的标量会提前耗尽深度导致误退（外审实证）。
-    void EnterSkip() {
+    void EnterSkip()
+    {
         skip_return_ = state_;
         skip_depth_ = 0;
         state_ = State::kSkip;
     }
-    void ExitSkipOnScalar() {           // 未识别键的值为标量：消费即退出
-        if (skip_depth_ == 0) state_ = skip_return_;
+    void ExitSkipOnScalar()
+    { // 未识别键的值为标量：消费即退出
+        if (skip_depth_ == 0)
+            state_ = skip_return_;
     }
-    void ExitSkipOnEnd() {              // 容器结束：递减深度，归零退出
-        if (skip_depth_ > 0) --skip_depth_;
-        if (skip_depth_ == 0) state_ = skip_return_;
+    void ExitSkipOnEnd()
+    { // 容器结束：递减深度，归零退出
+        if (skip_depth_ > 0)
+            --skip_depth_;
+        if (skip_depth_ == 0)
+            state_ = skip_return_;
     }
 
     enum class State {
-        kRoot, kRootKeyAdded, kRootKeyModel, kRootKeyNormalizer,
-        kAddedElem, kAddedId, kAddedContent, kAddedSpecial,
-        kModel, kModelType, kModelByteFallback, kModelUnk, kVocab, kVocabValue,
-        kMerges, kMergesItem, kMergesPair,
-        kNormalizer, kNormalizerType, kNormalizerContent,
-        kNormalizerPatternObj, kNormalizerPattern,
+        kRoot,
+        kRootKeyAdded,
+        kRootKeyModel,
+        kRootKeyNormalizer,
+        kAddedElem,
+        kAddedId,
+        kAddedContent,
+        kAddedSpecial,
+        kModel,
+        kModelType,
+        kModelByteFallback,
+        kModelUnk,
+        kVocab,
+        kVocabValue,
+        kMerges,
+        kMergesItem,
+        kMergesPair,
+        kNormalizer,
+        kNormalizerType,
+        kNormalizerContent,
+        kNormalizerPatternObj,
+        kNormalizerPattern,
         kSkip,
     };
     State state_ = State::kRoot;
@@ -253,8 +380,8 @@ private:
     std::string vocab_key_;
     std::vector<std::pair<std::string, std::int64_t>> vocab_pairs_;
     std::vector<std::string> merges_raw_;
-    std::vector<std::pair<std::string, std::string>> merge_pairs_;  // 数组格式（免拼接）
-    std::vector<std::string> merge_pair_;  // 数组格式 merges 的当前二元组
+    std::vector<std::pair<std::string, std::string>> merge_pairs_; // 数组格式（免拼接）
+    std::vector<std::string> merge_pair_;                          // 数组格式 merges 的当前二元组
 
     std::string model_type_;
     bool byte_fallback_ = false;
@@ -262,10 +389,11 @@ private:
     std::string normalizer_type_, normalizer_pattern_, normalizer_content_;
 };
 
-}  // namespace
+} // namespace
 
 // ── VocabStore ──────────────────────────────────────────────────────────────
-Status VocabStore::load(const VocabSource& src) {
+Status VocabStore::load(const VocabSource& src)
+{
     // 局部构建、成功才提交成员（外审 F-02：任何失败路径不留"半加载可用"实例——
     // 失败实例 vocab_size()==0，encode/decode 恒 FAILURE）
     std::unordered_map<std::string, int> tok2id;
@@ -288,9 +416,11 @@ Status VocabStore::load(const VocabSource& src) {
     std::istream* in = nullptr;
     if (const auto* path = std::get_if<std::filesystem::path>(&src.artifact)) {
         std::error_code ec;
-        if (!std::filesystem::exists(*path, ec)) return Status::FAILURE;
+        if (!std::filesystem::exists(*path, ec))
+            return Status::FAILURE;
         file.open(*path, std::ios::binary);
-        if (!file) return Status::FAILURE;
+        if (!file)
+            return Status::FAILURE;
         in = &file;
     } else if (const auto* bytes = std::get_if<std::vector<std::byte>>(&src.artifact)) {
         memory.str(std::string(reinterpret_cast<const char*>(bytes->data()), bytes->size()));
@@ -306,19 +436,21 @@ Status VocabStore::load(const VocabSource& src) {
     }
 
     // base vocab
-    if (sax.vocab_pairs().empty()) return Status::FAILURE;  // 空词表：结构非法
+    if (sax.vocab_pairs().empty())
+        return Status::FAILURE; // 空词表：结构非法
     std::int64_t max_id = -1;
     for (const auto& [lit, id] : sax.vocab_pairs()) {
-        if (id < 0 || id > kMaxReasonableTokenId) return Status::FAILURE;
+        if (id < 0 || id > kMaxReasonableTokenId)
+            return Status::FAILURE;
         if (!tok2id.emplace(lit, static_cast<int>(id)).second) {
-            return Status::FAILURE;  // 同一字面量双 id
+            return Status::FAILURE; // 同一字面量双 id
         }
         max_id = std::max(max_id, id);
     }
     id2tok.assign(static_cast<size_t>(max_id) + 1, std::string());
     for (const auto& [lit, id] : sax.vocab_pairs()) {
         if (!id2tok[static_cast<size_t>(id)].empty()) {
-            return Status::FAILURE;  // 同一 id 多字面量（vocab dict 内冲突）
+            return Status::FAILURE; // 同一 id 多字面量（vocab dict 内冲突）
         }
         id2tok[static_cast<size_t>(id)] = lit;
     }
@@ -326,11 +458,13 @@ Status VocabStore::load(const VocabSource& src) {
     // added_tokens overlay（Qwen 追加式 / gemma 内联式统一：added 覆写双向映射，
     // 与 HF AddedVocabulary 语义一致——外审 F-03 注释订正）
     for (const auto& [lit, id64] : sax.added_tokens()) {
-        if (id64 < 0 || id64 > kMaxReasonableTokenId) return Status::FAILURE;
+        if (id64 < 0 || id64 > kMaxReasonableTokenId)
+            return Status::FAILURE;
         const int id = static_cast<int>(id64);
         const size_t uid = static_cast<size_t>(id);
         added_tokens.emplace_back(lit, id);
-        if (uid >= id2tok.size()) id2tok.resize(uid + 1);
+        if (uid >= id2tok.size())
+            id2tok.resize(uid + 1);
         id2tok[uid] = lit;
         tok2id[lit] = id;
     }
@@ -344,14 +478,15 @@ Status VocabStore::load(const VocabSource& src) {
     for (const auto& m : sax.merges_raw()) {
         const auto sep = m.find(' ');
         if (sep == std::string::npos || m.find(' ', sep + 1) != std::string::npos) {
-            return Status::FAILURE;  // merges 条目非 "A B" 二元组：结构非法
+            return Status::FAILURE; // merges 条目非 "A B" 二元组：结构非法
         }
         merges.emplace_back(m.substr(0, sep), m.substr(sep + 1));
     }
     merges.insert(merges.end(), sax.merge_pairs().begin(), sax.merge_pairs().end());
     // 交叉校验：merges 引用的 token 必须在词表中（TC_102）
     for (const auto& [a, b] : merges) {
-        if (!tok2id.count(a) || !tok2id.count(b)) return Status::FAILURE;
+        if (!tok2id.count(a) || !tok2id.count(b))
+            return Status::FAILURE;
     }
 
     // 元信息
@@ -377,33 +512,32 @@ Status VocabStore::load(const VocabSource& src) {
     return Status::SUCCESS;
 }
 
-std::optional<int> VocabStore::token_to_id(std::string_view tok) const {
+std::optional<int> VocabStore::token_to_id(std::string_view tok) const
+{
     // C++17 unordered_map 无 string_view 异构查找（透明哈希为 C++20）——构造
     // string 查找；encode 热点开销登记 U-1 优化项（string_view 键/透明哈希）
     auto it = tok2id_.find(std::string(tok));
-    if (it == tok2id_.end()) return std::nullopt;
+    if (it == tok2id_.end())
+        return std::nullopt;
     return it->second;
 }
 
-std::optional<std::string_view> VocabStore::id_to_token(int id) const {
-    if (id < 0 || static_cast<size_t>(id) >= id2tok_.size()) return std::nullopt;
+std::optional<std::string_view> VocabStore::id_to_token(int id) const
+{
+    if (id < 0 || static_cast<size_t>(id) >= id2tok_.size())
+        return std::nullopt;
     const std::string& s = id2tok_[static_cast<size_t>(id)];
-    if (s.empty()) return std::nullopt;
+    if (s.empty())
+        return std::nullopt;
     return std::string_view(s);
 }
 
 size_t VocabStore::vocab_size() const { return id2tok_.size(); }
 
-const std::vector<std::pair<std::string, std::string>>& VocabStore::merges() const {
-    return merges_;
-}
+const std::vector<std::pair<std::string, std::string>>& VocabStore::merges() const { return merges_; }
 
-const std::vector<std::pair<std::string, int>>& VocabStore::added_tokens() const {
-    return added_tokens_;
-}
+const std::vector<std::pair<std::string, int>>& VocabStore::added_tokens() const { return added_tokens_; }
 
-const std::vector<int>& VocabStore::special_strip_ids() const {
-    return special_strip_ids_;
-}
+const std::vector<int>& VocabStore::special_strip_ids() const { return special_strip_ids_; }
 
-}  // namespace cann_lm::engine
+} // namespace cann_lm::engine

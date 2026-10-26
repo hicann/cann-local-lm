@@ -39,22 +39,24 @@ typedef enum {
     HIAI_MEMORY_MODE_FEATURE_MAP = 3,
 } HiAI_MemoryMode;
 
-OH_NN_ReturnCode HMS_HiAIExecutor_InitWeights(OH_NNExecutor *executor, const char* weightDir);
+OH_NN_ReturnCode HMS_HiAIExecutor_InitWeights(OH_NNExecutor* executor, const char* weightDir);
 
-OH_NN_ReturnCode HMS_HiAIExecutor_DeinitWeights(OH_NNExecutor *executor);
+OH_NN_ReturnCode HMS_HiAIExecutor_DeinitWeights(OH_NNExecutor* executor);
 
-OH_NN_ReturnCode HMS_HiAIExecutor_ReleaseMemory(OH_NNExecutor *executor, HiAI_MemoryMode mode);
+OH_NN_ReturnCode HMS_HiAIExecutor_ReleaseMemory(OH_NNExecutor* executor, HiAI_MemoryMode mode);
 
-OH_NN_ReturnCode HMS_HiAIExecutor_RecoverMemory(OH_NNExecutor *executor, HiAI_MemoryMode mode);
+OH_NN_ReturnCode HMS_HiAIExecutor_RecoverMemory(OH_NNExecutor* executor, HiAI_MemoryMode mode);
 
-OH_NN_ReturnCode HMS_HiAIExecutor_GetWeightBuffer(OH_NNExecutor *executor, const char* weightName, void** data, size_t* size);
+OH_NN_ReturnCode HMS_HiAIExecutor_GetWeightBuffer(OH_NNExecutor* executor, const char* weightName, void** data,
+                                                  size_t* size);
 
-OH_NN_ReturnCode HMS_HiAIExecutor_FlushWeight(OH_NNExecutor *executor, const char* weightName, size_t offset, size_t size);
+OH_NN_ReturnCode HMS_HiAIExecutor_FlushWeight(OH_NNExecutor* executor, const char* weightName, size_t offset,
+                                              size_t size);
 
-OH_NN_ReturnCode HMS_HiAIExecutor_GetModelID(OH_NNExecutor *executor, uint32_t* modelId);
+OH_NN_ReturnCode HMS_HiAIExecutor_GetModelID(OH_NNExecutor* executor, uint32_t* modelId);
 
-OH_NN_ReturnCode HMS_HiAIExecutor_UpdateWeight(
-    OH_NNExecutor* executor, const char* weightName, size_t offset, size_t size, const void* weightBuffer);
+OH_NN_ReturnCode HMS_HiAIExecutor_UpdateWeight(OH_NNExecutor* executor, const char* weightName, size_t offset,
+                                               size_t size, const void* weightBuffer);
 
 #ifdef __cplusplus
 }

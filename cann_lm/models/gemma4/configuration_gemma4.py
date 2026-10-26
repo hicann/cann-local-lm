@@ -89,7 +89,9 @@ class Gemma4TextConfig:
         if self.layer_types is None:
             sliding_window_pattern = 6
             self.layer_types = [
-                "sliding_attention" if bool((i + 1) % sliding_window_pattern) else "full_attention"
+                "sliding_attention"
+                if bool((i + 1) % sliding_window_pattern)
+                else "full_attention"
                 for i in range(self.num_hidden_layers)
             ]
         if self.layer_types[-1] != "full_attention":
@@ -187,4 +189,9 @@ class Gemma4Config:
         return {k: v for k, v in self.__dict__.items() if not k.startswith("_")}
 
 
-__all__ = ["Gemma4AudioConfig", "Gemma4Config", "Gemma4TextConfig", "Gemma4VisionConfig"]
+__all__ = [
+    "Gemma4AudioConfig",
+    "Gemma4Config",
+    "Gemma4TextConfig",
+    "Gemma4VisionConfig",
+]

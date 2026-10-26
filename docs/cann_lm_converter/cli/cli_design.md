@@ -39,8 +39,6 @@ def convert(
     output_dir: str,
     dtype: torch.dtype,
     max_file_size: int = 50 * 1024 * 1024 * 1024,
-    kv_cache_max_len: int = 2048,
-    seq_len: int = 64,
     use_embeddings: bool = True,   # 默认纯 embeddings (图外查表); False 走图内查表
     mode: str = "prefill-decode",   # "single" | "prefill-decode"
     num_layers: int | None = None,  # 截层调试; None = 全部
@@ -54,8 +52,8 @@ def convert(
     不接受 device 参数. NPU 跑 GPTQ 通过 quant_method + subprocess 隔离.
 
     mode:
-      - "single": 一张形状特化图 (seq_len 固定 64)
-      - "prefill-decode": prefill (seq_len=64) + decode (seq_len=1) 两图, 共享权重
+      - "single": 一张形状特化图
+      - "prefill-decode": prefill + decode 两图, 共享权重
     """
     # 场景 2 (--quant-method gptq): 先 spawn 轻量化工具 subprocess 跑 GPTQ (主进程不预 load, 避免 2x 内存)
     # 场景 1 (--quant-path): 轻量化工具已离线跑完, 直接消费产物
@@ -108,8 +106,6 @@ def convert(
         save_epair_prefill_decode(
             artifact, output_dir,
             max_file_size=max_file_size,
-            kv_cache_max_len=kv_cache_max_len,
-            seq_len=seq_len,
             use_embeddings=use_embeddings,
             embed_quant=embed_quant,
             target_soc=target_soc,
@@ -118,8 +114,6 @@ def convert(
         save_epair(
             artifact, output_dir,
             max_file_size=max_file_size,
-            kv_cache_max_len=kv_cache_max_len,
-            seq_len=seq_len,
             use_embeddings=use_embeddings,
             embed_quant=embed_quant,
             target_soc=target_soc,
@@ -139,9 +133,8 @@ def parse_args():
                         help="Target SoC for epair export (default: KirinX90). Determines dtype: "
                              "Ascend→bfloat16, Kirin→float16.")
     parser.add_argument("--max-file-size", type=int, default=50*1024*1024*1024)
-    parser.add_argument("--kv-cache-max-len", type=int, default=2048)
     parser.add_argument("--mode", default="prefill-decode", choices=["single", "prefill-decode"],
-                        help="single: 一张形状特化图 (seq_len=64); prefill-decode: prefill+decode 两图 + 共享权重 (默认)")
+                        help="single: 一张形状特化图; prefill-decode: prefill+decode 两图 + 共享权重 (默认)")
     parser.add_argument("--num-layers", type=int, default=None,
                         help="只导出前 N 层 (截层调试). None = 全部. 截 model.model.layers, config.num_hidden_layers 不变")
     # 量化: --quant-path (场景 1) 与 --quant-method (场景 2) 互斥
@@ -161,7 +154,6 @@ def parse_args():
 | `--output-dir`　　　 | (必填)　　　　　 | epair 输出目录　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　|
 | `--target-soc`　　　 | `KirinX90`　　　| 目标 SoC（决定 dtype 派生 + swap 打包格式；Ascend→bfloat16, Kirin→float16）　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　 |
 | `--max-file-size`　　| 50GB　　　　　　 | 单个 `weights_*.bin` 最大字节数　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　 |
-| `--kv-cache-max-len` | 2048　　　　　　 | KV buffer 第一维　　　　　　　　　　　　|
 | `--mode`　　　　　　 | `prefill-decode` | `single` / `prefill-decode`　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　 |
 | `--num-layers`　　　 | `None`　　　　　 | 只导出前 N 层（截层调试）；`None` = 全部；截 `model.model.layers`，`config.num_hidden_layers` 不变 |
 | `--quant-path`　　　 | `None`　　　　　 | 轻量化工具 GPTQ 产物路径（场景 1，自动推断 group_size/embed；与 `--quant-method gptq` 互斥）　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　 |
@@ -179,7 +171,6 @@ def parse_args():
 cann_lm_converter.py (CLI)
     │
     ├── parse_args()  ← --hf-path, --output-dir, --target-soc, --max-file-size,
-    │                    --kv-cache-max-len,
     │                    --mode, --num-layers,
     │                    [--quant-path | --quant-method gptq]
     │
@@ -225,7 +216,7 @@ saver.save_epair(...) / save_epair_prefill_decode(...)  # ④ 保存 (详见 exp
     │
     ├── register_ge_converters()
     ├── wrapper = artifact.wrapper_cls(model, ...).eval()
-    ├── wrapper.get_sample_inputs(seq_len, use_embeddings)
+    ├── wrapper.get_sample_inputs(use_embeddings)
     ├── (use_embeddings) _extract_host_side_weights + detach_externalized_lookups
     ├── torch.export.export(wrapper, sample, strict=False)
     ├── torch_delegate.export_to_epair(ep) → epair
@@ -237,7 +228,7 @@ saver.save_epair(...) / save_epair_prefill_decode(...)  # ④ 保存 (详见 exp
 
 ## prefill/decode 分离模式 CLI
 
-实际 LLM 推理需要 prefill（处理 prompt，seq_len 可变）+ decode（逐 token 生成，seq_len=1）两个阶段。`torch.export` 形状特化后单张图无法覆盖两个阶段，故 CLI 支持 `--mode prefill-decode` 导出两张图。
+实际 LLM 推理需要 prefill（处理 prompt）+ decode（逐 token 生成）两个阶段。`torch.export` 形状特化后单张图无法覆盖两个阶段，故 CLI 支持 `--mode prefill-decode` 导出两张图。
 
 ### CLI 用法
 
@@ -249,7 +240,7 @@ python cann_lm/converter/cann_lm_converter.py \
     --target-soc Ascend910B
 ```
 
-> dtype 由 `--target-soc` 派生（Ascend→bfloat16, Kirin→float16）。`seq_len` 是 `convert()` 参数（默认 64），非 CLI 参数。
+> dtype 由 `--target-soc` 派生（Ascend→bfloat16, Kirin→float16）。
 
 ### 接口（saver 侧，详见 export_design.md）
 
@@ -260,8 +251,6 @@ save_epair_prefill_decode(
     artifact, output_dir,
     *,
     max_file_size=50*1024**3,      # 单 bin 最大字节数
-    kv_cache_max_len=2048,         # KV buffer 第一维
-    seq_len=64,                    # prefill 图 seq_len (convert 参数, 非 CLI)
     use_embeddings=True,          # 固定 True (纯 embeddings); 非 CLI 参数
     save_weights=True,             # 是否写 weights_*.bin (False 只写 ep_json)
     whitelist_decompositions=None, # 限定 decomposition 白名单 (None = 全跑)
@@ -274,8 +263,8 @@ save_epair_prefill_decode(
 
 ```
 output_dir/
-├── prefill_ep_json_with_ascend_ir.json   # prefill 图 (seq_len 由参数指定)
-├── decode_ep_json_with_ascend_ir.json    # decode 图 (seq_len=1)
+├── prefill_ep_json_with_ascend_ir.json   # prefill 图
+├── decode_ep_json_with_ascend_ir.json    # decode 图
 ├── weight_info.json                       # 共享权重索引 (一份)
 ├── weights_0.bin                          # 共享权重 (一份)
 ├── model_config.json

@@ -23,6 +23,7 @@ clamp 范围: INT4_NEG_CLIP = -8 (标准 signed int4 二补码 + dopt qmin_max �
 权威层级: Tier 0 (本文件, 手算夹具钉) > Tier 1 (dopt fakequant W4A16, 权重网格交叉)
          > Tier 2 (NPU ge.QuantBatchMatmulV4, 部署真值, 校准本 reference)。见 VERIFICATION.md。
 """
+
 import torch
 
 from bedrock.hand_fixtures import FIXTURES, to_tensor
@@ -35,12 +36,14 @@ INT4_NEG_CLIP = -8
 def ref_quant_weight_int4(w: torch.Tensor, scale: torch.Tensor, group_size: int):
     """w: [out, in] fp; scale: [out, in//group] fp -> (q_w int8 [out,in], scale fp [out,in//group])."""
     w = w.float()
-    s_exp = scale.float().repeat_interleave(group_size, dim=-1)   # [out, in]
+    s_exp = scale.float().repeat_interleave(group_size, dim=-1)  # [out, in]
     q = torch.round(w / s_exp).clamp(INT4_NEG_CLIP, 7).to(torch.int8)
     return q, scale.float()
 
 
-def ref_dequant_weight_int4(q: torch.Tensor, scale: torch.Tensor, group_size: int) -> torch.Tensor:
+def ref_dequant_weight_int4(
+    q: torch.Tensor, scale: torch.Tensor, group_size: int
+) -> torch.Tensor:
     s_exp = scale.float().repeat_interleave(group_size, dim=-1)
     return q.float() * s_exp
 
@@ -53,15 +56,17 @@ def ref_dynamic_quant(x: torch.Tensor):
     return xq, act_scale.to(torch.float32)
 
 
-def ref_quant_matmul(x_q, w_q, weight_scale, group_size, pertoken_scale=None, bias=None):
+def ref_quant_matmul(
+    x_q, w_q, weight_scale, group_size, pertoken_scale=None, bias=None
+):
     """x_q: int8 [..., m, k]; w_q: int8 [out, in]=[n, k]; weight_scale: [n, k//group]; -> out [..., m, n]."""
     s_exp = weight_scale.float().repeat_interleave(group_size, dim=-1)  # [n, k]
-    w_fp = w_q.float() * s_exp                                            # [n, k]
+    w_fp = w_q.float() * s_exp  # [n, k]
     if pertoken_scale is not None:
-        x_fp = x_q.float() * pertoken_scale.float()                       # dequant activation
+        x_fp = x_q.float() * pertoken_scale.float()  # dequant activation
     else:
         x_fp = x_q.float()
-    out = x_fp @ w_fp.t()                                                 # [..., m, k] @ [k, n] -> [..., m, n]
+    out = x_fp @ w_fp.t()  # [..., m, k] @ [k, n] -> [..., m, n]
     if bias is not None:
         out = out + bias.float()
     return out
@@ -85,7 +90,9 @@ def self_check() -> int:
             exp = torch.tensor(fx["expected_qw"], dtype=torch.int8)
             ok = torch.equal(q, exp)
             npass += ok
-            print(f"  [{'PASS' if ok else 'FAIL'}] {name}: q_w={q.flatten().tolist()} expected={exp.flatten().tolist()}")
+            print(
+                f"  [{'PASS' if ok else 'FAIL'}] {name}: q_w={q.flatten().tolist()} expected={exp.flatten().tolist()}"
+            )
         elif fx["kind"] == "act":
             x = to_tensor(fx["x"])
             xq, xs = ref_dynamic_quant(x)
@@ -94,7 +101,9 @@ def self_check() -> int:
             ok_s = abs(xs.item() - fx["expected_scale"]) < fx["tol"]
             ok = ok_q and ok_s
             npass += ok
-            print(f"  [{'PASS' if ok else 'FAIL'}] {name}: x_q={xq.flatten().tolist()} expected={exp_q.flatten().tolist()} | scale={xs.item():.6f} expected={fx['expected_scale']:.6f}")
+            print(
+                f"  [{'PASS' if ok else 'FAIL'}] {name}: x_q={xq.flatten().tolist()} expected={exp_q.flatten().tolist()} | scale={xs.item():.6f} expected={fx['expected_scale']:.6f}"
+            )
         elif fx["kind"] == "matmul":
             w, sc, gs = to_tensor(fx["w"]), to_tensor(fx["scale"]), fx["group_size"]
             x = to_tensor(fx["x"])
@@ -102,7 +111,9 @@ def self_check() -> int:
             exp = fx["expected_out"]
             ok = abs(out.item() - exp) < fx["tol"]
             npass += ok
-            print(f"  [{'PASS' if ok else 'FAIL'}] {name}: out={out.item():.6f} expected={exp:.6f} (={fx['derive']})")
+            print(
+                f"  [{'PASS' if ok else 'FAIL'}] {name}: out={out.item():.6f} expected={exp:.6f} (={fx['derive']})"
+            )
     print(f"\nTier 0 bedrock: {npass}/{len(FIXTURES)} fixtures PASS")
     return 0 if npass == len(FIXTURES) else 1
 

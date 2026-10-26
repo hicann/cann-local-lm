@@ -20,7 +20,7 @@ public:
 
     BaseBuffer(uint8_t* data, size_t size, bool shouldOwn = false);
     // 未使用：全仓零调用（上游 framework 自定义释放能力预留，勿删）
-    BaseBuffer(uint8_t* data, size_t size, std::function<void (uint8_t*)> freeFunc);
+    BaseBuffer(uint8_t* data, size_t size, std::function<void(uint8_t*)> freeFunc);
 
     ~BaseBuffer() override;
 
@@ -47,10 +47,10 @@ private:
     BaseBuffer& operator=(BaseBuffer&& other) = delete;
 
 private:
-    bool isOwner_ {false};
-    uint8_t* data_ {nullptr};
-    size_t size_ {0};
-    std::function<void (uint8_t*)> freeFunc_ {nullptr};
+    bool isOwner_{false};
+    uint8_t* data_{nullptr};
+    size_t size_{0};
+    std::function<void(uint8_t*)> freeFunc_{nullptr};
 };
 } // namespace hiai
 #endif // GE_BUFFER_H

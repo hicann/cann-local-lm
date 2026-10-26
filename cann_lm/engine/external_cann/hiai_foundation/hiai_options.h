@@ -46,8 +46,8 @@ extern "C" {
  * otherwise. For details about the error codes, see {@link OH_NN_ReturnCode}.
  * @since 4.1.0(11)
  */
-OH_NN_ReturnCode HMS_HiAIOptions_SetInputTensorShapes(
-    OH_NNCompilation* compilation, NN_TensorDesc* inputTensorDescs[], size_t shapeCount);
+OH_NN_ReturnCode HMS_HiAIOptions_SetInputTensorShapes(OH_NNCompilation* compilation, NN_TensorDesc* inputTensorDescs[],
+                                                      size_t shapeCount);
 
 /**
  * @brief Queries the number of shape descriptions among the build options.
@@ -146,8 +146,7 @@ typedef enum {
  * otherwise. For details about the error codes, see {@link OH_NN_ReturnCode}.
  * @since 4.1.0(11)
  */
-OH_NN_ReturnCode HMS_HiAIOptions_SetDynamicShapeStatus(
-    OH_NNCompilation* compilation, HiAI_DynamicShapeStatus status);
+OH_NN_ReturnCode HMS_HiAIOptions_SetDynamicShapeStatus(OH_NNCompilation* compilation, HiAI_DynamicShapeStatus status);
 
 /**
  * @brief Sets the maximum number of cached models in the variable shape configuration before model building.
@@ -163,8 +162,7 @@ OH_NN_ReturnCode HMS_HiAIOptions_SetDynamicShapeStatus(
  * otherwise. For details about the error codes, see {@link OH_NN_ReturnCode}.
  * @since 4.1.0(11)
  */
-OH_NN_ReturnCode HMS_HiAIOptions_SetDynamicShapeMaxCache(
-    OH_NNCompilation* compilation, size_t maxCacheCount);
+OH_NN_ReturnCode HMS_HiAIOptions_SetDynamicShapeMaxCache(OH_NNCompilation* compilation, size_t maxCacheCount);
 
 /**
  * @brief Sets the cache mode in the variable shape configuration before model building.
@@ -180,8 +178,8 @@ OH_NN_ReturnCode HMS_HiAIOptions_SetDynamicShapeMaxCache(
  * otherwise. For details about the error codes, see {@link OH_NN_ReturnCode}.
  * @since 4.1.0(11)
  */
-OH_NN_ReturnCode HMS_HiAIOptions_SetDynamicShapeCacheMode(
-    OH_NNCompilation* compilation, HiAI_DynamicShapeCacheMode mode);
+OH_NN_ReturnCode HMS_HiAIOptions_SetDynamicShapeCacheMode(OH_NNCompilation* compilation,
+                                                          HiAI_DynamicShapeCacheMode mode);
 
 /**
  * @brief Queries the dynamic shape status parameter in the variable shape configuration before model building.
@@ -247,8 +245,8 @@ typedef enum {
  * otherwise. For details about the error codes, see {@link OH_NN_ReturnCode}.
  * @since 4.1.0(11)
  */
-OH_NN_ReturnCode HMS_HiAIOptions_SetOperatorDeviceOrder(
-    OH_NNCompilation* compilation, const char* operatorName, HiAI_ExecuteDevice* executeDevices, size_t deviceCount);
+OH_NN_ReturnCode HMS_HiAIOptions_SetOperatorDeviceOrder(OH_NNCompilation* compilation, const char* operatorName,
+                                                        HiAI_ExecuteDevice* executeDevices, size_t deviceCount);
 
 /**
  * @brief Queries the number of devices to execute a specific operator in the model from the operator-level tuning
@@ -272,8 +270,8 @@ size_t HMS_HiAIOptions_GetOperatorDeviceCount(const OH_NNCompilation* compilatio
  * otherwise.
  * @since 4.1.0(11)
  */
-HiAI_ExecuteDevice* HMS_HiAIOptions_GetOperatorDeviceOrder(
-    const OH_NNCompilation* compilation, const char* operatorName);
+HiAI_ExecuteDevice* HMS_HiAIOptions_GetOperatorDeviceOrder(const OH_NNCompilation* compilation,
+                                                           const char* operatorName);
 
 /**
  * @brief Sets the list of devices to execute the model in the model-level tuning configuration.
@@ -291,8 +289,8 @@ HiAI_ExecuteDevice* HMS_HiAIOptions_GetOperatorDeviceOrder(
  * otherwise. For details about the error codes, see {@link OH_NN_ReturnCode}.
  * @since 4.1.0(11)
  */
-OH_NN_ReturnCode HMS_HiAIOptions_SetModelDeviceOrder(
-    OH_NNCompilation* compilation, HiAI_ExecuteDevice* executeDevices, size_t deviceCount);
+OH_NN_ReturnCode HMS_HiAIOptions_SetModelDeviceOrder(OH_NNCompilation* compilation, HiAI_ExecuteDevice* executeDevices,
+                                                     size_t deviceCount);
 
 /**
  * @brief Queries the number of devices to execute the model in the model-level tuning configuration.
@@ -340,8 +338,7 @@ typedef enum {
  * otherwise. For details about the error codes, see {@link OH_NN_ReturnCode}.
  * @since 4.1.0(11)
  */
-OH_NN_ReturnCode HMS_HiAIOptions_SetFallbackMode(
-    OH_NNCompilation* compilation, HiAI_FallbackMode fallbackMode);
+OH_NN_ReturnCode HMS_HiAIOptions_SetFallbackMode(OH_NNCompilation* compilation, HiAI_FallbackMode fallbackMode);
 
 /**
  * @brief Queries the fallback mode in the tuning configuration.
@@ -383,8 +380,8 @@ typedef enum {
  * otherwise. For details about the error codes, see {@link OH_NN_ReturnCode}.
  * @since 4.1.0(11)
  */
-OH_NN_ReturnCode HMS_HiAIOptions_SetDeviceMemoryReusePlan(
-    OH_NNCompilation* compilation, HiAI_DeviceMemoryReusePlan deviceMemoryReusePlan);
+OH_NN_ReturnCode HMS_HiAIOptions_SetDeviceMemoryReusePlan(OH_NNCompilation* compilation,
+                                                          HiAI_DeviceMemoryReusePlan deviceMemoryReusePlan);
 
 /**
  * @brief Queries the device memory overcommitment parameters in the tuning configuration.
@@ -427,8 +424,7 @@ typedef enum {
  * otherwise. For details about the error codes, see {@link OH_NN_ReturnCode}.
  * @since 4.1.0(11)
  */
-OH_NN_ReturnCode HMS_HiAIOptions_SetTuningStrategy(
-    OH_NNCompilation* compilation, HiAI_TuningStrategy tuningStrategy);
+OH_NN_ReturnCode HMS_HiAIOptions_SetTuningStrategy(OH_NNCompilation* compilation, HiAI_TuningStrategy tuningStrategy);
 
 /**
  * @brief Queries the model tuning strategy.
@@ -598,9 +594,9 @@ typedef enum {
     HIAI_OM_TYPE_PROFILING = 1,
 
     /**
-    * Dump operation type.
-    * @since 6.0.0(20)
-    */
+     * Dump operation type.
+     * @since 6.0.0(20)
+     */
     HIAI_OM_TYPE_DUMP = 2,
 } HiAI_OmType;
 

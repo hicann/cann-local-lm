@@ -25,22 +25,22 @@ NDKProxy::NDKProxy()
 
     // Try each candidate path for libhiai_foundation.so
     // for (const auto& dir : paths) {
-        std::string hiaiPath = JoinPath(path, "libhiai_foundation.so");
-        if (hiaiHelper_.Init(hiaiPath)) {
-            hiaiLoaded = true;
-            ACL_LOGI("Loaded libhiai_foundation.so from: %s", hiaiPath.c_str());
+    std::string hiaiPath = JoinPath(path, "libhiai_foundation.so");
+    if (hiaiHelper_.Init(hiaiPath)) {
+        hiaiLoaded = true;
+        ACL_LOGI("Loaded libhiai_foundation.so from: %s", hiaiPath.c_str());
         //     break;
-        }
+    }
     // }
 
     // Try each candidate path for libneural_network_core.so
     // for (const auto& dir : paths) {
-        std::string nncorePath = JoinPath(path, "libneural_network_core.so");
-        if (nncoreHelper_.Init(nncorePath)) {
-            nncoreLoaded = true;
-            ACL_LOGI("Loaded libneural_network_core.so from: %s", nncorePath.c_str());
-            // break;
-        }
+    std::string nncorePath = JoinPath(path, "libneural_network_core.so");
+    if (nncoreHelper_.Init(nncorePath)) {
+        nncoreLoaded = true;
+        ACL_LOGI("Loaded libneural_network_core.so from: %s", nncorePath.c_str());
+        // break;
+    }
     // }
 
     initialized_ = nncoreLoaded && hiaiLoaded;
@@ -74,16 +74,12 @@ void* NDKProxy::GetSymbol(std::string symbol)
     // Route: OH_NN* symbols → nncore, HMS_* / other symbols → hiai_foundation
     const std::string OH_NN_PREFIX = "OH_NN";
     const std::string NN_PREFIX = "NN_";
-    if (symbol.substr(0, OH_NN_PREFIX.size()) == OH_NN_PREFIX ||
-        symbol.substr(0, NN_PREFIX.size()) == NN_PREFIX) {
+    if (symbol.substr(0, OH_NN_PREFIX.size()) == OH_NN_PREFIX || symbol.substr(0, NN_PREFIX.size()) == NN_PREFIX) {
         return GetInstance()->nncoreHelper_.GetSymbol(symbol);
     }
     return GetInstance()->hiaiHelper_.GetSymbol(symbol);
 }
 
-bool NDKProxy::IsInitialized()
-{
-    return GetInstance()->initialized_;
-}
+bool NDKProxy::IsInitialized() { return GetInstance()->initialized_; }
 
-}  // namespace hiai
+} // namespace hiai

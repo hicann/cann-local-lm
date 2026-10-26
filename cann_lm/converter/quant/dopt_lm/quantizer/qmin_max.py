@@ -415,6 +415,3 @@ class OmniGroupMinMaxGridWeight(OmniMinMaxGrid):
 
         x = x.reshape([cout, cin])
         return x
-
-
-

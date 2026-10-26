@@ -12,8 +12,8 @@ std::shared_ptr<INDTensorBuffer> CreateNDTensorBuffer(const NDTensorDesc& tensor
     return CreateNDTensorBufferFromNDK(tensorDesc, data, dataSize);
 }
 
-std::shared_ptr<INDTensorBuffer> CreateNDTensorBufferNoCopy(
-    const NDTensorDesc& tensorDesc, const void* data, size_t dataSize)
+std::shared_ptr<INDTensorBuffer> CreateNDTensorBufferNoCopy(const NDTensorDesc& tensorDesc, const void* data,
+                                                            size_t dataSize)
 {
     (void)tensorDesc;
     (void)data;
@@ -27,13 +27,12 @@ std::shared_ptr<INDTensorBuffer> CreateNDTensorBuffer(const NDTensorDesc& tensor
     return CreateNDTensorBufferFromNDK(tensorDesc, handle);
 }
 
-std::shared_ptr<INDTensorBuffer> CreateKVCacheBuffer(const NDTensorDesc& tensorDesc,
-    size_t kvCacheNum, size_t tileSize)
+std::shared_ptr<INDTensorBuffer> CreateKVCacheBuffer(const NDTensorDesc& tensorDesc, size_t kvCacheNum, size_t tileSize)
 {
     return CreateKVCacheBufferFromNDK(tensorDesc, kvCacheNum, tileSize);
 }
 
-Status ResizeKVCacheBuffer(const std::shared_ptr<INDTensorBuffer> &tensor, size_t size)
+Status ResizeKVCacheBuffer(const std::shared_ptr<INDTensorBuffer>& tensor, size_t size)
 {
     return ResizeKVCacheBufferFromNDK(tensor, size);
 }

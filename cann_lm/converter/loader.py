@@ -21,7 +21,9 @@ class ModelArtifact:
     tokenizer_files: list[Path]
     model_type: str
     wrapper_cls: type  # ExportWrapper subclass (passed through from ModelEntry)
-    quant_info: dict | None = None  # quant metadata (scheme/group_size/scope/...), None=unquantized
+    quant_info: dict | None = (
+        None  # quant metadata (scheme/group_size/scope/...), None=unquantized
+    )
 
 
 def load_model(

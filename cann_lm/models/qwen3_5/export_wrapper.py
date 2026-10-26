@@ -38,13 +38,17 @@ class Qwen3_5ExportWrapper(ExportWrapper):
         """
         layer_types = getattr(self.config, "layer_types", [])
         n = len(self.model.model.layers)
-        return [i for i, lt in enumerate(layer_types) if lt == "full_attention" and i < n]
+        return [
+            i for i, lt in enumerate(layer_types) if lt == "full_attention" and i < n
+        ]
 
     def _linear_layer_indices(self) -> list[int]:
         """linear_attention 层索引 (截断到实际层数)."""
         layer_types = getattr(self.config, "layer_types", [])
         n = len(self.model.model.layers)
-        return [i for i, lt in enumerate(layer_types) if lt == "linear_attention" and i < n]
+        return [
+            i for i, lt in enumerate(layer_types) if lt == "linear_attention" and i < n
+        ]
 
     def _build_zero_delta_states(self):
         """构造零 delta_states (conv_flat, recurrent_flat) 供 prefill 图输入.
@@ -53,18 +57,31 @@ class Qwen3_5ExportWrapper(ExportWrapper):
         (depthwise conv: conv_state 零替代 padding 零, output[K-1+k]==eager output[k]).
         让 prefill 也走 export 路径 (delta 图输入输出), 统一 prefill+decode delta tensor 流.
         """
-        lin = next(l.linear_attn for l in self.model.model.layers
-                   if l.layer_type == "linear_attention")
+        lin = next(
+            l.linear_attn
+            for l in self.model.model.layers
+            if l.layer_type == "linear_attention"
+        )
         dtype = next(self.model.parameters()).dtype
         n_linear = len(self._linear_layer_indices())
-        conv_flat = [torch.zeros(self.batch, lin.conv_dim, lin.conv_kernel_size, dtype=dtype)
-                     for _ in range(n_linear)]
-        rec_flat = [torch.zeros(self.batch, lin.num_v_heads, lin.head_k_dim, lin.head_v_dim, dtype=dtype)
-                    for _ in range(n_linear)]
+        conv_flat = [
+            torch.zeros(self.batch, lin.conv_dim, lin.conv_kernel_size, dtype=dtype)
+            for _ in range(n_linear)
+        ]
+        rec_flat = [
+            torch.zeros(
+                self.batch, lin.num_v_heads, lin.head_k_dim, lin.head_v_dim, dtype=dtype
+            )
+            for _ in range(n_linear)
+        ]
         return (conv_flat, rec_flat)
 
-    def get_sample_inputs(self, seq_len: int = 128, use_embeddings: bool = False,
-                          quant_embeddings: bool = False) -> tuple:
+    def get_sample_inputs(
+        self,
+        seq_len: int = 128,
+        use_embeddings: bool = False,
+        quant_embeddings: bool = False,
+    ) -> tuple:
         """qwen3_5 override: prefill 也传 delta_states (零, 图输入), 统一 prefill+decode delta 流.
 
         past KV 只构造 full_attention 层 (6 对), linear 层用 delta_states 不用 KV —
@@ -122,7 +139,7 @@ class Qwen3_5ExportWrapper(ExportWrapper):
         updated_cache = outputs["past_key_values"]
         updated_delta = outputs.get("delta_cache")
         if delta_states is None:
-            self._delta_cache_box[0] = updated_delta   # 持久 delta_cache (eager 跨调用)
+            self._delta_cache_box[0] = updated_delta  # 持久 delta_cache (eager 跨调用)
 
         past_kv_flat: list[torch.Tensor] = []
         if updated_cache is not None:

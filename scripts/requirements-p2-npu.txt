@@ -1,0 +1,13 @@
+# P2 NPU 附加包 — requirements-p2-npu.txt
+# 仅 NPU 环境安装; GPU 环境跳过此文件
+# 用途: NPU 推理 (acl.mdl.execute) + NPU 加速量化 (dopt GPTQ)
+#
+# 安装: pip install -r requirements-p2.txt -r requirements-p2-npu.txt
+# 前置: CANN >= 9.3.0 已安装 (source <cann>/set_env.sh), acl 由 CANN site-packages 提供
+#
+# === torch_npu (三重绑定: torch_npu ↔ torch ↔ CANN) ===
+torch_npu==2.7.1.post4   # 版本号须与 torch 主版本一致 (2.7.1); 配套 CANN 见 COMPATIBILITY.md
+#
+# 非 pip 包 (NPU 环境额外需要):
+#   acl:      CANN site-packages (PYTHONPATH 由 set_env.sh 引入)
+#   dopt_lm: 仓内 cann_lm/converter/quant/ (PYTHONPATH 引入)

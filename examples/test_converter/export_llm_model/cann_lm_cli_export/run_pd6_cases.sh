@@ -70,11 +70,11 @@ import torchair, torch_delegate; print('torchair+torch_delegate OK')
 
 # ─── env: converter (CPU venv + torchair stubs) / dopt (系统 python + 真 NPU) ───
 setup_converter_env() {
-  source "$PROJECT_ROOT/scripts/set_env_export.sh"
+  source "$PROJECT_ROOT/scripts/cann_lm_compile/set_env_export.sh"
 }
 
 setup_dopt_env() {
-  source "$PROJECT_ROOT/scripts/set_env_cann.sh" --npu
+  source "$PROJECT_ROOT/scripts/cann_lm_compile/set_env_cann.sh" --npu
   export PYTHONPATH="$QD:${PYTHONPATH:-}"
 }
 
@@ -219,21 +219,21 @@ case_6() { _require_hf; case_quant_method gemma4  "$HF_GEMMA4"  epair_gemma4_qua
 print_env() {
   cat <<'EOF'
 === converter env (① 导出 epair; 不装 torch_npu, 走 stub 路径) ===
-source $PROJECT_ROOT/scripts/set_env_export.sh
+source $PROJECT_ROOT/scripts/cann_lm_compile/set_env_export.sh
 # 设好: CONVERTER_PYTHON(=.venv/bin/python), PYTHONPATH, LD_LIBRARY_PATH(stubs 在前), TORCH_DELEGATE_HOME
 # 本脚本 setup_converter_env() 已 source
 
 === dopt env (Step A GPTQ, 量化前置; 系统 python + 真 torch_npu + NPU) ===
-source $PROJECT_ROOT/scripts/set_env_cann.sh --npu
+source $PROJECT_ROOT/scripts/cann_lm_compile/set_env_cann.sh --npu
 export PYTHONPATH=$PROJECT_ROOT/cann_lm/converter/quant:${PYTHONPATH:-}
 # 设好: DOPT_PYTHON(=系统 python), DEVICE=npu, 真 CANN lib64; 本脚本 setup_dopt_env() 已 source
 
 === OM 编译 env (②, 真 CANN, CPU 侧不需 NPU) ===
-source $PROJECT_ROOT/scripts/set_env_cann.sh
+source $PROJECT_ROOT/scripts/cann_lm_compile/set_env_cann.sh
 # 设好: SOC_VERSION, GE_FUSION_SWITCH_FILE(关 AUB), GE_EXTERNAL_WEIGHT; 用 build/cann_lm_compile
 
 === NPU 出字 env (③, 系统 python + torch_npu) ===
-source $PROJECT_ROOT/scripts/set_env_cann.sh --npu
+source $PROJECT_ROOT/scripts/cann_lm_compile/set_env_cann.sh --npu
 # 用 $DOPT_PYTHON run_<model>_gen.py "prompt"
 EOF
 }

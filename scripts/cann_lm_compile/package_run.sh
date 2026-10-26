@@ -6,7 +6,7 @@ set -euo pipefail
 # 流程: build (--no-tests) → stage (binary+.so+cfg+set_env) → patchelf rpath → makeself
 # 产物: dist/cann_lm_compile-<ver>-<arch>.run
 # 包内容: cann_lm_compile / lib/libtorch_delegate_backend.so / fusion_autoub_off.cfg / set_env.sh
-# 安装: bash cann_lm_compile-<ver>-<arch>.run --target /opt/cann-lm
+# 安装: bash cann_lm_compile-<ver>-<arch>.run --extract=/opt/cann-lm
 # 运行: source /opt/cann-lm/set_env.sh (需先 source CANN set_env.sh) → /opt/cann-lm/cann_lm_compile ...
 # 注: 工具不依赖 torch/venv, 安装机只需 CANN
 #
@@ -88,5 +88,5 @@ fi
 echo ""
 echo "=== package ==="
 ls -lh "$DIST/$PKG_NAME.run" | awk '{print "  "$5, $9}'
-echo "  安装: bash $DIST/$PKG_NAME.run --target /opt/cann-lm"
+echo "  安装: bash $DIST/$PKG_NAME.run --extract=/opt/cann-lm"
 echo "  运行: source /opt/cann-lm/set_env.sh && /opt/cann-lm/cann_lm_compile <ep_json> <weight_info> [out]"

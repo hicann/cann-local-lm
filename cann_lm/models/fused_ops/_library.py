@@ -40,6 +40,7 @@ def safe_define(schema: str) -> None:
     except RuntimeError:
         pass  # torch_npu 已 define 该 op, 跳过
 
+
 # cann_lm 命名空间: 无 torchair 对应的算子 (chunk_gated_delta_rule, torchair raise RuntimeError)
 CANN_LM_LIB = torch.library.Library("cann_lm", "DEF")
 

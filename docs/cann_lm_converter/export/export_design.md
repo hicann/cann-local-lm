@@ -1289,7 +1289,7 @@ HF (Gemma4ClippableLinear):           cann_lm (nn.Linear):
   #1: token 236743 " "  (18.500)       #1: token 532 " and" (18.500)
   #2: token 532 " and" (18.250)       #2: token 236761 "." (18.500)
   #3: token 236761 "." (18.250)       #3: token 236743 " " (18.500)
-  
+
   Top-1 vs Top-2 gap: 0.250          Top-1 vs Top-2 gap: 0.000 ← top-3 完全打平
 ```
 

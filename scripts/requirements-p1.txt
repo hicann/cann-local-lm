@@ -1,0 +1,32 @@
+# P1 converter venv — requirements-p1.txt
+# 用途: ① 导出 epair (converter) + 量化 Step B + TBE/tvm (cann_lm_compile 编 omc 时回调)
+# torch 版本: 2.9.0+cpu (不装 torch_npu, 走 stub 路径)
+# python: >= 3.10 (本机 3.12.9)
+#
+# 安装方式: 先建 venv, pip install -r requirements-p1.txt, 再源码装 torchair + torch-delegate
+#
+# === torch 核心 ===
+torch==2.9.0
+# torchair / torch-delegate / cann_lm / cann_lm_engine 非 pip 包:
+#   torchair:     源码编译 (gitcode.com/Ascend/torchair.git, TARGET_PYTHON=本 venv, ABI 匹配)
+#   torch-delegate: 源码编译 (gitcode.com/shengnan666/torch-delegate.git, 需申请权限; 或用预编 whl)
+#   cann_lm:      bash scripts/build.sh deps (装进本 venv)
+#   CANN 包 (te/cann_ops_*/asc_*/es_*/hccl 等): 来自 CANN site-packages, 不装 pip
+#
+# === torchair 运行时依赖 ===
+protobuf==3.20.3
+# numpy 由 torch + te 自动拉入, 不需显式装
+#
+# === TBE/tvm 依赖 (cann_lm_compile 编 omc 时回调) ===
+# 以下由 te (pip install te) 自动拉入: attrs, decorator, numpy, psutil, scipy
+# 以下由 torch 自动拉入: sympy, networkx
+# 需手动装:
+requests
+PyYAML
+cffi
+tqdm  # 可选, 缺失非阻塞
+#
+# === 模型加载 ===
+safetensors
+#
+# === torch 运行时 (torch 自动拉入: filelock, fsspec, jinja2, typing-extensions, setuptools) ===

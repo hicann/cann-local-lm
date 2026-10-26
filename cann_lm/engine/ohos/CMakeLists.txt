@@ -56,7 +56,6 @@ set(ENGINE_SRC
     ${_E}/core/component/tokenizer/qwen_tokenizer.cpp
     ${_E}/core/component/tokenizer/vocab_store.cpp
     ${_E}/core/component/tokenizer/special_token_handler.cpp
-    ${_E}/core/sample/sampler.cc
     ${_E}/pipeline/history_prompt_manager.cpp
     ${_E}/pipeline/pipeline_executor.cpp
     ${_E}/pipeline/preprocessor.cpp
@@ -66,11 +65,14 @@ set(ENGINE_SRC
 # ── SHARED 库 ───────────────────────────────────────────────────────────────
 add_library(cann_lm_engine SHARED ${ENGINE_SRC})
 target_include_directories(cann_lm_engine PUBLIC ${_E})
-target_include_directories(cann_lm_engine PRIVATE ${_E}/../../third_party)   # nlohmann/json（D-09 vendored）
+target_include_directories(cann_lm_engine PRIVATE ${_E}/../../cmake/third_party)   # nlohmann/json（D-09 vendored）
 # backend 通路:工厂/设备模型/张量的具体实现(含 hiai_acl shim 依赖,PIC 由 toolchain 设定)
 # hilog_ndk.z:infra/log.h 的 __OHOS__ 分支(OH_LOG_Print)所需
 target_link_libraries(cann_lm_engine PUBLIC cann_backend hilog_ndk.z)
 target_compile_options(cann_lm_engine PRIVATE -Wall -Wextra -Wpedantic)
+
+# SONAME: 让 bbit/api_smoke 等 NEEDED 记 libcann_lm_engine.so 而非绝对路径
+target_link_options(cann_lm_engine PRIVATE "-Wl,-soname,libcann_lm_engine.so")
 
 # RPATH 设为 $ORIGIN,便于在鸿蒙设备上就近找到 libc++_shared.so / libcann_lm_engine.so
 set(CMAKE_SKIP_BUILD_RPATH FALSE)
@@ -90,84 +92,29 @@ endif()
 
 # ── GTest:本地源码 FetchContent(交叉编译不能用主机 find_package) ──────────
 # gtest_discover_tests 在交叉编译下失效(它要运行宿主跑不了的目标二进制),
-# 故改用静态 add_test(NAME ... COMMAND <exe>),由设备端 ctest 或直接 ./ 运行。
+# 故 tests/cpp/engine/CMakeLists.txt 用 add_test 静态注册（见 _GTEST_LIBS 分支）。
 include(FetchContent)
-set(GTEST_TAR "/mnt/workspace/gtest-1.14.0.tar.gz" CACHE FILEPATH "Path to googletest v1.14.0 source tarball")
-if(NOT EXISTS "${GTEST_TAR}")
-    message(FATAL_ERROR "GTest source tarball not found: ${GTEST_TAR} (download from https://github.com/google/googletest/releases/tag/v1.14.0)")
+if(NOT DEFINED GTEST_TAR)
+    set(GTEST_TAR "$ENV{GTEST_TAR}" CACHE FILEPATH "Path to googletest v1.14.0 source tarball")
 endif()
-FetchContent_Declare(googletest URL "${GTEST_TAR}")
-set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
-# googletest 1.14 无 BUILD_GTEST 选项;其自带测试/样例由 gtest_build_tests /
-# gtest_build_samples 控制,二者默认 OFF,故无需显式抑制。
-FetchContent_MakeAvailable(googletest)
+if(NOT EXISTS "${GTEST_TAR}")
+    # 回退: 仓内 output/third_party/gtest（build.sh third_party 产出）
+    set(GTEST_TAR "${_E}/../../output/third_party/gtest/googletest-1.14.0.tar.gz" CACHE FILEPATH "" FORCE)
+endif()
+if(EXISTS "${GTEST_TAR}")
+    FetchContent_Declare(googletest URL "${GTEST_TAR}")
+    set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
+    FetchContent_MakeAvailable(googletest)
+else()
+    message(STATUS "GTest tarball not found (${GTEST_TAR}), skipping UT targets")
+endif()
 
 enable_testing()
 
-# ── 辅助:注册一个 gtest 可执行 + 静态 ctest 项 ──────────────────────────────
-function(cannlm_add_gtest_test name)
-    add_executable(${name} ${ARGN})
-    target_link_libraries(${name} PRIVATE cann_lm_engine gtest gtest_main)
-    target_include_directories(${name} PRIVATE ${_E})
-    target_compile_options(${name} PRIVATE -Wall -Wextra -Wpedantic)
-    # 静态注册:设备端 ctest 直接执行整个二进制(交叉编译不可 discover)
-    add_test(NAME ${name} COMMAND ${name})
-endfunction()
-
-# ── UT 可执行 ─────────────────────────────────────────────────────────────────
-# ⚠️ model_executor_ut / ut_text_embedding 暂不注册：源 mock 旧 cann_llm_engine
-# backend 接口（GetDesc/.name/.size/DataType::UNDEFINED 等），未随 hiai 迁移改编，
-# 编入必编译失败。迁完后恢复（host 侧 ../CMakeLists.txt 同因、无 GTest 跳过）。
-# （另 ut_sampler/ut_request_handle/tokenizer_realdata 历史上即未在 OHOS 注册。）
-set(ME_TEST_DIR ${TESTS_ROOT}/cann_lm/engine/core/model_executor)
-cannlm_add_gtest_test(model_executor_ut
-    ${ME_TEST_DIR}/test_kv_cache_pool.cpp
-    ${ME_TEST_DIR}/test_input_assembler.cpp
-    ${ME_TEST_DIR}/test_model_executor.cpp
-    ${ME_TEST_DIR}/test_dfx_collector.cpp
-    ${ME_TEST_DIR}/test_tensor_manager.cpp)
-
-set(UT_DIR ${TESTS_ROOT}/ut)
-cannlm_add_gtest_test(ut_engine_executor ${UT_DIR}/ut_engine_executor.cpp)
-cannlm_add_gtest_test(ut_tokenizer       ${UT_DIR}/ut_tokenizer.cpp)
-target_compile_definitions(ut_tokenizer PRIVATE
-    TOKENIZER_FIXTURE_DIR="${TESTS_ROOT}/fixtures/tokenizer")
-target_include_directories(ut_tokenizer PRIVATE ${_E}/../../third_party)
-cannlm_add_gtest_test(ut_c_api           ${UT_DIR}/ut_c_api.cpp)
-cannlm_add_gtest_test(ut_scheduler       ${UT_DIR}/ut_scheduler.cpp)
-
-# ── TextEmbedding UT（SR20260828001；与 ../CMakeLists.txt 一一对应，勿漂移）──
-# ⚠️ 同上暂不注册：mock 旧 backend 接口未迁移（__fp16 直接引用亦失效，
-#    text_embedding.cpp 已改软件 fp16）。
-set(TE_TEST_DIR ${TESTS_ROOT}/cann_lm/engine/core)
-cannlm_add_gtest_test(ut_text_embedding ${TE_TEST_DIR}/ut_text_embedding.cpp)
-
-# ── bbit:黑盒集成(自带 main,非 gtest;ctest 跑 --check 与配置驱动完整流程) ──
-add_executable(bbit ${TESTS_ROOT}/bbit/bbit.cpp)
-target_link_libraries(bbit PRIVATE cann_lm_engine)
-target_include_directories(bbit PRIVATE ${_E})
-target_include_directories(bbit PRIVATE ${_E}/../../third_party)   # nlohmann/json（D-09 vendored，配置解析）
-target_compile_options(bbit PRIVATE -Wall -Wextra -Wpedantic)
-add_test(NAME bbit_check COMMAND bbit --check)
-add_test(NAME bbit_flow  COMMAND bbit --config ${TESTS_ROOT}/bbit/testcase.json)
-
-# ── 冒烟程序(C++ / C,自带 main) ───────────────────────────────────────────
-add_executable(api_smoke ${_E}/main/api_smoke.cpp)
-target_link_libraries(api_smoke PRIVATE cann_lm_engine)
-target_include_directories(api_smoke PRIVATE ${_E})
-target_compile_options(api_smoke PRIVATE -Wall -Wextra -Wpedantic)
-
-add_executable(c_api_smoke ${_E}/main/c_api_smoke.c)
-target_link_libraries(c_api_smoke PRIVATE cann_lm_engine)
-target_include_directories(c_api_smoke PRIVATE ${_E})
-target_compile_options(c_api_smoke PRIVATE -Wall -Wextra -Wpedantic)
-
-# 【临时调试代码 — 验证完成后删除】golden_verify: 模型精度验证工具
-add_executable(golden_verify ${_E}/main/golden_verify.cpp)
-target_link_libraries(golden_verify PRIVATE cann_lm_engine)
-target_include_directories(golden_verify PRIVATE ${_E})
-target_include_directories(golden_verify PRIVATE ${_E}/../../third_party)   # nlohmann/json
-target_compile_options(golden_verify PRIVATE -Wall -Wextra -Wpedantic)
+# ── UT（由 tests/cpp/engine/ 独立 CMakeLists 定义）──
+# smoke/bbit 由 build.sh --smoke 单独构建（examples/test_engine/ 独立 cmake）
+set(CANN_LM_CROSS_BUILD ON CACHE INTERNAL "OHOS cross-compile build" FORCE)
+add_subdirectory(${TESTS_ROOT}/cpp/engine ${CMAKE_BINARY_DIR}/tests/cpp/engine)
 
 # ── 签名:不在 CMake 内做(本机 cmake 3.20 对 OHOS 未知系统的 POST_BUILD
 #    生成器表达式求值不稳)。改由仓库根 sign_ohos.sh 在 build 后对 build_ohos/

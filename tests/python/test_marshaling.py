@@ -6,19 +6,21 @@ and the backing storage must stay alive for the duration of the C call.
 
 These run without the engine .so — pure ctypes array/buffer work.
 """
+
 import ctypes as ct
 
-import pytest
 
 from cann_lm.engine import build_buffer, build_request_options
 
 
 # ────────────────────────── stop_token_ids ──────────────────────────
 
+
 class TestStopTokenIds:
     def test_nonempty_array_content_and_count(self):
         opts, keepalive = build_request_options(
-            max_tokens=8, stop_token_ids=[1, 2, 300])
+            max_tokens=8, stop_token_ids=[1, 2, 300]
+        )
         assert opts.stop_token_ids_count == 3
         assert opts.max_tokens == 8
         # read back through the stored pointer
@@ -39,6 +41,7 @@ class TestStopTokenIds:
 
 # ────────────────────────── stop_strings ──────────────────────────
 
+
 class TestStopStrings:
     def test_nonempty_ascii_and_unicode_roundtrip(self):
         opts, _ = build_request_options(stop_strings=["hello", "世界"])
@@ -55,16 +58,17 @@ class TestStopStrings:
 
 # ────────────────────────── Buffer ──────────────────────────
 
+
 class TestBuildBuffer:
     def test_none_is_empty_buffer(self):
         buf, _ = build_buffer(None)
-        assert not buf.data          # NULL
+        assert not buf.data  # NULL
         assert buf.size == 0
 
     def test_bytes_content_and_size(self):
         buf, _ = build_buffer(b"abc")
         assert buf.size == 3
-        assert buf.data              # non-NULL
+        assert buf.data  # non-NULL
         ptr = ct.cast(buf.data, ct.POINTER(ct.c_char))
         assert ptr[0:3] == b"abc"
 
@@ -83,6 +87,6 @@ class TestBuildBuffer:
 
     def test_backing_storage_kept_alive(self):
         buf, keepalive = build_buffer(b"alive")
-        assert keepalive            # caller must retain this during the C call
+        assert keepalive  # caller must retain this during the C call
         ptr = ct.cast(buf.data, ct.POINTER(ct.c_char))
         assert ptr[0:5] == b"alive"

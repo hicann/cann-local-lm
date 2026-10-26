@@ -44,6 +44,6 @@ if(BUILD_CONVERTER)
     # ── backend lib + cann_lm_compile 工具 (均由 csrc/CMakeLists 提供, 不依赖 torch) ──
     add_subdirectory(cann_lm/converter/export/csrc)
 
-    # ── C++ tests (tests/c++/epair_archive) ──
-    add_subdirectory(tests/c++/epair_archive)
+    # ── C++ tests (tests/cpp/epair_archive; converter C++ UT, 需 CANN 工具链, 无 NPU 设备) ──
+    add_subdirectory(tests/cpp/epair_archive)
 endif()

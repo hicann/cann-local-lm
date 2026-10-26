@@ -28,16 +28,12 @@
 
 namespace hiai {
 
-DynamicLoader::~DynamicLoader() {
-    Close();
-}
+DynamicLoader::~DynamicLoader() { Close(); }
 
-DynamicLoader::DynamicLoader(DynamicLoader&& other) noexcept
-    : handle_(other.handle_) {
-    other.handle_ = nullptr;
-}
+DynamicLoader::DynamicLoader(DynamicLoader&& other) noexcept : handle_(other.handle_) { other.handle_ = nullptr; }
 
-DynamicLoader& DynamicLoader::operator=(DynamicLoader&& other) noexcept {
+DynamicLoader& DynamicLoader::operator=(DynamicLoader&& other) noexcept
+{
     if (this != &other) {
         Close();
         handle_ = other.handle_;
@@ -46,7 +42,8 @@ DynamicLoader& DynamicLoader::operator=(DynamicLoader&& other) noexcept {
     return *this;
 }
 
-bool DynamicLoader::Open(const std::string& libPath) {
+bool DynamicLoader::Open(const std::string& libPath)
+{
     Close();
     // Suppress Windows hard-error dialogs when probing .so paths that may be non-PE
     // (e.g., ARM OpenHarmony ELF in the OHOS SDK sysroot: arm-linux-ohos/libneural_network_core.so).
@@ -64,23 +61,24 @@ bool DynamicLoader::Open(const std::string& libPath) {
     return handle_ != nullptr;
 }
 
-void* DynamicLoader::GetSymbol(const std::string& symbolName) const {
-    if (!handle_) return nullptr;
+void* DynamicLoader::GetSymbol(const std::string& symbolName) const
+{
+    if (!handle_)
+        return nullptr;
     HMODULE hMod = static_cast<HMODULE>(handle_);
     return reinterpret_cast<void*>(GetProcAddress(hMod, symbolName.c_str()));
 }
 
-void DynamicLoader::Close() {
+void DynamicLoader::Close()
+{
     if (handle_) {
         FreeLibrary(static_cast<HMODULE>(handle_));
         handle_ = nullptr;
     }
 }
 
-bool DynamicLoader::IsOpen() const {
-    return handle_ != nullptr;
-}
+bool DynamicLoader::IsOpen() const { return handle_ != nullptr; }
 
-}  // namespace hiai
+} // namespace hiai
 
-#endif  // _WIN32
+#endif // _WIN32

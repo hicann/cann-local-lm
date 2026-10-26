@@ -14,7 +14,7 @@ inline std::vector<std::string> GetNdkSearchPaths()
         "/usr/lib64",
         "/usr/lib",
         "/system/lib",
-        "",  // 空 = 裸库名，交给系统加载器
+        "", // 空 = 裸库名，交给系统加载器
     };
 }
 inline std::string JoinPath(const std::string& dir, const std::string& libName)

@@ -10,9 +10,7 @@
 #include "infra/assertion.h"
 
 namespace hiai {
-BaseBuffer::BaseBuffer()
-{
-}
+BaseBuffer::BaseBuffer() {}
 
 BaseBuffer::BaseBuffer(const BaseBuffer& other)
 {
@@ -28,20 +26,15 @@ BaseBuffer::BaseBuffer(const BaseBuffer& other)
     }
 }
 
-BaseBuffer::BaseBuffer(uint8_t* data, size_t size, bool shouldOwn) : isOwner_(shouldOwn), data_(data), size_(size)
-{
-}
+BaseBuffer::BaseBuffer(uint8_t* data, size_t size, bool shouldOwn) : isOwner_(shouldOwn), data_(data), size_(size) {}
 
-BaseBuffer::BaseBuffer(uint8_t* data, size_t size, std::function<void (uint8_t*)> freeFunc)
+BaseBuffer::BaseBuffer(uint8_t* data, size_t size, std::function<void(uint8_t*)> freeFunc)
     : data_(data), size_(size), freeFunc_(freeFunc)
 {
     isOwner_ = true;
 }
 
-BaseBuffer::~BaseBuffer()
-{
-    Clear();
-}
+BaseBuffer::~BaseBuffer() { Clear(); }
 
 bool BaseBuffer::Init(size_t size, uint8_t defaultVal)
 {
@@ -102,25 +95,13 @@ void BaseBuffer::SetData(uint8_t* data, size_t size, bool shouldOwn)
     isOwner_ = shouldOwn;
 }
 
-const uint8_t* BaseBuffer::GetData() const
-{
-    return data_;
-}
+const uint8_t* BaseBuffer::GetData() const { return data_; }
 
-void* BaseBuffer::GetData()
-{
-    return data_;
-}
+void* BaseBuffer::GetData() { return data_; }
 
-uint8_t* BaseBuffer::MutableData()
-{
-    return data_;
-}
+uint8_t* BaseBuffer::MutableData() { return data_; }
 
-size_t BaseBuffer::GetSize() const
-{
-    return size_;
-}
+size_t BaseBuffer::GetSize() const { return size_; }
 
 void BaseBuffer::Clear()
 {

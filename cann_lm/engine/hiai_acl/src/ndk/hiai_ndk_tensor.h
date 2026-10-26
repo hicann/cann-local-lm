@@ -11,5 +11,5 @@
 namespace hiai {
 aclError HIAI_NDK_HiAITensor_SetCacheStatus(NN_Tensor* tensor, uint8_t cacheStatus);
 aclError HIAI_NDK_HiAITensor_GetCacheStatus(NN_Tensor* tensor, uint8_t* cacheStatus);
-}
+} // namespace hiai
 #endif

@@ -1,0 +1,39 @@
+# P2 量化/推理 — requirements-p2.txt
+# 用途: ③ NPU 出字 (acl.mdl.execute) + 量化 Step A (dopt GPTQ, NPU/GPU 加速)
+# torch 版本: 2.7.1 (CPU; GPU 环境可换 torch==2.7.1+cuXXX)
+# python: >= 3.10 (本机 3.12.9, 系统 python /opt/buildtools/python-3.12.9)
+#
+# 安装方式:
+#   GPU 环境:  pip install -r requirements-p2.txt
+#   NPU 环境:  pip install -r requirements-p2.txt -r requirements-p2-npu.txt
+#
+# === torch 核心 ===
+torch==2.7.1
+torchaudio==2.7.1   # 须与 torch 同版本; 旧版 2.11.0 ABI 不兼容会报 undefined symbol
+torchvision==0.22.1  # 可选, 文本 LLM 不需要
+#
+# === 量化 (dopt GPTQ) ===
+# dopt_lm 非 pip 包: 来自仓内 cann_lm/converter/quant/ (PYTHONPATH 引入)
+# acl 非 pip 包: 来自 CANN site-packages (PYTHONPATH 引入)
+transformers
+accelerate
+safetensors
+tokenizers
+#
+# === 科学计算 ===
+numpy
+scipy
+sympy
+networkx
+#
+# === 运行时依赖 ===
+attrs
+decorator
+psutil
+requests
+PyYAML
+cffi
+protobuf
+tqdm
+filelock
+typing_extensions

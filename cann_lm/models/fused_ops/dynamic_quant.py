@@ -32,7 +32,7 @@ if NPU_LIB is not None:
     safe_define(
         "dynamic_quant(Tensor input, *, "
         "Tensor? smooth_scales=None, Tensor? group_index=None, "
-        "int? dst_type=None, str quant_mode=\"pertoken\", "
+        'int? dst_type=None, str quant_mode="pertoken", '
         "float dst_type_max=0.) -> (Tensor y, Tensor scale)"
     )
 

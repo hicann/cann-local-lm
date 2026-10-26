@@ -24,10 +24,12 @@ namespace hiai {
 /// Returns candidate search directories for NDK shared libraries.
 /// An empty string means "let the system loader search its default paths"
 /// (i.e. pass bare library name like "libneural_network_core.so").
-inline std::vector<std::string> GetNdkSearchPaths() {
+inline std::vector<std::string> GetNdkSearchPaths()
+{
     return {
         // DevEco Studio SDK (Windows cross-compile reference — ARM .so files)
-        "C:\\Program Files\\Huawei\\DevEco Studio\\sdk\\default\\openharmony\\native\\sysroot\\usr\\lib\\arm-linux-ohos",
+        "C:\\Program Files\\Huawei\\DevEco "
+        "Studio\\sdk\\default\\openharmony\\native\\sysroot\\usr\\lib\\arm-linux-ohos",
         // OpenHarmony system library paths
         "/system/lib64/ndk",
         "/system/lib/ndk",
@@ -40,7 +42,8 @@ inline std::vector<std::string> GetNdkSearchPaths() {
 }
 
 /// Builds a full path: dir + "/" + libName, or just libName if dir is empty.
-inline std::string JoinPath(const std::string& dir, const std::string& libName) {
+inline std::string JoinPath(const std::string& dir, const std::string& libName)
+{
     if (dir.empty()) {
         return libName;
     }
@@ -49,6 +52,6 @@ inline std::string JoinPath(const std::string& dir, const std::string& libName) 
     return dir + "/" + libName;
 }
 
-}  // namespace hiai
+} // namespace hiai
 
-#endif  // HIAI_ACL_NDK_PATHS_H
+#endif // HIAI_ACL_NDK_PATHS_H

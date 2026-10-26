@@ -22,7 +22,7 @@
 4. **跑通单元测试**（提交前强制）：
    ```bash
    # Python 测试 (converter venv + TORCH_DEVICE_BACKEND_AUTOLOAD=0)
-   TORCH_DEVICE_BACKEND_AUTOLOAD=0 <venv_python> -m pytest tests/py/llm_models/ tests/py/converter/ tests/py/dopt_lm/ -q
+   TORCH_DEVICE_BACKEND_AUTOLOAD=0 <venv_python> -m pytest tests/python/llm_models/ tests/python/converter/ tests/python/dopt_lm/ -q
 
    # C++ 测试 (真 CANN env, ASAN)
    bash scripts/build.sh cpp --asan && ctest --test-dir build --output-on-failure

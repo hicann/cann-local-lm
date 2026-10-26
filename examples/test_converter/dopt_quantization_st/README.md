@@ -1,8 +1,10 @@
 # dopt_quantization_st — gemma4/Qwen3.5 真实量化系统测试
 
-本目录把 `demos/gemma4` 和 `demos/qwen3dot5_4B` 收敛为两个固定的真实模型 ST。模型权重仍由运行环境提供；校准数据固定使用仓库内的 `cann_lm/converter/quant/calibrate_sets/calibrate_coig_cqia.jsonl`，因此使用者只需要配置两个模型路径。
+本目录把两个固定真实模型收敛为 ST。模型权重由运行环境提供；校准数据使用已安装的 `cann_lm` pip 包内的 `calibrate_sets/calibrate_coig_cqia.jsonl`，使用者只需配置模型路径。
 
 仓库不归档真实模型权重、量化产物或机器相关模型路径。默认输出目录 `output/` 已被 `.gitignore` 屏蔽。
+
+> **前置**：`.run` 包已安装（`/opt/cann-device-lm/`），`cann_lm` whl 已装进系统 python（`--no-deps --user`）。
 
 ## ST 用例
 
@@ -17,19 +19,16 @@
 
 ## 运行两个真实 demo 用例
 
-只需设置模型路径和带 NPU 依赖的 Python：
+只需设置模型路径（`DOPT_PYTHON` 由 `set_env.sh --npu` 自动探测）：
 
 ```bash
-cd <CANN-LM>
-
-export DOPT_PYTHON=<python_with_torch_npu>
 export GEMMA4_MODEL_PATH=<runtime_gemma4_model_dir>
 export QWEN3_5_MODEL_PATH=<runtime_qwen3_5_model_dir>
 
 bash examples/test_converter/dopt_quantization_st/run.sh run
 ```
 
-默认 `--profile demo`，严格使用上表中的两套 demo 参数并顺序执行；同时默认截取前 2 层加速（见下文「截层 + 小样本快速运行」，`--num-layers 0` 恢复全量模型）。模型路径也可以直接从命令行传入：
+默认 `--profile demo`，严格使用上表中的两套 demo 参数并顺序执行；同时默认截取前 2 层加速（`--num-layers 0` 恢复全量模型）。模型路径也可以直接从命令行传入：
 
 ```bash
 bash examples/test_converter/dopt_quantization_st/run.sh run \
@@ -47,7 +46,7 @@ bash examples/test_converter/dopt_quantization_st/run.sh run \
 
 ## 真实权重快速冒烟
 
-提交前如果只验证“模型加载 → 自动策略 → NPU GPTQ → 权重保存 → 产物校验”链路，可使用真实权重的 smoke profile；两个模型都固定为 `ptq_samples=1`、`cutoff_len=32`：
+提交前如果只验证"模型加载 → 自动策略 → NPU GPTQ → 权重保存 → 产物校验"链路，可使用 smoke profile；两个模型都固定为 `ptq_samples=1`、`cutoff_len=32`：
 
 ```bash
 bash examples/test_converter/dopt_quantization_st/run.sh run --profile smoke
@@ -74,21 +73,6 @@ bash examples/test_converter/dopt_quantization_st/run.sh run \
 - 截层只改 `config.num_hidden_layers` 并裁剪 `model.layers`，其余逐层配置列表（如 `layer_types`）保持原样。
 - 截层产物只服务于快速验证，不代表完整模型的量化效果；需要完整模型回归时用 `--num-layers 0`。
 
-## 真实执行记录（2026-08-27）
-
-本版本已在 Ascend NPU 上使用运行时提供的两个真实模型目录执行：
-
-```bash
-bash examples/test_converter/dopt_quantization_st/run.sh run --profile smoke
-```
-
-| 用例 | GPTQ 记录耗时 | 策略分布 | state dict 大小 | 结果 |
-|---|---:|---|---:|---|
-| DOPT-ST-GEMMA4 | 1065.42 s | `Quant_INT8-4_ECO` 343、embedding 2、lm_head 1 | 16,713,397,425 bytes | PASS |
-| DOPT-ST-QWEN3_5 | 778.86 s | `Quant_INT8-4_ECO` 248、embedding 1、lm_head 1 | 10,082,095,389 bytes | PASS |
-
-整套命令退出码为 0，随后独立执行 `verify` 再次 PASS。Qwen3.5 的 `linear_attn` 和 `self_attn` 均进入了真实逐层 GPTQ。执行记录不包含模型目录；本地权重产物由 `.gitignore` 排除。
-
 ## 独立验证和无权重检查
 
 验证默认输出目录中的两个结果：
@@ -112,21 +96,9 @@ bash examples/test_converter/dopt_quantization_st/run.sh run \
 
 ## 环境与归档边界
 
-- `DOPT_PYTHON` 应指向安装了 `torch`、设备插件、`transformers` 和 `PyYAML` 的 Python。
+- `run.sh` 自动 `source /opt/cann-device-lm/set_env.sh --npu`（探测 `DOPT_PYTHON` + 设 `DEVICE=npu`）；探测失败时手动 `export DOPT_PYTHON=/path/to/python3`。
+- `DOPT_PYTHON` 应指向安装了 `torch`、`torch_npu`、`transformers` 和 `PyYAML` 的 Python。
 - 默认 `HF_DATASETS_OFFLINE=1`、`WANDB_DISABLED=true`。
 - 设备号与原 demo 一致：gemma4 默认 1，Qwen3.5 默认 0；可用 `--gemma4-device-id`、`--qwen3-5-device-id` 覆盖。
 - `run` 默认顺序执行两个模型，避免单进程同时占用大量主机内存。
 - 运行配置、日志、自动生成的 `dopt_config.json` 和权重只存在于 `--output-root`，不得提交到仓库。
-
-
-重新运行真实 smoke 时需指定新输出目录：
-
-export DOPT_PYTHON=$DOPT_PYTHON   # 或先 source scripts/set_env_cann.sh --npu 自动探测
-export GEMMA4_MODEL_PATH=/mnt/workspace/oreo/cann_lm/models/gemma-4-E4B-it
-export QWEN3_5_MODEL_PATH=/mnt/workspace/oreo/cann_lm/models/Qwen3.5-4B
-
-bash examples/test_converter/dopt_quantization_st/run.sh run \
-  --profile smoke \
-  --output-root examples/test_converter/dopt_quantization_st/output_next
-
-不加 --profile smoke 就是完整 demo 参数：gemma4 使用 8×32，Qwen3.5 使用 8×2048（--ptq-samples 可覆盖；默认 --num-layers 2 截层，--num-layers 0 跑全量）。完整 demo profile 尚未执行，本次真实执行的是缩小校准规模但不跳过任何量化环节的 smoke。

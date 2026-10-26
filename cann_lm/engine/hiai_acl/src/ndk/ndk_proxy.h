@@ -35,11 +35,11 @@ private:
     static NDKProxy* GetInstance();
 
 private:
-    DynamicLoadHelper nncoreHelper_;   // libneural_network_core.so
-    DynamicLoadHelper hiaiHelper_;     // libhiai_foundation.so
+    DynamicLoadHelper nncoreHelper_; // libneural_network_core.so
+    DynamicLoadHelper hiaiHelper_;   // libhiai_foundation.so
     bool initialized_ = false;
 };
 
-}  // namespace hiai
+} // namespace hiai
 
-#endif  // HIAI_ACL_NDK_PROXY_H
+#endif // HIAI_ACL_NDK_PROXY_H

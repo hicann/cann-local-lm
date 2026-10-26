@@ -173,9 +173,7 @@ def optimize_model(model, config_file):
             )
             module_config = copy.deepcopy(layer_config[name])
             module_config["layer_name"] = name
-            replace_modules[name] = get_optimized_op(
-                m, module_config, layer_name=name
-            )
+            replace_modules[name] = get_optimized_op(m, module_config, layer_name=name)
 
     if replace_modules:
         model = replace_module_by_names(model, replace_modules)

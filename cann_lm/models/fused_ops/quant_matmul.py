@@ -48,6 +48,7 @@ _SCALAR_TYPE_TO_TORCH_DTYPE = {
 
 
 if not _HAS_TORCH_NPU:
+
     @torch.library.register_fake("cann_lm::quant_matmul")
     def _quant_matmul_meta(
         x1: torch.Tensor,
@@ -68,12 +69,22 @@ if not _HAS_TORCH_NPU:
         transpose_x2: bool = False,
     ) -> torch.Tensor:
         del (
-            offset, pertoken_scale, bias, x1_dtype, x2_dtype, pertoken_scale_dtype,
-            scale_dtype, group_sizes, y_scale, transpose_x1, transpose_x2, scale,
+            offset,
+            pertoken_scale,
+            bias,
+            x1_dtype,
+            x2_dtype,
+            pertoken_scale_dtype,
+            scale_dtype,
+            group_sizes,
+            y_scale,
+            transpose_x1,
+            transpose_x2,
+            scale,
         )
         out_dtype = _SCALAR_TYPE_TO_TORCH_DTYPE.get(output_dtype, torch.int8)
         m = x1.size(-2)
-        n = x2.size(-2) 
+        n = x2.size(-2)
         # KirinX90 int4pack: x2 is int32 [K, N//8] — 8 int4 per int32 along N.
         # GE converter (_quant_matmul_converter) applies n = n * 8 for DT_INT32 x2;
         # meta must match so torch.export tracing produces correct output shape.
@@ -81,7 +92,6 @@ if not _HAS_TORCH_NPU:
         #     k = k * 8
         batch = list(torch.broadcast_shapes(x1.shape[:-2], x2.shape[:-2]))
         return x1.new_empty(batch + [m, n], dtype=out_dtype)
-
 
     @register_cpu_impl("cann_lm::quant_matmul")
     def _npu_quant_matmul_cpu(

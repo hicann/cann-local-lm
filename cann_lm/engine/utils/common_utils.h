@@ -18,6 +18,6 @@ std::string CvtVectorToStr(std::vector<T> vec)
     return ss.str();
 }
 
-}  // namespace cann_lm::engine
+} // namespace cann_lm::engine
 
-#endif  // CANN_LM_ENGINE_UTILS_COMMON_UTILS_H
+#endif // CANN_LM_ENGINE_UTILS_COMMON_UTILS_H

@@ -14,10 +14,10 @@
 #ifndef ACL_ACL_MDL_H
 #define ACL_ACL_MDL_H
 
-#include "acl_base.h"   // aclError, aclDataType, aclFormat, aclDataBuffer, aclrtStream
+#include "acl_base.h" // aclError, aclDataType, aclFormat, aclDataBuffer, aclrtStream
 #include <stddef.h>
 #include <stdint.h>
-#include <vector>       // C2 follow-on: aclmdlConfigHandle::inputTensorShapes
+#include <vector> // C2 follow-on: aclmdlConfigHandle::inputTensorShapes
 
 #ifdef __cplusplus
 extern "C" {
@@ -57,30 +57,30 @@ struct aclmdlInputShape {
     size_t dimCount;
 };
 struct aclmdlConfigHandle {
-    std::vector<aclmdlInputShape> inputTensorShapes;  // C2 follow-on: HIAI_NDK_HiAIOptions_SetInputTensorShapes
+    std::vector<aclmdlInputShape> inputTensorShapes; // C2 follow-on: HIAI_NDK_HiAIOptions_SetInputTensorShapes
     size_t mdlLoadType = 0;
     const char* loadPath = nullptr;
     const void* mdlAddr = nullptr;
     size_t mdlSize = 0;
-    int32_t priority = -1;              // OH_NN_Priority
-    int32_t prefMode = -1;              // OH_NN_PerformanceMode
-    bool enableFloat16 = false;         // OH_NNCompilation_EnableFloat16
-    const char* cachePath = nullptr;    // OH_NNCompilation_SetCache
-    uint32_t cacheVersion = 0;          // OH_NNCompilation_SetCache
-    int32_t bandMode = -1;              // HiAI_BandMode            (C2 follow-on)
-    int32_t tuningStrategy = -1;        // HiAI_TuningStrategy       (C2 follow-on)
-    int32_t tuningMode = -1;            // HiAI_TuningMode           (C2 follow-on)
+    int32_t priority = -1;                 // OH_NN_Priority
+    int32_t prefMode = -1;                 // OH_NN_PerformanceMode
+    bool enableFloat16 = false;            // OH_NNCompilation_EnableFloat16
+    const char* cachePath = nullptr;       // OH_NNCompilation_SetCache
+    uint32_t cacheVersion = 0;             // OH_NNCompilation_SetCache
+    int32_t bandMode = -1;                 // HiAI_BandMode            (C2 follow-on)
+    int32_t tuningStrategy = -1;           // HiAI_TuningStrategy       (C2 follow-on)
+    int32_t tuningMode = -1;               // HiAI_TuningMode           (C2 follow-on)
     const char* tuningCacheDir = nullptr;  // (C2 follow-on)
-    int32_t fallbackMode = -1;          // HiAI_FallbackMode         (C2 follow-on)
-    int32_t deviceMemoryReusePlan = -1; // HiAI_DeviceMemoryReusePlan(C2 follow-on)
-    int32_t formatMode = -1;            // HiAI_FormatMode           (C2 follow-on)
-    bool dynamicShapeStatus = false;    // HiAI_DynamicShapeStatus   (C2 follow-on)
-    size_t dynamicShapeMaxCache = 0;    //                            (C2 follow-on)
-    int32_t dynamicShapeCacheMode = -1; // HiAI_DynamicShapeCacheMode(C2 follow-on)
-    const char* quantConfigData = nullptr;  // (C2 follow-on)
-    const char* omOutputDir = nullptr;  // HiAI_OmType               (C2 follow-on)
-    int32_t omType = -1;  // (C2 follow-on)
-    bool enableDump = false;            // ACL-only, NDK ignores
+    int32_t fallbackMode = -1;             // HiAI_FallbackMode         (C2 follow-on)
+    int32_t deviceMemoryReusePlan = -1;    // HiAI_DeviceMemoryReusePlan(C2 follow-on)
+    int32_t formatMode = -1;               // HiAI_FormatMode           (C2 follow-on)
+    bool dynamicShapeStatus = false;       // HiAI_DynamicShapeStatus   (C2 follow-on)
+    size_t dynamicShapeMaxCache = 0;       //                            (C2 follow-on)
+    int32_t dynamicShapeCacheMode = -1;    // HiAI_DynamicShapeCacheMode(C2 follow-on)
+    const char* quantConfigData = nullptr; // (C2 follow-on)
+    const char* omOutputDir = nullptr;     // HiAI_OmType               (C2 follow-on)
+    int32_t omType = -1;                   // (C2 follow-on)
+    bool enableDump = false;               // ACL-only, NDK ignores
     const char* dumpConfigPath = nullptr;
 };
 typedef void* aclmdlModel;
@@ -132,4 +132,4 @@ aclError aclmdlSetInputDynamicDims(uint32_t modelId, aclmdlDataset* dataset, siz
 }
 #endif
 
-#endif  // ACL_ACL_MDL_H
+#endif // ACL_ACL_MDL_H

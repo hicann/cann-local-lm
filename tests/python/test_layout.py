@@ -13,9 +13,9 @@ size_t = 8 bytes, int/uint32/float/enum = 4 bytes, uint64 = 8 bytes):
   RequestOptions    : int + pad(4) + ptr + size_t + ptr + size_t           -> 40
   Result            : ptr + size_t + ptr + enum(int)@24 + pad(4)           -> 32
 """
+
 import ctypes as ct
 
-import pytest
 
 # RED: _ffi does not exist yet -> ImportError is the expected first failure.
 from cann_lm._ffi import (
@@ -39,6 +39,7 @@ def field_size(cls, name):
 
 # ────────────────────────── Buffer ──────────────────────────
 
+
 class TestBuffer:
     def test_sizeof_is_16(self):
         assert ct.sizeof(CANN_LMEngine_Buffer) == 16
@@ -48,11 +49,12 @@ class TestBuffer:
         assert field_offset(CANN_LMEngine_Buffer, "size") == 8
 
     def test_field_types(self):
-        assert field_size(CANN_LMEngine_Buffer, "data") == 8   # void*
-        assert field_size(CANN_LMEngine_Buffer, "size") == 8   # size_t
+        assert field_size(CANN_LMEngine_Buffer, "data") == 8  # void*
+        assert field_size(CANN_LMEngine_Buffer, "size") == 8  # size_t
 
 
 # ────────────────────────── ModelArtifact ──────────────────────────
+
 
 class TestModelArtifact:
     def test_sizeof_is_88(self):
@@ -71,12 +73,18 @@ class TestModelArtifact:
 
     def test_pointer_fields_are_8_bytes(self):
         cls = CANN_LMEngine_ModelArtifact
-        for name in ("prefill_omc_path", "decode_omc_path",
-                     "prefill_weight", "decode_weight", "meta_json_path"):
+        for name in (
+            "prefill_omc_path",
+            "decode_omc_path",
+            "prefill_weight",
+            "decode_weight",
+            "meta_json_path",
+        ):
             assert field_size(cls, name) == 8
 
 
 # ────────────────────────── EngineOptions ──────────────────────────
+
 
 class TestEngineOptions:
     def test_sizeof_is_32(self):
@@ -93,12 +101,16 @@ class TestEngineOptions:
 
     def test_int_fields_are_4_bytes(self):
         cls = CANN_LMEngine_EngineOptions
-        for name in ("default_chunk_size", "max_concurrent_prefill",
-                     "max_batch_size_override"):
+        for name in (
+            "default_chunk_size",
+            "max_concurrent_prefill",
+            "max_batch_size_override",
+        ):
             assert field_size(cls, name) == 4
 
 
 # ────────────────────────── SamplingParams ──────────────────────────
+
 
 class TestSamplingParams:
     def test_sizeof_is_32(self):
@@ -106,9 +118,9 @@ class TestSamplingParams:
 
     def test_seed_at_16_after_padding(self):
         cls = CANN_LMEngine_SamplingParams
-        assert field_offset(cls, "temperature") == 0      # float 4
-        assert field_offset(cls, "top_k") == 4            # int 4
-        assert field_offset(cls, "top_p") == 8            # float 4
+        assert field_offset(cls, "temperature") == 0  # float 4
+        assert field_offset(cls, "top_k") == 4  # int 4
+        assert field_offset(cls, "top_p") == 8  # float 4
         # uint64 needs 8-align: 4 bytes padding at 12, seed at 16
         assert field_offset(cls, "seed") == 16
         assert field_offset(cls, "repetition_penalty") == 24  # float 4
@@ -120,21 +132,23 @@ class TestSamplingParams:
 
 # ────────────────────────── RequestOptions ──────────────────────────
 
+
 class TestRequestOptions:
     def test_sizeof_is_40(self):
         assert ct.sizeof(CANN_LMEngine_RequestOptions) == 40
 
     def test_int_then_padding_before_pointer_array_pair(self):
         cls = CANN_LMEngine_RequestOptions
-        assert field_offset(cls, "max_tokens") == 0            # int 4
+        assert field_offset(cls, "max_tokens") == 0  # int 4
         # 4 bytes pad, pointer at 8
-        assert field_offset(cls, "stop_token_ids") == 8        # TokenId* 8
-        assert field_offset(cls, "stop_token_ids_count") == 16 # size_t 8
-        assert field_offset(cls, "stop_strings") == 24         # char** 8
-        assert field_offset(cls, "stop_strings_count") == 32   # size_t 8
+        assert field_offset(cls, "stop_token_ids") == 8  # TokenId* 8
+        assert field_offset(cls, "stop_token_ids_count") == 16  # size_t 8
+        assert field_offset(cls, "stop_strings") == 24  # char** 8
+        assert field_offset(cls, "stop_strings_count") == 32  # size_t 8
 
 
 # ────────────────────────── Result ──────────────────────────
+
 
 class TestResult:
     def test_sizeof_is_32(self):
@@ -142,10 +156,10 @@ class TestResult:
 
     def test_layout(self):
         cls = CANN_LMEngine_Result
-        assert field_offset(cls, "token_ids") == 0          # TokenId* 8
-        assert field_offset(cls, "token_ids_count") == 8    # size_t 8
-        assert field_offset(cls, "text") == 16              # char* 8
-        assert field_offset(cls, "finish_reason") == 24     # enum=int 4
+        assert field_offset(cls, "token_ids") == 0  # TokenId* 8
+        assert field_offset(cls, "token_ids_count") == 8  # size_t 8
+        assert field_offset(cls, "text") == 16  # char* 8
+        assert field_offset(cls, "finish_reason") == 24  # enum=int 4
         # trailing 4 bytes pad to struct align 8
 
     def test_finish_reason_is_4_byte_int(self):

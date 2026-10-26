@@ -25,7 +25,7 @@
 #include <condition_variable>
 #include <thread>
 #include <queue>
-#include <future>  // std::promise/std::shared_future (VirtualEvent) — C3: was missing
+#include <future> // std::promise/std::shared_future (VirtualEvent) — C3: was missing
 
 #include "acl/acl_base.h"
 #include "acl/acl_mdl.h"
@@ -54,7 +54,7 @@
 inline constexpr int32_t UNDEFINED_CONFIG = -1;
 
 struct aclmdlDesc {
-    uint32_t modelId = 0;  // set by GetTensorDesc, used by GetCurOutputDims
+    uint32_t modelId = 0; // set by GetTensorDesc, used by GetCurOutputDims
     std::vector<NN_TensorDesc*> inputDescs;
     std::vector<NN_TensorDesc*> outputDescs;
 };
@@ -107,8 +107,8 @@ public:
     // vendored in external_acl/. Re-add in C2 when wiring ModelOptions via the
     // config-handle path, with real ACL graph headers or a local compat enum.
     aclError RunModel(uint32_t modelId, const aclmdlDataset* input, aclmdlDataset* output);
-    aclError RunModelAsync(uint32_t modelId, const aclmdlDataset* input,
-                           aclmdlDataset* output, int32_t timeoutMs, void* userData);
+    aclError RunModelAsync(uint32_t modelId, const aclmdlDataset* input, aclmdlDataset* output, int32_t timeoutMs,
+                           void* userData);
     aclError GetTensorDesc(aclmdlDesc* modelDesc, uint32_t modelId);
     aclError UnloadModel(uint32_t modelId);
     aclError SetInputDynamic(uint32_t modelId, aclmdlDataset* dataset, size_t index, const aclmdlIODims* dims);
@@ -171,6 +171,6 @@ extern uint64_t aclInitRefCount;
 /// Get the ACLManager singleton. Returns nullptr if not initialized.
 inline ACLManager* GetACLManager() { return gACLManager.get(); }
 
-}  // namespace hiai
+} // namespace hiai
 
-#endif  // HIAI_ACL_MANAGER_H
+#endif // HIAI_ACL_MANAGER_H

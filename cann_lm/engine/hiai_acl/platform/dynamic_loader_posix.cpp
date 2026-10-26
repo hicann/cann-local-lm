@@ -15,16 +15,12 @@
 
 namespace hiai {
 
-DynamicLoader::~DynamicLoader() {
-    Close();
-}
+DynamicLoader::~DynamicLoader() { Close(); }
 
-DynamicLoader::DynamicLoader(DynamicLoader&& other) noexcept
-    : handle_(other.handle_) {
-    other.handle_ = nullptr;
-}
+DynamicLoader::DynamicLoader(DynamicLoader&& other) noexcept : handle_(other.handle_) { other.handle_ = nullptr; }
 
-DynamicLoader& DynamicLoader::operator=(DynamicLoader&& other) noexcept {
+DynamicLoader& DynamicLoader::operator=(DynamicLoader&& other) noexcept
+{
     if (this != &other) {
         Close();
         handle_ = other.handle_;
@@ -33,30 +29,32 @@ DynamicLoader& DynamicLoader::operator=(DynamicLoader&& other) noexcept {
     return *this;
 }
 
-bool DynamicLoader::Open(const std::string& libPath) {
-    Close();  // close any previously opened handle
+bool DynamicLoader::Open(const std::string& libPath)
+{
+    Close(); // close any previously opened handle
     // RTLD_LAZY: resolve symbols on first use
     // RTLD_GLOBAL: make symbols available to subsequently loaded libraries
     handle_ = dlopen(libPath.c_str(), RTLD_LAZY | RTLD_GLOBAL);
     return handle_ != nullptr;
 }
 
-void* DynamicLoader::GetSymbol(const std::string& symbolName) const {
-    if (!handle_) return nullptr;
+void* DynamicLoader::GetSymbol(const std::string& symbolName) const
+{
+    if (!handle_)
+        return nullptr;
     return dlsym(handle_, symbolName.c_str());
 }
 
-void DynamicLoader::Close() {
+void DynamicLoader::Close()
+{
     if (handle_) {
         dlclose(handle_);
         handle_ = nullptr;
     }
 }
 
-bool DynamicLoader::IsOpen() const {
-    return handle_ != nullptr;
-}
+bool DynamicLoader::IsOpen() const { return handle_ != nullptr; }
 
-}  // namespace hiai
+} // namespace hiai
 
-#endif  // !_WIN32
+#endif // !_WIN32

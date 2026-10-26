@@ -190,7 +190,6 @@ typedef enum {
     OH_NN_UNAVAILABLE_DEVICE = 14
 } OH_NN_ReturnCode;
 
-
 /**
  * @brief Defines the callback function handle for the post-process when the asynchronous execution has been done.
  *
@@ -212,7 +211,7 @@ typedef enum {
  * @since 11
  * @version 1.0
  */
-typedef void (*NN_OnRunDone)(void *userData, OH_NN_ReturnCode errCode, void *outputTensor[], int32_t outputCount);
+typedef void (*NN_OnRunDone)(void* userData, OH_NN_ReturnCode errCode, void* outputTensor[], int32_t outputCount);
 
 /**
  * @brief Defines the callback function handle for the post-process when the device driver service is dead during
@@ -228,7 +227,7 @@ typedef void (*NN_OnRunDone)(void *userData, OH_NN_ReturnCode errCode, void *out
  * @since 11
  * @version 1.0
  */
-typedef void (*NN_OnServiceDied)(void *userData);
+typedef void (*NN_OnServiceDied)(void* userData);
 
 /**
  * @brief Defines activation function types in the fusion operator.
@@ -315,7 +314,6 @@ typedef enum {
     /** float64 */
     OH_NN_FLOAT64 = 12
 } OH_NN_DataType;
-
 
 /**
  * @brief Defines operator types.
@@ -2012,7 +2010,7 @@ typedef enum {
      */
     OH_NN_OPS_EQUAL = 70,
 
-     /**
+    /**
      * For <b>input1</b> and <b>input2</b>, calculate the result of input1[i] > input2[i] for each pair of elements,
      * where i is the index of each element in the input tensor.
      *
@@ -3502,7 +3500,7 @@ typedef enum {
  */
 typedef struct OH_NN_UInt32Array {
     /** Pointer to the unsigned integer array */
-    uint32_t *data;
+    uint32_t* data;
     /** Array length */
     uint32_t size;
 } OH_NN_UInt32Array;
@@ -3551,11 +3549,11 @@ typedef struct OH_NN_QuantParam {
      */
     uint32_t quantCount;
     /** Number of quantization bits */
-    const uint32_t *numBits;
+    const uint32_t* numBits;
     /** Pointer to the scale data in the quantization formula */
-    const double *scale;
+    const double* scale;
     /** Pointer to the zero point data in the quantization formula */
-    const int32_t *zeroPoint;
+    const int32_t* zeroPoint;
 } OH_NN_QuantParam;
 
 /**
@@ -3575,9 +3573,9 @@ typedef struct OH_NN_Tensor {
     /** Number of dimensions of the specified tensor */
     uint32_t dimensionCount;
     /** Dimension information (shape) of the specified tensor*/
-    const int32_t *dimensions;
+    const int32_t* dimensions;
     /** Quantization information of the specified tensor. The data type must be {@link OH_NN_QuantParam}. */
-    const OH_NN_QuantParam *quantParam;
+    const OH_NN_QuantParam* quantParam;
     /** Specifies the tensor type. The value of <b>type</b> is related to the tensor usage.
      *  When the tensor is used as the input or output of the model, set <b>type</b> to {@link OH_NN_TENSOR}.
      *  When a tensor is used as an operator parameter, select any enumerated value except {@link OH_NN_TENSOR}
@@ -3596,7 +3594,7 @@ typedef struct OH_NN_Tensor {
  */
 typedef struct OH_NN_Memory {
     /** Pointer to the shared memory. The shared memory is usually allocated by the underlying hardware driver. */
-    void * const data;
+    void* const data;
     /** Records the length of the shared memory, in bytes. */
     const size_t length;
 } OH_NN_Memory;

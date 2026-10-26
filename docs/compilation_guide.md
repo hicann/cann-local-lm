@@ -31,8 +31,8 @@
 
 ```
 [UT/1] engine host C++ UT     GTest, 编译 engine + UT 目标, 用 stub NDK 跑
-[UT/2] converter C++ UT       tests/c++/epair_archive, ctest 跑 7 个用例 (需 CANN)
-[UT/3] Python UT              pytest: tests/py/converter + tests/py/llm_models + tests/python
+[UT/2] converter C++ UT       tests/cpp/epair_archive, ctest 跑 7 个用例 (需 CANN 工具链, 无 NPU 设备)
+[UT/3] Python UT              pytest: tests/python/converter + tests/python/llm_models + tests/python
 ```
 
 ---
@@ -196,17 +196,17 @@ bash build.sh -u
   • bbit --check (黑盒自检)
   ✓ bbit --check: PASS
 
-▶ [UT/2] converter C++ UT (tests/c++/epair_archive, 需 CANN)
+▶ [UT/2] converter C++ UT (tests/cpp/epair_archive, 需 CANN 工具链, 无 NPU 设备)
   ✓ CANN CANN toolkit path
   • ctest
 100% tests passed, 0 tests failed out of 7        ← 7/7 全过
 
 ▶ [UT/3] Python UT (pytest)
-  ✓ tests/py/converter: PASS
-  ✓ tests/py/llm_models: PASS
+  ✓ tests/python/converter: PASS
+  ✓ tests/python/llm_models: PASS
   ✓ tests/python: PASS
 
-▶ === -u 全部通过 === 
+▶ === -u 全部通过 ===
 ```
 
 **成功判读要点**：

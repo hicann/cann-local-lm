@@ -36,7 +36,7 @@ _FA_SCHEMA = (
     "Tensor? atten_mask=None, Tensor? actual_seq_qlen=None, Tensor? actual_seq_kvlen=None, "
     "Tensor? block_table=None, "
     "int num_query_heads=1, int num_key_value_heads=0, float softmax_scale=1.0, "
-    "int pre_tokens=2147483647, int next_tokens=2147483647, str input_layout=\"BSH\", "
+    'int pre_tokens=2147483647, int next_tokens=2147483647, str input_layout="BSH", '
     "int sparse_mode=0, int block_size=0, int inner_precise=0, bool return_softmax_lse=False"
     ") -> (Tensor attention_out, Tensor softmax_lse)"
 )
@@ -48,11 +48,24 @@ if not _HAS_TORCH_NPU:
 
     @torch.library.register_fake("cann_lm::fused_infer_attention_score_v2")
     def _fa_meta(
-        query, key, value, *,
-        atten_mask=None, actual_seq_qlen=None, actual_seq_kvlen=None, block_table=None,
-        num_query_heads=1, num_key_value_heads=0, softmax_scale=1.0,
-        pre_tokens=2147483647, next_tokens=2147483647, input_layout="BSH",
-        sparse_mode=0, block_size=0, inner_precise=0, return_softmax_lse=False,
+        query,
+        key,
+        value,
+        *,
+        atten_mask=None,
+        actual_seq_qlen=None,
+        actual_seq_kvlen=None,
+        block_table=None,
+        num_query_heads=1,
+        num_key_value_heads=0,
+        softmax_scale=1.0,
+        pre_tokens=2147483647,
+        next_tokens=2147483647,
+        input_layout="BSH",
+        sparse_mode=0,
+        block_size=0,
+        inner_precise=0,
+        return_softmax_lse=False,
     ):
         # output shape 跟 query 同 (除 layout 转换外, 融合算子保持 q 的 batch/seq/heads/dim)
         out = torch.empty_like(query)
@@ -61,11 +74,24 @@ if not _HAS_TORCH_NPU:
 
     @register_cpu_impl("cann_lm::fused_infer_attention_score_v2")
     def _fa_cpu(
-        query, key, value, *,
-        atten_mask=None, actual_seq_qlen=None, actual_seq_kvlen=None, block_table=None,
-        num_query_heads=1, num_key_value_heads=0, softmax_scale=1.0,
-        pre_tokens=2147483647, next_tokens=2147483647, input_layout="BSH",
-        sparse_mode=0, block_size=0, inner_precise=0, return_softmax_lse=False,
+        query,
+        key,
+        value,
+        *,
+        atten_mask=None,
+        actual_seq_qlen=None,
+        actual_seq_kvlen=None,
+        block_table=None,
+        num_query_heads=1,
+        num_key_value_heads=0,
+        softmax_scale=1.0,
+        pre_tokens=2147483647,
+        next_tokens=2147483647,
+        input_layout="BSH",
+        sparse_mode=0,
+        block_size=0,
+        inner_precise=0,
+        return_softmax_lse=False,
     ):
         """CPU eager: 简化版 attention (BSND/BNSD/BSH/TND + sparse_mode 0/3/4 + 无 quant/paged).
 
@@ -73,11 +99,15 @@ if not _HAS_TORCH_NPU:
         复杂场景 (paged/quant/antiquant) raise NotImplementedError.
         """
         if block_table is not None:
-            raise NotImplementedError("PagedAttention (block_table) not supported on CPU")
+            raise NotImplementedError(
+                "PagedAttention (block_table) not supported on CPU"
+            )
         if num_key_value_heads == 0:
             num_key_value_heads = num_query_heads
 
-        q, k, v = _to_bnsd(query, key, value, input_layout, num_query_heads, num_key_value_heads)
+        q, k, v = _to_bnsd(
+            query, key, value, input_layout, num_query_heads, num_key_value_heads
+        )
         # GQA: repeat_kv
         n_rep = num_query_heads // num_key_value_heads
         if n_rep > 1:
@@ -94,10 +124,12 @@ if not _HAS_TORCH_NPU:
             # 截前 seq_len 行匹配 attn_weights [b,heads,seq_len,kv_max] + bool→float (True→-inf)。
             # 非方阵 [b,1,seq_len,kv_max] float mask (其他模型) 直用, 不受影响。
             if atten_mask.shape[2] != attn_weights.shape[2]:
-                atten_mask = atten_mask[:, :, :attn_weights.shape[2], :]
+                atten_mask = atten_mask[:, :, : attn_weights.shape[2], :]
             if atten_mask.dtype == torch.bool:
                 min_val = torch.finfo(attn_weights.dtype).min
-                atten_mask = torch.where(atten_mask, min_val, 0.0).to(attn_weights.dtype)
+                atten_mask = torch.where(atten_mask, min_val, 0.0).to(
+                    attn_weights.dtype
+                )
             attn_weights = attn_weights + atten_mask
         # softmax (fp32) -> @V
         attn_weights = torch.softmax(attn_weights.float(), dim=-1).to(q.dtype)
@@ -171,5 +203,12 @@ def _build_sparse_mask(q, sparse_mode, pre_tokens, next_tokens):
     else:
         return None
     min_val = torch.finfo(q.dtype).min
-    return torch.where(mask, torch.tensor(0.0, device=q.device, dtype=q.dtype),
-                       torch.tensor(min_val, device=q.device, dtype=q.dtype)).unsqueeze(0).unsqueeze(0)
+    return (
+        torch.where(
+            mask,
+            torch.tensor(0.0, device=q.device, dtype=q.dtype),
+            torch.tensor(min_val, device=q.device, dtype=q.dtype),
+        )
+        .unsqueeze(0)
+        .unsqueeze(0)
+    )

@@ -37,14 +37,14 @@ private:
     std::shared_ptr<OH_NNExecutor> GetExecutor() const;
 
 private:
-    std::shared_ptr<OH_NNCompilation> nnCompilation_ {nullptr};
-    std::shared_ptr<BaseBuffer> buffer_ {nullptr};
+    std::shared_ptr<OH_NNCompilation> nnCompilation_{nullptr};
+    std::shared_ptr<BaseBuffer> buffer_{nullptr};
     CustomModelData customModelData_;
-    std::shared_ptr<IBuffer> modelBuffer_ {nullptr};
-    uint64_t builtModelId_ {0};
+    std::shared_ptr<IBuffer> modelBuffer_{nullptr};
+    uint64_t builtModelId_{0};
 
-    std::string modelName_ {""};
-    std::string modelPath_ {""};
+    std::string modelName_{""};
+    std::string modelPath_{""};
 
 private:
     static std::atomic<uint64_t> idGenerator_;

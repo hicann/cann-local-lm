@@ -1,5 +1,6 @@
 __pycache__/
 build/
+!torch_delegate/cmake/third_party/build/
 
 # OpenCode / 工具 scratch
 .claude/
@@ -9,7 +10,7 @@ build/
 .omo/
 .superpowers/
 docs/superpowers/
-AGENTS.md
+/AGENTS.md
 PROGRESS.md
 
 # Python 模型权重 / 产物

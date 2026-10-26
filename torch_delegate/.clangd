@@ -1,0 +1,5 @@
+# clangd 配置
+# compile_commands.json 由 CMake 生成 (CMAKE_EXPORT_COMPILE_COMMANDS=ON)
+# 默认指向 release 构建目录；如使用 debug 构建，改为 build/debug
+CompileFlags:
+  CompilationDatabase: build/release

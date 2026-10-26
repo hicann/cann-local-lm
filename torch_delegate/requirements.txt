@@ -1,0 +1,19 @@
+torch==2.9.0+cpu
+
+# CANN runtime dependencies (ref: CANN 9.1.0-beta.1 official doc)
+# Versioned — per CANN spec
+numpy>=1.19.2
+decorator>=4.4.0
+sympy>=1.5.1
+cffi>=1.12.3
+protobuf>=3.20.0,<3.21.0
+
+# Unversioned — any version, pip-installed source decides
+absl-py
+attrs
+Cython
+pathlib2
+psutil
+PyYAML
+requests
+scipy

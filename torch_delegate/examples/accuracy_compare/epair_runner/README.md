@@ -1,0 +1,88 @@
+# epair_runner — C++ epair 加载与精度验证
+
+本示例演示如何使用 C++ `td::EpairModelLoader` 加载 `.epair` 文件并执行 GE 图推理，用于 `accuracy_compare` 流程中的 Delegate 路径精度验证。
+
+## 目录结构
+
+```
+epair_runner/
+├── CMakeLists.txt       # 构建配置
+├── epair_runner.cpp     # 主程序
+├── tensor_io.h          # Tensor 二进制 I/O
+├── tensor_io.cpp
+└── README.md            # 本文档
+```
+
+## 前置条件
+
+| 依赖 | 说明 |
+|------|------|
+| TorchDelegate | 已安装的 torch_delegate whl（或源码构建的 install 目录） |
+| CANN | 已安装，`ASCEND_HOME_PATH` 已设置 |
+| libtorch | 独立 libtorch 分发包或 Python torch wheel |
+| libtorch_npu | （可选）用于自定义算子注册 |
+
+## 环境变量
+
+| 变量 | 必填 | 说明 |
+|------|------|------|
+| `ASCEND_HOME_PATH` | 是 | CANN 安装路径 |
+| `TORCH_DELEGATE_ROOT` | 是 | TorchDelegate install 目录 |
+| `TORCH_PKG_DIR` | 是 | Python torch 包目录 |
+| `TORCH_NPU_DIR` | 否 | libtorch_npu 源码路径（用于 `LIBTORCH_NPU_ROOT`） |
+
+## 构建与运行
+
+### 1. 设置环境
+
+```bash
+source /usr/local/Ascend/cann/set_env.sh
+export TORCH_DELEGATE_ROOT=$(torch-delegate-config --cmake-prefix)
+export TORCH_PKG_DIR=$(python3 -c "import torch, os; print(os.path.dirname(torch.__file__))")
+```
+
+### 2. 构建
+
+```bash
+cmake -S . -B build \
+  -DTorchDelegate_ROOT=${TORCH_DELEGATE_ROOT} \
+  -DCANN_ROOT=${ASCEND_HOME_PATH} \
+  -DTORCH_PKG_DIR=${TORCH_PKG_DIR}
+cmake --build build -j$(nproc)
+```
+
+### 3. 运行
+
+```bash
+./build/epair_runner <epair_file> <output_dir> <device_id> <input0.bin> [input1.bin ...]
+```
+
+参数说明：
+- `epair_file` — `.epair` 文件路径
+- `output_dir` — 输出目录（保存 `output_*.bin`）
+- `device_id` — NPU 设备 ID（如 `"0"`）
+- `input*.bin` — 输入二进制文件（支持多输入）
+
+### 与 accuracy_compare 配合使用
+
+`accuracy_compare/run.sh compare` 会自动调用本二进制进行 Delegate 路径推理。
+
+## 关键 API
+
+| API | 说明 |
+|-----|------|
+| `td::EpairModelLoader(archive_path)` | 加载 epair 并构建 GE Graph |
+| `loader.GetGEGraph(&graph)` | 提取 GE Graph |
+| `ge::GeSession(options)` | 创建 GE 会话 |
+| `session.AddGraph(id, graph)` | 注册图 |
+| `session.RunGraph(id, inputs, outputs)` | 同步运行 |
+
+## 自定义算子
+
+可通过 `CUSTOM_OP_LIBRARY_PATH` 环境变量指定自定义算子库路径：
+
+```bash
+export CUSTOM_OP_LIBRARY_PATH=/path/to/custom_op/lib
+```
+
+或在 cmake 中通过 `-DCUST_OPAPI_DIR=/path/to/custom_op/build` 指定 `libcust_opapi.so`。

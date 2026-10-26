@@ -1,0 +1,161 @@
+/**
+ * Copyright (c) 2026 Huawei Technologies Co., Ltd.
+ * This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+ * CANN Open Software License Agreement Version 2.0 (the "License").
+ * Please refer to the License for details. You may not use this file except in compliance with the License.
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+ * INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+ * See LICENSE in the root of the software repository for the full text of the License.
+ */
+#include <gtest/gtest.h>
+
+#include <map>
+#include <string>
+#include <vector>
+
+#include "torch_delegate/epair_model_loader.h"
+#include "ge_stub/ge_stub_control.h"
+
+#ifndef FIXTURES_DIR
+#define FIXTURES_DIR "build/tests/cpp/fixtures"
+#endif
+
+namespace {
+
+const std::string kAnnotated = std::string(FIXTURES_DIR) + "/annotated_mm_add.epair";
+const std::string kMissingGraphSource = std::string(FIXTURES_DIR) + "/missing_graph_source.epair";
+
+}  // namespace
+
+namespace td {
+
+class EpairModelLoaderTest : public ::testing::Test {
+ protected:
+  void SetUp() override {
+    stub::GeApiStub::Instance().Reset();
+  }
+
+  void TearDown() override {
+    stub::GeApiStub::Instance().Reset();
+  }
+};
+
+TEST_F(EpairModelLoaderTest, RunBeforeLoadRejected) {
+  EpairModelLoader loader(kAnnotated.c_str());
+  std::vector<gert::Tensor> inputs;
+  std::vector<gert::Tensor> outputs;
+  EXPECT_EQ(loader.RunModelWithStreamAsync(nullptr, inputs, outputs), FAILED);
+}
+
+TEST_F(EpairModelLoaderTest, ConstructorFailurePropagatesToCompileAndLoad) {
+  EpairModelLoader loader(kMissingGraphSource.c_str());
+  std::map<ge::AscendString, ge::AscendString> options;
+  EXPECT_EQ(loader.CompileAndLoad(options, nullptr), FAILED);
+}
+
+TEST_F(EpairModelLoaderTest, CompileSucceedsForAnnotatedModel) {
+  EpairModelLoader loader(kAnnotated.c_str());
+  std::map<ge::AscendString, ge::AscendString> options;
+  EXPECT_EQ(loader.CompileAndLoad(options, nullptr), SUCCESS);
+  EXPECT_EQ(stub::GeApiStub::Instance().RegisteredGraphCount(), 1u);
+}
+
+TEST_F(EpairModelLoaderTest, CompileAndLoadSucceedsWithNullStream) {
+  EpairModelLoader loader(kAnnotated.c_str());
+  std::map<ge::AscendString, ge::AscendString> options;
+  EXPECT_EQ(loader.CompileAndLoad(options, nullptr), SUCCESS);
+}
+
+TEST_F(EpairModelLoaderTest, CompileAndLoadIsIdempotent) {
+  EpairModelLoader loader(kAnnotated.c_str());
+  std::map<ge::AscendString, ge::AscendString> options;
+  ASSERT_EQ(loader.CompileAndLoad(options, nullptr), SUCCESS);
+  EXPECT_EQ(loader.CompileAndLoad(options, nullptr), SUCCESS);
+  EXPECT_EQ(stub::GeApiStub::Instance().RegisteredGraphCount(), 1u);
+}
+
+TEST_F(EpairModelLoaderTest, RunSucceedsAfterCompileAndLoad) {
+  EpairModelLoader loader(kAnnotated.c_str());
+  std::map<ge::AscendString, ge::AscendString> options;
+  ASSERT_EQ(loader.CompileAndLoad(options, nullptr), SUCCESS);
+  std::vector<gert::Tensor> inputs;
+  std::vector<gert::Tensor> outputs;
+  EXPECT_EQ(loader.RunModelWithStreamAsync(nullptr, inputs, outputs), SUCCESS);
+}
+
+TEST_F(EpairModelLoaderTest, RunModelBeforeLoadRejected) {
+  EpairModelLoader loader(kAnnotated.c_str());
+  std::vector<gert::Tensor> inputs;
+  std::vector<gert::Tensor> outputs;
+  EXPECT_EQ(loader.RunModel(inputs, outputs), FAILED);
+}
+
+TEST_F(EpairModelLoaderTest, RunModelSucceedsAfterCompileAndLoad) {
+  EpairModelLoader loader(kAnnotated.c_str());
+  std::map<ge::AscendString, ge::AscendString> options;
+  ASSERT_EQ(loader.CompileAndLoad(options, nullptr), SUCCESS);
+  std::vector<gert::Tensor> inputs;
+  std::vector<gert::Tensor> outputs;
+  EXPECT_EQ(loader.RunModel(inputs, outputs), SUCCESS);
+  EXPECT_FALSE(outputs.empty());
+}
+
+TEST_F(EpairModelLoaderTest, RunModelPropagatesGeSessionRunFailure) {
+  stub::GeApiStub::Instance().SetRunGraphStatus(ge::FAILED);
+  EpairModelLoader loader(kAnnotated.c_str());
+  std::map<ge::AscendString, ge::AscendString> options;
+  ASSERT_EQ(loader.CompileAndLoad(options, nullptr), SUCCESS);
+  std::vector<gert::Tensor> inputs;
+  std::vector<gert::Tensor> outputs;
+  EXPECT_EQ(loader.RunModel(inputs, outputs), FAILED);
+}
+
+TEST_F(EpairModelLoaderTest, RunModelRejectedAfterAsyncRun) {
+  EpairModelLoader loader(kAnnotated.c_str());
+  std::map<ge::AscendString, ge::AscendString> options;
+  ASSERT_EQ(loader.CompileAndLoad(options, nullptr), SUCCESS);
+  std::vector<gert::Tensor> inputs;
+  std::vector<gert::Tensor> outputs;
+  ASSERT_EQ(loader.RunModelWithStreamAsync(nullptr, inputs, outputs), SUCCESS);
+  EXPECT_EQ(loader.RunModel(inputs, outputs), FAILED);
+}
+
+TEST_F(EpairModelLoaderTest, RunModelWithStreamAsyncRejectedAfterSyncRun) {
+  EpairModelLoader loader(kAnnotated.c_str());
+  std::map<ge::AscendString, ge::AscendString> options;
+  ASSERT_EQ(loader.CompileAndLoad(options, nullptr), SUCCESS);
+  std::vector<gert::Tensor> inputs;
+  std::vector<gert::Tensor> outputs;
+  ASSERT_EQ(loader.RunModel(inputs, outputs), SUCCESS);
+  EXPECT_EQ(loader.RunModelWithStreamAsync(nullptr, inputs, outputs), FAILED);
+}
+
+TEST_F(EpairModelLoaderTest, CompilePropagatesGeSessionAddGraphFailure) {
+  stub::GeApiStub::Instance().SetAddGraphStatus(ge::FAILED);
+  EpairModelLoader loader(kAnnotated.c_str());
+  std::map<ge::AscendString, ge::AscendString> options;
+  EXPECT_EQ(loader.CompileAndLoad(options, nullptr), FAILED);
+}
+
+TEST_F(EpairModelLoaderTest, GetGEGraphReturnsValidGraph) {
+  EpairModelLoader loader(kAnnotated.c_str());
+  ge::Graph graph;
+  EXPECT_EQ(loader.GetGEGraph(&graph), SUCCESS);
+  const auto nodes = graph.GetDirectNode();
+  const std::vector<std::pair<std::string, std::string>> expect_nodes = {
+      {"p_weight", "Const"}, {"b_bias", "Const"}, {"x", "Data"},
+      {"MatMul", "MatMul"},  {"Add", "Add"},      {"Node_Output", "NetOutput"},
+  };
+  EXPECT_EQ(nodes.size(), expect_nodes.size());
+  for (size_t idx = 0; idx < nodes.size(); ++idx) {
+    const auto &node = nodes[idx];
+    ge::AscendString name;
+    ge::AscendString type;
+    node.GetName(name);
+    node.GetType(type);
+    EXPECT_EQ(expect_nodes[idx].first, name.GetString());
+    EXPECT_EQ(expect_nodes[idx].second, type.GetString());
+  }
+}
+
+}  // namespace td

@@ -1,0 +1,28 @@
+diff --git a/xllm_ops/beam_search/beam_search.h b/xllm_ops/beam_search/beam_search.h
+index 0000000..0000001 100644
+--- a/xllm_ops/beam_search/beam_search.h
++++ b/xllm_ops/beam_search/beam_search.h
+@@ -25,8 +25,8 @@ public:
+        GM_ADDR top_probs, GM_ADDR out_token_ids, GM_ADDR out_token_index,
+        GM_ADDR out_log_probs, int32_t num_sequences, int32_t sequence_length,
+        int32_t beam_width, int32_t top_k, int32_t request_num, int32_t core_num,
+-       int32_t min_size, int32_t step_size, TopkTiling &topkTilingData,
+-       TopkTiling &topKTilingData1);
++       int32_t min_size, int32_t step_size, const TopkTiling &topkTilingData,
++       const TopkTiling &topKTilingData1);
+   __aicore__ inline void Process();
+
+   __aicore__ inline int32_t AlignUp(int32_t value, int32_t alignment);
+diff --git a/xllm_ops/beam_search/beam_search.cpp b/xllm_ops/beam_search/beam_search.cpp
+index 0000000..0000001 100644
+--- a/xllm_ops/beam_search/beam_search.cpp
++++ b/xllm_ops/beam_search/beam_search.cpp
+@@ -22,7 +22,7 @@ __aicore__ inline void BeamSearch<TokenIdType, LogProbType>::Init(
+     GM_ADDR out_token_ids, GM_ADDR out_token_index, GM_ADDR out_log_probs,
+     int32_t num_sequences, int32_t sequence_length,
+     int32_t beam_width, int32_t top_k, int32_t request_num, int32_t core_num,
+-    int32_t min_size, int32_t step_size, TopkTiling &topkTilingData, TopkTiling &topKTilingData1) {
++    int32_t min_size, int32_t step_size, const TopkTiling &topkTilingData, const TopkTiling &topKTilingData1) {
+   log_probs_gm.SetGlobalBuffer((__gm__ LogProbType *)log_probs);
+   top_tokens_gm.SetGlobalBuffer((__gm__ TokenIdType *)top_tokens);
+   top_probs_gm.SetGlobalBuffer((__gm__ LogProbType *)top_probs);

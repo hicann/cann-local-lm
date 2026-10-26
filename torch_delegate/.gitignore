@@ -1,0 +1,80 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+*.pyd
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Type checking
+.mypy_cache/
+.pyright/
+
+# IDE
+.vscode/
+.idea/
+
+# Claude Code
+.claude/*
+!.claude/skills/
+!.claude/commands/
+
+# OS
+.DS_Store
+
+# C++ / CMake
+/build/
+/cmake-build-*/
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+#*.cmake.in
+!CMakeLists.txt
+!*.cmake
+
+# C++ compiled objects
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.dylib
+*.dll
+*.exe
+*.out
+*.app
+
+# C++ test binaries
+torch_delegate_tests
+*_test
+*_tests
+
+# Generated fixtures
+tests/cpp/fixtures/
+
+# Output directory
+output/
+
+.opencode
+.claude
+*.log
+examples/*/deps/
+examples/*/ge_graph/
+examples/*/build/
+examples/*/output/
+examples/*/output_dir/
+examples/*/__pycache__/
+examples/*/*.log
+examples/*/*.pyc
+examples/*/.arts/

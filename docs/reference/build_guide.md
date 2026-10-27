@@ -24,9 +24,9 @@ engine 是纯标准 C++17、零 POSIX 依赖,可在 Linux 本机直接构建跑 
 | `cann_lm/engine/ohos/binary-sign-tool.jar` | **鸿蒙二进制签名工具**(jar,架构无关);自签名 `-selfSign 1`,注入 `.codesign` 段 | 鸿蒙 |
 | `scripts/build_ohos.sh` | **鸿蒙构建+签名入口**:校验 `OHOS_SDK_NATIVE`→cmake build→自动调 `sign_ohos.sh` | 鸿蒙 |
 | `scripts/sign_ohos.sh` | **签名脚本**:对 build_ohos/ 下 .so ×2 + 8 可执行各产 `*_signed` | 鸿蒙 |
-| `scripts/package_ohos.sh` | **打包脚本**:从 build_ohos/ 签名产物生成 `deploy_ohos/`(重命名 .so、去 `_signed` 后缀、生成 run.sh) | 鸿蒙 |
+| `scripts/package_ohos.sh` | **打包脚本**:从 build_ohos/ 签名产物生成 `engine_ohos.run`(自解压部署包) | 鸿蒙 |
 | `tools/`(含 `binary-sign-tool.jar`) | vendored 签名工具(12MB,jar,**gitignore 不入库**;见 tools/README.md) | 鸿蒙 |
-| `deploy_ohos/` | **部署包**(有意入库):签名产物 + run.sh + README,供设备 git pull 验证 | 鸿蒙 |
+| `build_ohos/` | **构建产物**(gitignore):交叉编译签名 .so + UT + run.sh | 鸿蒙 |
 | `/mnt/workspace/gtest-1.14.0.tar.gz` | GTest 源码(github v1.14.0,867K),OHOS CMake FetchContent 本地引用 | 鸿蒙 |
 | `tests/`(cann_lm/engine/../../tests) | GTest UT 源码 + bbit 黑盒 | 两者 |
 | `.project/memory/gotchas.md` | OHOS 交叉编译六个必踩坑的根因与解法 | 鸿蒙(参考) |
@@ -187,13 +187,13 @@ readelf -h libcann_lm_engine.so | grep Machine
 
 ### 3.7 设备运行验证(需鸿蒙 PC / 设备)
 
-**先打包部署包**(`build_ohos/` 签名产物 → `deploy_ohos/`):
+**先打包部署包**(`build_ohos/` 签名产物 → `engine_ohos.run`):
 ```bash
-./scripts/package_ohos.sh     # 重命名 .so、去可执行 _signed 后缀、生成 run.sh
+./scripts/package_ohos.sh     # 打成自解压 .run 包
 ```
-`deploy_ohos/` 是自包含部署包(有意入库供设备 git pull),含 README + `run.sh`。鸿蒙 PC 上 `cd deploy_ohos && ./run.sh` 一键跑全部。详细见 `deploy_ohos/README.md`。
+`engine_ohos.run` 是自包含部署包(自解压)。鸿蒙 PC 上解压后 `./run.sh` 一键跑全部。
 
-本机无链接设备时的约定流程:**git 提交 deploy_ohos/ → 设备 pull → `./run.sh`**。
+本机无链接设备时的约定流程:**打包 engine_ohos.run → 推到设备 → 解压 → `./run.sh`**。
 
 ```bash
 export LD_LIBRARY_PATH=$(pwd)

@@ -19,7 +19,7 @@
 [2/4] converter   纯源码 pip wheel (--no-deps)
                   → dist/cann_lm-<ver>-py3-none-any.whl (converter 导出 whl)
 [3/4] engine      OHOS 交叉编译 + 签名 + 打包 (build_package_ohos.sh)
-                  → deploy_ohos/ (libcann_lm_engine.so + 6 UT + bbit + 2 smoke + run.sh)
+                  → engine_ohos.run (libcann_lm_engine.so + 6 UT + bbit + 2 smoke + run.sh)
 [4/4] 打包        两个 .run 自解压分发物
                   → dist/cann_lm_compile_converter-<ver>-<arch>.run (compile+converter)
                   → dist/cann_lm_engine_ohos-<ver>-<arch>.run       (engine 部署包)
@@ -121,10 +121,10 @@ bash build.sh --pkg
 === sign binaries ===
   ✓ libcann_lm_engine.so -> libcann_lm_engine_signed.so
   ✓ ... (其余 10 项)                                                            ← 签名全 ✓
-=== [2/2] 打包部署包(package_ohos.sh → deploy_ohos/) ===
+=== [2/2] 打包部署包(package_ohos.sh → engine_ohos.run) ===
   ✓ libcann_lm_engine_signed.so -> libcann_lm_engine.so
   ✓ ... (11 项全 ✓)                                                            ← 打包全 ✓
-  ✓ engine 交叉编译 + 打包完成: deploy_ohos/ (libcann_lm_engine.so + UT/bbit/smoke)   ← 阶段3 成功标志
+  ✓ engine 交叉编译 + 打包完成: engine_ohos.run (libcann_lm_engine.so + UT/bbit/smoke)   ← 阶段3 成功标志
 
 ▶ [4/4] 打包 .run (compile_converter + engine_ohos)
   ... makeself 压缩 ...
@@ -146,7 +146,7 @@ bash build.sh --pkg
 | **[1/4] compile** | `CMake Error ... Could NOT find GTest / nlohmann_json` | `output/third_party` 里 json/gtest 只有 tar 没解压产物 | 补 §2.1-2 |
 | **[3/4] engine 前置** | 多个 `✗`（缺编译器 / OHOS_SDK_NATIVE 无效 / 缺 jar / 缺 GTest tar）+ `✗ engine 交叉编译前置不满足; 已中断 --pkg` | §2.2 任一未满足 | 按 §2.2 补齐，`export` 环境变量 |
 | **[3/4] engine configure** | `CMake Error at .../ohos/CMakeLists.txt:97: FATAL_ERROR "GTest source tarball not found: /mnt/workspace/gtest-1.14.0.tar.gz"` | 没 `export GTEST_TAR`，用了写死的默认路径 | `export GTEST_TAR=<真实存在的 tar>` 重跑 |
-| **[4/4] 打包** | `✗ deploy_ohos/ 无 libcann_lm_engine.so, engine_ohos.run 打包失败` | 阶段3 没跑出产物（前置被中断，或产物校验有 `[缺]`） | 回阶段3 修 |
+| **[4/4] 打包** | `✗ engine_ohos.run 未生成, 打包失败` | 阶段3 没跑出产物（前置被中断，或产物校验有 `[缺]`） | 回阶段3 修 |
 | **[4/4] 打包** | `⚠ compile/converter 产物不全, 跳过 compile_converter.run` | 阶段1/2 产物缺失但脚本继续 | 完整 `--pkg` 一次跑通 |
 
 
@@ -160,7 +160,7 @@ bash dist/cann_lm_engine_ohos-0.1.0-x86_64.run     --extract=/tmp/x2 --noexec
 
 # ② compile 工具冒烟（需 CANN 环境）
 source <cann>/set_env.sh && ./build/cann_lm_compile   # 打印 usage 即正常
-# ③ engine 部署包: 推到鸿蒙设备 ./run.sh（见 deploy_ohos/README.md）
+# ③ engine 部署包: 推到鸿蒙设备 解压后 ./run.sh
 ```
 
 ---
@@ -258,4 +258,4 @@ bash scripts/cann_lm_converter/build_wheel.sh                                   
 能。`-u` 不依赖 OHOS SDK（engine host UT 用 host gcc + stub NDK）。只有 `--pkg` 的 `[3/4]` 需要 SDK。
 
 **Q3：engine_ohos.run 装到设备跑不起来？**
-见 `deploy_ohos/README.md`：需开发者模式（自签名）、目录可写可执行（避开 noexec）、`.so` 名字不可改。
+见 `engine_ohos.run` 解压后 README：需开发者模式（自签名）、目录可写可执行（避开 noexec）、`.so` 名字不可改。

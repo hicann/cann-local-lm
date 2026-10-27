@@ -8,7 +8,7 @@ description: |
   - OM 编译失败报 "operator not supported" 或某算子 kernel 缺失
   - 把 gitee npu_tuned 模式 (host 预构 mask / repeat_kv concat / RoPE 预缓存) 应用到 cann_lm 模型
   - 对 gemma4 / qwen3.5 做 export 前的图改造
-version: 1.0.0
+version: 0.1.0-beta.1
 metadata:
   author: assistant
   category: graph-rewrite

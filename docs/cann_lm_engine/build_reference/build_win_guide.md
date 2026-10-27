@@ -111,7 +111,7 @@ bash scripts/cann_lm_engine/build_package_ohos.sh --clean
 ```
 
 ### 绿判据
-输出末尾出现 `=== build_ohos.sh 完成 ===`（方式一）或 `一键完成: deploy_ohos/`（方式二），且 **make 阶段无 error**。
+输出末尾出现 `=== build_ohos.sh 完成 ===`（方式一）或 `一键完成: engine_ohos.run`（方式二），且 **make 阶段无 error**。
 
 ### 编译流程说明（build_ohos.sh 内部 5 步）
 1. **SDK 校验**：取 `OHOS_SDK_NATIVE`（默认 `/mnt/workspace/ohos_sdk/ohos_native/native`），校验 `sysroot` 子目录存在；检查本机 `clang-18`/`clang++-18`（`command -v`，缺失提示 `apt install clang-18 llvm-18`）。
@@ -132,7 +132,7 @@ bash scripts/cann_lm_engine/build_package_ohos.sh --clean
 | `api_smoke` / `c_api_smoke`（各 +`_signed`） | C++/C API 冒烟程序 |
 
 ### 打包（方式二自动执行，或单独跑）
-`package_ohos.sh` 从 `build_ohos/` 签名产物生成 `deploy_ohos/`：11 产物去 `_signed` 后缀、恢复可执行位、生成 `run.sh`（跑 6 UT + bbit + 2 smoke，自动 chmod + `LD_LIBRARY_PATH`）+ README.md。鸿蒙 PC 上 `cd deploy_ohos && ./run.sh` 一键跑全部。
+`package_ohos.sh` 从 `build_ohos/` 签名产物生成 `engine_ohos.run`：11 产物去 `_signed` 后缀、恢复可执行位、生成 `run.sh`（跑 6 UT + bbit + 2 smoke，自动 chmod + `LD_LIBRARY_PATH`）+ README.md。鸿蒙 PC 上解压后 `./run.sh` 一键跑全部。
 
 ---
 

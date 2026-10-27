@@ -29,17 +29,19 @@ This project includes code adapted from the following open source projects:
    - License: NVIDIA Source Code License
    - Copyright: Copyright (c) 2023-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
-5. AutoGPTQ (潘其威/William)
-   - Source: https://github.com/AutoGPTQ/AutoGPTQ
+5. Intel Neural Compressor (Intel Corporation)
+   - Source: https://github.com/intel/neural-compressor
    - Files: cann_lm/converter/quant/dopt_lm/opt_funcs/weight_quant_ptq/ptq_algo_hessian/quant.py
-   - License: MIT
-   - Copyright: Copyright (c) 2023 潘其威(William)
+   - License: Apache 2.0
+   - Copyright: Copyright Intel Corporation
 
-6. Qualcomm GPTVQ (Qualcomm Technologies, Inc.)
-   - Source: https://github.com/qualcomm-ai-research/gptvq
+6. gptqmodel (ModelCloud.ai)
+   - Source: https://github.com/ModelCloud/gptqmodel
    - Files: cann_lm/converter/quant/dopt_lm/opt_funcs/weight_quant_ptq/ptq_algo_hessian/quant.py
-   - License: BSD-style
-   - Copyright: Copyright (c) 2024 Qualcomm Technologies, Inc.
+   - License: Apache 2.0
+   - Copyright: Copyright 2024-2025 ModelCloud.ai
+
+7. AutoGPTQ (潘其威/William)
    - Source: https://github.com/AutoGPTQ/AutoGPTQ
    - Files: cann_lm/converter/quant/dopt_lm/opt_funcs/weight_quant_ptq/ptq_algo_hessian/quant.py
    - License: MIT
@@ -62,3 +64,9 @@ This project includes code adapted from the following open source projects:
    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
    OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
    SOFTWARE.
+
+8. Qualcomm GPTVQ (Qualcomm Technologies, Inc.)
+   - Source: https://github.com/qualcomm-ai-research/gptvq
+   - Files: cann_lm/converter/quant/dopt_lm/opt_funcs/weight_quant_ptq/ptq_algo_hessian/quant.py
+   - License: BSD-style
+   - Copyright: Copyright (c) 2024 Qualcomm Technologies, Inc.

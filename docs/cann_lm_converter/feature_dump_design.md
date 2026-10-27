@@ -51,11 +51,11 @@ class DumpInterpreter(Interpreter):
 
 ```bash
 # gemma4 5-layer prefill（中间全 dump）
-source /mnt/workspace/CANN-LM_5883/scripts/set_env_export.sh
+source $PROJECT_ROOT/scripts/set_env_export.sh
 export TORCH_DEVICE_BACKEND_AUTOLOAD=0
 python examples/test_converter/llm_models_run_on_cpu/gen_golden_with_dump.py \
     --model-type gemma4 \
-    --hf-path /mnt/workspace/CANN-LM_5883/models/unsloth/gemma-4-E2B-it \
+    --hf-path $PROJECT_ROOT/models/unsloth/gemma-4-E2B-it \
     --seq-len 128 --num-layers 5 --dtype float16 \
     --output-dir out/golden_gemma4_5l
 
@@ -65,7 +65,7 @@ python .../gen_golden_with_dump.py ... --no-intermediates
 # qwen3.5 5-layer
 python .../gen_golden_with_dump.py \
     --model-type qwen3_5 \
-    --hf-path /mnt/workspace/CANN-LM_5883/models/Qwen/Qwen3.5-0.8B \
+    --hf-path $PROJECT_ROOT/models/Qwen/Qwen3.5-0.8B \
     --seq-len 8 --num-layers 5 --dtype float16 \
     --output-dir out/golden_qwen35_5l
 ```
@@ -111,7 +111,7 @@ export PYTHONPATH=<shims>:$PYTHONPATH
 # 量化 dump (W4A8 fakequant, 逐算子中间张量)
 python examples/test_converter/llm_models_run_on_cpu/gen_golden_with_dump.py \
     --model-type gemma4 \
-    --hf-path /mnt/workspace/CANN-LM_5883/models/unsloth/gemma-4-E4B-it \
+    --hf-path $PROJECT_ROOT/models/unsloth/gemma-4-E4B-it \
     --quant-path /path/to/dopt_output \
     --seq-len 8 --num-layers 3 --dtype float16 \
     --output-dir out/golden_gemma4_3l_quant

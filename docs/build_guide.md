@@ -36,7 +36,7 @@ CANN 是**外部预置**（用户先 source 其 `set_env.sh`），本仓不构�
 | 组件 | 版本 | 获取 |
 |------|------|------|
 | CANN toolkit | >= 9.3.0 | [master 下载](https://ascend.devcloud.huaweicloud.com/artifactory/cann-run-mirror/software/master) |
-| CANN ops | 按 SOC | Ascend910 → `Ascend910-ops`；kirinx90 → `ops-nn`/`ops-math` |
+| CANN ops | 按 SOC | Ascend910 → `Ascend910-ops`；kirinx90 → `ops-nn`/`ops-math`/`ops-transformer` |
 
 安装（以下值为示例，按实际版本/SOC/架构调整）：
 
@@ -130,7 +130,7 @@ ls tools/binary-sign-tool.jar                # 期望: 文件存在
 
 | 组件 | 作用 | git 源 |
 |------|------|--------|
-| torch-delegate | `torch_delegate` whl + `.venv`（torch 2.9.0+cpu） | `gitcode.com/shengnan666/torch-delegate.git`（⚠️ 需申请权限） |
+| torch-delegate | `torch_delegate` whl + `.venv`（torch 2.9.0+cpu） | 已合入 cann-device-lm 仓 `torch_delegate/` 目录（`gitcode.com/cann/cann-device-lm`） |
 | torchair | `torchair` whl（FX→GE IR 转换） | `gitcode.com/Ascend/torchair.git` |
 
 ### 方式一：从源码构建安装
@@ -142,7 +142,7 @@ source $HOME/Ascend/cann/set_env.sh
 
 # 1. torch-delegate（产 .venv + torch_delegate whl）
 cd /path/to/cann-device-lm
-git clone https://gitcode.com/shengnan666/torch-delegate.git deps/torch-delegate
+git clone https://gitcode.com/cann/cann-device-lm.git deps/torch-delegate  # 或直接用 cann-device-lm 仓内 torch_delegate/ 目录
 cd deps/torch-delegate && ./build.sh    # build.sh 自动创建 .venv（torch 2.9.0+cpu）+ 编译 whl
 .venv/bin/pip install --force-reinstall --no-deps output/package/torch_delegate-*.whl
 
@@ -284,7 +284,7 @@ export LD_LIBRARY_PATH=$(dirname $(dirname $DOPT_PYTHON))/lib:${LD_LIBRARY_PATH:
 torchaudio 须与 torch 同版本。修复：
 
 ```bash
-pip install torchaudio==2.7.1 --force-reinstall --no-deps --user   # 匹配 torch 2.7.1
+pip install torchaudio==2.9.0 --force-reinstall --no-deps --user   # 匹配 torch 2.9.0
 ```
 
 > 详见 [env_dependencies.md](env_dependencies.md) §2.2。

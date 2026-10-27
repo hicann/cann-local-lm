@@ -29,6 +29,7 @@ find_package(nlohmann_json CONFIG
         "${CANN_3RD_LIB_PATH}/json"
         "${CMAKE_SOURCE_DIR}/output/third_party/json"
     NO_DEFAULT_PATH
+    NO_CMAKE_FIND_ROOT_PATH
     QUIET
 )
 
@@ -44,6 +45,7 @@ find_path(_NLOHMANN_JSON_INCLUDE_DIR
         "${CANN_3RD_LIB_PATH}/json/include"
         "${CMAKE_SOURCE_DIR}/output/third_party/json/include"
     NO_DEFAULT_PATH
+    NO_CMAKE_FIND_ROOT_PATH
 )
 
 if(_NLOHMANN_JSON_INCLUDE_DIR)

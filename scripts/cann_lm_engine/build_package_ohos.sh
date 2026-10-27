@@ -90,5 +90,5 @@ PIP_CMD="pip"
 rm -rf "$PY_SRC/cann_lm/lib" "$SCRIPTS_DIR/cann_lm_engine.egg-info"
 
 echo; echo "=== 完成 ==="
-echo "  build_ohos/: .so + ut_* （编译+签名产物）"
+echo "  build_ohos/: .so （编译+签名产物）"
 echo "  dist/:       $(ls "$DIST"/cann_lm_engine-*.whl 2>/dev/null | xargs basename 2>/dev/null || echo '无')"

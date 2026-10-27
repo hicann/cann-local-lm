@@ -54,12 +54,15 @@ set(CANN_LM_ENGINE_SRCS
 
 add_library(cann_lm_engine STATIC ${CANN_LM_ENGINE_SRCS})
 
+# nlohmann/json: find_package (Findnlohmann_json.cmake, 含 vendored fallback)
+find_package(nlohmann_json REQUIRED)
 target_include_directories(cann_lm_engine
     PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}
     PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/../../cmake/third_party   # nlohmann/json（D-09 vendored）
+        ${CMAKE_CURRENT_SOURCE_DIR}
 )
+target_link_libraries(cann_lm_engine PRIVATE nlohmann_json::nlohmann_json)
 
 # backend 通路：工厂/设备模型/张量的具体实现（含 hiai_acl shim 依赖，PUBLIC 传递给测试/冒烟目标）
 target_link_libraries(cann_lm_engine PUBLIC cann_backend)
@@ -82,8 +85,8 @@ if(NOT CMAKE_CROSSCOMPILING)
     add_library(cann_lm_engine_shared SHARED ${CANN_LM_ENGINE_SRCS})
     target_include_directories(cann_lm_engine_shared
         PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}
-        PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../../cmake/third_party)
-    target_link_libraries(cann_lm_engine_shared PRIVATE cann_backend)
+        PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    target_link_libraries(cann_lm_engine_shared PRIVATE cann_backend nlohmann_json::nlohmann_json)
     target_compile_options(cann_lm_engine_shared PRIVATE -Wall -Wextra -Wpedantic)
     set_target_properties(cann_lm_engine_shared PROPERTIES
         OUTPUT_NAME cann_lm_engine

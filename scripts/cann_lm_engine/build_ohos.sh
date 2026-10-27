@@ -23,8 +23,7 @@ for a in "$@"; do
 done
 
 # 版本/路径默认(与 scripts/cann_lm_compile/build.conf 同源;upstream 单体 build.sh
-# 亦 source 之)。GTEST_TAR 默认回退指向 third_party 预置的 googletest tarball
-# (由 cmd_third_party / build_third_party.sh 下载至 ${THIRD_PARTY}/gtest/)。
+# 亦 source 之)。
 source "${REPO_ROOT}/scripts/cann_lm_compile/build.conf"
 THIRD_PARTY="${THIRD_PARTY:-${PROJECT_ROOT}/output/third_party}"
 
@@ -82,7 +81,6 @@ cmake -G "Unix Makefiles" \
     -DCMAKE_TOOLCHAIN_FILE="${TOOLCHAIN}" \
     -DOHOS_SDK_NATIVE="${OHOS_SDK_NATIVE}" \
     -DOHOS_PLATFORM=OHOS \
-    -DGTEST_TAR="${GTEST_TAR:-${THIRD_PARTY}/gtest/googletest-${GTEST_VERSION}.tar.gz}" \
     -DCMAKE_BUILD_TYPE=Release \
     -B "${BUILD_DIR}" \
     -S "${ENGINE_OHOS_DIR}"
@@ -91,7 +89,7 @@ cmake -G "Unix Makefiles" \
 echo "=== build (make -j$(nproc)) ==="
 cmake --build "${BUILD_DIR}" -j"$(nproc)"
 
-# ── 7) 归集/校验产物(ohos/CMakeLists 产物: .so 在 build 根, UT 在 tests/cpp/engine/) ──
+# ── 7) 归集/校验产物(ohos/CMakeLists 产物: .so 在 build 根) ──
 echo "=== 产物校验 ==="
 for _f in libcann_lm_engine.so libc++_shared.so; do
     if [ -f "${BUILD_DIR}/${_f}" ]; then
@@ -100,13 +98,6 @@ for _f in libcann_lm_engine.so libc++_shared.so; do
         echo "  [缺]   ${_f}"
     fi
 done
-_ut_dir="${BUILD_DIR}/tests/cpp/engine"
-for _f in $(ls "${_ut_dir}" 2>/dev/null | grep -E "^ut_|^model_executor_ut$"); do
-    echo "  [ok]   tests/cpp/engine/${_f}"
-done
-if [ ! -d "${_ut_dir}" ] || [ -z "$(ls "${_ut_dir}" 2>/dev/null | grep -E '^ut_|^model_executor_ut$')" ]; then
-    echo "  [缺]   tests/cpp/engine/ UT 二进制"
-fi
 
 # libc++_shared.so:ohos/CMakeLists 已 POST_BUILD 拷贝;若仍缺失则从 SDK 兜底拷
 if [ ! -f "${BUILD_DIR}/libc++_shared.so" ]; then

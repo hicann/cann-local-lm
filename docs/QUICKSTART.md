@@ -62,9 +62,9 @@ $CONVERTER_PYTHON -m cann_lm.converter.cann_lm_converter \
 **量化导出（可选）：**
 
 > **量化特殊要求**：
-> - GPTQ 量化需 **NPU 设备加速**（dopt 子进程跑在 NPU 上），需额外准备 **P2 环境**（系统 python + torch_npu 2.7.1.post4，与 P1 venv 的 torch 2.9.0 版本不同，不能共用）。
+> - GPTQ 量化需 **NPU 设备加速**（dopt 子进程跑在 NPU 上），需额外准备 **P2 环境**（系统 python + torch_npu 2.9.0.post8，与 P1 venv 隔离，不能共用）。
 > - 需 `source /opt/cann-device-lm/set_env.sh --npu`（自动探测 `DOPT_PYTHON` + 设 `DEVICE=npu`），探测失败时手动 `export DOPT_PYTHON=/path/to/python3`。
-> - torchaudio 版本须与 torch 2.7.1 一致（`pip install torchaudio==2.7.1`），否则报 `undefined symbol`。
+> - torchaudio 版本须与 torch 2.9.0 一致（`pip install torchaudio==2.9.0`），否则报 `undefined symbol`。
 > - 无 NPU 时可跳过 GPTQ，用 `--quant-path` 消费已有 dopt 产物做离线量化。
 
 ```bash

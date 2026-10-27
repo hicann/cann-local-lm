@@ -1,10 +1,40 @@
 # !/usr/bin/env python
 # -*- coding: utf-8 -*-
+#
+# MIT License
+#
+# Copyright (c) 2023 潘其威(William)
 # Copyright Huawei Technologies Co., Ltd. 2010-2025. All rights reserved.
 #
-# Adapted from:
-#   - AutoGPTQ/AutoGPTQ (MIT License, Copyright (c) 2023 潘其威(William))
-#     https://github.com/AutoGPTQ/AutoGPTQ
+# This file is adapted from AutoGPTQ quantizer.py (v0.7.0-release):
+# https://github.com/AutoGPTQ/AutoGPTQ/blob/v0.7.0-release/auto_gptq/quantization/quantizer.py
+#
+# The original source file does not contain a copyright header; copyright and
+# license terms are declared in the project's LICENSE file.
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+#
+# Additional adapted sources:
+#   - ModelCloud/gptqmodel (Apache 2.0, Copyright 2024-2025 ModelCloud.ai)
+#     https://github.com/ModelCloud/gptqmodel
+#   - intel/neural-compressor (Apache 2.0, Copyright Intel Corporation)
+#     https://github.com/intel/neural-compressor
 #   - qualcomm-ai-research/gptvq (Copyright (c) 2024 Qualcomm Technologies, Inc.)
 #     https://github.com/qualcomm-ai-research/gptvq
 import os

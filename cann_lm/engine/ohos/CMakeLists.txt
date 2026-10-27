@@ -5,12 +5,10 @@
 # 产物:
 #   libcann_lm_engine.so  (SHARED, 鸿蒙 musl 目标)
 #   libc++_shared.so      (随 .so 分发)
-#   9 个可执行: model_executor_ut / ut_engine_executor / ut_tokenizer /
-#              ut_c_api / ut_scheduler / ut_text_embedding / bbit /
-#              api_smoke / c_api_smoke
 #   (backend 经 add_subdirectory 接入 cann_backend 静态库,其自带 demo/test
 #    EXCLUDE_FROM_ALL 不在默认构建产物中)
-#   若 -DSIGN_ON=ON(默认):每个产物再产 *_signed 版
+#   签名由仓库根 sign_ohos.sh 在 build 后跑 binary-sign-tool.jar -selfSign 1。
+# UT 不交叉编译——UT 是 host 端验证(build.sh -u 跑),不部署到鸿蒙设备。
 # 后续:验证通过后再合入 ../CMakeLists.txt 的 OHOS 分支(共享源码清单)。
 
 cmake_minimum_required(VERSION 3.16)
@@ -64,11 +62,16 @@ set(ENGINE_SRC
 
 # ── SHARED 库 ───────────────────────────────────────────────────────────────
 add_library(cann_lm_engine SHARED ${ENGINE_SRC})
+# nlohmann/json: find_package (Findnlohmann_json.cmake, 含 vendored fallback)
+# CMAKE_MODULE_PATH 让 cmake 找到 Findnlohmann_json.cmake;
+# CANN_3RD_LIB_PATH 让 Find 模块搜到 output/third_party/json;
+# CMAKE_FIND_ROOT_PATH 追加 third_party (toolchain 设了 ONLY, 不加则 find_package 只搜 OHOS SDK)。
+list(APPEND CMAKE_MODULE_PATH "${_E}/../../cmake/third_party/modules")
+set(CANN_3RD_LIB_PATH "${_E}/../../output/third_party" CACHE PATH "Third-party libraries directory")
+list(APPEND CMAKE_FIND_ROOT_PATH "${_E}/../../output/third_party")
+find_package(nlohmann_json REQUIRED)
 target_include_directories(cann_lm_engine PUBLIC ${_E})
-target_include_directories(cann_lm_engine PRIVATE ${_E}/../../cmake/third_party)   # nlohmann/json（D-09 vendored）
-# backend 通路:工厂/设备模型/张量的具体实现(含 hiai_acl shim 依赖,PIC 由 toolchain 设定)
-# hilog_ndk.z:infra/log.h 的 __OHOS__ 分支(OH_LOG_Print)所需
-target_link_libraries(cann_lm_engine PUBLIC cann_backend hilog_ndk.z)
+target_link_libraries(cann_lm_engine PUBLIC cann_backend hilog_ndk.z nlohmann_json::nlohmann_json)
 target_compile_options(cann_lm_engine PRIVATE -Wall -Wextra -Wpedantic)
 
 # SONAME: 让 bbit/api_smoke 等 NEEDED 记 libcann_lm_engine.so 而非绝对路径
@@ -89,32 +92,6 @@ if(EXISTS "${_CXX_SHARED}")
 else()
     message(WARNING "libc++_shared.so not found at ${_CXX_SHARED}; copy manually for device run")
 endif()
-
-# ── GTest:本地源码 FetchContent(交叉编译不能用主机 find_package) ──────────
-# gtest_discover_tests 在交叉编译下失效(它要运行宿主跑不了的目标二进制),
-# 故 tests/cpp/engine/CMakeLists.txt 用 add_test 静态注册（见 _GTEST_LIBS 分支）。
-include(FetchContent)
-if(NOT DEFINED GTEST_TAR)
-    set(GTEST_TAR "$ENV{GTEST_TAR}" CACHE FILEPATH "Path to googletest v1.14.0 source tarball")
-endif()
-if(NOT EXISTS "${GTEST_TAR}")
-    # 回退: 仓内 output/third_party/gtest（build.sh third_party 产出）
-    set(GTEST_TAR "${_E}/../../output/third_party/gtest/googletest-1.14.0.tar.gz" CACHE FILEPATH "" FORCE)
-endif()
-if(EXISTS "${GTEST_TAR}")
-    FetchContent_Declare(googletest URL "${GTEST_TAR}")
-    set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
-    FetchContent_MakeAvailable(googletest)
-else()
-    message(STATUS "GTest tarball not found (${GTEST_TAR}), skipping UT targets")
-endif()
-
-enable_testing()
-
-# ── UT（由 tests/cpp/engine/ 独立 CMakeLists 定义）──
-# smoke/bbit 由 build.sh --smoke 单独构建（examples/test_engine/ 独立 cmake）
-set(CANN_LM_CROSS_BUILD ON CACHE INTERNAL "OHOS cross-compile build" FORCE)
-add_subdirectory(${TESTS_ROOT}/cpp/engine ${CMAKE_BINARY_DIR}/tests/cpp/engine)
 
 # ── 签名:不在 CMake 内做(本机 cmake 3.20 对 OHOS 未知系统的 POST_BUILD
 #    生成器表达式求值不稳)。改由仓库根 sign_ohos.sh 在 build 后对 build_ohos/

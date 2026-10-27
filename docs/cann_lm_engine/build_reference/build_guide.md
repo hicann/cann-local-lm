@@ -8,7 +8,7 @@
 
 ## 0. 一句话
 
-engine 是纯标准 C++17、零 POSIX 依赖,可在 Linux 本机直接构建跑 UT,也可交叉编译为鸿蒙 musl 目标的 `.so` + 9 个可执行(UT/bbit/smoke)并自签名。**两套构建相互独立**——鸿蒙构建是独立旁路(`cann_lm/engine/ohos/` + `scripts/cann_lm_engine/` 下的 `build_ohos.sh`/`sign_ohos.sh`/`package_ohos.sh`/`build_package_ohos.sh`),不改动现有 Linux 构建文件,Linux 构建零风险。鸿蒙一条命令到位:`./scripts/cann_lm_engine/build_ohos.sh`(编译→自动签名),或一键 `./scripts/cann_lm_engine/build_package_ohos.sh`(编译→签名→打包 `deploy_ohos/`)。
+engine 是纯标准 C++17、零 POSIX 依赖,可在 Linux 本机直接构建跑 UT,也可交叉编译为鸿蒙 musl 目标的 `.so` + 9 个可执行(UT/bbit/smoke)并自签名。**两套构建相互独立**——鸿蒙构建是独立旁路(`cann_lm/engine/ohos/` + `scripts/cann_lm_engine/` 下的 `build_ohos.sh`/`sign_ohos.sh`/`package_ohos.sh`/`build_package_ohos.sh`),不改动现有 Linux 构建文件,Linux 构建零风险。鸿蒙一条命令到位:`./scripts/cann_lm_engine/build_ohos.sh`(编译→自动签名),或一键 `./scripts/cann_lm_engine/build_package_ohos.sh`(编译→签名→打包 `engine_ohos.run`)。
 
 ---
 
@@ -24,9 +24,9 @@ engine 是纯标准 C++17、零 POSIX 依赖,可在 Linux 本机直接构建跑 
 | `tools/binary-sign-tool.jar` | **鸿蒙二进制签名工具**(jar,架构无关);自签名 `-selfSign 1`,注入 `.codesign` 段;放 `tools/`,**gitignore 不入库**(见 tools/README.md) | 鸿蒙 |
 | `scripts/cann_lm_engine/build_ohos.sh` | **鸿蒙构建+签名入口**:校验 `OHOS_SDK_NATIVE`(精简 SDK)+ 本机 `clang-18` → `cmake -G Unix Makefiles` build → 11 产物校验 + libc++ 兜底 → 自动调 `sign_ohos.sh` | 鸿蒙 |
 | `scripts/cann_lm_engine/sign_ohos.sh` | **签名脚本**:对 build_ohos/ 下 .so ×2 + **9 可执行**各产 `*_signed` | 鸿蒙 |
-| `scripts/cann_lm_engine/package_ohos.sh` | **打包脚本**:从 build_ohos/ 签名产物生成 `deploy_ohos/`(11 产物去 `_signed` 后缀、重命名 .so、生成 `run.sh` 跑 UT+bbit+smoke) | 鸿蒙 |
-| `scripts/cann_lm_engine/build_package_ohos.sh` | **一键脚本**:预检 java+jar → `build_ohos.sh`(编译+签名) → `package_ohos.sh`(打包) → `deploy_ohos/`;支持 `--clean` 全量重建 | 鸿蒙 |
-| `deploy_ohos/` | **部署包**(有意入库):11 签名产物 + run.sh + README,供设备 git pull 验证 | 鸿蒙 |
+| `scripts/cann_lm_engine/package_ohos.sh` | **打包脚本**:从 build_ohos/ 签名产物生成 `engine_ohos.run`(11 产物去 `_signed` 后缀、重命名 .so、生成 `run.sh` 跑 UT+bbit+smoke) | 鸿蒙 |
+| `scripts/cann_lm_engine/build_package_ohos.sh` | **一键脚本**:预检 java+jar → `build_ohos.sh`(编译+签名) → `package_ohos.sh`(打包) → `engine_ohos.run`;支持 `--clean` 全量重建 | 鸿蒙 |
+| `build_ohos/` | **构建产物**(gitignore):11 签名产物 + run.sh | 鸿蒙 |
 | `/mnt/workspace/gtest-1.14.0.tar.gz` | GTest 源码(github v1.14.0,867K),OHOS CMake FetchContent 本地引用(CMake 变量 `GTEST_TAR` 默认此路径) | 鸿蒙 |
 | `tests/` | GTest UT 源码 + bbit 黑盒 | 两者 |
 | `docs/build_reference/harmony_acl_build_analysis.md` | 参考项目 harmony_acl 构建体系全解 | 鸿蒙(参考) |
@@ -82,7 +82,7 @@ cmake --build . -j"$(nproc)"
 | `api_smoke` / `c_api_smoke` | C++ / C API 冒烟程序 |
 | `golden_verify` | 【临时调试】模型精度验证工具(验证完成后删除) |
 
-> 另有 `stub_ndk`(host 回归用的 external_ndk 打桩 .so)与 `cann_backend` 子项目自带 demo/test,均 `EXCLUDE_FROM_ALL`——不进默认构建,需显式 `--target` 触发。
+> 另有 `stub_ndk`(host 回归用的 external_ndk 打桩 .so,位于 `tests/cpp/` 下)与 `cann_backend` 子项目自带 demo/test,均 `EXCLUDE_FROM_ALL`——不进默认构建,需显式 `--target` 触发。
 > OHOS 交叉编译(`ohos/CMakeLists.txt`)只取上述的**一个子集**编 9 个可执行(6 UT + bbit + 2 smoke),见 §3.4。
 
 ### 2.4 验证
@@ -120,7 +120,7 @@ ctest --output-on-failure
 > - Linux 主机 → [`build_linux_guide.md`](build_linux_guide.md)
 > - Windows(WSL) → [`build_win_guide.md`](build_win_guide.md)
 >
-> 一条命令(两平台通用):`bash scripts/cann_lm_engine/build_ohos.sh`(编译+签名),或一键 `bash scripts/cann_lm_engine/build_package_ohos.sh [--clean]`(编译+签名+打包 `deploy_ohos/`)。三坑见 §5,环境变量见 §6。
+> 一条命令(两平台通用):`bash scripts/cann_lm_engine/build_ohos.sh`(编译+签名),或一键 `bash scripts/cann_lm_engine/build_package_ohos.sh [--clean]`(编译+签名+打包 `engine_ohos.run`)。三坑见 §5,环境变量见 §6。
 
 ### 3.1 产物速查(平铺 `build_ohos/`,共 11 个 + 各 `*_signed`)
 
@@ -133,15 +133,15 @@ ctest --output-on-failure
 | `api_smoke` / `c_api_smoke` | C++/C API 冒烟 |
 | 上述每个的 `*_signed` / `*_signed.so` | 签名版(`build_ohos.sh` 自动产) |
 
-> 产物验证(readelf 确认 musl 目标)、单独重签、打包 `deploy_ohos/`(`run.sh` 跑 6 UT + bbit + 2 smoke)、设备运行流程,均见分平台手册。本机 glibc **无法直接运行**这些产物(链接 musl 的 `libc.so`),运行验证须在鸿蒙设备(开发者模式,允许自签名二进制)。
+> 产物验证(readelf 确认 musl 目标)、单独重签、打包 `engine_ohos.run`(`run.sh` 跑 6 UT + bbit + 2 smoke)、设备运行流程,均见分平台手册。本机 glibc **无法直接运行**这些产物(链接 musl 的 `libc.so`),运行验证须在鸿蒙设备(开发者模式,允许自签名二进制)。
 
 ### 3.2 当前状态(2026-10-15 实测)
 - ✅ `.so` + `libc++_shared.so` 交叉编译通过(ELF AArch64,musl)
 - ✅ **9 可执行交叉编译通过**(6 UT + bbit + 2 smoke;GTest FetchContent 本地源码,静态 add_test)
 - ✅ **11 产物全部签名完成**(本机 java + `tools/binary-sign-tool.jar -selfSign 1`)
-- ✅ **打包通过**(`deploy_ohos/` 含全 11 产物 + run.sh + README);一键 `build_package_ohos.sh` 验证通过
+- ✅ **打包通过**(`engine_ohos.run` 含全 11 产物 + run.sh);一键 `build_package_ohos.sh` 验证通过
 - ✅ `model_executor_ut` / `ut_text_embedding` 已恢复(backend hiai 迁移完成)
-- ⏳ 鸿蒙设备实跑验证(待设备;git 提交 deploy_ohos/ 后设备 pull)
+- ⏳ 鸿蒙设备实跑验证(待设备;打包 engine_ohos.run 推设备)
 
 ---
 

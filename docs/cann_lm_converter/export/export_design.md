@@ -820,14 +820,14 @@ for (const auto &node : parser.Nodes()) {
 
 **信息覆盖情况**：
 
-| 信息 | model_constants_config.json 来源 | CANN-LM_5883 来源 | 是否已覆盖 |
+| 信息 | model_constants_config.json 来源 | cann-device-lm 来源 | 是否已覆盖 |
 |------|---|---|---|
 | 常量数据 | `data/constants/tensor_N` 文件 | `weights_*.bin`（`pack_weights` 已打包） | 已覆盖 |
 | 常量名/类型 | `config` 对象的 key 和 `is_param` | `input_specs` 的 `kind` 和 `name` + `weight_info.json` 的 `_is_weight` | 已覆盖 |
 | dtype/shape | `tensor_meta.dtype` / `tensor_meta.sizes` | C++ 侧从 `ep_json` 图节点推导 | 已覆盖 |
 | 数据存储位置 | `path_name` → `data/constants/` 目录 | `weight_info.json` 的 `file` + `offset` | 已覆盖 |
 
-**结论**：`model_constants_config.json` 是 PT2 归档格式的冗余元信息文件。CANN-LM_5883 通过以下路径已覆盖其全部信息，**不需要单独解析 `model_constants_config.json`**：
+**结论**：`model_constants_config.json` 是 PT2 归档格式的冗余元信息文件。cann-device-lm 通过以下路径已覆盖其全部信息，**不需要单独解析 `model_constants_config.json`**：
 1. **数据**：`pack_weights` 通过 `gs.inputs_to_lifted_tensor_constants` + `ep.module().named_buffers()` 将常量数据打包到 `weights_*.bin`
 2. **元信息**：C++ 侧 `EpairModelParser` 解析 `input_specs` 获取 kind/name，`GeWeightLoader` 从 `weight_info.json` 获取数据位置 + `_is_weight`（区分 module state vs trace 常量，fallback `input_specs` 的 `PlaceholderKind`）
 3. **dtype/shape**：C++ 侧从 `ep_json` 的图节点推导张量元信息

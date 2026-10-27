@@ -8,7 +8,7 @@
 # See LICENSE in the root of the software repository for the full text of the License.
 # -----------------------------------------------------------------------------------------------------------
 
-set(CANN_LM_VERSION "1.0.0")
-set(CANN_LM_VERSION_MAJOR 1)
-set(CANN_LM_VERSION_MINOR 0)
+set(CANN_LM_VERSION "0.1.0-beta.1")
+set(CANN_LM_VERSION_MAJOR 0)
+set(CANN_LM_VERSION_MINOR 1)
 set(CANN_LM_VERSION_PATCH 0)

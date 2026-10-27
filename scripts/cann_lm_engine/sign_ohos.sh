@@ -37,15 +37,8 @@ fi
 [ -f "$JAR" ] || { echo "ERROR: 找不到 jar: $JAR" >&2; exit 1; }
 [ -d "$BUILD_DIR" ] || { echo "ERROR: 产物目录不存在: $BUILD_DIR" >&2; exit 1; }
 
-# 待签名产物:两个 .so + UT 可执行（在 tests/cpp/engine/ 子目录）
+# 待签名产物:两个 .so（UT 不交叉编译,不签名）
 SO_FILES=(libcann_lm_engine.so libc++_shared.so)
-UT_DIR="tests/cpp/engine"
-EXE_FILES=()
-if [ -d "$BUILD_DIR/$UT_DIR" ]; then
-    while IFS= read -r f; do
-        EXE_FILES+=("$UT_DIR/$f")
-    done < <(ls "$BUILD_DIR/$UT_DIR" 2>/dev/null | grep -E '^ut_|^model_executor_ut$')
-fi
 
 # 签名产物放独立子目录 signed/ —— 裸名原件永不被改写。
 # 契约(build_ohos.sh / build_package_ohos.sh 消费):
@@ -82,7 +75,5 @@ echo "  java     : $(java -version 2>&1 | head -1)"
 echo "-- .so --"
 sign_one libcann_lm_engine.so "${SIGNED_SUBDIR}/libcann_lm_engine.so"
 sign_one libc++_shared.so     "${SIGNED_SUBDIR}/libc++_shared.so"
-echo "-- UT 可执行 (${UT_DIR}/) --"
-for t in "${EXE_FILES[@]}"; do sign_one "$t" "${SIGNED_SUBDIR}/$t"; done
 
 echo "=== 完成。签名产物在 $BUILD_DIR/$SIGNED_SUBDIR/ (裸名原件未动) ==="

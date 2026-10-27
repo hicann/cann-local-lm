@@ -189,7 +189,7 @@ target_link_libraries(ascendcl_ut PUBLIC hiai_ascendcl neural_network_core hiai_
 
 ### 5.3 Linux 分支(`UNIX AND NOT APPLE`)
 
-无鸿蒙系统库,改为**自建桩库**模拟 `hiai_foundation` / `neural_network_core`(用 `tests/cpp/engine/stub_ndk/` 下的桩源码编译成 .so),再链 UT。GTest 同样本地源码 FetchContent。用于主机端跑 UT。
+无鸿蒙系统库,改为**自建桩库**模拟 `hiai_foundation` / `neural_network_core`(用 `tests/cpp/` 下的桩源码编译成 .so),再链 UT。GTest 同样本地源码 FetchContent。用于主机端跑 UT。
 
 ### 5.4 Windows 分支(`WIN32`)
 

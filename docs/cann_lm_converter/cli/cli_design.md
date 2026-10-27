@@ -297,8 +297,8 @@ output_dir/
 
 ```bash
 source /home/developer/Ascend/cann/set_env.sh
-export LD_LIBRARY_PATH=/mnt/workspace/CANN-LM_5883/deps/torchair/build/stubs:${ASCEND_HOME_PATH}/lib64:${LD_LIBRARY_PATH:-}
-export PYTHONPATH=/mnt/workspace/CANN-LM_5883:${PYTHONPATH:-}
+export LD_LIBRARY_PATH=$TORCHAIR_ROOT/build/stubs:${ASCEND_HOME_PATH}/lib64:${LD_LIBRARY_PATH:-}
+export PYTHONPATH=$PROJECT_ROOT:${PYTHONPATH:-}
 export TORCH_DEVICE_BACKEND_AUTOLOAD=0
 export TORCH_DELEGATE_ENABLE_FALLBACK_CODEGEN=0
 

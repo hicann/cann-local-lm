@@ -67,7 +67,7 @@ CANN 是**外部预置**（用户先 source 其 `set_env.sh` 设 `ASCEND_HOME_PA
 **版本配套**（`build.conf` 信息性）：
 ```
 CANN_VERSION=9.3.0
-SOC_VERSION=Ascend910_9362      # 默认; kirinx90 用 KirinX90; 950DT 用 Ascend950DT_9575
+SOC_VERSION=KirinX90      # kirinx90; 910 用 Ascend910_9362; 950DT 用 Ascend950DT_9575
 ```
 
 **安装三步**：
@@ -120,14 +120,14 @@ bash scripts/build.sh cpp --asan && ctest --test-dir build
 
 **CPU-only venv，不装 torch_npu（stub 路径）**。converter 设备无关（不需 NPU），运行 `cann_lm_converter.py`（torch.export 执行模型 + torchair GE 转换）产 epair artifact。
 
-> **用户约束（P1/P2 环境隔离根因）**：converter 设计为可脱离 NPU 运行（CPU-only 机器也能导出），为此对 torchair 与 torch_npu **解耦**——torchair GE 转换不依赖 torch_npu。解耦导致 P1（torch 2.9.0，无 torch_npu）与 P2（torch_npu）torch 版本不兼容，**不能共用 python**。量化（dopt GPTQ）也跑 NPU/GPU，同样不能与 converter 共用 P1。因此 P1 用独立 venv（`CONVERTER_PYTHON`），与 P2 系统 python（`DOPT_PYTHON`）隔离。
+> **用户约束（P1/P2 环境隔离根因）**：converter 设计为可脱离 NPU 运行（CPU-only 机器也能导出），为此对 torchair 与 torch_npu **解耦**——torchair GE 转换不依赖 torch_npu。P1 刻意不装 torch_npu（stub 路径，设计决策），P2 装 torch_npu 跑 NPU；两者虽同为 torch 2.9.0 但 **P1 venv 与 P2 系统 python 隔离**（venv vs 系统 python，依赖不同）。量化（dopt GPTQ）也跑 NPU/GPU，同样不能与 converter 共用 P1。因此 P1 用独立 venv（`CONVERTER_PYTHON`），与 P2 系统 python（`DOPT_PYTHON`）隔离。
 
 | 组件 | 版本 | 本机实测 | 来源 |
 |------|------|---------|------|
 | **torch** | 2.9.0+cpu | 2.9.0+cpu ✓ | torch-delegate `.venv`（`pip install torch==2.9.0 --index-url https://download.pytorch.org/whl/cpu`） |
 | **torchair** | 0.1 | OK ✓ | 源码编译（`gitcode.com/Ascend/torchair.git`，公开仓） |
-| **torch_delegate** | 0.1.0 | OK ✓ | 源码编译（`gitcode.com/shengnan666/torch-delegate.git`，⚠️ 当前未开源，需申请权限） |
-| **torch_npu** | **不装** | absent ✓（stub path OK） | 若装需 **2.9.0.post8**（TorchNPU 26.1.1，配 CANN 9.1.X，见 §2.2）——但 converter 走 stub 路径**刻意不装**（设计决策，见 `cli_design.md`「converter 与 torch_npu 的关系」） |
+| **torch_delegate** | 0.1.0 | OK ✓ | 已合入 cann-device-lm 仓 `torch_delegate/` 目录（`gitcode.com/cann/cann-device-lm`） |
+| **torch_npu** | **不装** | absent ✓（stub path OK） | 若装需 **2.9.0.post8**（TorchNPU 26.1.1，配 CANN 9.3.0，见 §2.2）——但 converter 走 stub 路径**刻意不装**（设计决策，见 `cli_design.md`「converter 与 torch_npu 的关系」） |
 
 > 完整包列表见 [`scripts/requirements-p1.txt`](../scripts/requirements-p1.txt)（torchair/torch-delegate 非 pip 包，需源码安装）。
 | numpy / protobuf | 任意 | 随 torchair 装入 | torchair 运行时依赖（`ge._ge_graph` import numpy，`ge_ir_pb2` 查 protobuf 版本） |
@@ -159,7 +159,13 @@ bash scripts/build.sh cpp --asan && ctest --test-dir build
 
 ## 2.2 CANN 运行 + P2 系统 python + torch_npu/NPU（或 GPU）— ③ NPU 出字 + 量化 Step A
 
-本节是**使用 torch_npu/NPU 的运行任务**的总归组：③ NPU 出字（数值验证）+ 量化 Step A（dopt GPTQ）共用 P2 系统 python + torch_npu + NPU。**独立于 P1 venv**（torch_npu 与 CPU-torch 互斥，不可同环境，见下方绑定表）。仅这些运行任务需要。
+> **PyTorch 与 TorchNPU 安装顺序与约束**：
+> 1. **先装 CANN toolkit，再装 TorchNPU**（TorchNPU .so 依赖 CANN lib64 符号，未装 CANN 会报 undefined symbol）。
+> 2. **按实际 Python 版本单独安装**（PyTorch + TorchNPU 必须装在同一个 Python 环境下，版本配套见[《TorchNPU 软件安装》](https://gitcode.com/Ascend/pytorch/blob/master/COMPATIBILITY.md)）。
+> 3. **Python 版本必须一致**：PyTorch、TorchNPU、运行 Python 三者的 Python 版本须一致（torch C 扩展依赖 libpython，不一致会报 ABI 不兼容）。
+> 4. **Kirin 处理器系列产品仅依赖 PyTorch，不需安装 TorchNPU**（Kirin 走 hiai ACL，不经过 torch_npu NPU backend）。TorchNPU 仅用于 Ascend NPU（③ NPU 出字 / 量化加速）。
+
+本节是**使用 torch_npu/NPU 的运行任务**的总归组：③ NPU 出字（数值验证）+ 量化 Step A（dopt GPTQ）共用 P2 系统 python + torch_npu + NPU。**独立于 P1 venv**（P1 venv 刻意不装 torch_npu 走 stub 路径，P2 系统 python 装真 torch_npu 跑 NPU，两者隔离，见下方绑定表）。仅这些运行任务需要。
 
 > **量化 Step A 可选 GPU**：dopt GPTQ 除 NPU（torch_npu）外，**也可用 GPU（CUDA torch）加速**——此时用 GPU env（CUDA torch，无 torch_npu、不需 NPU），不撞下方三重绑定。**③ NPU 出字必须 NPU**（跑 omc 经 `acl.mdl.execute`），不可用 GPU。下表默认按 NPU 路径；GPU 路径把 `torch_npu` 行换成 `torch (CUDA)` + GPU 设备即可。
 
@@ -177,16 +183,15 @@ bash scripts/build.sh cpp --asan && ctest --test-dir build
 
 | TorchNPU 产品版本 | torch_npu 安装包 | torch | 标称 CANN | 备注 |
 |------------------|----------------|-------|-----------|------|
-| 26.1.1 | 2.9.0.post8 | 2.9.0 | CANN 9.1.X | 最新；P1 §2.1 若装 torch_npu 用此 |
+| **26.1.1** | **2.9.0.post8** | **2.9.0** | **CANN 9.3.0** | **← 本机 P2 实际用此行**；最新；P1 §2.1 若装 torch_npu 用此 |
 | 26.1.1 | 2.7.1.post10 | 2.7.1 | CANN 9.1.X | 含 `npu_chunk_gated_delta_rule` |
 | 26.1.0 | 2.9.0.post6 | 2.9.0 | CANN 9.1.0 | |
 | 26.1.0 | 2.7.1.post8 | 2.7.1 | CANN 9.1.0 | `npu_chunk_gated_delta_rule` ≥ 此版本才有 |
 | 26.0.0 | 2.9.0.post2 | 2.9.0 | CANN 9.0.0 | |
-| **26.0.0** | **2.7.1.post4** | **2.7.1** | **CANN 9.0.0** | **← 本机 P2 实际用此行** |
 
-> **关键规则**：同一 TorchNPU 产品版本（如 26.1.1）可配多个 torch 版本，但每个 torch 版本需对应的安装包版本——`2.7.1.post4` 只能配 torch 2.7.1，**不能**配 torch 2.9.0。`.postN` 是同一 torch 版本下的发布序号，**不能换算为产品版本**（2.7.1.post4 ≠ 2.9.0.post4）。
+> **关键规则**：同一 TorchNPU 产品版本（如 26.1.1）可配多个 torch 版本，但每个 torch 版本需对应的安装包版本——`2.9.0.post8` 只能配 torch 2.9.0，**不能**配 torch 2.7.1。`.postN` 是同一 torch 版本下的发布序号，**不能换算为产品版本**（2.7.1.post4 ≠ 2.9.0.post4）。
 >
-> **P1/P2 分两环境根因**：P1 §2.1 用 torch **2.9.0**（converter 需 torch.export 新特性），本节 P2 用 torch **2.7.1** + torch_npu **2.7.1.post4**（TorchNPU 26.0.0）；torch 版本不同 → torch_npu 版本也不同 → 不可同一 python 环境（torch ABI 不兼容）。
+> **P1/P2 隔离根因**：P1 §2.1 用 torch **2.9.0+cpu**（converter 需 torch.export，venv 隔离），本节 P2 用 torch **2.9.0** + torch_npu **2.9.0.post8**（TorchNPU 26.1.1）；P1/P2 同为 torch 2.9.0，但 **P1 venv 刻意不装 torch_npu**（stub 路径，设计决策），P2 系统 python 装 torch_npu 跑 NPU——venv 与系统 python 隔离（依赖不同、环境不同），不能共用。
 
 **CANN 运行用**：同 Part 1 §1.2（同一安装，NPU 出字 / 量化 Step A / ② omc 编译复用，无需另装）。torch_npu .so 依赖 CANN lib64（见上方绑定表）。
 
@@ -195,10 +200,10 @@ bash scripts/build.sh cpp --asan && ctest --test-dir build
 | 组件 | 版本 | 本机实测 | 来源 |
 |------|------|---------|------|
 | **python** | 3.12.9 | 3.12.9 ✓ | `/opt/buildtools/python-3.12.9/bin/python3` |
-| **torch** | 2.7.1+cpu | 2.7.1+cpu ✓ | 系统预装 |
-| **torch_npu** | 2.7.1.post4 | OK ✓（npu True, 2 devices） | 系统预装；属 TorchNPU **26.0.0**，标称配 CANN **9.0.0**（见上方配套表） |
+| **torch** | 2.9.0+cpu | 待验证 | 系统预装（当前 2.7.1+cpu，需升级） |
+| **torch_npu** | 2.9.0.post8 | 待验证 | 当前 2.7.1.post4（TorchNPU 26.0.0），需升级到 2.9.0.post8（TorchNPU 26.1.1，配 CANN 9.3.0，见上方配套表） |
 | torchvision | 0.22.1 | — | 系统预装（可选） |
-| torchaudio | 2.7.1 | OK ✓ | `pip install torchaudio==2.7.1 --force-reinstall --no-deps --user`（匹配 torch 2.7.1，装到 `~/.local/` shadow 系统旧版） |
+| torchaudio | 2.9.0 | 待验证 | `pip install torchaudio==2.9.0 --force-reinstall --no-deps --user`（匹配 torch 2.9.0，装到 `~/.local/` shadow 系统旧版） |
 
 **NPU 设备**：本机 2 张 Ascend910（64GB HBM），`npu-smi` 25.5.5
 
@@ -211,12 +216,12 @@ bash scripts/build.sh cpp --asan && ctest --test-dir build
 
 **⚠️ P2 三个坑**（源自上方三重绑定 + 实测）：
 
-1. **CANN 版本错位**：torch_npu 2.7.1.post4 标称配套 **CANN 9.0.0**，本机 runtime 用 **9.3.0**。本机能跑（npu True 2，向后兼容），但严格按配套表应配 9.0.0；若遇 torch_npu 报符号缺失/segfault，优先排查此错位。
-2. **torch_npu 较老缺算子**：2.7.1.post4（TorchNPU 26.0.0）缺 `npu_chunk_gated_delta_rule`（需 ≥2.7.1.**post8** / TorchNPU 26.1.0+）。影响 qwen3.5 量化 NPU 侧 dopt GPTQ（converter 侧靠 `cann_lm::` 自定义算子绕开，不撞）。**建议**：升级到 torch_npu 2.7.1.post10（TorchNPU 26.1.1，含该算子，配 CANN 9.1.X），但需同步升级 CANN 到 9.1.X 配套。
-3. **torchaudio 版本匹配**：torchaudio 须与 torch 同版本（torchaudio 2.7.1 ↔ torch 2.7.1）。若版本不匹配（如系统装了 torchaudio 2.11.0 + torch 2.7.1），`import torchaudio` 报 `undefined symbol: torch_library_impl`。修复：
+1. **CANN 版本配套**：torch_npu 2.9.0.post8（TorchNPU 26.1.1）标称配套 **CANN 9.3.0**，与本机 runtime CANN 9.3.0 一致，无版本错位风险。
+2. **torch_npu 版本**：2.9.0.post8（TorchNPU 26.1.1）含 `npu_chunk_gated_delta_rule`（≥2.7.1.post8 / TorchNPU 26.1.0+ 即有），不缺算子。
+3. **torchaudio 版本匹配**：torchaudio 须与 torch 同版本（torchaudio 2.9.0 ↔ torch 2.9.0）。若版本不匹配（如系统装了 torchaudio 2.11.0 + torch 2.9.0），`import torchaudio` 报 `undefined symbol: torch_library_impl`。修复：
 
 ```bash
-pip install torchaudio==2.7.1 --force-reinstall --no-deps --user   # 装到 ~/.local/，shadow 系统旧版
+pip install torchaudio==2.9.0 --force-reinstall --no-deps --user   # 装到 ~/.local/，shadow 系统旧版
 ```
 
 **另一个 P2 环境坑**（`build_guide.md` Q8）：
@@ -232,7 +237,7 @@ pip install torchaudio==2.7.1 --force-reinstall --no-deps --user   # 装到 ~/.l
 |------|------|------|
 | musl libc | 鸿蒙系统提供 | C 运行时（musl，非 glibc） |
 | `libneural_network_core.so` | 鸿蒙系统库（Hiai/NNRT） | NPU 推理（hiai ACL 底层） |
-| `libc++_shared.so` | 随 `deploy_ohos/` 包提供 | C++ 运行时（与 engine .so 同目录） |
+| `libc++_shared.so` | 随 `engine_ohos.run` 包提供 | C++ 运行时（与 engine .so 同目录） |
 | `libcann_lm_engine.so` | host 交叉编译产（Part 1 §1.3）→ 部署到设备 | engine SHARED 库（签名版） |
 
 > host 侧只需完成 Part 1 构建（产 `engine_ohos.run`），产物部署到设备后由设备侧运行时承载。

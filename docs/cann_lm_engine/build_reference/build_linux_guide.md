@@ -156,11 +156,11 @@ bash scripts/cann_lm_engine/build_package_ohos.sh
 
 ### 绿判据
 
-输出末尾出现 `=== build_ohos.sh 完成 ===`（方式一）或 `=== 一键完成: deploy_ohos/ ===`（方式二），且 make 阶段无 error。
+输出末尾出现 `=== build_ohos.sh 完成 ===`（方式一）或 `=== 一键完成: engine_ohos.run ===`（方式二），且 make 阶段无 error。
 
 ### 一键脚本（`build_package_ohos.sh`）
 
-精简编排层，只做：`--clean`（删 `build_ohos` 全量重建）→ 预检 java + jar → 调 `build_ohos.sh`（编译+签名）→ `package_ohos.sh`（打包）→ 收尾 `ls deploy_ohos`。SDK/clang-18/GTest/签名全部由 `build_ohos.sh` 内部处理。
+精简编排层，只做：`--clean`（删 `build_ohos` 全量重建）→ 预检 java + jar → 调 `build_ohos.sh`（编译+签名）→ `package_ohos.sh`（打包）→ 收尾 `ls engine_ohos.run`。SDK/clang-18/GTest/签名全部由 `build_ohos.sh` 内部处理。
 
 ## 5. 产物
 
@@ -192,11 +192,11 @@ readelf -h libcann_lm_engine.so | grep Machine
 ### 打包部署包（`package_ohos.sh`）
 
 ```bash
-bash scripts/cann_lm_engine/package_ohos.sh    # 从 build_ohos/ 签名产物 → deploy_ohos/
+bash scripts/cann_lm_engine/package_ohos.sh    # 从 build_ohos/ 签名产物 → engine_ohos.run
 ```
-`deploy_ohos/` 是自包含部署包（有意入库供设备 git pull）：签名产物重命名为加载器期望名（去 `_signed` 后缀），含 `run.sh`（一键跑 6 UT + bbit + 2 smoke，自动 chmod + LD_LIBRARY_PATH）+ `README.md`。`testcase.json` 手工维护，重打包保留。
+`engine_ohos.run` 是自包含部署包（有意入库供设备 git pull）：签名产物重命名为加载器期望名（去 `_signed` 后缀），含 `run.sh`（一键跑 6 UT + bbit + 2 smoke，自动 chmod + LD_LIBRARY_PATH）+ `README.md`。`testcase.json` 手工维护，重打包保留。
 
-设备端：`cd deploy_ohos && ./run.sh`（或 `./run.sh ut_c_api` 单跑）。
+设备端：解压 engine_ohos.run 后 `./run.sh`（或 `./run.sh ut_c_api` 单跑）。
 
 ## 6. 鸿蒙交叉编译三个必踩坑（首次环境准备）
 
@@ -239,10 +239,10 @@ bash scripts/cann_lm_engine/package_ohos.sh    # 从 build_ohos/ 签名产物 �
 - ✅ `libcann_lm_engine.so` + `libc++_shared.so` 交叉编译通过（ELF AArch64，musl 目标；`readelf -d` NEEDED `libc.so` 非 `libc.so.6`）
 - ✅ **9 个可执行交叉编译通过**（6 UT + bbit + 2 smoke；GTest 本地源码 FetchContent，静态 `add_test`）
 - ✅ **全部产物签名完成**（`*_signed`，本机 java-21 + binary-sign-tool.jar `-selfSign 1`）
-- ✅ **打包通过**（`deploy_ohos/` 含全 11 产物 + run.sh + README）
+- ✅ **打包通过**（`engine_ohos.run` 含全 11 产物 + run.sh + README）
 - ✅ `model_executor_ut` / `ut_text_embedding` 已恢复（backend hiai 迁移完成）
 - ⏳ ut_sampler/ut_request_handle/ut_data_type_utils 等旧 backend API UT 未随 hiai 迁移，暂未注册（源码重写属独立工作项）
-- ⏳ 鸿蒙设备实跑验证（待设备；git 提交 deploy_ohos/ 后设备 pull）
+- ⏳ 鸿蒙设备实跑验证（待设备；git 提交 engine_ohos.run 后设备 pull）
 
 ## 10. 提交代码
 

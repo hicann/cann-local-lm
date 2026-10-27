@@ -32,28 +32,36 @@ cann-device-lm/
 ├── cann_lm/                  # 核心源码
 │   ├── converter/            # 导出工具链 (HF 模型 → epair → omc 编译)
 │   ├── engine/               # 推理引擎 (omc 加载 + 推理执行)
-│   ├── models/               # 模型定义 (gemma4 + fused_ops 算子)
-│   └── python/               # Python 推理封装 (cann_llm 包 + 示例)
-├── docs/                     # 设计文档 (converter + engine + 构建)
+│   └── models/               # 模型定义 (gemma4 + fused_ops 算子)
+├── torch_delegate/           # torch-delegate (已合入): epair 序列化/加载 + C++ backend + .venv 构建
+│   ├── csrc/                 # C++ 后端 (epair archive 加载 → GE Graph → OM)
+│   ├── torch_delegate/       # Python 包 (api.py + converter/ + epair/ + core/)
+│   ├── cmake/                # torch-delegate 专用 CMake 模块
+│   ├── docs/                 # torch-delegate 设计文档 + 构建指南
+│   ├── tests/                # torch-delegate 单元测试 (C++ GTest + Python pytest)
+│   ├── build.sh              # 一站式构建 (deps → cpp → wheel → .run)
+│   └── examples/             # 示例 (导出加载/精度对比/异步执行)
+├── docs/                     # 设计文档 (converter + engine + 构建 + 版本演进)
 ├── examples/                 # 端到端用例 (omc 编译 + NPU 出字验证)
 ├── scripts/                  # 构建脚本 (build.sh + build.conf + set_env*.sh + cann_lm_compile/)
-├── tests/                    # 单元测试 (c++/ + py/)
+├── tests/                    # 单元测试 (cpp/ + python/)
 ├── ci/                       # CI/CD
-└── cmake/                    # CMake 公共模块 (modules/ + third_party/)
+└── cmake/                    # CMake 公共模块 (modules/ + third_party/ + TorchDelegatePackage)
 ```
 
 ### 各目录介绍
 
-| 目录　　　　　　　　　　　　 | 职责　　　　　　　　　　　 | 关键文件　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　 |
+| 目录　　　　　　　　　　　　 | 职责　　　　　　　　　　　 | 关键文件　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　 |
 | ------------------------------| ----------------------------| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | **cann_lm/converter/**　　　 | HF 模型 → epair → omc 导出工具链 | `cann_lm_converter.py`(CLI 入口) / `loader.py`(加载) / `saver.py`(保存) / `quant/`(量化:swap/materialize/auto_quant/dopt_wrapper) / `export/`(ge_converter + C++ csrc) |
 | **cann_lm/engine/**　　　　　| omc 推理引擎　　　　　　　| `api/`(Python 接口) / `core/`(核心逻辑) / `backend/`(C++ 后端) / `pipeline/`(推理流水线)　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　 |
 | **cann_lm/models/**　　　　　|模型定义 + 自定义算子　| `gemma4/`(Gemma4ForCausalLM + export_wrapper)  / `fused_ops/`(cann_lm:: + npu:: 算子 schema+fake-meta)　　　　　　　　　　　　　　　　　　　　　|
-| **docs/cann_lm_converter/**　| converter 设计文档　　　　 | `cli/cli_design.md` / `export/export_design.md` / `quant/quant_design.md` / `README.md`(总览)　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　|
+| **torch_delegate/**　　　　　| epair 序列化/加载 + C++ 后端 | `csrc/backend/`(EpairModelLoader → GE Graph → OM) / `torch_delegate/`(api.py + converter + epair + core) / `build.sh`(一键构建) / `examples/`(示例) |
+| **docs/cann_lm_converter/**　| converter 设计文档　　　　 | `cli/cli_design.md` / `export/export_design.md` / `quant/quant_design.md` / `README.md`(总览) / `version_evolution.md`(版本演进)　　　　　　　　　　　　　　　　　　　　　　　　　　　|
 | **examples/test_converter/** | 端到端测试用例　　　　　　 | `export_llm_model/`(C++ omc 编译 + om_npu_verify 出字验证) / `cann_lm_cli_export/run_pd6_cases.sh`(6 用例)　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　|
 | **scripts/**　　　　　　　　 | 构建脚本　　　　　　　　　 | `build.sh`(顶层 check/deps/third_party/cpp/tests/wheel/package/all) / `build.conf`(版本+git源+自定位派生路径) / `set_env.sh`(converter+compile 统一 env, 真 CANN 无 stubs) / `set_env_cann.sh`(③ NPU) / `_env_common.sh`(公共) / `cann_lm_compile/build_cpp.sh`(C++ .so+cann_lm_compile) / `build_test.sh`(ASAN 测试) / `build_third_party.sh`(自建 json/gtest/makeself) / `cann_lm_{converter,engine}/build_wheel.sh`(whl 打包)　 |
-| **tests/**　　　　　　　　　 | 单元测试　　　　　　　　　 | `ut/`(C++ GTest; 跑: `bash scripts/build.sh tests` → ASAN+ctest) / `py/`+`python/`(pytest) / `stub_ndk/`(backend probes)　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　 |
-| **ci/**　　　　　　　　　　　| CI/CD　　　　　　　　　　　| 流水线定义、构建脚本、镜像配置　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　 |
+| **tests/**　　　　　　　　　 | 单元测试　　　　　　　　　 | `cpp/`(C++ GTest; 跑: `bash scripts/build.sh tests` → ASAN+ctest) / `python/`(pytest)　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　 |
+| **ci/**　　　　　　　　　　　| CI/CD　　　　　　　　　　　| 流水线定义、构建脚本、镜像配置　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　 |
 | **cmake/**　　　　　　　　　 | CMake 共享　　　　　　　　 | `modules/`(DelegateCommonFlags + Find*.cmake + TorchDelegateCannCommon) / `third_party/`(ExternalProject 下载 json/gtest/makeself)　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　 |
 
 ## ⚡️ 快速开始
@@ -67,6 +75,7 @@ cann-device-lm/
 | [快速入门](docs/QUICKSTART.md) | 安装 / 导出 epair / 量化导出 / omc 编译 / 部署到鸿蒙 |
 | [构建指南](docs/build_guide.md) | 构建前置 / 一键构建+安装+使用 / 速查 / FAQ |
 | [环境依赖](docs/env_dependencies.md) | 构建/运行依赖分类 / P1 venv / P2 torch_npu / 多 env 速查表 |
+| [版本演进](docs/version_evolution.md) | 发布节奏 / 配套表（HarmonyOS / CANN / 芯片 / PyTorch / TorchNPU） |
 | [CLI 设计](docs/cann_lm_converter/cli/cli_design.md) | CLI 入口 / convert() / 命令行参数 / 调用链 |
 | [导出设计](docs/cann_lm_converter/export/export_design.md) | loader / saver / ExportWrapper / C++ 加载 |
 | [量化设计](docs/cann_lm_converter/quant/quant_design.md) | W4A8 方案 / 轻量化工具 GPTQ / swap / 算子规格 |

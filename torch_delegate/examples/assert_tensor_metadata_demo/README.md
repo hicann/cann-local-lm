@@ -1,12 +1,14 @@
 # assert_tensor_metadata_demo
 
-演示 `torch.export` 自动插入的 `aten._assert_tensor_metadata` 节点，以及如何在导出后将其移除，再导出 epair 并在 C++ 侧加载执行。
+简体中文 | [English](README_en.md)
+
+演示 `torch.export` 自动插入的 `aten._assert_tensor_metadata` 节点，以及如何在导出后将其移除，再导出epair并在C++侧加载执行。
 
 ## 背景
 
-`torch.export` 在导出时会自动插入 `aten._assert_tensor_metadata` 运行时校验节点，用于在推理时检查 tensor 的 dtype / device / layout 是否与导出时一致。
+`torch.export` 在导出时会自动插入 `aten._assert_tensor_metadata` 运行时校验节点，用于在推理时检查tensor的dtype / device / layout是否与导出时一致。
 
-该节点的 schema 为 `-> ()`，**没有计算语义**，但会被下游 GE / torchair 转换器拒绝，导致 epair 或 `torch.compile` 路径报错。
+该节点的schema为 `-> ()`，**没有计算语义**，但会被下游GE / torchair转换器拒绝，导致epair或 `torch.compile` 路径报错。
 
 ### 触发条件
 
@@ -14,7 +16,7 @@
 
 > 参考: `torch/_export/utils.py::_insert_aten_to_metadata_assert_pass`
 
-本示例**不使用任何自定义算子**（无需 `torch.library` / `xllm_placeholder`），也**不依赖 fallback codegen**（无需 torchair converter），仅靠标准 `aten.to.dtype` 即可触发。
+本示例**不使用任何自定义算子**（无需 `torch.library` / `xllm_placeholder`），也**不依赖fallback codegen**（无需torchair converter），仅靠标准 `aten.to.dtype` 即可触发。
 
 ## 模型
 
@@ -27,9 +29,9 @@ class SimpleModel(nn.Module):
         return y.to(torch.bfloat16)   # aten.to.dtype  -> _assert_tensor_metadata
 ```
 
-导出后的 graph（关键部分）:
+导出后的graph（关键部分）:
 
-```
+```text
 %mm = aten.mm.default(%x, %p_weight)
 %_assert_tensor_metadata_default = aten._assert_tensor_metadata.default(%mm, dtype=float32, ...)
 %to = aten.to.dtype(%mm, torch.float32)
@@ -54,7 +56,7 @@ ep.graph_module.recompile()
 
 ## 目录结构
 
-```
+```text
 assert_tensor_metadata_demo/
 ├── README.md              # 本文档
 ├── export_demo.py         # Python 侧: 导出 epair + 保存输入/参考输出
@@ -68,7 +70,7 @@ assert_tensor_metadata_demo/
 1. **torch 2.9.0+**
 2. **torch_npu** + **torchair**
 3. **torch-delegate** 已构建
-4. **CANN 9.0.0+**
+4. **CANN 9.2.0+**
 
 ## 快速开始
 
@@ -88,13 +90,13 @@ bash run.sh
 ```
 
 `run.sh` 自动完成：
-1. Python 侧导出 epair + 保存输入二进制和参考输出
-2. C++ 侧构建 epair_loader
-3. C++ 侧加载 epair 执行推理 + 精度比对
+1. Python侧导出epair +保存输入二进制和参考输出
+2. C++侧构建epair_loader
+3. C++侧加载epair执行推理+精度比对
 
 ### 分步运行
 
-#### 1. 导出 epair
+#### 导出epair
 
 ```bash
 python3 export_demo.py
@@ -102,13 +104,13 @@ python3 export_demo.py
 
 生成文件：
 - `generate/simple_model.pt2` - ExportedProgram
-- `generate/simple_model.epair` - epair 文件
+- `generate/simple_model.epair` - epair文件
 - `generate/input_0.bin` - 示例输入
 - `generate/ref_output.bin` - 参考输出
-- `generate/graph_before.py` - 移除前的 graph 文本
-- `generate/graph_after.py` - 移除后的 graph 文本
+- `generate/graph_before.py` - 移除前的graph文本
+- `generate/graph_after.py` - 移除后的graph文本
 
-#### 2. 构建 C++ 示例
+#### 构建C++示例
 
 ```bash
 cmake -S . -B build \
@@ -118,7 +120,7 @@ cmake -S . -B build \
 cmake --build build -j$(nproc)
 ```
 
-#### 3. 运行 C++ 加载器
+#### 运行C++加载器
 
 ```bash
 TORCH_PKG_DIR=$(python3 -c "import torch, os; print(os.path.dirname(torch.__file__))")
@@ -128,7 +130,7 @@ export LD_LIBRARY_PATH="${TORCH_PKG_DIR}/lib:${TORCH_PKG_DIR}.libs:${LD_LIBRARY_
 
 ## 流程
 
-```
+```python
 torch.export.export(strict=False)
     │
     ▼
@@ -159,6 +161,6 @@ C++ EpairModelLoader
 ## 参考
 
 - `accuracy_compare/export_program.py` — 原始 `_remove_assert_tensor_metadata` 实现
-- `accuracy_compare/ge_converters.py` — 兜底 converter（no-op）
+- `accuracy_compare/ge_converters.py` — 兜底converter（no-op）
 - `torch/_export/utils.py::_insert_aten_to_metadata_assert_pass` — 上游插入逻辑
-- `export_and_load_example/` — 基础 epair 加载示例
+- `export_and_load_example/` — 基础epair加载示例

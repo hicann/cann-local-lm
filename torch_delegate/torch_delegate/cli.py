@@ -8,7 +8,7 @@
 """torch-delegate-config 命令行入口。
 
 仅提供构建期信息：C++ 制品前缀与包版本。运行期库路径不由本工具注入，
-需由使用方自行配置 LD_LIBRARY_PATH（见 docs/build.md）。
+需由使用方自行配置 LD_LIBRARY_PATH（见 docs/zh/guide/build.md）。
 """
 
 import argparse

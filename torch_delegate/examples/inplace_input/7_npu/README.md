@@ -1,10 +1,12 @@
-# Inplace Input NPU 验证
+# Inplace Input NPU验证
 
-本目录提供完整的 NPU epair 导出、加载和精度验证流程。
+简体中文 | [English](README_en.md)
+
+本目录提供完整的NPU epair导出、加载和精度验证流程。
 
 ## 目录结构
 
-```
+```text
 7_npu/
 ├── README.md           # 本文档
 ├── CMakeLists.txt      # C++ 构建配置
@@ -24,24 +26,24 @@
 
 ## 环境要求
 
-1. **硬件**: Ascend NPU 设备
+1. **硬件**: Ascend NPU设备
 2. **软件**:
-   - CANN 9.0.0 或更高版本
+   - CANN 9.2.0或更高版本
    - Python 3.11+ with torch, torch_npu
-   - GCC 9+ with C++17 支持
+   - GCC 9+ with C++17支持
    - CMake 3.14+
 
 ## 快速开始 (一键运行)
 
-### Step 1: 设置环境变量
+### 设置环境变量
 
 ```bash
 # 必须设置这两个环境变量
 export TORCH_DELEGATE_ROOT=/mnt/workspace/File/torch-delegate
-export ASCEND_HOME_PATH=/home/developer/Ascend/cann-9.0.0
+export ASCEND_HOME_PATH=/home/developer/Ascend/cann-9.2.0
 ```
 
-### Step 2: 运行一键脚本
+### 运行一键脚本
 
 ```bash
 cd $TORCH_DELEGATE_ROOT/examples/inplace_input/7_npu
@@ -49,14 +51,14 @@ bash run_all.sh
 ```
 
 脚本会自动完成:
-- 构建 TorchDelegate
-- 构建 C++ inplace_verify 可执行文件
-- 导出三个模型的 epair 文件
-- 在 NPU 上运行并验证精度
+- 构建TorchDelegate
+- 构建C++ inplace_verify可执行文件
+- 导出三个模型的epair文件
+- 在NPU上运行并验证精度
 
 ### 预期输出
 
-```
+```text
 [INFO] ============================================
 [INFO] 验证结果汇总
 [INFO] ============================================
@@ -72,7 +74,7 @@ bash run_all.sh
 
 如果一键脚本失败或需要分步调试:
 
-### Step 1: 构建 TorchDelegate
+### 构建TorchDelegate
 
 ```bash
 cd $TORCH_DELEGATE_ROOT
@@ -84,7 +86,7 @@ cd $TORCH_DELEGATE_ROOT
 ./build.sh --release --cann_3rd_lib_path=$TORCH_DELEGATE_ROOT/third_party
 ```
 
-### Step 2: 构建 C++ inplace_verify
+### 构建C++ inplace_verify
 
 ```bash
 cd $TORCH_DELEGATE_ROOT/examples/inplace_input/7_npu
@@ -102,7 +104,7 @@ cmake .. \
 make -j$(nproc)
 ```
 
-### Step 3: 导出 epair 文件
+### 导出epair文件
 
 ```bash
 cd $TORCH_DELEGATE_ROOT/examples/inplace_input/7_npu
@@ -114,7 +116,7 @@ pip install -e $TORCH_DELEGATE_ROOT
 python3 export_epair.py
 ```
 
-### Step 4: 运行 NPU 验证
+### 运行NPU验证
 
 ```bash
 cd $TORCH_DELEGATE_ROOT/examples/inplace_input/7_npu/build
@@ -138,7 +140,7 @@ export LD_LIBRARY_PATH=$TORCH_DELEGATE_ROOT/build/release/install/lib:$ASCEND_HO
 
 ## 移植到其他环境
 
-### 方式一: 完整移植
+### 方式一 完整移植
 
 将整个 `torch-delegate` 项目复制到目标环境:
 
@@ -155,9 +157,9 @@ cd $TORCH_DELEGATE_ROOT/examples/inplace_input/7_npu
 bash run_all.sh
 ```
 
-### 方式二: 最小移植 (仅运行验证)
+### 方式二 最小移植 (仅运行验证)
 
-如果目标环境已构建好 TorchDelegate 和 epair 文件:
+如果目标环境已构建好TorchDelegate和epair文件:
 
 ```bash
 # 1. 复制必需文件
@@ -186,30 +188,30 @@ export LD_LIBRARY_PATH=/path/to/torch-delegate/build/release/install/lib:$ASCEND
 
 ## 常见问题
 
-### Q: 找不到 libtorch_delegate_backend.so
-**A**：确保 `LD_LIBRARY_PATH` 包含 TorchDelegate 的 lib 目录：
+### Q找不到libtorch_delegate_backend.so
+**A**：确保 `LD_LIBRARY_PATH` 包含TorchDelegate的lib目录：
 ```bash
 export LD_LIBRARY_PATH=$TORCH_DELEGATE_ROOT/build/release/install/lib:$LD_LIBRARY_PATH
 ```
 
-### Q: 找不到 libc10.so
-**A**：确保 `LD_LIBRARY_PATH` 包含 torch 的 lib 目录：
+### Q找不到libc10.so
+**A**：确保 `LD_LIBRARY_PATH` 包含torch的lib目录：
 ```bash
 export LD_LIBRARY_PATH=$(python3 -c "import torch; print(torch.__path__[0] + '/lib')"):$LD_LIBRARY_PATH
 ```
 
-### Q: CMake 找不到 TorchDelegate
-**A**：确保 `-DTorchDelegate_ROOT_DIR` 指向正确的 install 目录：
+### Q CMake找不到TorchDelegate
+**A**：确保 `-DTorchDelegate_ROOT_DIR` 指向正确的install目录：
 ```bash
 cmake .. -DTorchDelegate_ROOT_DIR=/path/to/torch-delegate/build/release/install
 ```
 
-### Q: epair 加载失败 "manifest.json not found"
-**A**: PyTorchStreamReader 要求所有文件在单一子目录，epair 格式已修复此问题。
+### Q epair加载失败 "manifest.json not found"
+**A**: PyTorchStreamReader要求所有文件在单一子目录，epair格式已修复此问题。
 如果遇到此问题，请确保使用最新版本的 `torch_delegate/api.py`。
 
-### Q: NPU 设备不可用
-**A**：检查 NPU 驱动和 CANN 安装：
+### Q NPU设备不可用
+**A**：检查NPU驱动和CANN安装：
 ```bash
 # 检查 NPU 设备
 npu-smi info
@@ -222,8 +224,8 @@ cat $ASCEND_HOME_PATH/version.info
 
 | 文件 | 位置 |
 |------|------|
-| TorchDelegate 源码 | `$TORCH_DELEGATE_ROOT/csrc/` |
+| TorchDelegate源码 | `$TORCH_DELEGATE_ROOT/csrc/` |
 | Python API | `$TORCH_DELEGATE_ROOT/torch_delegate/api.py` |
-| epair 格式常量 | `$TORCH_DELEGATE_ROOT/csrc/common/epair_archive_constants.h` |
-| C++ 加载流程 | `$TORCH_DELEGATE_ROOT/csrc/backend/delegate_session.cc` |
+| epair格式常量 | `$TORCH_DELEGATE_ROOT/csrc/common/epair_archive_constants.h` |
+| C++加载流程 | `$TORCH_DELEGATE_ROOT/csrc/backend/delegate_session.cc` |
 | 模型定义 | `$TORCH_DELEGATE_ROOT/examples/inplace_input/models.py` |

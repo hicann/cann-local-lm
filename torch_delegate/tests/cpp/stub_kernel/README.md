@@ -1,36 +1,38 @@
-# stub_kernel.so - 自定义算子 Schema Stub
+# stub_kernel.so - 自定义算子Schema Stub
+
+简体中文 | [English](README_en.md)
 
 ## 用途
 
-将自定义算子 schema（如 `xllm_ascend::rope_in_place`）注册到 libtorch dispatcher，
-使 `FallbackCodegen` 能够查询非原生注册算子的 schema 信息。
+将自定义算子schema（如 `xllm_ascend::rope_in_place`）注册到libtorch dispatcher，
+使 `FallbackCodegen` 能够查询非原生注册算子的schema信息。
 
-**已验证**： 编译成功（485KB），schema 注册已通过 rope_in_place.json 测试。
+**已验证**： 编译成功（485KB），schema注册已通过rope_in_place.json测试。
 
 ---
 
 ## 已注册算子
 
-### rope_in_place（inplace 版本）
+### rope_in_place（inplace版本）
 
 **命名空间**： `xllm_ascend`
 
 **Schema**：
-```
+```text
 rope_in_place(Tensor(a!) input, Tensor sin_cache, Tensor cos_cache) -> ()
 ```
 
-**完整 Target**： `torch.ops.xllm_ascend.rope_in_place.default`
+**完整Target**： `torch.ops.xllm_ascend.rope_in_place.default`
 
 **关键特征**：
-- `Tensor(a!)`： 表示 input 参数会被**写入**（alias annotation）
-- `-> ()`： 返回类型为 `void`（inplace 操作不返回新 tensor）
-- Kernel 参数类型: `at::Tensor&`（引用，非 const）
+- `Tensor(a!)`： 表示input参数会被**写入**（alias annotation）
+- `-> ()`： 返回类型为 `void`（inplace操作不返回新tensor）
+- Kernel参数类型: `at::Tensor&`（引用，非const）
 
 **Dispatch Keys**：
-- Meta: inplace shape inference（无输出 tensor，input shape 不变）
-- PrivateUse1: NPU stub（空实现，不修改 input）
-- CPU: CPU stub（空实现，不修改 input）
+- Meta: inplace shape inference（无输出tensor，input shape不变）
+- PrivateUse1: NPU stub（空实现，不修改input）
+- CPU: CPU stub（空实现，不修改input）
 
 **来源**： 基于 `tests/cpp/rope_in_place.json`
 
@@ -50,7 +52,7 @@ print(f'算子已注册: {op}')  # ✅ 成功
 
 ## 编译方式
 
-### 方式 1：项目 CMake 集成构建（推荐）
+### 方式1项目CMake集成构建（推荐）
 
 ```bash
 # 配置项目（启用 BUILD_TESTS=ON）
@@ -68,7 +70,7 @@ ls build/tests/cpp/stub_kernel/libstub_kernel.so
 
 ---
 
-### 方式 2：独立 CMake 构建（脱离项目）
+### 方式2独立CMake构建（脱离项目）
 
 ```bash
 # 进入 stub_kernel 目录
@@ -92,15 +94,15 @@ ls libstub_kernel.so
 ```
 
 **注意**：
-- `TORCH_PKG_DIR` 必须指向 **Python torch 包目录**（如 `/mnt/workspace/thj_delegate/lib/python3.12/site-packages/torch`）
-- `TORCH_NPU_DIR` 必须指向 **libtorch_npu 源码根目录**（如 `/mnt/workspace/gitCode/pytorch/libtorch_npu`）
-- CMake 会自动将源码父目录加入 include 路径，以解析 `NPUQueue.h` 中的 `#include "torch_npu/csrc/logging/LogContext.h"`
+- `TORCH_PKG_DIR` 必须指向 **Python torch包目录**（如 `/mnt/workspace/thj_delegate/lib/python3.12/site-packages/torch`）
+- `TORCH_NPU_DIR` 必须指向 **libtorch_npu源码根目录**（如 `/mnt/workspace/gitCode/pytorch/libtorch_npu`）
+- CMake会自动将源码父目录加入include路径，以解析 `NPUQueue.h` 中的 `#include "torch_npu/csrc/logging/LogContext.h"`
 - 自动查找 `${TORCH_NPU_DIR}/lib/libtorch_npu.so` 并链接，提供 `NPUStream` 等运行时符号
-- 将 `/path/to/libtorch` 替换为实际的 libtorch 安装路径
+- 将 `/path/to/libtorch` 替换为实际的libtorch安装路径
 
 ---
 
-### 方式 3：g++ 直接编译（无需 CMake）
+### 方式3 g++直接编译（无需CMake）
 
 ```bash
 # 进入 stub_kernel 目录
@@ -123,21 +125,21 @@ g++ -shared -fPIC -o libstub_kernel.so stub_kernel.cc \
 ls libstub_kernel.so
 ```
 
-**注意**： 根据实际 libtorch 安装路径调整 `-I` 和 `-L` 参数。
+**注意**： 根据实际libtorch安装路径调整 `-I` 和 `-L` 参数。
 
 ---
 
 ## 使用方式
 
-stub_kernel.so 需要在 `FallbackCodegen` 调用 `findSchema` 之前加载，使其 schema 注册到 libtorch dispatcher。推荐以下方式：
+stub_kernel.so需要在 `FallbackCodegen` 调用 `findSchema` 之前加载，使其schema注册到libtorch dispatcher。推荐以下方式：
 
-### 方式 1： LD_PRELOAD（推荐）
+### 方式1 LD_PRELOAD（推荐）
 
 ```bash
 LD_PRELOAD=/path/to/libstub_kernel.so ./torch_delegate_tests
 ```
 
-### 方式 2： 测试代码中 dlopen
+### 方式2测试代码中dlopen
 
 ```cpp
 #include <dlfcn.h>
@@ -148,7 +150,7 @@ if (!handle) {
 }
 ```
 
-### 方式 3： Python import（需构建为 extension）
+### 方式3 Python import（需构建为extension）
 
 ```python
 # 构建 stub_kernel 为 Python extension（需 PyInit_stub_kernel 符号）
@@ -178,7 +180,7 @@ print(f'成功: Schema 可通过 torch.ops 访问')
 ```
 
 **预期输出**：
-```
+```text
 已加载: /path/to/libstub_kernel.so
 算子已注册: xllm_ascend.rope_in_place
 成功: Schema 可通过 torch.ops 访问
@@ -186,7 +188,7 @@ print(f'成功: Schema 可通过 torch.ops 访问')
 
 ---
 
-### Schema 注册检查（C++）
+### Schema注册检查（C++）
 
 ```cpp
 #include <ATen/core/function_schema.h>
@@ -202,7 +204,7 @@ if (handle.has_value()) {
 ```
 
 **预期输出**：
-```
+```text
 Schema found: rope_in_place(Tensor input, Tensor sin_cache, Tensor cos_cache) -> Tensor
 ```
 
@@ -210,7 +212,7 @@ Schema found: rope_in_place(Tensor input, Tensor sin_cache, Tensor cos_cache) ->
 
 ## 目录结构
 
-```
+```text
 tests/cpp/stub_kernel/
 ├── stub_kernel.cc          # Schema 注册实现
 ├── CMakeLists.txt          # 独立 CMake 构建配置
@@ -226,16 +228,16 @@ tests/cpp/stub_kernel/
 
 ## 故障排查
 
-### Schema not found 错误
+### Schema not found错误
 
-```
+```text
 FallbackCodegen: schema not found for 'xllm_ascend::rope_in_place' with overload ''
 ```
 
 **解决方案**：
-1. 检查 stub_kernel.so 文件是否存在
-2. 通过 `LD_PRELOAD` 或代码中 `dlopen` 加载 stub_kernel.so
-3. 检查 dlopen 是否成功（启用调试日志）:
+1. 检查stub_kernel.so文件是否存在
+2. 通过 `LD_PRELOAD` 或代码中 `dlopen` 加载stub_kernel.so
+3. 检查dlopen是否成功（启用调试日志）:
    ```bash
    export TORCH_DELEGATE_LOG_LEVEL=DEBUG
    ./torch_delegate_tests
@@ -243,17 +245,17 @@ FallbackCodegen: schema not found for 'xllm_ascend::rope_in_place' with overload
 
 ---
 
-### ABI mismatch 错误
+### ABI mismatch错误
 
-```
+```text
 undefined symbol: _ZNK2at6Tensor... (ABI=0 vs ABI=1)
 ```
 
-**解决方案**： 确保 stub_kernel 使用 `_GLIBCXX_USE_CXX11_ABI=1` 编译（与 libtorch 保持一致）
+**解决方案**： 确保stub_kernel使用 `_GLIBCXX_USE_CXX11_ABI=1` 编译（与libtorch保持一致）
 
 ---
 
-### dlopen 权限错误
+### dlopen权限错误
 
 **解决方案**： 检查文件权限和路径可访问性:
 ```bash
@@ -279,14 +281,14 @@ TORCH_LIBRARY_IMPL(xllm_ascend, Meta, m) {
 }
 ```
 
-然后重新编译 stub_kernel.so。
+然后重新编译stub_kernel.so。
 
 ---
 
 ## 相关文件
 
-- `tests/cpp/rope_in_place.json`： 定义算子结构的源 JSON
-- `csrc/fallback_codegen/fallback_codegen.cc`： Fallback codegen 实现
+- `tests/cpp/rope_in_place.json`： 定义算子结构的源JSON
+- `csrc/fallback_codegen/fallback_codegen.cc`： Fallback codegen实现
 - `tests/CMakeLists.txt`： 项目构建集成
 
 ---
@@ -294,11 +296,11 @@ TORCH_LIBRARY_IMPL(xllm_ascend, Meta, m) {
 ## 验证结果总结
 
 ### 编译验证
-- ✅ stub_kernel.so 编译成功（485KB）
-- ✅ 导出符号包含 `xllm_ascend::rope_in_place` schema 注册
-- ✅ ABI=1 设置正确（与 libtorch 一致）
+- ✅ stub_kernel.so编译成功（485KB）
+- ✅ 导出符号包含 `xllm_ascend::rope_in_place` schema注册
+- ✅ ABI=1设置正确（与libtorch一致）
 
-### Schema 注册验证
+### Schema注册验证
 ```bash
 python3 -c "
 import ctypes, torch
@@ -308,10 +310,10 @@ print(f'算子: {op}')  # 输出: 算子: xllm_ascend.rope_in_place
 "
 ```
 
-### rope_in_place.json 验证
-- ✅ JSON 解析成功（214KB, 21 个 nodes）
-- ✅ rope_in_place node 确认:
+### rope_in_place.json验证
+- ✅ JSON解析成功（214KB, 21个nodes）
+- ✅ rope_in_place node确认:
   - target: `torch.ops.xllm_ascend.rope_in_place.default`
   - inputs: 3（input, sin_cache, cos_cache）
   - outputs: 1
-  - `ascend_ir.source`： MISSING（需要 fallback codegen）
+  - `ascend_ir.source`： MISSING（需要fallback codegen）

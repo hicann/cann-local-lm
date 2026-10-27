@@ -63,6 +63,12 @@ torch_delegate_tests
 # Generated fixtures
 tests/cpp/fixtures/
 
+# Build tests
+/build_tests/
+
+# Ruff cache
+.ruff_cache/
+
 # Output directory
 output/
 

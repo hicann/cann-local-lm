@@ -6,7 +6,7 @@
 
 ## 项目结构
 
-```
+```text
 torch-delegate/
 ├── cmake/                  ← CMake 模块（FindXxx.cmake）、三方库构建、打包配置
 ├── torch_delegate/         ← Python 包（converter、epair、api、core）
@@ -42,7 +42,7 @@ torch-delegate/
 
 ### 通用
 
-- 构建指南参考：[build.md](./docs/build.md)
+- 构建指南参考：[build.md](./docs/zh/guide/build.md)
 - 依赖：`torch`（必需）+ `torchair`（Ascend 后端必需，用于 IR 转换）
 - 测试：`pytest`，测试文件放置于 `tests/python/`；单文件运行 `pytest tests/python/test_api.py`，单用例 `pytest tests/python/test_api.py::test_name`
 - **protobuf ABI 陷阱**：`tests/python/conftest.py` 强制设置 `PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python`，因为 protobuf C++ 扩展与 PyTorch 编译的 protobuf 版本 ABI 不兼容，调用 `serialize()` 时会 segfault；写脚本直接调用 `torch.export` / `serialize()` 时须手动设置此环境变量
@@ -147,7 +147,7 @@ TorchDelegate 使用 `ErrorResult` 结构体实现自动返回值类型推导，
 
 ## C++ 工程构建
 
-详见 [docs/build.md](docs/build.md)。主要命令：
+详见 [docs/zh/guide/build.md](docs/zh/guide/build.md)。主要命令：
 
 - `./build.sh` — 一站式构建（三方库 → C++ 库 → 单一 whl）
 - `./build.sh --skip_third_party` — 跳过三方库
@@ -161,5 +161,5 @@ TorchDelegate 使用 `ErrorResult` 结构体实现自动返回值类型推导，
 - **单一 whl 发布**：唯一发布产物是 `output/package/torch_delegate-<ver>-py3-none-linux_<arch>.whl`，同时承载 Python API 与 C++ 制品（`torch_delegate/inc/`、`torch_delegate/lib/`、`torch_delegate/lib/cmake/TorchDelegate/`）。不再生成 `.run` 安装包，也不提供 C++ 独立分发包；C++-only 用户直接解压 whl（zip）取用。
 - **版本号单一来源**：`build.conf` 的 `TORCH_DELEGATE_VERSION` 是唯一来源，构建时经 `TORCH_DELEGATE_PACKAGE_VERSION` 注入 whl 元数据与 `torch_delegate/_version.py`，CMake 用同一变量；`pyproject.toml` 使用 dynamic version，不得硬编码版本号。debug 构建追加 PEP 440 local version `+debug`。
 - **多 Python 版本**：whl 的 tag 固定 `py3-none`（动态库不链接 libpython），单包覆盖 3.10~3.13；`requires-python = ">=3.10,<3.14"`。
-- **不提供 set_env.sh**：C++ 前缀通过 `torch_delegate.cmake_prefix()` 或 `torch-delegate-config --cmake-prefix` 获取；运行期 `LD_LIBRARY_PATH`（libtorch、CANN）由用户按 docs/build.md 手动配置，动态库不注入指向 torch/CANN 的 RUNPATH。
+- **不提供 set_env.sh**：C++ 前缀通过 `torch_delegate.cmake_prefix()` 或 `torch-delegate-config --cmake-prefix` 获取；运行期 `LD_LIBRARY_PATH`（libtorch、CANN）由用户按 docs/zh/guide/build.md 手动配置，动态库不注入指向 torch/CANN 的 RUNPATH。
 - **依赖声明**：whl 只声明 `torch>=2.9`；`torch_npu`（提供 `torchair`）由用户自行安装配套版本，运行期缺失时直接报错，不自动安装。

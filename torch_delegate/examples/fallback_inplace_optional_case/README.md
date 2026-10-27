@@ -1,15 +1,17 @@
-# Fallback Inplace/Optional 测试用例
+# Fallback Inplace/Optional测试用例
 
-本示例测试 fallback 场景下的两个关键特性：
+简体中文 | [English](README_en.md)
 
-1. **多 Inplace 参数**：单个算子定义中有多个 inplace 参数
+本示例测试fallback场景下的两个关键特性：
+
+1. **多Inplace参数**：单个算子定义中有多个inplace参数
 2. **多可选参数**：算子定义中有多个可选参数，调用时只传入部分
 
 ---
 
 ## 测试目标
 
-### 场景 1： 多 Inplace 参数
+### 多Inplace参数
 
 ```python
 # dual_inplace_: a *= scale_a; b *= scale_b
@@ -17,11 +19,11 @@ my_ops.define("dual_inplace_(Tensor(a!) a, Tensor(b!) b, float scale_a, float sc
 ```
 
 验证要点：
-- x 和 y 都被原地修改
-- REG_OP 声明完整 schema（a, b, scale_a, scale_b）
-- auto_functionalized_v2 正确解包
+- x和y都被原地修改
+- REG_OP声明完整schema（a, b, scale_a, scale_b）
+- auto_functionalized_v2正确解包
 
-### 场景 2： 多可选参数
+### 多可选参数
 
 ```python
 # multi_optional_op: result = x * alpha + beta + gamma + delta
@@ -31,19 +33,19 @@ my_ops.define(
 ```
 
 验证要点：
-- 调用 `multi_optional_op(x, gamma=3.0)` 时，EP JSON 只有 x 和 gamma
-- REG_OP 声明全量 5 个参数（x, alpha, beta, gamma, delta）
-- Execute 从 GE input 读全量参数，缺失的 alpha/beta/delta 由 GE 提供默认值
+- 调用 `multi_optional_op(x, gamma=3.0)` 时，EP JSON只有x和gamma
+- REG_OP声明全量5个参数（x, alpha, beta, gamma, delta）
+- Execute从GE input读全量参数，缺失的alpha/beta/delta由GE提供默认值
 
-- 调用 `multi_optional_op(x, alpha=2.0, gamma=3.0)` 时，EP JSON 有 x, alpha, gamma
-- REG_OP 声明全量 5 个参数
-- Execute 从 GE input 读全量参数
+- 调用 `multi_optional_op(x, alpha=2.0, gamma=3.0)` 时，EP JSON有x, alpha, gamma
+- REG_OP声明全量5个参数
+- Execute从GE input读全量参数
 
 ---
 
 ## 目录结构
 
-```
+```text
 fallback_inplace_optional_case/
 ├── custom_ops.py           # 算子定义 + CPU/NPU/Meta 实现
 ├── custom_ops_reg.cpp      # C++ 算子注册（CPU + PrivateUse1）
@@ -62,10 +64,10 @@ fallback_inplace_optional_case/
 
 ## 环境要求
 
-1. **torch 2.9.0+cpu**（推荐使用 py311gcc13 venv）
+1. **torch 2.9.0+cpu**（推荐使用py311gcc13 venv）
 2. **torch_npu** + **torchair**
 3. **torch-delegate** 已构建
-4. **CANN 9.0.0+**
+4. **CANN 9.2.0+**
 5. **libtorch_npu** 源码可用
 
 ---
@@ -91,17 +93,17 @@ bash run.sh
 
 ## 详细步骤
 
-### step 1： 导出模型
+### 导出模型
 
 ```bash
 python3 export_model.py
 ```
 
 生成文件：
-- `output/model_inplace_optional.epair` - Epair 文件
+- `output/model_inplace_optional.epair` - Epair文件
 - `output/input_*.bin` / `output/input_*.txt` - 测试输入数据
 
-### step 2： 构建 C++ Runner
+### 构建C++ Runner
 
 ```bash
 mkdir -p build && cd build
@@ -110,10 +112,10 @@ cmake --build . -j$(nproc)
 ```
 
 生成文件：
-- `build/fallback_runner` - C++ 执行器
+- `build/fallback_runner` - C++执行器
 - `build/libcustom_ops.so` - 自定义算子库
 
-### step 3： 执行 Runner
+### 执行Runner
 
 ```bash
 export TORCH_DELEGATE_ENABLE_FALLBACK_CODEGEN=1
@@ -121,7 +123,7 @@ export TORCH_DELEGATE_OUTPUT_DIR=./output_dir
 ./build/fallback_runner --custom-ops build/libcustom_ops.so output/model_inplace_optional.epair
 ```
 
-### step 4： 精度对比
+### 精度对比
 
 ```bash
 python3 compare_accuracy.py
@@ -131,7 +133,7 @@ python3 compare_accuracy.py
 
 ## 预期输出
 
-```
+```text
 ========================================
 [1/6] 检查环境
 ========================================
@@ -183,9 +185,9 @@ python3 compare_accuracy.py
 
 ## 技术要点
 
-### Inplace 标记
+### Inplace标记
 
-必须使用 `(a!)` 和 `(b!)` 标记，否则 PyTorch 不会识别为 inplace：
+必须使用 `(a!)` 和 `(b!)` 标记，否则PyTorch不会识别为inplace：
 
 ```python
 # 正确
@@ -197,7 +199,7 @@ my_ops.define("dual_inplace_(Tensor a, Tensor b, float scale_a, float scale_b) -
 
 ### auto_functionalized_v2
 
-PyTorch 会将 inplace 算子包装为 `auto_functionalized_v2`：
+PyTorch会将inplace算子包装为 `auto_functionalized_v2`：
 
 ```json
 {
@@ -212,36 +214,36 @@ PyTorch 会将 inplace 算子包装为 `auto_functionalized_v2`：
 }
 ```
 
-fallback codegen 需要正确解包并生成 REG_OP。
+fallback codegen需要正确解包并生成REG_OP。
 
 ### 可选参数默认值
 
-当 EP JSON 中缺少某个参数时，fallback codegen 会：
-1. REG_OP 仍然声明该参数（全量 schema）
-2. Execute 从 GE input 读取该参数
-3. GE Graph Builder 为该参数创建 Const 节点（使用默认值）
+当EP JSON中缺少某个参数时，fallback codegen会：
+1. REG_OP仍然声明该参数（全量schema）
+2. Execute从GE input读取该参数
+3. GE Graph Builder为该参数创建Const节点（使用默认值）
 
 ---
 
 ## 故障排除
 
-### 错误："dual_inplace_ 未被识别为 inplace"
+### 错误 "dual_inplace_ 未被识别为inplace"
 
 **原因**： 算子定义中缺少 `(a!)` 或 `(b!)` 标记。
 
-**解决**： 检查 `custom_ops.py` 中的算子定义，确保使用了正确的 alias 标记。
+**解决**： 检查 `custom_ops.py` 中的算子定义，确保使用了正确的alias标记。
 
-### 错误："multi_optional_op 参数数量不匹配"
+### 错误 "multi_optional_op参数数量不匹配"
 
-**原因**： REG_OP 声明的参数数量与 GE 图连接的输入数量不一致。
+**原因**： REG_OP声明的参数数量与GE图连接的输入数量不一致。
 
-**解决**： 检查 `output_dir/*/custom_op.cpp` 中的 REG_OP 定义，确保声明了全量参数。
+**解决**： 检查 `output_dir/*/custom_op.cpp` 中的REG_OP定义，确保声明了全量参数。
 
-### 错误："精度对比失败"
+### 错误 "精度对比失败"
 
-**原因**： inplace 操作未正确执行，或可选参数默认值未正确应用。
+**原因**： inplace操作未正确执行，或可选参数默认值未正确应用。
 
-**解决**： 检查 `output_dir/*/custom_op.cpp` 中的 Execute 方法，确保正确读取了所有参数。
+**解决**： 检查 `output_dir/*/custom_op.cpp` 中的Execute方法，确保正确读取了所有参数。
 
 ---
 
@@ -249,4 +251,4 @@ fallback codegen 需要正确解包并生成 REG_OP。
 
 - sym_int_case: `../sym_int_case/`
 - accuracy_compare: `../accuracy_compare/`
-- TorchDelegate 文档: `../../docs/build.md`
+- TorchDelegate文档: `../../docs/zh/guide/build.md`

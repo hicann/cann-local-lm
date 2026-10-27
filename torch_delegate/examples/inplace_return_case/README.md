@@ -1,33 +1,35 @@
-# Inplace+Return 测试用例
+# Inplace+Return测试用例
 
-本示例测试 fallback 场景下的 **inplace 输入 + Tensor 返回值** 组合特性。
+简体中文 | [English](README_en.md)
+
+本示例测试fallback场景下的 **inplace输入+ Tensor返回值** 组合特性。
 
 ---
 
 ## 测试目标
 
-### 核心场景: inplace 算子同时返回 Tensor
+### 核心场景inplace算子同时返回Tensor
 
 ```python
 # inplace_scale_out: a *= scale (原地修改), 返回 a (修改后的张量)
 my_ops.define("inplace_scale_out(Tensor(a!) a, float scale) -> Tensor")
 ```
 
-这是 `dual_inplace_`（纯 inplace，返回 `()`）和 `scale_add`（纯返回，无 inplace）的组合：
-- **inplace 输入**：`a` 被标记为 `(a!)`，会被原地修改
-- **Tensor 返回值**：算子返回一个 Tensor（而非 `()`）
+这是 `dual_inplace_`（纯inplace，返回 `()`）和 `scale_add`（纯返回，无inplace）的组合：
+- **inplace输入**：`a` 被标记为 `(a!)`，会被原地修改
+- **Tensor返回值**：算子返回一个Tensor（而非 `()`）
 
 验证要点：
-- `auto_functionalized_v2` 正确解包 inplace + 返回值的组合
-- REG_OP 声明完整 schema
+- `auto_functionalized_v2` 正确解包inplace +返回值的组合
+- REG_OP声明完整schema
 - 模型同时使用返回值和原地修改后的输入
-- GE 图正确处理 mutation 输出和返回值输出
+- GE图正确处理mutation输出和返回值输出
 
 ---
 
 ## 目录结构
 
-```
+```text
 inplace_return_case/
 ├── custom_ops.py           # 算子定义 + CPU/NPU/Meta 实现
 ├── custom_ops_reg.cpp      # C++ 算子注册（CPU + PrivateUse1）
@@ -49,7 +51,7 @@ inplace_return_case/
 1. **torch 2.9.0+cpu**
 2. **torch_npu** + **torchair**
 3. **torch-delegate** 已构建
-4. **CANN 9.0.0+**
+4. **CANN 9.2.0+**
 5. **libtorch_npu** 源码可用
 
 ---
@@ -72,17 +74,17 @@ bash run.sh
 
 ## 详细步骤
 
-### step 1: 导出模型
+### 导出模型
 
 ```bash
 python3 export_model.py
 ```
 
 生成文件：
-- `output/model_inplace_return.epair` - Epair 文件
+- `output/model_inplace_return.epair` - Epair文件
 - `output/input_*.bin` / `output/input_*.txt` - 测试输入数据
 
-### step 2: 构建 C++ Runner
+### 构建C++ Runner
 
 ```bash
 mkdir -p build && cd build
@@ -90,7 +92,7 @@ cmake .. -DCANN_ROOT=${ASCEND_HOME_PATH} -DTORCH_NPU_DIR=${TORCH_NPU_DIR}
 cmake --build . -j$(nproc)
 ```
 
-### step 3: 执行 Runner
+### 执行Runner
 
 ```bash
 export TORCH_DELEGATE_ENABLE_FALLBACK_CODEGEN=1
@@ -98,7 +100,7 @@ export TORCH_DELEGATE_OUTPUT_DIR=./output_dir
 ./build/fallback_runner --custom-ops build/libcustom_ops.so output/model_inplace_return.epair
 ```
 
-### step 4: 精度对比
+### 精度对比
 
 ```bash
 python3 compare_accuracy.py
@@ -108,9 +110,9 @@ python3 compare_accuracy.py
 
 ## 技术要点
 
-### auto_functionalized_v2 与 inplace + 返回值
+### auto_functionalized_v2与inplace +返回值
 
-PyTorch 会将 inplace 算子包装为 `auto_functionalized_v2`。当算子同时有 inplace 输入和 Tensor 返回值时：
+PyTorch会将inplace算子包装为 `auto_functionalized_v2`。当算子同时有inplace输入和Tensor返回值时：
 
 ```json
 {
@@ -124,7 +126,7 @@ PyTorch 会将 inplace 算子包装为 `auto_functionalized_v2`。当算子同�
 ```
 
 `auto_functionalized_v2` 的输出包括：
-1. **mutation 输出**：被原地修改的 tensor（`a!` 标记的参数）
-2. **返回值输出**：算子返回的 Tensor
+1. **mutation输出**：被原地修改的tensor（`a!` 标记的参数）
+2. **返回值输出**：算子返回的Tensor
 
-fallback codegen 需要正确区分这两类输出并生成对应的 REG_OP。
+fallback codegen需要正确区分这两类输出并生成对应的REG_OP。

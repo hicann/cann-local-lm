@@ -45,7 +45,7 @@ class EpairContents:
         manifest: 转换元数据，包含节点统计和版本信息。
         ep_json: 含 ascend_ir 注解的 EP JSON dict。
             每个 node 对象可能包含可选的 ascend_ir 字段，
-            格式详见 docs/epair.md 第 4 节。
+            格式详见 docs/zh/features/epair_format_design.md。
         ep: 可执行的 ExportedProgram。
             可通过 ep.module()(inputs...) 在 Python eager 模式下执行。
 

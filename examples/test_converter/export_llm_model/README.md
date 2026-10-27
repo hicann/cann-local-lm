@@ -2,7 +2,7 @@
 
 两模型（gemma4 / qwen3.5）端到端流水线：HuggingFace 模型 → epair（torch.export + GE 转换）→ OM（aclgrphBuildModel）→ NPU 出字（acl.mdl.execute）。顶层入口 `run_e2e_pipeline.sh` 串通三阶段。
 
-> 本目录为**开发者工具**，使用源码仓环境。用户面向的端到端用例见 [快速入门](../../../docs/QUICKSTART.md)。
+> 本目录为**开发者工具**，使用源码仓环境。用户面向的端到端用例见 [快速入门](../../../docs/zh/QUICKSTART.md)。
 >
 > 子目录：`cann_lm_cli_export/`（① CLI 导出）、`om_npu_verify/`（②③ OM 编译 + NPU 出字）。CPU 侧调试见 `../llm_models_run_on_cpu/`，单元测试见 `tests/python/llm_models/`。
 

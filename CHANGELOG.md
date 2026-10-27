@@ -1,5 +1,7 @@
 # CHANGELOG
 
+简体中文 | [English](CHANGELOG_en.md)
+
 > 本文档记录各版本的重要变更，版本按时间倒序排列。
 
 ## 2026.10

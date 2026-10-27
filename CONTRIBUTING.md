@@ -1,5 +1,7 @@
 # 贡献指南
 
+简体中文 | [English](CONTRIBUTING_en.md)
+
 感谢您对 CANN-LM 项目的关注！欢迎通过以下方式参与贡献。
 
 ## 如何贡献
@@ -54,10 +56,10 @@
 | 修改范围 | 须更新文档 |
 |----------|-----------|
 | `cann_lm/converter/` | `docs/cann_lm_converter/` 下对应设计文档 |
-| `cann_lm/models/fused_ops/` | `docs/cann_lm_converter/models/fused_ops/fused_ops.md` |
-| `cann_lm/converter/export/` | `docs/cann_lm_converter/export/export_design.md` |
-| `cann_lm/converter/quant/` | `docs/cann_lm_converter/quant/quant_design.md` |
-| CLI 命令行参数 | `docs/cann_lm_converter/cli/cli_design.md` |
+| `cann_lm/models/fused_ops/` | `docs/zh/cann_lm_converter/models/fused_ops/fused_ops.md` |
+| `cann_lm/converter/export/` | `docs/zh/cann_lm_converter/export/export_design.md` |
+| `cann_lm/converter/quant/` | `docs/zh/cann_lm_converter/quant/quant_design.md` |
+| CLI 命令行参数 | `docs/zh/cann_lm_converter/cli/cli_design.md` |
 
 ## 版本配套
 

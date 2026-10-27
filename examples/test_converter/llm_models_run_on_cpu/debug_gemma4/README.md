@@ -208,4 +208,4 @@ python verify_gemma4_vs_hf.py --model /path/to/gemma-4-E2B-it --gen-tokens 8
 
 - `skills/gemma4-debug/SKILL.md`:gemma4 调试经验(17 条)+ 验证脚本索引 + 精度策略
 - `skills/gemma4-pure-torch/SKILL.md`:纯 PyTorch 实现说明
-- `../../../../docs/cann_lm_converter/README.md`:converter 全流程设计 + 精度差异分析
+- `../../../../docs/zh/cann_lm_converter/README.md`:converter 全流程设计 + 精度差异分析

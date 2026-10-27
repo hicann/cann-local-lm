@@ -67,5 +67,5 @@ export QWEN3_5_HF_PATH=<qwen3.5 model dir>
 ## 文档关联
 
 - 各 `debug_*/README.md`：单模型脚本详情。
-- `../../../../docs/cann_lm_converter/README.md`：converter 全流程 + 精度差异分析 + 遗留任务。
+- `../../../../docs/zh/cann_lm_converter/README.md`：converter 全流程 + 精度差异分析 + 遗留任务。
 - [`../export_llm_model/om_npu_verify/README.md`](../export_llm_model/om_npu_verify/README.md)：NPU 侧 OM 编译 + 出字验证。

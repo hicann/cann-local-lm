@@ -198,4 +198,4 @@ python verify_qwen3_5_multiturn.py --prompts "你好||刚才我说了什么？||
 
 - `skills/`:qwen3.5 调试经验
 - `../debug_gemma4/README.md`:gemma4 调试流程参考(slider-window 修复、scatter-write 等)
-- `../../../../docs/cann_lm_converter/README.md`:converter 全流程设计 + 精度差异分析 + 遗留任务(qwen3.5 scatter/linear attention segfault)
+- `../../../../docs/zh/cann_lm_converter/README.md`:converter 全流程设计 + 精度差异分析 + 遗留任务(qwen3.5 scatter/linear attention segfault)

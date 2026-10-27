@@ -108,7 +108,6 @@ examples/test_converter/export_epair_and_compile/export_addrmsnorm_model/generat
 examples/test_converter/export_llm_model/cann_lm_cli_export/.dopt_shim/
 examples/test_converter/export_llm_model/cann_lm_cli_export/extract_dopt_weight.py
 examples/test_converter/export_llm_model/cann_lm_cli_export/extract_node_weight.py
-models/
-!docs/cann_lm_converter/models/
+/models/
 build_smoke/
 deploy_ohos/

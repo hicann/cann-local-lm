@@ -116,4 +116,4 @@ GEMMA4_OM=/tmp/opencode/gemma4_calib/gemma4_calib_noaub.om $DOPT_PYTHON run_gemm
 ## 详细文档
 
 - 各子目录 README（`export_epair_and_compile/`、`export_llm_model/cann_lm_cli_export/`、`export_llm_model/om_npu_verify/`、`llm_models_run_on_cpu/`）。
-- converter 设计：[`docs/cann_lm_converter/`](../../docs/cann_lm_converter/)（cli_design / export_design / quant_design）。
+- converter 设计：[`docs/zh/cann_lm_converter/`](../../docs/zh/cann_lm_converter/)（cli_design / export_design / quant_design）。

@@ -19,6 +19,7 @@ from .epair.schema import EpairContents, EpairManifest
 from .epair.config import EpairConfig
 from .epair.constants import EPAIR_MANIFEST_FILENAME, EPAIR_ANNOTATED_MODEL_FILENAME
 from .epair.writer import EpairWriter
+from .epair.reader import epair_load
 from .lite_context import (
     LiteConversionError,
     LiteExportError,
@@ -29,6 +30,12 @@ from .lite_context import (
     prepare_lite_torchair,
     validate_lite_result,
 )
+
+__all__ = [
+    "export_to_epair",
+    "epair_save",
+    "epair_load",
+]
 
 
 _TORCHAIR_MISSING_MESSAGE = (

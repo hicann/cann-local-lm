@@ -1,4 +1,4 @@
-name: PR-pipeline_ops-collections
+name: PR-pipeline_cann-device-lm
 
 concurrency:
   max: 5

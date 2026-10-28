@@ -1,4 +1,12 @@
 cmake_minimum_required(VERSION 3.18)
+
+# ── 镜像环境三方库直连 ──
+# 镜像 /home/jenkins/opensource 下三方库已解压好: lib_cache/{json,gtest} + makeself.
+# 直接复用本仓 cmake/third_party/modules 的 Find 模块 (扁平布局兜底: find_path/
+# find_library 建 IMPORTED target), 不走 cmake-master 的 add_cann_third_party 机制.
+# 启用: -DMIRROR_THIRD_PARTY=ON -DCANN_3RD_LIB_PATH=<镜像三方库根 (opensource)>
+option(MIRROR_THIRD_PARTY "Use mirror lib_cache third-party directly" OFF)
+
 project(CANN_LM LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
@@ -8,6 +16,18 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Debug CACHE STRING "Build type" FORCE)
+endif()
+
+# ── 镜像环境三方库直连 (project 后) ──
+# 把本仓 modules Find 模块前置到 CMAKE_MODULE_PATH, 使 find_package(nlohmann_json)
+# / find_package(GTest) 走 module 模式直接命中 lib_cache 扁平布局 (include + lib).
+# 非镜像 (OFF): 行为不变, 仍走 -Dnlohmann_json_DIR / -DGTest_DIR CONFIG 包路径.
+if(MIRROR_THIRD_PARTY)
+    list(PREPEND CMAKE_MODULE_PATH
+        "${CMAKE_CURRENT_SOURCE_DIR}/cmake/third_party/modules")
+    if(CANN_3RD_LIB_PATH AND NOT "${CANN_3RD_LIB_PATH}" IN_LIST CMAKE_PREFIX_PATH)
+        list(APPEND CMAKE_PREFIX_PATH "${CANN_3RD_LIB_PATH}")
+    endif()
 endif()
 
 # 顶层启用 CTest：engine/ 与 converter/ 子目录内的 enable_testing() 只作用于子目录层级，

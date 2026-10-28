@@ -19,15 +19,20 @@ endif()
 
 # Add CANN_3RD_LIB_PATH to CMAKE_PREFIX_PATH for searching
 if(CANN_3RD_LIB_PATH AND NOT "${CANN_3RD_LIB_PATH}" IN_LIST CMAKE_PREFIX_PATH)
-    list(APPEND CMAKE_PREFIX_PATH "${CANN_3RD_LIB_PATH}/json")
+    list(APPEND CMAKE_PREFIX_PATH "${CANN_3RD_LIB_PATH}")
 endif()
+
+# 镜像 (lib_cache 扁平布局) 与非镜像 (output/third_party CONFIG 包) 搜索根
+set(_NLOHMANN_JSON_ROOTS
+    "${CANN_3RD_LIB_PATH}/lib_cache/json"
+    "${CANN_3RD_LIB_PATH}/json"
+    "${CMAKE_SOURCE_DIR}/output/third_party/json"
+)
 
 # Try to find nlohmann_json using CONFIG mode first
 find_package(nlohmann_json CONFIG
     NAMES nlohmann_json
-    PATHS
-        "${CANN_3RD_LIB_PATH}/json"
-        "${CMAKE_SOURCE_DIR}/output/third_party/json"
+    PATHS ${_NLOHMANN_JSON_ROOTS}
     NO_DEFAULT_PATH
     NO_CMAKE_FIND_ROOT_PATH
     QUIET
@@ -41,9 +46,8 @@ endif()
 # Try to find header file directly
 find_path(_NLOHMANN_JSON_INCLUDE_DIR
     NAMES nlohmann/json.hpp
-    PATHS
-        "${CANN_3RD_LIB_PATH}/json/include"
-        "${CMAKE_SOURCE_DIR}/output/third_party/json/include"
+    PATHS ${_NLOHMANN_JSON_ROOTS}
+    PATH_SUFFIXES include
     NO_DEFAULT_PATH
     NO_CMAKE_FIND_ROOT_PATH
 )

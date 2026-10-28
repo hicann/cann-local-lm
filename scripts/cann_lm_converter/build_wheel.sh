@@ -9,11 +9,11 @@ set -euo pipefail
 # torchair/torch-delegate 不在 PyPI, 需源码/whl 预装 (见 AGENTS.md ① converter env), 故 --no-deps.
 #
 # 用法: bash scripts/cann_lm_converter/build_wheel.sh
-# 产物: $REPO/dist/cann_lm-*.whl
+# 产物: $REPO/build_out/cann_lm-*.whl
 #=============================================================================
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$SCRIPT_DIR/../.." && pwd)"
-DIST="$REPO/dist"
+DIST="${DIST:-$REPO/build_out}"
 # TORCH_DELEGATE_HOME 自定位派生 (不硬编码 /mnt/workspace; 与 build.conf 的 deps/ 一致)
 TORCH_DELEGATE_HOME="${TORCH_DELEGATE_HOME:-${REPO}/deps/torch-delegate}"
 VENV="${VENV:-${TORCH_DELEGATE_HOME}/.venv}"
@@ -23,5 +23,5 @@ mkdir -p "$DIST"
 echo "### build cann-lm (converter + models + dopt_lm)"
 "$PIP" wheel "$SCRIPT_DIR" --no-deps -w "$DIST" 2>&1 | grep -E "Built|Created|error|Error" | tail -3
 echo ""
-echo "=== dist/ ==="
+echo "=== build_out/ ==="
 ls -la "$DIST"/*.whl 2>/dev/null | awk '{print "  "$5, $9}' || echo "  (无 whl)"

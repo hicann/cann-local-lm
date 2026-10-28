@@ -64,11 +64,23 @@ set(ENGINE_SRC
 add_library(cann_lm_engine SHARED ${ENGINE_SRC})
 # nlohmann/json: find_package (Findnlohmann_json.cmake, 含 vendored fallback)
 # CMAKE_MODULE_PATH 让 cmake 找到 Findnlohmann_json.cmake;
-# CANN_3RD_LIB_PATH 让 Find 模块搜到 output/third_party/json;
-# CMAKE_FIND_ROOT_PATH 追加 third_party (toolchain 设了 ONLY, 不加则 find_package 只搜 OHOS SDK)。
+# CANN_3RD_LIB_PATH 让 Find 模块搜到 output/third_party/json 或 lib_cache/json (镜像);
+# CMAKE_FIND_ROOT_PATH 追加三方库根 (toolchain 设了 ONLY, 不加则 find_package 只搜 OHOS SDK).
 list(APPEND CMAKE_MODULE_PATH "${_E}/../../cmake/third_party/modules")
-set(CANN_3RD_LIB_PATH "${_E}/../../output/third_party" CACHE PATH "Third-party libraries directory")
-list(APPEND CMAKE_FIND_ROOT_PATH "${_E}/../../output/third_party")
+# 镜像模式 (MIRROR_THIRD_PARTY=ON): CANN_3RD_LIB_PATH 由 build_ohos.sh -D 传入 (lib_cache 根),
+#   不在此硬编码覆盖; 非镜像: 默认 output/third_party (保持原行为).
+# 注意: 原来用 CACHE PATH 会导致外部 -D 被首次 set 覆盖, 故镜像下改用普通 set (尊重外部值).
+if(NOT MIRROR_THIRD_PARTY)
+    set(CANN_3RD_LIB_PATH "${_E}/../../output/third_party" CACHE PATH "Third-party libraries directory")
+endif()
+# CMAKE_FIND_ROOT_PATH 追加: 镜像下追加 lib_cache 根, 非镜像追加 output/third_party.
+#   Findnlohmann_json.cmake 内 find_path 用了 NO_CMAKE_FIND_ROOT_PATH 可绕过 root,
+#   但 CONFIG 模式 find_package 仍受 root 影响, 故两边都追加以保险.
+if(MIRROR_THIRD_PARTY AND CANN_3RD_LIB_PATH)
+    list(APPEND CMAKE_FIND_ROOT_PATH "${CANN_3RD_LIB_PATH}/lib_cache" "${CANN_3RD_LIB_PATH}")
+else()
+    list(APPEND CMAKE_FIND_ROOT_PATH "${_E}/../../output/third_party")
+endif()
 find_package(nlohmann_json REQUIRED)
 target_include_directories(cann_lm_engine PUBLIC ${_E})
 target_link_libraries(cann_lm_engine PUBLIC cann_backend hilog_ndk.z nlohmann_json::nlohmann_json)

@@ -19,15 +19,29 @@ endif()
 
 # Add CANN_3RD_LIB_PATH to search paths
 if(CANN_3RD_LIB_PATH AND NOT "${CANN_3RD_LIB_PATH}" IN_LIST CMAKE_PREFIX_PATH)
-    list(APPEND CMAKE_PREFIX_PATH "${CANN_3RD_LIB_PATH}/gtest")
+    list(APPEND CMAKE_PREFIX_PATH "${CANN_3RD_LIB_PATH}")
+endif()
+
+# 镜像 (lib_cache 扁平布局) 与非镜像 (output/third_party CONFIG 包) 搜索根
+set(_GTEST_SEARCH_PATHS
+    "${CANN_3RD_LIB_PATH}/lib_cache/gtest"
+    "${CANN_3RD_LIB_PATH}/gtest"
+    "${CMAKE_SOURCE_DIR}/output/third_party/gtest"
+)
+if(MIRROR_THIRD_PARTY)
+    # 镜像 gtest 变体兜底: compile.sh 按 gcc 版本软链 lib_cache, 若当前变体 gtest 未就位,
+    # 回退其它镜像变体 (gcc15/gcc15x86/ubuntu20), 保证任一变体有完整 gtest 即可命中.
+    list(APPEND _GTEST_SEARCH_PATHS
+        "${CANN_3RD_LIB_PATH}/gcc15/lib_cache/gtest"
+        "${CANN_3RD_LIB_PATH}/gcc15x86/lib_cache/gtest"
+        "${CANN_3RD_LIB_PATH}/ubuntu20/lib_cache/gtest"
+    )
 endif()
 
 # Try CONFIG mode first
 find_package(GTest CONFIG
     NAMES GTest gtest
-    PATHS
-        "${CANN_3RD_LIB_PATH}/gtest"
-        "${CMAKE_SOURCE_DIR}/output/third_party/gtest"
+    PATHS ${_GTEST_SEARCH_PATHS}
     NO_DEFAULT_PATH
     QUIET
 )
@@ -38,10 +52,6 @@ if(GTest_FOUND)
 endif()
 
 # Try to find static libraries directly
-set(_GTEST_SEARCH_PATHS
-    "${CANN_3RD_LIB_PATH}/gtest"
-    "${CMAKE_SOURCE_DIR}/output/third_party/gtest"
-)
 
 find_path(_GTEST_INCLUDE_DIR
     NAMES gtest/gtest.h
@@ -90,6 +100,10 @@ set(GTest_FOUND FALSE)
 if(GTest_FIND_REQUIRED)
     message(FATAL_ERROR
         "[GTest] GoogleTest not found.\n"
+        "[GTest] search roots: ${_GTEST_SEARCH_PATHS}\n"
+        "[GTest] find_path(gtest/gtest.h) -> '${_GTEST_INCLUDE_DIR}'\n"
+        "[GTest] find_library(gtest) -> '${_GTEST_LIBRARY}'\n"
+        "[GTest] find_library(gtest_main) -> '${_GTEST_MAIN_LIBRARY}'\n"
         "[GTest] Options:\n"
         "[GTest]   1. Build third-party libraries: ./build_third_party.sh\n"
         "[GTest]   2. Specify CANN_3RD_LIB_PATH: -DCANN_3RD_LIB_PATH=/path/to/third_party\n"

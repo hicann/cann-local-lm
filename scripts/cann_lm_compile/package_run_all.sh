@@ -11,8 +11,8 @@ set -euo pipefail
 #
 # 流程: build_cpp.sh(--no-tests --target cann_lm_compile) + build_wheel.sh
 #       → stage (binary+lib+cfg+whl+set_env) → patchelf rpath → makeself
-# 产物: dist/cann_lm_compile_converter-<ver>-<arch>.run
-# 安装: bash <pkg>.run --extract=/opt/cann-lm
+# 产物: build_out/cann_lm_compile_converter-<ver>-<arch>.run
+# 安装: bash <pkg>.run --target /opt/cann-lm
 # 运行: source <CANN set_env.sh> && source /opt/cann-lm/set_env.sh
 #       && pip install /opt/cann-lm/wheels/cann_lm-*.whl   # converter (仅需 torch 时)
 #       && /opt/cann-lm/cann_lm_compile <ep_json> <weight_info> [out]  # compile
@@ -25,7 +25,7 @@ VERSION="${VERSION:-0.1.0}"
 ARCH="${ARCH:-$(uname -m)}"
 PKG_NAME="cann_lm_compile_converter-${VERSION}-${ARCH}"
 STAGE="$REPO/build/package_stage/$PKG_NAME"
-DIST="$REPO/dist"
+DIST="${DIST:-$REPO/build_out}"
 THIRD_PARTY="${THIRD_PARTY:-$REPO/output/third_party}"
 MAKESELF="${THIRD_PARTY}/makeself/makeself.sh"
 # whl 打包 pip: 默认用 build_wheel.sh 的 venv (deps/torch-delegate/.venv), 缺失回退系统 pip
@@ -49,7 +49,7 @@ mkdir -p "$DIST"
 "$PIP_CMD" wheel "$REPO/scripts/cann_lm_converter" --no-deps -w "$DIST" 2>&1 \
     | grep -E "Built|Created|error|Error" | tail -3
 WHL="$(ls -1 "$DIST"/cann_lm-*.whl 2>/dev/null | head -1 || true)"
-[[ -n "$WHL" ]] || { echo "ERROR: whl 构建失败 (dist/ 无 cann_lm-*.whl)" >&2; exit 1; }
+[[ -n "$WHL" ]] || { echo "ERROR: whl 构建失败 (build_out/ 无 cann_lm-*.whl)" >&2; exit 1; }
 echo "  whl: $WHL ($(du -h "$WHL" | cut -f1))"
 
 # ── 3. stage (binary + lib/ + cfg + wheels/ + set_env.sh) ──

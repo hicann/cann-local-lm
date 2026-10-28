@@ -12,13 +12,13 @@ set -euo pipefail
 # 含 pkgutil.extend_path, 两 wheel 同 env 不互隐(cann_lm.Engine 与 cann_lm.converter 并存)。
 #
 # 用法: bash scripts/cann_lm_engine/build_wheel.sh
-# 产物: $REPO/dist/cann_lm_engine-*.whl
+# 产物: $REPO/build_out/cann_lm_engine-*.whl
 #=============================================================================
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$SCRIPT_DIR/../.." && pwd)"
 PY_SRC="$REPO/cann_lm/engine/python"
 PYPROJECT="$REPO/scripts/cann_lm_engine/pyproject.toml"
-DIST="$REPO/dist"
+DIST="${DIST:-$REPO/build_out}"
 mkdir -p "$DIST"
 
 # PIP 选择: 优先 P1 venv 的 pip(converter wheel 需要 torch venv); engine wheel 纯 python,
@@ -37,6 +37,6 @@ echo "  pip: $PIP"
 (cd "$REPO/scripts/cann_lm_engine" && $PIP wheel . --no-deps -w "$DIST") 2>&1 | grep -E "Built|Created|error|Error" | tail -3
 rm -rf "$REPO/scripts/cann_lm_engine/cann_lm_engine.egg-info"  # 清理构建中间产物
 echo ""
-echo "=== dist/ ==="
+echo "=== build_out/ ==="
 ls -la "$DIST"/cann_lm_engine-*.whl 2>/dev/null | awk '{print "  "$5, $9}' \
   || { echo "  ✗ 无 cann_lm_engine-*.whl"; exit 1; }

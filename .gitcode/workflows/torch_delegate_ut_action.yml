@@ -1,0 +1,51 @@
+name: torch_delegate_ut_action
+
+on:
+  workflow_call:
+    inputs:
+      ut_type:
+        required: true
+        type: string
+      image_version:
+        required: true
+        type: string
+
+jobs:
+  JOB_torch_delegate_ut:
+    name: ut
+    steps:
+      -
+        name: Checkout
+        identifier: process_checkout
+        uses: checkout
+        with:
+          ref: ${{ atomgit.event.pull_request.merge_commit_sha }}
+          allow-unsafe-pr-checkout: true
+      -
+        name: download
+        uses: obs-download
+        with:
+          endpoint: "https://obs.cn-north-4.myhuaweicloud.com"
+          bucket: "ascend-ci"
+          key: |
+            ${{ env.obs_path }}/pr_filelist.txt
+            ${{ env.obs_path }}/pr_filelist_mod.txt
+            ${{ env.obs_path }}/torch_delegate_ut.sh
+          path: ${{ steps.process_checkout.outputs.path }}
+      # redis-cache 暂时停用 (redis 服务不可用), 恢复时取消注释
+      # -
+      #   name: redis-cache
+      #   uses: cann/.gitcode/actions/redis-cache@master
+      -
+        name: torch_delegate_ut_acc
+        identifier: ut
+        run: |
+          export WORKSPACE=${{ steps.process_checkout.outputs.path }}
+          cd ${{ steps.process_checkout.outputs.path }}
+          export ut_type=${{ inputs.ut_type }}
+          export TARGET_BRANCH=${{ env.TARGET_BRANCH }}
+          bash torch_delegate_ut.sh
+    if: "${{ default() }}"
+    runs-on: [self-hosted, arch=x64, spec=xlarge]
+    container:
+      image: swr.cn-north-4.myhuaweicloud.com/ci_cann/${{ inputs.image_version }}

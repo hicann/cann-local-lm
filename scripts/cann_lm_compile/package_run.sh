@@ -4,7 +4,7 @@ set -euo pipefail
 # package_run.sh — 打 cann_lm_compile .run 自解压安装包 (makeself)
 #
 # 流程: build (--no-tests) → stage (binary+.so+cfg+set_env) → patchelf rpath → makeself
-# 产物: dist/cann_lm_compile-<ver>-<arch>.run
+# 产物: build_out/cann_lm_compile-<ver>-<arch>.run
 # 包内容: cann_lm_compile / lib/libtorch_delegate_backend.so / fusion_autoub_off.cfg / set_env.sh
 # 安装: bash cann_lm_compile-<ver>-<arch>.run --extract=/opt/cann-lm
 # 运行: source /opt/cann-lm/set_env.sh (需先 source CANN set_env.sh) → /opt/cann-lm/cann_lm_compile ...
@@ -18,7 +18,7 @@ VERSION="${VERSION:-0.1.0}"
 ARCH="${ARCH:-$(uname -m)}"
 PKG_NAME="cann_lm_compile-${VERSION}-${ARCH}"
 STAGE="$REPO/build/package_stage/$PKG_NAME"
-DIST="$REPO/dist"
+DIST="${DIST:-$REPO/build_out}"
 THIRD_PARTY="${THIRD_PARTY:-$REPO/output/third_party}"
 MAKESELF="${THIRD_PARTY}/makeself/makeself.sh"
 

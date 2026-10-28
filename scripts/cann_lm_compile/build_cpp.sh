@@ -27,6 +27,12 @@ BUILD_DIR="${BUILD_DIR:-$REPO/build}"
 # 自带三方库 (bash scripts/build.sh third_party 构建), 不再依赖 torch-delegate
 THIRD_PARTY="${THIRD_PARTY:-$REPO/output/third_party}"
 
+# ── 镜像模式 : 三方库直接引用 lib_cache 扁平布局 (modules Find 模块), 不联网下载 ──
+# 启用: --mirror-third-party[=CANN_3RD_LIB_PATH]
+#       或环境变量 MIRROR_THIRD_PARTY=ON + CANN_3RD_LIB_PATH
+MIRROR_THIRD_PARTY_VAL="${MIRROR_THIRD_PARTY:-OFF}"
+CANN_3RD_LIB_PATH="${CANN_3RD_LIB_PATH:-}"
+
 # ── 校验 env ──
 if [[ -z "${ASCEND_HOME_PATH:-}" ]]; then
     echo "ERROR: ASCEND_HOME_PATH 未设. 先 source scripts/cann_lm_compile/set_env.sh" >&2
@@ -35,7 +41,8 @@ fi
 
 # ── 派生路径 (CANN + third_party; csrc 不依赖 torch, 无需 venv) ──
 # THIRD_PARTY 已在头部设 (自带 output/third_party); 缺失则提示先跑 build.sh third_party
-if [[ ! -d "${THIRD_PARTY}/json" ]]; then
+# 镜像模式下跳过该检查 (三方库在 CANN_3RD_LIB_PATH 的 lib_cache 布局, 由 modules Find 模块直连)
+if [[ "$MIRROR_THIRD_PARTY_VAL" != "ON" && ! -d "${THIRD_PARTY}/json" ]]; then
     echo "ERROR: third_party 缺失: ${THIRD_PARTY}/json" >&2
     echo "  先构建: bash scripts/build.sh third_party" >&2
     exit 1
@@ -60,11 +67,23 @@ while [[ $# -gt 0 ]]; do
         --no-compile-tool) BUILD_COMPILE_TOOL_VAL="OFF"; shift;;
         --no-om)           BUILD_COMPILE_TOOL_VAL="OFF"; shift;;   # 别名 (旧 --no-om)
         --no-backend)      BUILD_BACKEND_VAL="OFF"; shift;;
+        --mirror-third-party=*) MIRROR_THIRD_PARTY_VAL="ON"; CANN_3RD_LIB_PATH="${1#*=}"; shift;;
+        --mirror-third-party)   MIRROR_THIRD_PARTY_VAL="ON"; shift;;
         --target)     TARGET="$2"; shift 2;;
         -h|--help)    grep -E '^# ' "$0" | sed 's/^# //'; exit 0;;
         *) echo "unknown arg: $1 (see --help)" >&2; exit 1;;
     esac
 done
+
+# 镜像内必填校验
+if [[ "$MIRROR_THIRD_PARTY_VAL" == "ON" ]]; then
+    if [[ -z "$CANN_3RD_LIB_PATH" ]]; then
+        echo "ERROR: 镜像内需要 CANN_3RD_LIB_PATH" >&2
+        echo "  用法: bash build_cpp.sh --mirror-third-party=<镜像三方库根 (opensource)>" >&2
+        echo "        (或环境变量 CANN_3RD_LIB_PATH)" >&2
+        exit 1
+    fi
+fi
 JOBS="$(nproc 2>/dev/null || echo 4)"
 
 echo "=== Build Config (顶层统一 build 树, 不依赖 torch) ==="
@@ -72,25 +91,46 @@ echo "  REPO:                $REPO"
 echo "  BUILD_DIR:           $BUILD_DIR"
 echo "  BUILD_TYPE:          $BUILD_TYPE"
 echo "  ASCEND_INSTALL_PATH: $ASCEND_INSTALL_PATH"
-echo "  third_party:         ${THIRD_PARTY} (nlohmann_json + GTest)"
+echo "  MIRROR_THIRD_PARTY:  $MIRROR_THIRD_PARTY_VAL"
+if [[ "$MIRROR_THIRD_PARTY_VAL" == "ON" ]]; then
+    echo "  CANN_3RD_LIB_PATH:   $CANN_3RD_LIB_PATH (lib_cache/{json,gtest} 直连)"
+else
+    echo "  third_party:         ${THIRD_PARTY} (nlohmann_json + GTest)"
+fi
 echo "  ASAN:                $ASAN_VAL"
 echo "  COVERAGE:            $COVERAGE_VAL"
 echo "  JOBS:                $JOBS"
 echo ""
 
 mkdir -p "$BUILD_DIR"
-cmake -S "$REPO" -B "$BUILD_DIR" \
-    -DCMAKE_BUILD_TYPE="$BUILD_TYPE" \
-    -DASCEND_INSTALL_PATH="$ASCEND_INSTALL_PATH" \
-    -Dnlohmann_json_DIR="${THIRD_PARTY}/json/share/cmake/nlohmann_json" \
-    -DGTest_DIR="${THIRD_PARTY}/gtest/lib/cmake/GTest" \
-    -DBUILD_ENGINE=OFF \
-    -DBUILD_CONVERTER=ON \
-    -DBUILD_BACKEND=$BUILD_BACKEND_VAL \
-    -DBUILD_COMPILE_TOOL=$BUILD_COMPILE_TOOL_VAL \
-    -DBUILD_TESTS=$BUILD_TESTS_VAL \
-    -DENABLE_ASAN=$ASAN_VAL \
-    -DENABLE_COVERAGE=$COVERAGE_VAL
+if [[ "$MIRROR_THIRD_PARTY_VAL" == "ON" ]]; then
+    # 镜像内: 三方库走 modules Find 模块直连 lib_cache, 不传 nlohmann_json_DIR/GTest_DIR
+    cmake -S "$REPO" -B "$BUILD_DIR" \
+        -DCMAKE_BUILD_TYPE="$BUILD_TYPE" \
+        -DASCEND_INSTALL_PATH="$ASCEND_INSTALL_PATH" \
+        -DMIRROR_THIRD_PARTY=ON \
+        -DCANN_3RD_LIB_PATH="$CANN_3RD_LIB_PATH" \
+        -DBUILD_ENGINE=OFF \
+        -DBUILD_CONVERTER=ON \
+        -DBUILD_BACKEND=$BUILD_BACKEND_VAL \
+        -DBUILD_COMPILE_TOOL=$BUILD_COMPILE_TOOL_VAL \
+        -DBUILD_TESTS=$BUILD_TESTS_VAL \
+        -DENABLE_ASAN=$ASAN_VAL \
+        -DENABLE_COVERAGE=$COVERAGE_VAL
+else
+    cmake -S "$REPO" -B "$BUILD_DIR" \
+        -DCMAKE_BUILD_TYPE="$BUILD_TYPE" \
+        -DASCEND_INSTALL_PATH="$ASCEND_INSTALL_PATH" \
+        -Dnlohmann_json_DIR="${THIRD_PARTY}/json/share/cmake/nlohmann_json" \
+        -DGTest_DIR="${THIRD_PARTY}/gtest/lib/cmake/GTest" \
+        -DBUILD_ENGINE=OFF \
+        -DBUILD_CONVERTER=ON \
+        -DBUILD_BACKEND=$BUILD_BACKEND_VAL \
+        -DBUILD_COMPILE_TOOL=$BUILD_COMPILE_TOOL_VAL \
+        -DBUILD_TESTS=$BUILD_TESTS_VAL \
+        -DENABLE_ASAN=$ASAN_VAL \
+        -DENABLE_COVERAGE=$COVERAGE_VAL
+fi
 
 if [[ -n "$TARGET" ]]; then
     cmake --build "$BUILD_DIR" -j"$JOBS" --target "$TARGET"

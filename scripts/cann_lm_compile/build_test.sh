@@ -20,11 +20,22 @@ REPO="$(cd "$SCRIPT_DIR/../.." && pwd)"
 BUILD_DIR="${BUILD_DIR:-$REPO/build_tests/converter}"
 THIRD_PARTY="${THIRD_PARTY:-$REPO/output/third_party}"
 
+# ── 镜像模式: 三方库走 lib_cache 扁平布局 (modules Find 模块直连), 不需 output/third_party ──
+MIRROR_THIRD_PARTY_VAL="${MIRROR_THIRD_PARTY:-OFF}"
+CANN_3RD_LIB_PATH="${CANN_3RD_LIB_PATH:-}"
+
 if [[ -z "${ASCEND_HOME_PATH:-}" ]]; then
     echo "ERROR: ASCEND_HOME_PATH 未设. 先 source scripts/cann_lm_compile/set_env.sh" >&2; exit 1
 fi
-if [[ ! -d "${THIRD_PARTY}/json" ]]; then
-    echo "ERROR: third_party 缺失: ${THIRD_PARTY}/json (先 bash build.sh third_party)" >&2; exit 1
+# 镜像下校验 lib_cache/json; 非镜像校验 output/third_party/json
+if [[ "$MIRROR_THIRD_PARTY_VAL" == "ON" ]]; then
+    if [[ ! -d "${CANN_3RD_LIB_PATH}/lib_cache/json/include/nlohmann" ]]; then
+        echo "ERROR: 镜像三方库缺失: ${CANN_3RD_LIB_PATH}/lib_cache/json/include/nlohmann" >&2; exit 1
+    fi
+else
+    if [[ ! -d "${THIRD_PARTY}/json" ]]; then
+        echo "ERROR: third_party 缺失: ${THIRD_PARTY}/json (先 bash build.sh third_party)" >&2; exit 1
+    fi
 fi
 
 ASAN_VAL="ON"; RUN_TESTS="YES"
@@ -40,22 +51,41 @@ JOBS="$(nproc 2>/dev/null || echo 4)"
 
 echo "=== Converter Test Build (BUILD_CONVERTER=ON, ASAN=$ASAN_VAL) ==="
 echo "  BUILD_DIR:   $BUILD_DIR"
-echo "  third_party: ${THIRD_PARTY}"
+if [[ "$MIRROR_THIRD_PARTY_VAL" == "ON" ]]; then
+    echo "  MIRROR:      ON (lib_cache 直连, CANN_3RD_LIB_PATH=$CANN_3RD_LIB_PATH)"
+else
+    echo "  third_party: ${THIRD_PARTY}"
+fi
 echo "  JOBS:        $JOBS"
 echo ""
 
 mkdir -p "$BUILD_DIR"
-cmake -S "$REPO" -B "$BUILD_DIR" \
-    -DCMAKE_BUILD_TYPE=Debug \
-    -DASCEND_INSTALL_PATH="${ASCEND_HOME_PATH}/$(uname -m)-linux" \
-    -Dnlohmann_json_DIR="${THIRD_PARTY}/json/share/cmake/nlohmann_json" \
-    -DGTest_dir="${THIRD_PARTY}/gtest/lib/cmake/GTest" \
-    -DBUILD_ENGINE=OFF \
-    -DBUILD_CONVERTER=ON \
-    -DBUILD_BACKEND=ON \
-    -DBUILD_COMPILE_TOOL=OFF \
-    -DBUILD_TESTS=ON \
-    -DENABLE_ASAN=$ASAN_VAL
+if [[ "$MIRROR_THIRD_PARTY_VAL" == "ON" ]]; then
+    # 镜像内: 三方库走 modules Find 模块直连 lib_cache, 不传 nlohmann_json_DIR/GTest_DIR
+    cmake -S "$REPO" -B "$BUILD_DIR" \
+        -DCMAKE_BUILD_TYPE=Debug \
+        -DASCEND_INSTALL_PATH="${ASCEND_HOME_PATH}/$(uname -m)-linux" \
+        -DMIRROR_THIRD_PARTY=ON \
+        -DCANN_3RD_LIB_PATH="$CANN_3RD_LIB_PATH" \
+        -DBUILD_ENGINE=OFF \
+        -DBUILD_CONVERTER=ON \
+        -DBUILD_BACKEND=ON \
+        -DBUILD_COMPILE_TOOL=OFF \
+        -DBUILD_TESTS=ON \
+        -DENABLE_ASAN=$ASAN_VAL
+else
+    cmake -S "$REPO" -B "$BUILD_DIR" \
+        -DCMAKE_BUILD_TYPE=Debug \
+        -DASCEND_INSTALL_PATH="${ASCEND_HOME_PATH}/$(uname -m)-linux" \
+        -Dnlohmann_json_DIR="${THIRD_PARTY}/json/share/cmake/nlohmann_json" \
+        -DGTest_dir="${THIRD_PARTY}/gtest/lib/cmake/GTest" \
+        -DBUILD_ENGINE=OFF \
+        -DBUILD_CONVERTER=ON \
+        -DBUILD_BACKEND=ON \
+        -DBUILD_COMPILE_TOOL=OFF \
+        -DBUILD_TESTS=ON \
+        -DENABLE_ASAN=$ASAN_VAL
+fi
 
 cmake --build "$BUILD_DIR" -j"$JOBS"
 

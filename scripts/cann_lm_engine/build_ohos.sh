@@ -77,11 +77,19 @@ echo "    SDK       = ${OHOS_SDK_NATIVE}"
 echo "    toolchain = ${TOOLCHAIN}"
 echo "    source    = ${ENGINE_OHOS_DIR}"
 echo "    build     = ${BUILD_DIR}"
+# 镜像模式透传: build.sh --pkg 镜像分支已 export MIRROR_THIRD_PARTY/CANN_3RD_LIB_PATH,
+# build_package_ohos.sh → 本脚本 → cmake → engine/ohos/CMakeLists.txt 需收到才能直连 lib_cache.
+_MIRROR_ARGS=()
+if [[ "${MIRROR_THIRD_PARTY:-OFF}" == "ON" && -n "${CANN_3RD_LIB_PATH:-}" ]]; then
+    echo "    mirror    = ON (lib_cache 直连, CANN_3RD_LIB_PATH=${CANN_3RD_LIB_PATH})"
+    _MIRROR_ARGS=(-DMIRROR_THIRD_PARTY=ON -DCANN_3RD_LIB_PATH="${CANN_3RD_LIB_PATH}")
+fi
 cmake -G "Unix Makefiles" \
     -DCMAKE_TOOLCHAIN_FILE="${TOOLCHAIN}" \
     -DOHOS_SDK_NATIVE="${OHOS_SDK_NATIVE}" \
     -DOHOS_PLATFORM=OHOS \
     -DCMAKE_BUILD_TYPE=Release \
+    "${_MIRROR_ARGS[@]}" \
     -B "${BUILD_DIR}" \
     -S "${ENGINE_OHOS_DIR}"
 

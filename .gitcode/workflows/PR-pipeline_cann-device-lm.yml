@@ -77,6 +77,64 @@ stages:
     - type: auto
     fail-fast: false
 
+  stage3:
+    name: Compile
+    jobs:
+      JOB_x86_compile:
+        name: Compile_Ascend_X86
+        uses: .gitcode/workflows/compile_action.yml
+        with:
+          task_name: 'Compile_Ascend_X86_ubuntu24'
+          image_version: 'ubuntu24.04_x86_ndk:repo_20261023074923'
+          arch: 'x64'
+          package_name: 'cann-cann-device-lm_linux-x86_64.run'
+      JOB_arm_compile:
+        name: Compile_Ascend_ARM
+        uses: .gitcode/workflows/compile_action.yml
+        with:
+          task_name: 'Compile_Ascend_ARM_ubuntu24'
+          image_version: 'ubuntu24.04_arm_ndk:repo_20261023075532'
+          arch: 'arm64'
+          package_name: 'cann-cann-device-lm_linux-aarch64.run'
+      JOB_torch_delegate_x86_compile:
+        name: Compile_TorchDelegate_X86
+        uses: .gitcode/workflows/torch_delegate_compile_action.yml
+        with:
+          task_name: 'Compile_TorchDelegate_X86_ubuntu24'
+          image_version: 'ubuntu24.04_x86_ndk:repo_20261023074923'
+          arch: 'x64'
+      JOB_torch_delegate_arm_compile:
+        name: Compile_TorchDelegate_ARM
+        uses: .gitcode/workflows/torch_delegate_compile_action.yml
+        with:
+          task_name: 'Compile_TorchDelegate_ARM_ubuntu24'
+          image_version: 'ubuntu24.04_arm_ndk:repo_20261023075532'
+          arch: 'arm64'
+    pre:
+    - type: auto
+    fail-fast: false
+
+  # 暂时关闭UT门禁, 恢复时取消注释
+  # stage4:
+  #   name: UT
+  #   jobs:
+  #     JOB_UT_Test:
+  #       name: UT_Test
+  #       uses: .gitcode/workflows/ut_action.yml
+  #       with:
+  #         ut_type: 'ophost'
+  #         ut_package: 'coverage_*.info'
+  #         image_version: 'ubuntu24.04_x86_ndk:repo_20261023074923'
+  #     JOB_torch_delegate_ut:
+  #       name: UT_TorchDelegate
+  #       uses: .gitcode/workflows/torch_delegate_ut_action.yml
+  #       with:
+  #         ut_type: 'torch_delegate'
+  #         image_version: 'ubuntu24.04_x86_ndk:repo_20261023074923'
+  #   pre:
+  #   - type: auto
+  #   fail-fast: false
+
 
 post:
   jobs:

@@ -114,26 +114,25 @@ stages:
     - type: auto
     fail-fast: false
 
-  # 暂时关闭UT门禁, 恢复时取消注释
-  # stage4:
-  #   name: UT
-  #   jobs:
-  #     JOB_UT_Test:
-  #       name: UT_Test
-  #       uses: .gitcode/workflows/ut_action.yml
-  #       with:
-  #         ut_type: 'ophost'
-  #         ut_package: 'coverage_*.info'
-  #         image_version: 'ubuntu24.04_x86_ndk:repo_20261023074923'
-  #     JOB_torch_delegate_ut:
-  #       name: UT_TorchDelegate
-  #       uses: .gitcode/workflows/torch_delegate_ut_action.yml
-  #       with:
-  #         ut_type: 'torch_delegate'
-  #         image_version: 'ubuntu24.04_x86_ndk:repo_20261023074923'
-  #   pre:
-  #   - type: auto
-  #   fail-fast: false
+  stage4:
+    name: UT
+    jobs:
+      JOB_UT_Test:
+        name: UT_Test
+        uses: .gitcode/workflows/ut_action.yml
+        with:
+          ut_type: 'ophost'
+          ut_package: 'coverage_*.info'
+          image_version: 'ubuntu24.04_x86:lv6_v2.1018'
+      JOB_torch_delegate_ut:
+        name: UT_TorchDelegate
+        uses: .gitcode/workflows/torch_delegate_ut_action.yml
+        with:
+          ut_type: 'torch_delegate'
+          image_version: 'ubuntu24.04_x86:lv6_v2.1018'
+    pre:
+    - type: auto
+    fail-fast: false
 
 
 post:

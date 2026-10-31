@@ -30,11 +30,14 @@ from typing import List, Optional
 
 import torch
 from torchair._ge_concrete_graph import ge_apis as ge
+from torchair._ge_concrete_graph.compat_ir import ge_op, IrDef
 from torchair._ge_concrete_graph.ge_converter.converter_utils import (
     GROUP_SIZE_MAX_VALUE,
 )
+from torchair.ge import attr
 from torchair.ge._ge_graph import (
     DataType,
+    ProtoDataType,
     Tensor,
     TensorSpec,
     torch_dtype_value_to_ge_proto_type,
@@ -68,13 +71,7 @@ def convert_quant_matmul(
     dtype = torch_dtype_value_to_ge_type(output_dtype)
     # a8w4: x1=FP8 + x2=FP4/FP32; s8s4: x1=int8 + x2=int4 (nibble-packed int8). 两者 per-group 只在 K 维 -> group_size=group_k
     # (绕过 torch_npu.float4_e2m1fn_x2, 用 x1/x2.dtype 判断; Bitcast 前判断, x2 此时仍是 packed int8=DT_INT8)
-    is_a8w4 = x1.dtype == DataType.DT_FLOAT8_E4M3FN and (  # noqa: F841
-        x2.dtype in (DataType.DT_FLOAT4_E2M1, DataType.DT_FLOAT)
-    )
-    is_s8s4 = x1.dtype == DataType.DT_INT8 and x2.dtype in (
-        DataType.DT_INT8,
-        DataType.DT_INT32,
-    )
+    is_s8s4 = x1.dtype == DataType.DT_INT8 and x2.dtype == DataType.DT_INT8
 
     if x1_dtype is not None and x1 is not None:
         x1 = ge.Bitcast(x1, type=torch_dtype_value_to_ge_type(x1_dtype))
@@ -82,6 +79,35 @@ def convert_quant_matmul(
     if x2_dtype is not None and x2 is not None:
         x2 = ge.Bitcast(x2, type=torch_dtype_value_to_ge_type(x2_dtype))
         x2.desc.dtype = torch_dtype_value_to_ge_proto_type(x2_dtype)
+    if is_s8s4:
+        # x2 是 int8 nibble-packed [N, K/2] (2 int4/int8), ND 格式.
+        # 导出侧只做类型改写: Bitcast (int8→int4, [N, K/2]→[N, K] 字节不变), x2 以
+        # int4 ND 声明进图. 不插 TransData — 实际 ND→FRACTAL_Z 权重重排由编译期
+        # host 侧自定义算子 (op_cpu 注册 Bitcast/TransData HostCpu kernel,
+        # ConstantFolding 折叠) 与 CustomPass 完成.
+        x2_in_dims = list(x2.desc.shape.dim) if x2.desc.shape.dim else []
+        n_val = int(x2_in_dims[0]) if len(x2_in_dims) >= 1 else None
+
+        # Bitcast: [N, K/2] int8 → [N, K] int4.
+        # HostCpu 注册 (op_cpu/bitcast_cpu.py) 的 Bitcast IR 输出名是 "output0"
+        # (其注册 schema 硬编码 output{index}), epair loader 按注册表 IR 校验
+        # 输出端口名; 原生 ge.Bitcast 输出名是 "y", 端口名不匹配会在装载期被拒
+        # ("Output y is not compatible with IR output output0"). 因此必须用
+        # ge_op + IrDef 显式对齐 HostCpu 注册的 IR 定义.
+        x2 = ge_op(
+            op_type="Bitcast",
+            inputs={"x": x2},
+            attrs={"type": attr.DataType(DataType.DT_INT4)},
+            outputs=["output0"],
+            ir=IrDef("Bitcast"),
+        )
+        x2.desc.dtype = ProtoDataType.DT_INT4
+        x2.desc.layout = "ND"
+        if x2_in_dims:
+            del x2.desc.shape.dim[:]
+            bc_dims = list(x2_in_dims)
+            bc_dims[-1] = bc_dims[-1] * 2  # K/2 → K (int4 element count)
+            x2.desc.shape.dim.extend(bc_dims)
     if pertoken_scale is not None and pertoken_scale_dtype is not None:
         pertoken_scale = ge.Bitcast(
             pertoken_scale, type=torch_dtype_value_to_ge_type(pertoken_scale_dtype)
@@ -107,33 +133,21 @@ def convert_quant_matmul(
         if group_k > group_max or group_k < 0:
             raise RuntimeError(f"group_k {group_k} out of [0, {group_max}]")
         group_size = group_k  # 写死 group_k (per-K-group, 不编码 m/n/k)
-    # Packer applies pack_int4_nz to x2 (ND [K,N//8] int32 → FRACTAL_Z [K//64,N//16,16,8])
-    # when rules.json QuantBatchMatmulV4 rule is enabled. Set x2 inputDesc layout to match
-    # so MapGeLayoutString → CreateConstNode format propagation stays consistent.
-    # Decision sourced from the same rules.json the packer reads (resolve_format).
-    if is_s8s4:
-        from cann_lm.converter.export.weight_format import load_rules, resolve_format
-
-        _rules = load_rules()
-        if (
-            resolve_format("op.weight_q", is_quantized=True, rules=_rules).get("format")
-            == "Z"
-        ):
-            x2.desc.layout = "Z"
+    # 新流程: 权重保持 ND ([N, K/2] int8 → Bitcast → [N, K] int4 ND), 导出不预排
+    # FRACTAL_Z; 编译期由 host 侧自定义算子 (op_cpu, ASCEND_CUSTOM_OPP_PATH 注册) 与
+    # CustomPass 将 x2 落到 int4 FRACTAL_Z.
     # Use ge.QuantBatchMatmulV4 (full IR with all inputs incl None placeholders) so the
     # V4→V3 TBE fusion correctly maps x2_scale to V3's required scale input.
-    # The binary must have QuantBatchMatmulV4 registered (reg_register.h) for the
-    # C++ parser to create the op node without heap corruption.
     if bias is None:
         # CANN QuantBatchMatmulV4 InferShape (InferNDimWithBias) does NOT handle
         # bias=nullptr — it tries to infer bias shape from x1's M dim and compares
         # to N, failing with "dimensions a(M) and b(N) must be same".
         # Workaround: create a dummy bias (zeros [N], float32) so InferShape passes.
         # The bias value (0) does not affect the matmul result (out = x1@x2*scale + 0).
-        n = x2.shape[-1] if hasattr(x2, "shape") else None
-        if n is not None and x2.dtype == DataType.DT_INT32:
-            n = n * 8  # int4pack 沿 N (8 int4/int32): N = last_dim * 8 (Kirin packed-N)
-        bias = ge.Const([0.0] * int(n), dtype=1) if n else None
+        # N 是权重的行数; is_s8s4 时 n_val 已从 Bitcast 前的 x2 shape 提取,
+        # 否则从 x2 最后一维取 (旧路径兼容).
+        bias_n = n_val if is_s8s4 else (x2.shape[-1] if hasattr(x2, "shape") else None)
+        bias = ge.Const([0.0] * int(bias_n), dtype=1) if bias_n else None
 
     out = ge.QuantBatchMatmulV4(
         x1,
@@ -151,5 +165,12 @@ def convert_quant_matmul(
         transpose_x2=False,
         group_size=group_size,
     )
+    # arch31 s8s4 tiling requires x1=int8 ND, x2=int4 FRACTAL_Z.
+    # 导出侧 x2 以 int4 ND 声明; 落 FRACTAL_Z 由编译期 host 侧算子 + CustomPass 负责.
+    # input_layout_info (torchair convention) 同步声明为 ND (node 生成阶段 x2 仍是 ND).
+    if is_s8s4:
+        node = out.node
+        node.attr["input_layout_info"].list.i.extend([0, 1])
+        node.attr["input_layout_info"].list.s.extend([b"ND", b"ND"])
     out.desc.dtype = torch_dtype_value_to_ge_proto_type(output_dtype)
     return out

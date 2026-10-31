@@ -442,11 +442,20 @@ class Gemma4TextRotaryEmbedding(nn.Module):
             t = torch.arange(max_seq, device=dev, dtype=torch.float32)
             freqs = torch.outer(t, inv_freq)
             emb = torch.cat((freqs, freqs), dim=-1)
+            # [cos 表修复] torch.cos 的 CPU 并行分片随线程调度非确定 (64核默认下逐次变脸,
+            # 1-ULP 级差可落入行使行区间, 42l 已实证逐层放大致乱码)。f64 求 cos/sin:
+            # (a) 对 f32 角度 (全环境逐位一致) 做正确舍入, 与绿链 a73cebb0 在行使区
+            #     rows 0-575 逐位一致 (已验证 4 表全 0 diff);
+            # (b) 依赖导出脚本钉扎 OMP_NUM_THREADS=1 保证逐次可复现 (默认 64 线程下
+            #     f64 cos 仍随分片漂移)。
+            emb64 = emb.double()
+            cos_table = emb64.cos().float()
+            sin_table = emb64.sin().float()
             self.register_buffer(
-                f"cos_cached_{layer_type}", emb.cos(), persistent=False
+                f"cos_cached_{layer_type}", cos_table, persistent=False
             )
             self.register_buffer(
-                f"sin_cached_{layer_type}", emb.sin(), persistent=False
+                f"sin_cached_{layer_type}", sin_table, persistent=False
             )
 
     def _compute_inv_freq(
@@ -608,6 +617,7 @@ class Gemma4TextAttention(nn.Module):
         past_key_values: list | None = None,
         shared_kv_states: dict | None = None,
         new_kv_cache_pos: torch.Tensor | None = None,
+        sliding_kv_pos: torch.Tensor | None = None,
         **_kwargs,
     ) -> torch.Tensor:
         input_shape = hidden_states.shape[:-1]
@@ -665,8 +675,16 @@ class Gemma4TextAttention(nn.Module):
                 # CPU (else 分支) 与 GE (ge.ScatterNdUpdate) 语义一致, 不依赖 1D=dim2 约定.
                 # cann_lm 自带 converter (converter/export/_scatter_nd_update_converter.py)
                 # 覆盖 torchair, 直接产出 ge.ScatterNdUpdate (不绕 InplaceUpdate+Transpose).
-                cache_k = scatter_kv_to_cache(cache_k, new_kv_cache_pos, key_states)
-                cache_v = scatter_kv_to_cache(cache_v, new_kv_cache_pos, value_states)
+                # ring 槽位由 host 预算 (sliding_kv_pos = pos%R, R=sliding_window+prefill_seq) 传入,
+                # 图内 scatter 直接用该输入当槽位 (无 ge.FloorMod, 取模在 host Python).
+                # sliding 层用 sliding_kv_pos (ring), full 层用 new_kv_cache_pos (绝对位, pos<kv_max).
+                scatter_pos = (
+                    sliding_kv_pos
+                    if (self.is_sliding and sliding_kv_pos is not None)
+                    else new_kv_cache_pos
+                )
+                cache_k = scatter_kv_to_cache(cache_k, scatter_pos, key_states)
+                cache_v = scatter_kv_to_cache(cache_v, scatter_pos, value_states)
                 past_key_values[self.layer_idx] = (cache_k, cache_v)
                 # Use entire buffer for attention
                 key_states = cache_k
@@ -763,6 +781,7 @@ class Gemma4TextDecoderLayer(nn.Module):
         attention_mask: torch.Tensor | None = None,
         past_key_values: list | None = None,
         new_kv_cache_pos: torch.Tensor | None = None,
+        sliding_kv_pos: torch.Tensor | None = None,
         **kwargs,
     ) -> torch.Tensor:
         residual = hidden_states
@@ -774,6 +793,7 @@ class Gemma4TextDecoderLayer(nn.Module):
             past_key_values=past_key_values,
             shared_kv_states=shared_kv_states,
             new_kv_cache_pos=new_kv_cache_pos,
+            sliding_kv_pos=sliding_kv_pos,
         )
         hidden_states = self.post_attention_layernorm(hidden_states)
         hidden_states, residual = self.pre_feedforward_layernorm.forward_add(
@@ -987,6 +1007,7 @@ class Gemma4TextModel(nn.Module):
         shared_kv_states: dict | None = None,
         output_hidden_states: bool = False,
         new_kv_cache_pos: torch.Tensor | None = None,
+        sliding_kv_pos: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, list, dict | None]:
         if inputs_embeds is None:
             inputs_embeds = self.embed_tokens(input_ids)
@@ -1050,6 +1071,7 @@ class Gemma4TextModel(nn.Module):
                 attention_mask=mask,
                 past_key_values=past_key_values,
                 new_kv_cache_pos=new_kv_cache_pos,
+                sliding_kv_pos=sliding_kv_pos,
             )
             if output_hidden_states:
                 all_hidden_states = all_hidden_states + (hidden_states,)

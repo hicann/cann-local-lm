@@ -239,6 +239,9 @@ def gen_golden_with_dump(
             f"skip_embed_quant={skip_embed_quant}"
         )
 
+    # 固定 input_ids 种子 (get_sample_inputs 用 torch.randint), 保证跨 run 可复现
+    # (ring vs absolute 对比需相同 input_ids; 否则 argmax 不可比)
+    torch.manual_seed(0)
     sample_inputs = _get_sample_inputs(wrapper, seq_len, use_embeddings)
 
     if use_embeddings:

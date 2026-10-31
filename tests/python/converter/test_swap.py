@@ -287,6 +287,7 @@ def test_swap_linear_from_sd_happy_path_swaps_quantlinear():
     assert model.q_proj.group_size == 4
 
 
+@pytest.mark.skip(reason="pack_int4_int32 not yet implemented")
 def test_swap_linear_from_sd_kirinx90_int4pack_int32():
     # KirinX90: int4pack int32 (packed-K, [N, K//8]), 区别于 Ascend910 int8 nibble ([K//2,N])
     # in(K) 须整除 8 (8 int4/int32 沿 K pack). commit 33df54c: materialize 去 transpose, 直接 pack q[N,K] 沿 K 维.

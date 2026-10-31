@@ -78,7 +78,7 @@ ok "epair: ${EPAIR_DIR}"
 # =========================================================
 phase "OM 编译 (cann_lm_compile: epair → OM)"
 # =========================================================
-# cann_lm_compile 退出时可能 abort (GE 库已知问题), 用 || true 容错, 以 .om 存在判定成功
+# cann_lm_compile 用 quick_exit 规避 GE 库静态析构, 正常退出码 0
 "${COMPILE_BIN}" \
   "${EPAIR_DIR}/ep_json_with_ascend_ir.json" \
   "${EPAIR_DIR}/weight_info.json" \

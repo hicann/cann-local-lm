@@ -56,36 +56,6 @@ def pack_int4(q: torch.Tensor) -> torch.Tensor:
     return ((nib_odd << 4) | nib_even).to(torch.int8)
 
 
-def pack_int4_int32(q: torch.Tensor) -> torch.Tensor:
-    """CANN int4pack: 8 个 int4 沿最后一维交叠进 1 个 int32 (int32 ``[..., n//8]``).
-
-    Input: ``q`` int8 ``[..., n]`` holding signed int4 values in [-8, 7].
-    Output: int32 ``[..., n//8]`` — int32 at index i holds int4 for n=8i (bit 0-3),
-    n=8i+1 (bit 4-7), ..., n=8i+7 (bit 28-31), two's-complement 4-bit (``value & 0xF``).
-    Matches ``npu_convert_weight_to_int4pack`` output (int32 [k, n//8] 交叠排放, 对应
-    ``npu_weight_quant_batchmatmul`` 的 weight 输入; 区别于 ``pack_int4`` 的 int8
-    nibble [k//2, n] 给 ``npu_quant_matmul`` x2).
-
-    注: 交叠排列为 8 int4 连续填 int32 低->高 4 位 (n=8i -> bit0-3, n=8i+7 -> bit28-31).
-    已对齐 ops-nn canonical unpack_int32_to_int4 (matmul_quant_util.py) bit-exact 验证 (含 -8).
-    CANN 实际排列在 libop_plugin.so (C++, 本地无源码), 与上述一致 (经 ops-nn golden 交叉验证).
-    """
-    if q.shape[-1] % 8 != 0:
-        raise ValueError(f"last dim {q.shape[-1]} must be multiple of 8 for int4pack")
-    q = (q.to(torch.int8) & 0x0F).to(torch.int32)
-    packed = (
-        q[..., 0::8]
-        | (q[..., 1::8] << 4)
-        | (q[..., 2::8] << 8)
-        | (q[..., 3::8] << 12)
-        | (q[..., 4::8] << 16)
-        | (q[..., 5::8] << 20)
-        | (q[..., 6::8] << 24)
-        | (q[..., 7::8] << 28)
-    )
-    return packed.to(torch.int32)
-
-
 def materialize_int4_per_group_symmetric(
     weight: torch.Tensor,
     scale: torch.Tensor,
@@ -139,7 +109,7 @@ def materialize_int4_per_group_symmetric(
     q = q.to(torch.int8)
     if packed == "int4pack":
         # CANN int4pack: weight [out,in]=[N,K] -> 转置 [in,out]=[K,N] (CANN [k,n]) -> int32 [K, N//8]
-        payload = pack_int4_int32(q.contiguous())  # [in, out//8] = [K, N//8] int32
+        payload = pack_int4_int32(q.contiguous())  # noqa: F821  # [in, out//8] = [K, N//8] int32
     elif packed:
         payload = pack_int4(q)  # [out, in//2] int8 nibble (npu_quant_matmul x2)
     else:

@@ -171,15 +171,12 @@ class OMRunner:
 
 
 def real_emb(input_ids):
-    return (F.embedding(input_ids, emb_w) * EMB_SCALE).to(DT)
+    # raw lookup (不含 embed_scale); scale 由 embeddings_scale 输入在图内乘 (wrapper 契约 A)
+    return F.embedding(input_ids, emb_w).to(DT)
 
 
 def real_ple(input_ids):
-    return (
-        (F.embedding(input_ids, ple_w) * PLE_SCALE)
-        .reshape(*input_ids.shape, N_LAY, PLE_H)
-        .to(DT)
-    )
+    return F.embedding(input_ids, ple_w).reshape(*input_ids.shape, N_LAY, PLE_H).to(DT)
 
 
 def build_mask_full(seq_len, kv_max, start_pos, batch=1):
@@ -201,26 +198,15 @@ def build_mask_full(seq_len, kv_max, start_pos, batch=1):
 
 
 def build_mask_sliding(seq_len, kv_max, start_pos, sliding_window, batch=1):
-    """bool 矩阵 [batch,1,seq_len,kv_max], 绝对位 causal + sliding window。
+    """ring buffer sliding window mask [batch,1,seq_len,R], R=sliding_window+PREFILL_SEQ (固定)。
 
-    query@绝对位 attend kv[max(0, abs-w+1):abs+1] (窗口内+causal); 未写位 [actual:kv_max]
-    被 mask(True) 屏蔽。矩形 q_dim=seq_len (对齐 580bff6 wrapper, 去方阵 padding 行)。
-    kv_len <= sliding_window 时 causal 已隐含在窗口内, 退化为 mask_full。
+    委托 wrapper._build_mask_sliding (ring wrap 版: slot=pos%R, 含 wrap 两段)。
+    R 固定用 w+PREFILL_SEQ (不跟 chunk seq 走), 匹配 OM 的 ring R (prefill+decode 共用, KV 可跨传)。
     """
     w = sliding_window
-    if not w or w <= 0 or kv_max <= w:
-        return build_mask_full(seq_len, kv_max, start_pos, batch)
-    q_abs = (start_pos + torch.arange(seq_len)).unsqueeze(1)
-    k = torch.arange(kv_max).unsqueeze(0)
-    diff = q_abs - k
-    attend = (diff >= 0) & (diff <= w - 1)
-    return (
-        (~attend)
-        .unsqueeze(0)
-        .unsqueeze(0)
-        .expand(batch, 1, seq_len, kv_max)
-        .contiguous()
-    )
+    R = (w + PREFILL_SEQ) if (w and w > 0) else kv_max
+    new_pos = torch.arange(start_pos, start_pos + seq_len, dtype=torch.int32)
+    return wrapper._build_mask_sliding(seq_len, R, DT, new_pos)
 
 
 def build_prefill(chunk_ids, chunk_real_len, start_pos, kv_prev):
@@ -236,6 +222,10 @@ def build_prefill(chunk_ids, chunk_real_len, start_pos, kv_prev):
     new_pos = torch.arange(
         start_pos, start_pos + PREFILL_SEQ, dtype=torch.int32
     )  # 对齐 58b5d1f INT32 pos
+    R_sliding = wrapper._sliding_window + PREFILL_SEQ  # ring R=w+prefill_seq (固定)
+    skp = (new_pos % R_sliding).to(
+        torch.int32
+    )  # ring 槽位 (sliding 层 scatter 用, host 预算)
     s[1] = build_mask_full(PREFILL_SEQ, KV_MAX, start_pos)
     s[2] = build_mask_sliding(PREFILL_SEQ, KV_MAX, start_pos, wrapper._sliding_window)
     s[3] = new_pos.unsqueeze(0)  # position_ids [1,128]
@@ -245,11 +235,11 @@ def build_prefill(chunk_ids, chunk_real_len, start_pos, kv_prev):
     s[7] = torch.tensor(
         [chunk_real_len - 1], dtype=torch.int32
     )  # output_pos (块内最后真实位)
-    _, mf, ms, pos, _, npos, emb, opos, ple, _, _ = s
+    _, mf, ms, pos, _, npos, emb, opos, ple, emb_scale, ple_scale, _skp_sample = s
     if kv_prev is not None:
         kv = kv_prev
     else:
-        _, _, _, _, pkv, _, _, _, _, _, _ = wrapper.get_sample_inputs(
+        _, _, _, _, pkv, _, _, _, _, _, _, _ = wrapper.get_sample_inputs(
             seq_len=PREFILL_SEQ, use_embeddings=True
         )
         kv = [t for pair in pkv for t in pair]
@@ -261,6 +251,9 @@ def build_prefill(chunk_ids, chunk_real_len, start_pos, kv_prev):
         "embeddings": emb,
         "output_pos": opos,
         "per_layer_token_identity": ple,
+        "embeddings_scale": emb_scale,
+        "per_layer_token_identity_scale": ple_scale,
+        "sliding_kv_pos": skp,
     }
     inputs = []
     for i, name in enumerate(runner_pf.in_names):
@@ -279,10 +272,16 @@ def build_decode(next_token, cached_len, kv_prev):
     new_pos = torch.tensor([cached_len], dtype=torch.int32)
     mf = build_mask_full(1, KV_MAX, cached_len)
     ms = build_mask_sliding(1, KV_MAX, cached_len, wrapper._sliding_window)
+    R_sliding = (
+        wrapper._sliding_window + PREFILL_SEQ
+    )  # decode 也用 w+prefill_seq (固定 R)
+    skp = (new_pos % R_sliding).to(torch.int32)  # ring 槽位
     pos = torch.tensor([[cached_len]], dtype=torch.int32)
     opos = torch.tensor([0], dtype=torch.int32)
     emb = real_emb(next_token)  # [1,1,HID]
     ple = real_ple(next_token)  # [1,1,N_LAY,PLE_H]
+    emb_scale = torch.full((1, 1), EMB_SCALE, dtype=DT)
+    ple_scale = torch.full((1, 1), PLE_SCALE, dtype=DT)
     by_name = {
         "mask_full": mf,
         "mask_sliding": ms,
@@ -291,6 +290,9 @@ def build_decode(next_token, cached_len, kv_prev):
         "embeddings": emb,
         "output_pos": opos,
         "per_layer_token_identity": ple,
+        "embeddings_scale": emb_scale,
+        "per_layer_token_identity_scale": ple_scale,
+        "sliding_kv_pos": skp,
     }
     inputs = []
     kv_idx = 0

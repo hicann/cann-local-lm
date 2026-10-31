@@ -9,13 +9,6 @@
       "pad": true,
       "pack": "nd2nz",
       "enable": false
-    },
-    {
-      "name_pattern": "*.weight_q",
-      "op_type": "QuantBatchMatmulV4",
-      "format": "Z",
-      "pack": "pack_int4_nz",
-      "enable": true
     }
   ]
 }

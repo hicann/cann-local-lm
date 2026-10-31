@@ -61,22 +61,31 @@ class Gemma4ExportWrapper(ExportWrapper):
         per_layer_token_identity: torch.Tensor | None = None,
         embeddings_scale: torch.Tensor | None = None,
         per_layer_token_identity_scale: torch.Tensor | None = None,
+        sliding_kv_pos: torch.Tensor | None = None,
     ):
         # embeddings + embeddings_scale: raw lookup (不含 embed_scale) × per-token scale。
-        # 量化: scale = per_channel_scale × embed_scale (fold); 非量化: scale = full(embed_scale)。
-        # 统一: embeddings × scale 在图内做, embed_scale 显式可见。
+        # [fold 回迁 2026-10-27, 同 3d1a98f 形态] embed_scale 由图内常量乘补偿:
+        # 量化对象是 raw_weight (dopt), int8×per_token_scale≈raw, 缺 Gemma4TextScaledWordEmbedding
+        # 的 embed_scale; 7cd26b3 曾把它 fold 进 scale 输入取值, 但引擎 host 喂 scale 工位是
+        # 纯搬运 (raw 值, 无 fold), plain 形态图在 bbit 上乱码 (详见 同步代码后出现乱码问题.md §3.6)。
         if embeddings is not None and embeddings_scale is not None:
             dt = self._model_dtype
-            embeddings = embeddings.to(dt) * embeddings_scale.to(dt).unsqueeze(-1)
+            embeddings = (
+                embeddings.to(dt)
+                * embeddings_scale.to(dt).unsqueeze(-1)
+                * self._embed_scale
+            )
         # per_layer_token_identity + scale: 同理 (PLE embed_scale = sqrt(hidden_size_per_layer_input))
         if (
             per_layer_token_identity is not None
             and per_layer_token_identity_scale is not None
         ):
             dt = self._model_dtype
-            per_layer_token_identity = per_layer_token_identity.to(
-                dt
-            ) * per_layer_token_identity_scale.to(dt).unsqueeze(-1).unsqueeze(-1)
+            per_layer_token_identity = (
+                per_layer_token_identity.to(dt)
+                * per_layer_token_identity_scale.to(dt).unsqueeze(-1).unsqueeze(-1)
+                * self._ple_embed_scale
+            )
         logits, past_kv_flat = self._drive_layers(
             input_ids,
             mask_full,
@@ -86,6 +95,7 @@ class Gemma4ExportWrapper(ExportWrapper):
             new_kv_cache_pos,
             embeddings,
             per_layer_token_identity,
+            sliding_kv_pos,
         )
         if output_pos is not None:
             # index_select 替代 advanced indexing (logits[:, output_pos, :] -> ge.IndexByTensor,
@@ -103,6 +113,7 @@ class Gemma4ExportWrapper(ExportWrapper):
         new_kv_cache_pos: torch.Tensor,
         embeddings: torch.Tensor | None = None,
         per_layer_token_identity: torch.Tensor | None = None,
+        sliding_kv_pos: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, list[torch.Tensor]]:
         """绕过 Gemma4TextModel.forward, 直接驱动 decoder layers。
 
@@ -192,6 +203,7 @@ class Gemma4ExportWrapper(ExportWrapper):
                 attention_mask=mask_i,
                 past_key_values=kv_list,
                 new_kv_cache_pos=new_kv_cache_pos,
+                sliding_kv_pos=sliding_kv_pos,
             )
 
         # 6. norm + lm_head
@@ -237,20 +249,31 @@ class Gemma4ExportWrapper(ExportWrapper):
         dtype: torch.dtype,
         new_kv_cache_pos: torch.Tensor,
     ) -> torch.Tensor:
-        """bool 矩阵 [b,1,seq_len,kv_max], 绝对位 causal + sliding window。
+        """bool 矩阵 [b,1,seq_len,kv_max], ring-buffer sliding window mask。
 
-        query@绝对位 attend kv[max(0, abs-w+1):abs+1] (窗口内+causal);
-        未写位 [actual:kv_max] 被 mask(True) 屏蔽。矩形 q_dim=seq_len。
-        kv_len <= sliding_window 时 causal 已隐含在窗口内, 退化为 mask_full。
+        sliding 层 KV cache 是 ring buffer (R=kv_max=sliding_window+seq_len, slot=pos%R)。
+        query@abs q → ring slot qs=q%R; attend 窗口 [max(0,q-w+1),q] 映射到 slot:
+          - 不绕 (q<w 被 max clamp, 或 qs≥w-1): attend [max(0,qs-w+1), qs]
+          - 绕回 (q≥R 且 qs<w-1, 即跨过 R 边界): attend [0,qs] ∪ [R-w+1+qs, R-1]
+        kv_max ≤ w 时退化为 mask_full (无 ring 必要)。
         """
         w = self._sliding_window
         if not w or w <= 0 or kv_max <= w:
             return self._build_mask_full(seq_len, kv_max, dtype, new_kv_cache_pos)
-        mask = torch.ones(self.batch, 1, seq_len, kv_max, dtype=torch.bool)
-        q_abs = new_kv_cache_pos.unsqueeze(1)
-        k = torch.arange(kv_max).unsqueeze(0)
-        diff = q_abs - k
-        attend = (diff >= 0) & (diff <= w - 1)
+        R = kv_max
+        q = new_kv_cache_pos  # [S] abs
+        qs = q % R  # [S] ring slot
+        j = torch.arange(R)  # [R] cache slot
+        qe = q.unsqueeze(1)  # [S,1]
+        qse = qs.unsqueeze(1)  # [S,1]
+        je = j.unsqueeze(0)  # [1,R]
+        # 不绕: attend [max(0,qs-w+1), qs] (q<w 时 qs-w+1<0 → j≥负数恒真 → clamp [0,qs])
+        attend_nw = (je <= qse) & (je >= (qse - w + 1))
+        # 绕回: q≥R 且 qs<w-1 → attend [0,qs] ∪ [R-w+1+qs, R-1]
+        wrap = (qe >= R) & (qse < (w - 1))  # [S,1]
+        attend_w = (je <= qse) | (je >= (R - w + 1 + qse))
+        attend = torch.where(wrap, attend_w, attend_nw)  # [S,R]
+        mask = torch.ones(self.batch, 1, seq_len, R, dtype=torch.bool)
         mask[:] = ~attend
         return mask
 
@@ -260,9 +283,10 @@ class Gemma4ExportWrapper(ExportWrapper):
 
     def get_sample_inputs(
         self,
-        seq_len: int = 128,
+        seq_len: int = 64,
         use_embeddings: bool = False,
         quant_embeddings: bool = False,
+        prefill_seq: int | None = None,
     ) -> tuple:
         """构造导出用示例输入 (scatter-write + host 预构 mask)。
 
@@ -275,6 +299,12 @@ class Gemma4ExportWrapper(ExportWrapper):
         num_kv_heads = cfg.num_key_value_heads
         kv_max = self.kv_cache_max_len
         dtype = self._model_dtype
+        w = self._sliding_window
+        # sliding 层 KV cache 是 ring buffer: R = sliding_window + prefill_seq (固定, 不跟 chunk seq_len
+        # 走; prefill+decode 共用同一 R, KV 才能跨 prefill→decode 传). decode(seq=1) 也用 w+prefill_seq.
+        # full 层仍用 kv_cache_max_len。slot = pos % R (跨 chunk 稳定, ring 不越界)。
+        _rseq = prefill_seq if prefill_seq else seq_len
+        R_sliding = (w + _rseq) if (w and w > 0) else kv_max
 
         input_ids = torch.randint(
             0, cfg.vocab_size, (self.batch, seq_len), dtype=torch.int64
@@ -282,27 +312,34 @@ class Gemma4ExportWrapper(ExportWrapper):
         new_kv_cache_pos = torch.arange(seq_len, dtype=torch.int32)
         mask_full = self._build_mask_full(seq_len, kv_max, dtype, new_kv_cache_pos)
         mask_sliding = self._build_mask_sliding(
-            seq_len, kv_max, dtype, new_kv_cache_pos
+            seq_len, R_sliding, dtype, new_kv_cache_pos
         )
         position_ids = (
             torch.arange(seq_len, dtype=torch.int32).unsqueeze(0).repeat(self.batch, 1)
         )
         output_pos = torch.tensor([seq_len - 1], dtype=torch.int32)
+        # ring 槽位 (sliding 层 scatter 用, host 预算避图内 % ): pos % R_sliding
+        sliding_kv_pos = (new_kv_cache_pos % R_sliding).to(torch.int32)
 
         past_key_values = []
         for i in range(num_layers):
             hd = self._get_layer_head_dim(i)
-            k = torch.zeros(self.batch, num_kv_heads, kv_max, hd, dtype=dtype)
-            v = torch.zeros(self.batch, num_kv_heads, kv_max, hd, dtype=dtype)
+            is_sliding = (
+                i < len(self._layer_types)
+                and self._layer_types[i] == "sliding_attention"
+            )
+            kv_len_i = R_sliding if is_sliding else kv_max
+            k = torch.zeros(self.batch, num_kv_heads, kv_len_i, hd, dtype=dtype)
+            v = torch.zeros(self.batch, num_kv_heads, kv_len_i, hd, dtype=dtype)
             past_key_values.append((k, v))
 
         if use_embeddings:
             if quant_embeddings:
                 q_w, q_s = self._quant_embeddings["model.model.embed_tokens.weight"]
                 emb_q = q_w[input_ids]  # int8 [b, s, hidden]
-                emb_scale = (
-                    q_s[input_ids] * self._embed_scale
-                )  # fold embed_scale into per-channel scale
+                emb_scale = q_s[
+                    input_ids
+                ]  # [fold 回迁 2026-10-27] raw per-token scale (embed_scale 已在 forward 图内乘)
                 # PLE quant: gather int8 + per-token scale from _quant_embeddings (dopt Quant_Embed_MinMax)。
                 ple_q, ple_scale = None, None
                 ple_key = "model.model.embed_tokens_per_layer.weight"
@@ -314,9 +351,9 @@ class Gemma4ExportWrapper(ExportWrapper):
                         cfg.num_hidden_layers,
                         m.hidden_size_per_layer_input,
                     )
-                    ple_scale = (
-                        pq_s[input_ids] * self._ple_embed_scale
-                    )  # fold embed_scale
+                    ple_scale = pq_s[
+                        input_ids
+                    ]  # [fold 回迁 2026-10-27] raw per-token scale (ple scale 已在 forward 图内乘)
                 return (
                     None,
                     mask_full,
@@ -329,6 +366,7 @@ class Gemma4ExportWrapper(ExportWrapper):
                     ple_q,
                     emb_scale,
                     ple_scale,
+                    sliding_kv_pos,
                 )
             # 非 quant: raw lookup (bypass Gemma4TextScaledWordEmbedding, 不乘 embed_scale),
             # embed_scale 折进 embeddings_scale 在图内乘 (与量化路径统一)。
@@ -356,6 +394,7 @@ class Gemma4ExportWrapper(ExportWrapper):
                 ple,
                 embeddings_scale,
                 ple_scale,
+                sliding_kv_pos,
             )
         else:
             # 图内查表: input_ids 入图, embeddings/per_layer_token_identity=None (wrapper 内查)
@@ -371,6 +410,7 @@ class Gemma4ExportWrapper(ExportWrapper):
                 None,
                 None,
                 None,
+                sliding_kv_pos,
             )
 
     # ──────────────────────────────────────────────────────────────

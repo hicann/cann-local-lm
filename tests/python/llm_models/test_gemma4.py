@@ -420,8 +420,16 @@ def test_wrapper_get_sample_inputs_input_ids_mode():
     inputs = wrapper.get_sample_inputs(seq_len=seq, use_embeddings=False)
     # (input_ids, mask_full, mask_sliding, pos_ids, past_kv, new_kv_pos, emb, out_pos, ple, e_scale, ple_scale)
     assert inputs[0] is not None and inputs[0].shape == (1, seq)
-    assert inputs[1].shape == (1, 1, seq, 16)  # mask_full [b,1,seq_len,kv_max] (矩形)
-    assert inputs[2].shape == (1, 1, seq, 16)  # mask_sliding
+    assert inputs[1].shape == (
+        1,
+        1,
+        seq,
+        16,
+    )  # mask_full [b,1,seq_len,kv_max] (矩形, full 层绝对位)
+    R_sliding = (
+        wrapper._sliding_window + seq
+    )  # sliding 层 ring buffer (sliding_window+seq)
+    assert inputs[2].shape == (1, 1, seq, R_sliding)  # mask_sliding [b,1,seq,R]
     assert inputs[5].shape == (seq,)  # new_kv_cache_pos
     assert len(inputs[4]) == config.num_hidden_layers  # past_kv list
     # per-layer head dim: full layers use global_head_dim(32), sliding use head_dim(32)
@@ -740,8 +748,11 @@ def test_text_model_scatter_write_cache(config: Gemma4TextConfig):
             None,
         )
     check("scatter-write logits shape", logits.shape == (b, s, config.vocab_size))
-    # scatter-write keeps kv_max fixed (buffer not grown via torch.cat)
-    check("kv buffer stays kv_max", kv_flat[0].shape[2] == 16)
+    # scatter-write keeps buffer fixed (sliding 层 = ring R = sliding_window+seq, 非 kv_max)
+    check(
+        "sliding kv buffer = R (w+seq)",
+        kv_flat[0].shape[2] == wrapper._sliding_window + s,
+    )
 
 
 def test_prepare_causal_mask_4d_sliding_window():

@@ -130,8 +130,11 @@ ge::Format AtenTensorDescMapper::MapGeLayoutString(const std::string& layout, Va
     if (layout == "NZ") {
         return ge::FORMAT_FRACTAL_NZ; // FractNZ: weight Const pre-converted (CLI-015 CANN_LM_ENABLE_WEIGHT_TRANS)
     }
-    if (layout == "Z") {
+    if (layout == "Z" || layout == "FRACTAL_Z") {
         return ge::FORMAT_FRACTAL_Z; // FractZ: int4pack int32 weight for QuantBatchMatmulV4 x2 (ND-NZ quantized path)
+    }
+    if (layout == "FRACTAL_NZ") {
+        return ge::FORMAT_FRACTAL_NZ; // full GE layout string alias for "NZ"
     }
     AddError(result, "UNSUPPORTED_GE_LAYOUT", "Unsupported GE layout string", context + ":" + layout);
     return ge::FORMAT_ND;

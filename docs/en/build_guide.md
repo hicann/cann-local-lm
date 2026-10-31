@@ -126,54 +126,56 @@ ls tools/binary-sign-tool.jar                # Expected: file exists
 
 ## Runtime Prerequisite: P1 converter venv
 
-> ⚠️ **This section is only needed at converter runtime (exporting epair); the `--pkg` build does not need it.** `build_converter` falls back to system pip packaging (`--no-deps` pure source), `build_cpp` has zero torch references, and `build_engine` uses OHOS clang. If you only need the `.run` distribution artifacts, you can skip this section and go straight to Part 2.
->
-> The P1 venv is a **runtime dependency**; see [env_dependencies.md](env_dependencies.md) §2.1. cann-device-lm **does not build** torchair / torch-delegate in this repo; they are prerequisites.
+> ⚠️ **Only needed at converter runtime (exporting epair); `--pkg` build does not need it.** Skip to Part 2 if you only need `.run` artifacts.
 
-| Component | Purpose | git Source |
-|-----------|---------|------------|
-| torch-delegate | `torch_delegate` whl + `.venv` (torch 2.9.0+cpu) | Merged into the cann-device-lm repo `torch_delegate/` directory (`gitcode.com/cann/cann-device-lm`) |
-| torchair | `torchair` whl (FX→GE IR conversion) | `gitcode.com/Ascend/torchair.git` |
-
-### Option 1: Build and Install from Source
-
-> For the full dependency list, see [`scripts/requirements-p1.txt`](../../scripts/requirements-p1.txt).
+| Component | Source |
+|-----------|--------|
+| torch-delegate | In-repo `torch_delegate/` (includes `build.sh`, auto-creates `.venv` + torch 2.9.0+cpu) |
+| torchair | Choose one of the two methods below |
 
 ```bash
 source $HOME/Ascend/cann/set_env.sh
-
-# 1. torch-delegate (produces .venv + torch_delegate whl)
 cd /path/to/cann-device-lm
-git clone https://gitcode.com/cann/cann-device-lm.git deps/torch-delegate  # Or directly use the torch_delegate/ directory inside the cann-device-lm repo
-cd deps/torch-delegate && ./build.sh    # build.sh auto-creates .venv (torch 2.9.0+cpu) + compiles the whl
-.venv/bin/pip install --force-reinstall --no-deps output/package/torch_delegate-*.whl
 
-# 2. torchair (TARGET_PYTHON_PATH points to the P1 venv for ABI match)
-cd /path/to/cann-device-lm
-deps/torch-delegate/.venv/bin/pip install wheel numpy protobuf
-git clone https://gitcode.com/Ascend/torchair.git deps/torchair
-cd deps/torchair
-TARGET_PYTHON_PATH="$(realpath ../torch-delegate/.venv/bin/python)" bash build.sh -c
-../torch-delegate/.venv/bin/pip install --force-reinstall --no-deps output/torchair-*.whl
+# 1. torch-delegate: build from in-repo source (build.sh auto-creates .venv [torch 2.9.0+cpu] + compiles whl)
+cp -a torch_delegate deps/torch-delegate
+cd deps/torch-delegate && ./build.sh && .venv/bin/pip install --no-deps output/package/torch_delegate-*.whl
+
+# 2. torchair (choose one):
 ```
 
-### Option 2: Install with whl Packages
-
-If you already have prebuilt whls (produced by Option 1 or shipped with a release package), do not clone torch-delegate (no auto `.venv`); create a venv manually:
+**Option A: Build from source** (`.so` linked against CANN stubs, no torch_npu needed for converter)
 
 ```bash
-python3 -m venv /path/to/venv          # Create venv manually (Option 1 creates it automatically via torch-delegate build.sh)
-source /path/to/venv/bin/activate
-pip install torch==2.9.0 --index-url https://download.pytorch.org/whl/cpu
-pip install numpy protobuf
-pip install torch_delegate-0.1.0-py3-none-any.whl torchair-0.1-py3-none-any.whl
-export CONVERTER_PYTHON=/path/to/venv/bin/python
+# .venv/bin/pip is the P1 venv created by torch-delegate build.sh above
+cd /path/to/cann-device-lm
+git clone https://gitcode.com/Ascend/torchair.git deps/torchair && \
+  cd deps/torchair && TARGET_PYTHON_PATH="$(realpath ../torch-delegate/.venv/bin/python)" bash build.sh -c && \
+  ../torch-delegate/.venv/bin/pip install --no-deps output/torchair-*.whl
 ```
 
-### Verify Prerequisites Are Ready
+**Option B: Extract from torch_npu whl** (`.so` from official torch_npu build, must match torch version)
 
 ```bash
-source $HOME/Ascend/cann/set_env.sh
+VENV=deps/torch-delegate/.venv
+PY_VER=$($VENV/bin/python -c 'import sys;print(f"python{sys.version_info.major}.{sys.version_info.minor}")')
+
+# Download torch_npu whl (no install), extract torchair only
+pip download torch_npu==2.9.0.post9 \
+  --index-url https://ascend.devcloud.huaweicloud.com/pypi/simple/ \
+  --no-deps -d /tmp/torch_npu_whl
+unzip -o /tmp/torch_npu_whl/torch_npu-*.whl 'torch_npu/dynamo/torchair/*' -d /tmp/torch_npu_extracted
+
+# Copy to P1 venv site-packages, rename dir to torchair
+cp -r /tmp/torch_npu_extracted/torch_npu/dynamo/torchair \
+  $VENV/lib/$PY_VER/site-packages/torchair
+```
+
+> Both methods produce torchair with the same `.so` files (`_torchair.so`/`_npu_graph_executor.so` etc.), differing only in build environment: Option A uses CANN stubs, Option B uses official torch_npu build. The converter venv does not install torch_npu; Option A is the recommended path.
+
+### Verify
+
+```bash
 bash scripts/build.sh check
 ```
 
@@ -261,9 +263,9 @@ source $HOME/Ascend/cann/set_env.sh
 
 See the "Runtime Prerequisite: P1 converter venv" section; install torch-delegate (produces `.venv`) → torchair in order, then `bash scripts/build.sh deps && bash scripts/build.sh check`.
 
-### Q3: omc compilation exits non-zero but the omc is already produced
+### Q3: omc compilation exit code
 
-GE teardown triggers a glibc "corrupted size vs. prev size" → Aborted, but the omc is produced before this. Success is determined by whether the omc file exists (`run_compile.sh` already handles this with `|| true`).
+`cann_lm_compile` uses `std::quick_exit(0)` to skip GE library static destruction; normal exit code is 0.
 
 ### Q4: CANN version not found
 

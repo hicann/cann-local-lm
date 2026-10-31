@@ -4,11 +4,11 @@ English | [简体中文](README.md)
 
 ## 🔥 Latest News
 
-- [2026/10] Converter current capabilities: HuggingFace model → epair export (torch.export + FX→GE conversion + weight separation), supporting W4A8 quantization (GPTQ offline + runtime dynamic quantization). Engine current capabilities: three-layer inference engine architecture, supporting Continuous Batching, KV Cache management, asynchronous streaming inference, multi-turn continuation, request cancellation, adapted to Kirin platform, providing C++ API and Python API entry points.
+- [2026/10] Converter current capabilities: HuggingFace model → epair export (torch.export + FX→GE conversion + weight separation), supporting W4A8 quantization (GPTQ offline + runtime activated dynamic quantization). Engine current capabilities: three-layer inference engine architecture, supporting KV Cache management, asynchronous streaming inference, multi-turn continuation, request cancellation, adapted to Kirin platform, providing C++ API and Python API entry points.
 
 ## 🚀 Overview
 
-cann-device-lm aims to enable developers to run LLM inference on Huawei Kirin chips, providing end-to-end capabilities for **model quantization, model compilation, and model inference**. It exports HuggingFace models to epair format (IR + weight separation), loads and compiles them into omc via the C++ backend, and ultimately executes inference on Kirin chips.
+cann-device-lm aims to provide large model conversion tools and end-to-end inference engines based on CANN for edge devices, enabling lightweight, low-latency, and low-memory efficient inference for various large language models.
 
 ## ⬇️ Source Code Download
 
@@ -78,10 +78,10 @@ See [Quick Start](docs/en/QUICKSTART.md) for details, covering installation, epa
 | [Build Guide](docs/en/build_guide.md) | Build prerequisites / one-click build+install+usage / quick reference / FAQ |
 | [Environment Dependencies](docs/en/env_dependencies.md) | Build/runtime dependency classification / P1 venv / P2 torch_npu / multi-env quick reference table |
 | [Version Evolution](docs/en/version_evolution.md) | Release cadence / compatibility table (HarmonyOS / CANN / chip / PyTorch / TorchNPU) |
-| [CLI Design](docs/zh/cann_lm_converter/cli/cli_design.md) | CLI entry / convert() / command-line arguments / call chain |
-| [Export Design](docs/zh/cann_lm_converter/export/export_design.md) | loader / saver / ExportWrapper / C++ loading |
-| [Quantization Design](docs/zh/cann_lm_converter/quant/quant_design.md) | W4A8 scheme / lightweight tool GPTQ / swap / operator specs |
-| [Converter Overview](docs/zh/cann_lm_converter/README.md) | Cross-module call chain / model differences / accuracy summary |
+| [CLI Design](docs/en/cann_lm_converter/cli/cli_design.md) | CLI entry / convert() / command-line arguments / call chain |
+| [Export Design](docs/en/cann_lm_converter/export/export_design.md) | loader / saver / ExportWrapper / C++ loading |
+| [Quantization Design](docs/en/cann_lm_converter/quant/quant_design.md) | W4A8 scheme / lightweight tool GPTQ / swap / operator specs |
+| [Converter Overview](docs/en/cann_lm_converter/README.md) | Cross-module call chain / model differences / accuracy summary |
 
 ## 🌐 Ecosystem Integration
 

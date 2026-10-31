@@ -318,22 +318,15 @@ def _swap_linear_from_sd(
                 "cann_lm::quant_matmul (symmetric offset=0 only). Re-run dopt with a "
                 "symmetric strategy."
             )
-        # Pre-transpose weight_q and scale so cann_lm::quant_matmul meta takes N = x2.size(-1);
-        # _quant_matmul_converter hardcodes transpose_x2=False.
-        # KirinX90: int4pack int32 (packed-N, materialize 产 [K,N//8] K-first, 不 transpose);
-        # 其它(Ascend910): int8 nibble (materialize 产 [N,K//2], transpose -> [K//2,N]).
-        is_kirin = "kirin" in (target_soc or "").lower()
-        packed = "int4pack" if is_kirin else True
+        # weight_q 保持 materialize 原生 [N, K//2] nibble (不转置):
+        # _quant_matmul_converter 取 N = x2 dim0, Bitcast 得 [N, K] int4 元素视角,
+        # HostCpu TransData 重排约定输入物理布局为 [N, K//2] 行主序 — 转置会破坏整条链.
+        # weight_scale 仍转置到 [k//g, n] (V4 x2_scale 口径).
+        # KirinX90 在 GE converter 里 Bitcast int8→DT_INT4.
         weight_q, weight_scale = materialize_int4_per_group_symmetric(
-            w_gptq, scale2d, group_size, signed=True, nbits=bit, packed=packed
+            w_gptq, scale2d, group_size, signed=True, nbits=bit, packed=True
         )
-        weight_scale = weight_scale.transpose(
-            -1, -2
-        ).contiguous()  # [n,k//g]->[k//g,n] (两路径都 transpose)
-        if not is_kirin:
-            weight_q = weight_q.transpose(
-                -1, -2
-            ).contiguous()  # int8 nibble [n,k//2]->[k//2,n]; int4pack 已 [k,n//8]
+        weight_scale = weight_scale.transpose(-1, -2).contiguous()  # [n,k//g]->[k//g,n]
         ql = QuantLinear(
             weight_q,
             weight_scale,
@@ -356,7 +349,7 @@ def _swap_linear_from_sd(
         "scope": f"all nn.Linear except {list(skip)}",
         "n_quantized": n_q,
         "n_skipped_no_dopt_key": n_skip,
-        "weight_int4_encoding": "nibble-packed int8 [k//2,n] pre-transposed (low nibble=even k, signed [-8,7]) — cann_lm::quant_matmul x2",
+        "weight_int4_encoding": "nibble-packed int8 [n,k//2] natural (low nibble=even k, signed [-8,7]) — cann_lm::quant_matmul x2",
         "op": "cann_lm::quant_matmul",
         "dopt_unsigned_quant": uq,
         "offset_supported": "symmetric only (offset=0); non-zero offset rejected",

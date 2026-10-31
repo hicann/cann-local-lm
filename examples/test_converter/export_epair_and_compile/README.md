@@ -45,7 +45,7 @@ bash run.sh addrmsnorm   # export+compile 两步 + cann_lm_compile 编译 OM
 - **P1 venv**：`export CONVERTER_PYTHON=/path/to/venv/bin/python`（装了 torch + torchair + torch_delegate + cann_lm）
 - **SOC**：默认 `Ascend910_9362`（`export SOC_VERSION=...` 覆盖）
 
-converter 导出走 **`lite_export_context`**（`LiteConfig(target_soc=...)`，Python 级 fake torch_npu + `_get_device_id=lambda:0`），不需要 C 级 stubs 也不需 NPU 设备。
+converter 导出走 **`lite_export_context`**（`LiteConfig(target_soc=...)`，Python 级 fake torch_npu），不需要 NPU 设备。
 
 ## OM 编译
 
@@ -56,4 +56,3 @@ cann_lm_compile <ep_json> <weight_info> <output_name>  →  <output_name>.om
 - Load epair → `EpairModelLoader` 构建 GE Graph → `aclgrphBuildModel` → `aclgrphSaveModel` → `.om`
 - 读 `SOC_VERSION` / `GE_FUSION_SWITCH_FILE` / `GE_EXTERNAL_WEIGHT` 等 env
 - **CPU 侧流程，不需 NPU 设备**；需算子在 CANN 中对目标 SOC 存在
-- 退出时可能看到 `Aborted` 报错（GE 库已知问题，不影响结果），检查 `.om` 文件存在即成功

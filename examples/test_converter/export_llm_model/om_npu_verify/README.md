@@ -170,3 +170,45 @@ GEMMA4_OM=<om_path> HF="$GEMMA4_HF_PATH" $DOPT_PYTHON run_gemma4_om.py
 - **RoPE 预缓存表+Gather**：cos/sin 烘焙为 Const，forward 只 Gather；消除 Pow/Neg/Cos/Sin；代价 OM +~400MB。
 - **KV scatter-write**：用 `ScatterUpdate`（替代 `index_copy`），15 非共享层×2。
 - 真实 e2b 配置：35 层（后 20 KV 共享）、head_dim=256/global=512、hidden=1536、num_kv_heads=1(n_rep=8)、PLE 开、sliding=512、kv_max=2048、vocab=262144。
+
+## ring KV cache 测试用例（sliding 层 ring shrink, sliding_kv_pos 输入, 0 FloorMod）
+
+gemma4 sliding 层 KV cache 从 `kv_cache_max_len`(2048) 缩到 ring `R=sliding_window+prefill_seq`(512+64=576)，full 层仍 2048。ring slot `pos%R` 由 **host 预算**作 `sliding_kv_pos` 输入喂进 OM（**图内无 FloorMod**，取模在 host Python），scatter 直接用该输入当槽位 + ring wrap mask。下列 4 个 prompt 覆盖 4 个临界点，均用同一个 ring OM（`prefill.om`+`decode.om`，R=576 固定，80 输入含 `sliding_kv_pos`）跑通。
+
+prompt 基串：`The quick brown fox jumps over the lazy dog. `（11 tok/重复），按重复次数凑到目标 token 数。
+
+| 用例 | 重复 | tokens | 临界点（测什么） | prefill chunk | OM 输出 |
+|---|---|---|---|---|---|
+| **<64** | ×5 | 51 | 单 chunk prefill（pad 到 64，1 chunk） | 1 | "That is the famous **pangram**!" |
+| **>64** | ×8 | 81 | 多 chunk prefill + KV 跨 chunk 传（chunk0→chunk1） | 2 | "That is the famous **pangram**!" |
+| **>576** | ×60 | 601 | **ring wrap 触发**（pos≥576，chunk9 pos576..600） | 10 | "This is a bit of a mixed input! It seems" |
+| **>2048** | ×210 | 2101 | ring wrap + **full KV 溢出**（full 层 kv_max=2048，pos≥2048 散列覆盖旧位） | 33 | "jumps over the lazy dog. The quick brown fox jumps" |
+
+跑法（须 `PYTHONPATH=repo` 用 repo 的 ring cann_lm，venv whl 是 stale 无 ring 版）：
+
+```bash
+source /home/developer/Ascend/cann/set_env.sh
+export PYTHONPATH=/mnt/workspace/CANN-LM_5883:${PYTHONPATH:-}
+export LD_LIBRARY_PATH=/opt/buildtools/python-3.12.9/lib:${LD_LIBRARY_PATH}
+export HF=<gemma-4-E2B-it 路径>
+export PREFILL_OM=<ring prefill.om>  DECODE_OM=<ring decode.om>
+export PREFILL_SEQ=64  MAX_NEW=10
+cd examples/test_converter/export_llm_model/om_npu_verify
+
+# case1 <64 (单 chunk)
+python3 run_gemma4_gen.py "$(python3 -c "print('The quick brown fox jumps over the lazy dog. '*5)")"
+# case2 >64 (多 chunk)
+python3 run_gemma4_gen.py "$(python3 -c "print('The quick brown fox jumps over the lazy dog. '*8)")"
+# case3 >576 (ring wrap)
+python3 run_gemma4_gen.py "$(python3 -c "print('The quick brown fox jumps over the lazy dog. '*60)")"
+# case4 >2048 (full KV 溢出)
+python3 run_gemma4_gen.py "$(python3 -c "print('The quick brown fox jumps over the lazy dog. '*210)")"
+```
+
+**临界点说明**：
+- `<64`：prompt 不足 64，单 prefill chunk（pad 到 64）。验基础 prefill+decode 链路。
+- `>64`：prefill 分多 chunk（每 chunk 64），验多 chunk prefill + KV 跨 chunk 传（chunk0→chunk1）。
+- `>576`：sliding 层 ring R=576，pos≥576 触发 **ring wrap**（`sliding_kv_pos=pos%576` 绕回，mask 两段 attend）+ scatter 覆盖旧槽位。验 ring wrap 正确性。
+- `>2048`：full 层 kv_max=2048，pos≥2048 散列 `pos%2048` 覆盖旧 KV（full attention 丢早期上下文）；ring（sliding）层 576 早已 wrap。本用例 prompt 高度重复，溢出被重复模式掩盖仍出字；非重复 prompt >2048 会退化（full KV 限制，非 ring 问题）。
+
+> ring shrink 仅作用于 sliding 层（R=576，slot 由 `sliding_kv_pos` 输入控制，图内 0 FloorMod）；full 层仍 kv_max=2048，>2048 受 full KV 限制。要支持更长需调大 `kv_cache_max_len`（full 层）。

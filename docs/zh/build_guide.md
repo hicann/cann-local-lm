@@ -119,61 +119,76 @@ $OHOS_SDK_NATIVE/llvm/bin/clang --version   # 期望: clang 15.0.4
 ls $OHOS_SDK_NATIVE/sysroot                 # 期望: 目录存在
 ls tools/binary-sign-tool.jar                # 期望: 文件存在
 ```
-
-> GTest由 `--pkg` 自动从gitcode下载到 `output/third_party/gtest/`，无需手动设置。
-
 ---
 
-## 运行时前置：P1 converter venv
+## 运行时前置：P1 converter venv 与 P2 系统python
 
-> ⚠️ **此节仅converter运行时需要（导出epair），`--pkg` 构建不需要**。`build_converter` fallback系统pip打包（`--no-deps` 纯源码），`build_cpp` 零torch引用，`build_engine` 用OHOS clang。如只需产 `.run` 分发物，可跳过此节直接到Part 2。
->
-> P1 venv属**运行依赖**，见 [env_dependencies.md](env_dependencies.md) §2.1。cann-device-lm **不本仓构建** torchair / torch-delegate，它们是前置条件。
+> ⚠️ **仅converter运行时需要（导出epair），`--pkg` 构建不需要。** 如只需产 `.run` 分发物，跳过此节直接到 Part 2。
 
-| 组件 | 作用 | git源 |
-|------|------|--------|
-| torch-delegate | `torch_delegate` whl + `.venv`（torch 2.9.0+cpu） | 已合入cann-device-lm仓 `torch_delegate/` 目录（`gitcode.com/cann/cann-device-lm`） |
-| torchair | `torchair` whl（FX→GE IR转换） | `gitcode.com/Ascend/torchair.git` |
+### P1 与 P2 环境说明
 
-### 方式一：从源码构建安装
+cann-device-lm 的运行时分为两套互相隔离的环境：
 
-> 完整依赖列表见 [`scripts/requirements-p1.txt`](../../scripts/requirements-p1.txt)。
+| 环境 | 用途 | torch | torch_npu | 位置 | 说明 |
+|------|------|-------|-----------|------|------|
+| **P1 converter venv** | 导出epair + 量化Step B消费 | 2.9.0+cpu | **不装**（stub路径） | `deps/torch-delegate/.venv` | converter设备无关，CPU-only机器也能跑 |
+| **P2 系统python** | NPU出字 + 量化Step A（dopt GPTQ） | 2.9.0 | 2.9.0.post8 | 系统python | 需NPU设备，装真torch_npu |
 
-```bash
-source $HOME/Ascend/cann/set_env.sh
+> **P1/P2隔离根因**：converter设计为可脱离NPU运行（CPU-only机器也能导出），为此对torchair与torch_npu **解耦**——torchair GE转换不依赖torch_npu。P1刻意不装torch_npu（走stub路径），P2装真torch_npu跑NPU；两者虽同为torch 2.9.0但venv与系统python隔离，依赖不同、环境不同，不能共用。
 
-# 1. torch-delegate（产 .venv + torch_delegate whl）
-cd /path/to/cann-device-lm
-git clone https://gitcode.com/cann/cann-device-lm.git deps/torch-delegate  # 或直接用 cann-device-lm 仓内 torch_delegate/ 目录
-cd deps/torch-delegate && ./build.sh    # build.sh 自动创建 .venv（torch 2.9.0+cpu）+ 编译 whl
-.venv/bin/pip install --force-reinstall --no-deps output/package/torch_delegate-*.whl
+> **⚠️ 如果当前环境已存在 torch_npu（如系统python已装 torch_npu 2.9.0.post8）**：
+> 强烈建议为 torch_delegate、torchair、cann-lm-converter 创建一套**独立 venv**（即 P1 converter venv）。直接在装了 torch_npu 的 python 环境中安装 converter 会导致 torchair 代理覆盖、`_LazyTorchair` 冲突、FX→GE 转换失败等问题。P1 venv 与 P2 系统python 隔离是 converter 的设计约束，不可省略。
 
-# 2. torchair（TARGET_PYTHON 指向 P1 venv, ABI 匹配）
-cd /path/to/cann-device-lm
-deps/torch-delegate/.venv/bin/pip install wheel numpy protobuf
-git clone https://gitcode.com/Ascend/torchair.git deps/torchair
-cd deps/torchair
-TARGET_PYTHON_PATH="$(realpath ../torch-delegate/.venv/bin/python)" bash build.sh -c
-../torch-delegate/.venv/bin/pip install --force-reinstall --no-deps output/torchair-*.whl
-```
+### P1 converter venv 安装
 
-### 方式二：用whl包安装
-
-已有预编whl（方式一产出或发布包附带），不clone torch-delegate（无自动 `.venv`），需手动建venv：
-
-```bash
-python3 -m venv /path/to/venv          # 手动创建 venv（方式一由 torch-delegate build.sh 自动创建）
-source /path/to/venv/bin/activate
-pip install torch==2.9.0 --index-url https://download.pytorch.org/whl/cpu
-pip install numpy protobuf
-pip install torch_delegate-0.1.0-py3-none-any.whl torchair-0.1-py3-none-any.whl
-export CONVERTER_PYTHON=/path/to/venv/bin/python
-```
-
-### 校验前置就绪
+| 组件 | 来源 |
+|------|------|
+| torch-delegate | 仓内 `torch_delegate/`（含 `build.sh`，自动创建 `.venv` + torch 2.9.0+cpu） |
+| torchair | 见下方两种方式任选其一 |
 
 ```bash
 source $HOME/Ascend/cann/set_env.sh
+cd /path/to/cann-device-lm
+
+# 1. torch-delegate：仓内源码构建（build.sh 自动创建 .venv [torch 2.9.0+cpu] + 编译 whl）
+cp -a torch_delegate deps/torch-delegate
+cd deps/torch-delegate && ./build.sh && .venv/bin/pip install --no-deps output/package/torch_delegate-*.whl
+
+# 2. torchair（二选一）：
+```
+
+**方式 A：从源码编译**（`.so` 链 CANN stubs，converter 无需装 torch_npu）
+
+```bash
+# .venv/bin/pip 即上一步 torch-delegate build.sh 创建的 P1 venv
+cd /path/to/cann-device-lm
+git clone https://gitcode.com/Ascend/torchair.git deps/torchair && \
+  cd deps/torchair && TARGET_PYTHON_PATH="$(realpath ../torch-delegate/.venv/bin/python)" bash build.sh -c && \
+  ../torch-delegate/.venv/bin/pip install --no-deps output/torchair-*.whl
+```
+
+**方式 B：从 torch_npu whl 提取**（`.so` 来自 torch_npu 官方构建，须匹配 torch 版本）
+
+```bash
+VENV=deps/torch-delegate/.venv
+PY_VER=$($VENV/bin/python -c 'import sys;print(f"python{sys.version_info.major}.{sys.version_info.minor}")')
+
+# 下载 torch_npu whl（不安装），解压取出 torchair
+pip download torch_npu==2.9.0.post9 \
+  --index-url https://ascend.devcloud.huaweicloud.com/pypi/simple/ \
+  --no-deps -d /tmp/torch_npu_whl
+unzip -o /tmp/torch_npu_whl/torch_npu-*.whl 'torch_npu/dynamo/torchair/*' -d /tmp/torch_npu_extracted
+
+# 拷到 P1 venv site-packages，目录名改为 torchair
+cp -r /tmp/torch_npu_extracted/torch_npu/dynamo/torchair \
+  $VENV/lib/$PY_VER/site-packages/torchair
+```
+
+> 两种方式产出的 torchair 含相同的 `.so`（`_torchair.so`/`_npu_graph_executor.so` 等），差异在编译环境：方式 A 用 CANN stubs 编译，方式 B 用 torch_npu 官方构建。converter venv 不装 torch_npu，方式 A 是推荐路径。
+
+### 校验
+
+```bash
 bash scripts/build.sh check
 ```
 
@@ -261,9 +276,9 @@ source $HOME/Ascend/cann/set_env.sh
 
 见「运行时前置：P1 converter venv」节，按顺序装torch-delegate（产 `.venv`）→ torchair，然后 `bash scripts/build.sh deps && bash scripts/build.sh check`。
 
-### Q3: omc编译退出非零但omc已产出
+### Q3: omc编译退出码
 
-GE teardown触发glibc "corrupted size vs. prev size" → Aborted，但omc在此前已产出。以omc文件是否存在判定成功（`run_compile.sh` 已用 `|| true` 处理）。
+`cann_lm_compile` 使用 `std::quick_exit(0)` 跳过 GE 库静态析构，正常退出码 0。
 
 ### Q4: CANN版本未找到
 

@@ -65,7 +65,7 @@ def save_epair(
     *,
     max_file_size: int = 50 * 1024 * 1024 * 1024,
     kv_cache_max_len: int = 2048,
-    seq_len: int = 128,
+    seq_len: int = 64,
     use_embeddings: bool = True,
     save_weights: bool = True,
     whitelist_decompositions: set | None = None,
@@ -159,7 +159,7 @@ def save_epair_prefill_decode(
     *,
     max_file_size: int = 50 * 1024 * 1024 * 1024,
     kv_cache_max_len: int = 2048,
-    seq_len: int = 128,
+    seq_len: int = 64,
     use_embeddings: bool = True,
     save_weights: bool = True,
     whitelist_decompositions: set | None = None,
@@ -213,9 +213,13 @@ def save_epair_prefill_decode(
         seq_len=seq_len,
         use_embeddings=use_embeddings,
         quant_embeddings=quant_embeddings,
+        prefill_seq=seq_len,
     )
     decode_sample = wrapper.get_sample_inputs(
-        seq_len=1, use_embeddings=use_embeddings, quant_embeddings=quant_embeddings
+        seq_len=1,
+        use_embeddings=use_embeddings,
+        quant_embeddings=quant_embeddings,
+        prefill_seq=seq_len,
     )
 
     if quant_embeddings:

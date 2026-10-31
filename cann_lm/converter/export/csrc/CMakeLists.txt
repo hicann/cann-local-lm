@@ -108,3 +108,29 @@ if(BUILD_COMPILE_TOOL)
     target_link_options(cann_lm_compile PRIVATE "LINKER:--allow-shlib-undefined")
     set_target_properties(cann_lm_compile PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
 endif()
+# ── libcustom_pass_plugin.so (CustomPass 插件, 旧 ABI 匹配 libregister.so) ──
+# PassRegistrationData 构造函数接受 std::string, libregister.so 用旧 ABI (_GLIBCXX_USE_CXX11_ABI=0)。
+# 此 .so 独立编译用旧 ABI, cann_lm_compile 运行时 dlopen 加载,
+# PassReceiver 静态初始化将 pass 注册到 libregister.so 全局注册表。
+# 避免 cann_lm_compile 整体切换 ABI 导致与 torch_delegate_backend (新 ABI) 冲突。
+option(BUILD_CUSTOM_PASS_PLUGIN "Build libcustom_pass_plugin.so" ON)
+if(BUILD_CUSTOM_PASS_PLUGIN)
+    add_library(custom_pass_plugin SHARED
+        tools/custom_pass_plugin.cpp
+    )
+    # 旧 ABI 匹配 libregister.so
+    target_compile_definitions(custom_pass_plugin PRIVATE _GLIBCXX_USE_CXX11_ABI=0)
+    target_include_directories(custom_pass_plugin PRIVATE
+        ${CANN_INCLUDE_DIRS}
+        ${CSRC_DIR}/inc/external
+    )
+    target_link_directories(custom_pass_plugin PRIVATE ${CANN_LIB_DIRS})
+    target_link_libraries(custom_pass_plugin PRIVATE
+        ge_compiler
+        register
+    )
+    target_link_options(custom_pass_plugin PRIVATE "LINKER:--allow-shlib-undefined")
+    set_target_properties(custom_pass_plugin PROPERTIES
+        LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
+    )
+endif()

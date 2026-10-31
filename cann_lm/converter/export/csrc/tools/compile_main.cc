@@ -5,13 +5,31 @@
 #include "graph/ascend_string.h"
 #include "ge/ge_ir_build.h"
 #include "torch_delegate/epair_model_loader.h"
-#include "reg_register.h"
 #include <cctype>
 #include <iostream>
 #include <string>
 #include <vector>
 #include <cstdlib>
 #include <filesystem>
+#include <dlfcn.h>
+
+// ── CustomPass: fix QuantBatchMatmulV4 x1/x2 format after SecondInferformat ──
+// 注册逻辑在独立 .so (libcustom_pass_plugin.so, 旧 ABI 编译) 中, 由 dlopen 加载。
+// 必须在 aclgrphBuildInitialize 之前 dlopen, 使 PassReceiver 静态初始化
+// 将 pass 注册到 libregister.so 全局注册表。
+static void* LoadCustomPassPlugin()
+{
+    // 1. 优先同目录 libcustom_pass_plugin.so
+    // 2. 回退 LD_LIBRARY_PATH 搜索
+    void* handle = dlopen("libcustom_pass_plugin.so", RTLD_NOW | RTLD_GLOBAL);
+    if (handle == nullptr) {
+        std::cerr << "[WARN] dlopen libcustom_pass_plugin.so failed: " << dlerror() << std::endl;
+        std::cerr << "[WARN] QuantBatchMatmulV4 format fix CustomPass NOT loaded." << std::endl;
+    } else {
+        std::cout << "[INFO] CustomPass plugin loaded (libcustom_pass_plugin.so)" << std::endl;
+    }
+    return handle;
+}
 
 namespace {
 
@@ -157,6 +175,11 @@ int main(int argc, char* argv[])
         init_options.emplace(ge::AscendString("ge.externalWeightDir"), ge::AscendString(weight_dir_path.c_str()));
         std::cout << "[INFO] ge.externalWeightDir=" << weight_dir_path << std::endl;
     }
+    // Load CustomPass plugin (must be before aclgrphBuildInitialize so PassReceiver
+    // static init registers the pass into libregister.so global registry)
+    void* custom_pass_handle = LoadCustomPassPlugin();
+    (void)custom_pass_handle; // keep alive for process lifetime
+
     ge::graphStatus init_status = aclgrphBuildInitialize(init_options);
     if (init_status != ge::GRAPH_SUCCESS) {
         std::cerr << "[ERROR] aclgrphBuildInitialize failed, status: " << init_status << std::endl;
@@ -183,6 +206,10 @@ int main(int argc, char* argv[])
         std::quick_exit(-1);
     }
     std::cout << "[PASS] GE Graph extracted successfully" << std::endl;
+
+    // QuantBatchMatmulV4 x1/x2 format 修正由 ge_symbol_bridge.cpp 的 CustomPass 在
+    // kAfterOriginGraphOptimize 阶段执行 (GE SecondInferformat 之后), 不在此处修改
+    // (BuildModel 前修改会被内部 pass 覆盖)。
 
     // 可选: 保存编译前 GE 图为 .air (ge::Graph::SaveToFile, 二进制 protobuf).
     // env SAVE_AIR_FILE=<path> 触发; 若仅设 SAVE_AIR=1 则用 <output_name>.air.

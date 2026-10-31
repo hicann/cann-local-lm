@@ -12,7 +12,7 @@ import torch
 
 OM = os.environ["GEMMA4_OM"]
 E2B = os.environ["HF"]
-SEQ = 8
+SEQ = int(os.environ.get("SEQ", 8))
 KV_MAX = 2048
 DEV = 0
 
@@ -66,7 +66,8 @@ def move_sample(sample, dev):
 
 
 def flatten_to_om_inputs(sample, in_names):
-    """展平 wrapper sample → OM 77 输入 (按 OM input name 顺序)。"""
+    """展平 wrapper sample → OM 80 输入 (按 OM input name 顺序; embeddings + scale 分离, 图内乘;
+    sliding 层 ring slot 由 host 预算 sliding_kv_pos 输入, 图内 scatter 直接用, 无 ge.FloorMod)。"""
     (
         _,
         mask_full,
@@ -77,7 +78,9 @@ def flatten_to_om_inputs(sample, in_names):
         embeddings,
         output_pos,
         ple,
-        _,
+        embeddings_scale,
+        ple_scale,
+        sliding_kv_pos,
     ) = sample
     kv_flat = []
     for k, v in past_kv:
@@ -91,6 +94,9 @@ def flatten_to_om_inputs(sample, in_names):
         "embeddings": embeddings,
         "output_pos": output_pos,
         "per_layer_token_identity": ple,
+        "embeddings_scale": embeddings_scale,
+        "per_layer_token_identity_scale": ple_scale,
+        "sliding_kv_pos": sliding_kv_pos,
     }
     inputs = []
     for name in in_names:

@@ -4,11 +4,11 @@
 
 ## 🔥 Latest News
 
-- [2026/10] converter当前能力：HuggingFace模型 → epair导出（torch.export + FX→GE转换 + 权重分离），支持W4A8量化（GPTQ离线 + 运行时动态量化）。引擎当前能力：三层推理引擎架构，支持Continuous Batching、KV Cache管理、异步流式推理、多轮续接、请求取消，适配Kirin平台，提供C++ API以及python API入口。
+- [2026/10] converter当前能力：HuggingFace模型 → epair导出（torch.export + FX→GE转换 + 权重分离），支持W4A8量化（GPTQ离线 + 运行时激活动态量化）。引擎当前能力：三层推理引擎架构，支持KV Cache管理、异步流式推理、多轮续接、请求取消，适配Kirin平台，提供C++ API以及python API入口。
 
 ## 🚀 概述
 
-cann-device-lm旨在支持开发者在华为Kirin芯片上跑通大模型推理，提供**模型量化、模型编译、模型推理**端到端能力。将HuggingFace模型导出为epair格式（IR + 权重分离），经C++ 后端加载编译为omc，最终在Kirin芯片上执行推理。
+cann-device-lm旨在基于 CANN，面向端侧设备，提供大模型转换工具与端到端推理引擎等能力，实现多种大语言大模型轻量、低延迟、低内存占用的高效推理。
 
 ## ⬇️ 源码下载
 

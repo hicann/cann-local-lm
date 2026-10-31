@@ -50,9 +50,13 @@ fi
 FAIL=0
 
 echo "=== [1/2] torch_delegate C++ UT (build_test.sh, GTest + ASAN) ==="
-bash build_test.sh ${PY_FLAGS}
+# timeout 兜底: build_test.sh 内 pip/三方库下载无超时, 网络停滞会无限挂起 (124=超时)
+timeout 1800 bash build_test.sh ${PY_FLAGS}
 ret=$?
-if [ $ret -ne 0 ]; then
+if [ $ret -eq 124 ]; then
+    echo "C++ UT: FAIL (超时 30min, 疑似 pip/三方库下载网络停滞)"
+    FAIL=1
+elif [ $ret -ne 0 ]; then
     echo "C++ UT: FAIL (ret=$ret)"
     FAIL=1
 else
@@ -66,7 +70,7 @@ if ! "${TEST_PY}" --version >/dev/null 2>&1; then
     FAIL=1
 else
     ${TEST_PY} -m pytest --version >/dev/null 2>&1 \
-        || ${TEST_PY} -m pip install -q pytest -i https://repo.huaweicloud.com/repository/pypi/simple
+        || timeout 300 ${TEST_PY} -m pip install -q pytest -i https://repo.huaweicloud.com/repository/pypi/simple
     if ! ${TEST_PY} -m pytest --version >/dev/null 2>&1; then
         echo "Python UT: FAIL (pytest 不可用)"
         FAIL=1

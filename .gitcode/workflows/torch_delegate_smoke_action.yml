@@ -1,0 +1,64 @@
+name: torch_delegate_smoke_action
+
+on:
+  workflow_call:
+    inputs:
+      whl_url:
+        required: false
+        type: string
+        default: ''
+      image_version:
+        required: true
+        type: string
+
+jobs:
+  JOB_torch_delegate_smoke:
+    name: Smoke
+    steps:
+      -
+        name: Checkout
+        identifier: process_checkout
+        uses: checkout
+        with:
+          ref: ${{ atomgit.event.pull_request.merge_commit_sha }}
+          allow-unsafe-pr-checkout: true
+      -
+        name: download
+        uses: obs-download
+        with:
+          endpoint: "https://obs.cn-north-4.myhuaweicloud.com"
+          bucket: "ascend-ci"
+          access-key: ${{ secrets.AK }}
+          secret-key: ${{ secrets.SK }}
+          key: |
+            ${{ env.obs_path }}/pr_filelist.txt
+            ${{ env.obs_path }}/pr_filelist_mod.txt
+            ${{ env.obs_path }}/torch_delegate_smoke.sh
+          path: ${{ steps.process_checkout.outputs.path }}
+      -
+        name: smoke
+        identifier: smoke
+        timeout-minutes: 40
+        run: |
+          export WORKSPACE=${{ steps.process_checkout.outputs.path }}
+          cd ${{ steps.process_checkout.outputs.path }}
+          export whl_url=${{ inputs.whl_url }}
+          export repo_name=${{ env.repo_name }}
+          export pr_id=${{ env.MERGE_ID }}
+          export obs_path=${{ env.obs_path }}
+          bash torch_delegate_smoke.sh
+      -
+        name: upload slog
+        uses: obs-upload
+        if: ${{ always() }}
+        with:
+          endpoint: "https://obs.cn-north-4.myhuaweicloud.com"
+          bucket: "ascend-ci"
+          access-key: ${{ secrets.AK }}
+          secret-key: ${{ secrets.SK }}
+          artifact-path: "${{ steps.process_checkout.outputs.path }}/slog*.tar.gz"
+          object-prefix: ${{ env.obs_smoke_path }}/plog/
+    if: "${{ default() }}"
+    runs-on: ['self-hosted','npu=1','smoke=204']
+    container:
+      image: swr.cn-south-1.myhuaweicloud.com/pre_smoke/${{ inputs.image_version }}

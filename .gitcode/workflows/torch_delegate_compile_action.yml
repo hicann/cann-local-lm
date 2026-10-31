@@ -13,6 +13,11 @@ on:
         required: false
         type: string
         default: 'x64'
+    outputs:
+      whl_url:
+        value: ${{jobs.JOB_torch_delegate_compile.outputs.primary-url}}
+      whl_key:
+        value: ${{jobs.JOB_torch_delegate_compile.outputs.primary-key}}
 
 jobs:
   JOB_torch_delegate_compile:

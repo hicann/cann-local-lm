@@ -13,10 +13,10 @@ on:
   pull_request_comment:
     types: [created]
     branches: [ '*' ]
-    comments: [ '^/?compile(@\S+)?$' ]
+    comments: [ '^/?compile(@[A-Za-z0-9._-]+)?$' ]
   pr_comment:
     types: [ created ]
-    keyword: '^/?compile(@\S+)?$'
+    keyword: '^/?compile(@[A-Za-z0-9._-]+)?$'
 
 env:
   org_name: ${{ vars.ORG_NAME }}
@@ -47,6 +47,12 @@ stages:
             name: show_output
             run: |
               echo "Compile_Ascend_X86: ${{ steps.revise_image.outputs.Compile_Ascend_X86 }}"
+              echo "Compile_Ascend_ARM: ${{ steps.revise_image.outputs.Compile_Ascend_ARM }}"
+              echo "Compile_TorchDelegate_X86: ${{ steps.revise_image.outputs.Compile_TorchDelegate_X86 }}"
+              echo "Compile_TorchDelegate_ARM: ${{ steps.revise_image.outputs.Compile_TorchDelegate_ARM }}"
+              echo "UT_Test: ${{ steps.revise_image.outputs.UT_Test }}"
+              echo "UT_TorchDelegate: ${{ steps.revise_image.outputs.UT_TorchDelegate }}"
+              echo "Smoke_TorchDelegate_A2: ${{ steps.revise_image.outputs.Smoke_TorchDelegate_A2 }}"
         runs-on: ["self-hosted", "arch=x64", "spec=small"]
         container:
           image: swr.cn-north-4.myhuaweicloud.com/ci_cann/ubuntu20.04.05_x86:k8s_v1.1006
@@ -85,7 +91,7 @@ stages:
         uses: .gitcode/workflows/compile_action.yml
         with:
           task_name: 'Compile_Ascend_X86_ubuntu24'
-          image_version: 'ubuntu24.04_x86_ndk:repo_20261023074923'
+          image_version: ${{ jobs.JOB_image.outputs.Compile_Ascend_X86 }}
           arch: 'x64'
           package_name: 'cann-cann-device-lm_linux-x86_64.run'
       JOB_arm_compile:
@@ -93,7 +99,7 @@ stages:
         uses: .gitcode/workflows/compile_action.yml
         with:
           task_name: 'Compile_Ascend_ARM_ubuntu24'
-          image_version: 'ubuntu24.04_arm_ndk:repo_20261023075532'
+          image_version: ${{ jobs.JOB_image.outputs.Compile_Ascend_ARM }}
           arch: 'arm64'
           package_name: 'cann-cann-device-lm_linux-aarch64.run'
       JOB_torch_delegate_x86_compile:
@@ -101,14 +107,14 @@ stages:
         uses: .gitcode/workflows/torch_delegate_compile_action.yml
         with:
           task_name: 'Compile_TorchDelegate_X86_ubuntu24'
-          image_version: 'ubuntu24.04_x86_ndk:repo_20261023074923'
+          image_version: ${{ jobs.JOB_image.outputs.Compile_TorchDelegate_X86 }}
           arch: 'x64'
       JOB_torch_delegate_arm_compile:
         name: Compile_TorchDelegate_ARM
         uses: .gitcode/workflows/torch_delegate_compile_action.yml
         with:
           task_name: 'Compile_TorchDelegate_ARM_ubuntu24'
-          image_version: 'ubuntu24.04_arm_ndk:repo_20261023075532'
+          image_version: ${{ jobs.JOB_image.outputs.Compile_TorchDelegate_ARM }}
           arch: 'arm64'
     pre:
     - type: auto
@@ -123,13 +129,26 @@ stages:
         with:
           ut_type: 'ophost'
           ut_package: 'coverage_*.info'
-          image_version: 'ubuntu24.04_x86:lv6_v2.1018'
+          image_version: ${{ jobs.JOB_image.outputs.UT_Test }}
       JOB_torch_delegate_ut:
         name: UT_TorchDelegate
         uses: .gitcode/workflows/torch_delegate_ut_action.yml
         with:
           ut_type: 'torch_delegate'
-          image_version: 'ubuntu24.04_x86:lv6_v2.1018'
+          image_version: ${{ jobs.JOB_image.outputs.UT_TorchDelegate }}
+    pre:
+    - type: auto
+    fail-fast: false
+
+  stage5:
+    name: Smoke
+    jobs:
+      JOB_torch_delegate_smoke:
+        name: Smoke_TorchDelegate_A2
+        uses: .gitcode/workflows/torch_delegate_smoke_action.yml
+        with:
+          whl_url: ${{ jobs.JOB_torch_delegate_arm_compile.outputs.whl_url }}
+          image_version: ${{ jobs.JOB_image.outputs.Smoke_TorchDelegate_A2 }}
     pre:
     - type: auto
     fail-fast: false

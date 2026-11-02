@@ -151,6 +151,16 @@ def save_epair(
         use_embeddings=use_embeddings,
         quant_embeddings=quant_embeddings,
     )
+    from cann_lm.converter.gen_model_json import gen_model_json as _gen_model_json
+
+    _model_json = _gen_model_json(
+        str(Path(artifact.hf_path) / "config.json"),
+        seq_len=seq_len,
+        kv_cache_max_len=kv_cache_max_len,
+    )
+    with open(output_dir / "model.json", "w") as f:
+        json.dump(_model_json, f, indent=2)
+    print(f"Saved: {output_dir / 'model.json'}")
 
 
 def save_epair_prefill_decode(
@@ -271,6 +281,16 @@ def save_epair_prefill_decode(
         use_embeddings=use_embeddings,
         quant_embeddings=quant_embeddings,
     )
+    from cann_lm.converter.gen_model_json import gen_model_json as _gen_model_json
+
+    _model_json = _gen_model_json(
+        str(Path(artifact.hf_path) / "config.json"),
+        seq_len=seq_len,
+        kv_cache_max_len=kv_cache_max_len,
+    )
+    with open(output_dir / "model.json", "w") as f:
+        json.dump(_model_json, f, indent=2)
+    print(f"Saved: {output_dir / 'model.json'}")
 
 
 def save_model_config(

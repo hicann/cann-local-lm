@@ -49,6 +49,8 @@ jobs:
         name: torch_delegate_compile_acc
         identifier: compile
         uses: build-accelerate
+        # 兜底: BuildAccelerate 收尾上传偶发停滞(正常2~4min), 超时转确定性失败可重触发
+        timeout-minutes: 15
         with:
           command: |
             export WORKSPACE=${{ steps.process_checkout.outputs.path }}

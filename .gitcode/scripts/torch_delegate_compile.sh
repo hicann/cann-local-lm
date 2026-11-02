@@ -27,7 +27,11 @@ if [[ "${task_name}" == *ubuntu24* ]]; then
     elif sudo update-alternatives --set gcc /usr/bin/gcc-14 2>/dev/null; then
         echo "gcc-16/15 not available, fell back to gcc-14"
     fi
-    export PATH=/opt/buildtools/python-3.10.2/bin:$PATH
+    # 仅 X86 用 buildtools python-3.10.2; ARM 用镜像默认 python3(3.12):
+    # aarch64 无 torch 2.9.0+cpu 的 cp310 wheel(仅 cp312+), 强制 3.10 会导致 venv pip 必败
+    if [[ "${task_name}" == *X86* ]] && [ -d /opt/buildtools/python-3.10.2/bin ]; then
+        export PATH=/opt/buildtools/python-3.10.2/bin:$PATH
+    fi
 fi
 gcc --version
 python3 --version

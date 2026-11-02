@@ -80,7 +80,6 @@ echo "[Step 7] Downloading torch_npu daily build..."
 
 TORCH_VERSION="2.9.0"
 DAILY_BASE_URL="https://pytorch-package.obs.cn-north-4.myhuaweicloud.com/pta/Daily"
-TODAY=$(date +%Y%m%d)
 PYVER=$(python3 -c "import sys; print(f'{sys.version_info.major}{sys.version_info.minor}')")
 PKG_NAME="pytorch_v${TORCH_VERSION}_py${PYVER}.tar.gz"
 EXTRACT_DIR="/tmp/torch_delegate_deps_build/pytorch_daily"
@@ -91,20 +90,35 @@ rm -rf "${EXTRACT_DIR}"
 mkdir -p "${EXTRACT_DIR}"
 
 DOWNLOADED=0
-for BUILD_NUM in 3 2 1; do
-  URL="${DAILY_BASE_URL}/v${TORCH_VERSION}/${TODAY}.${BUILD_NUM}/${PKG_NAME}"
-  echo "  Trying: ${URL}"
-  if curl --progress-bar --fail --location --max-time 300 -o "${EXTRACT_DIR}/${PKG_NAME}" "${URL}"; then
-    echo "  [OK] Downloaded (build ${BUILD_NUM})"
-    DOWNLOADED=1
-    break
-  fi
-  echo "  Not available, trying previous build..."
+# 优先: 最近7天窗口内取最新可用 Daily (当日未发布时逐天回退)
+for DAYS_AGO in 0 1 2 3 4 5 6; do
+  BUILD_DAY=$(date -d "${DAYS_AGO} days ago" +%Y%m%d)
+  for BUILD_NUM in 3 2 1; do
+    URL="${DAILY_BASE_URL}/v${TORCH_VERSION}/${BUILD_DAY}.${BUILD_NUM}/${PKG_NAME}"
+    echo "  Trying: ${URL}"
+    if curl --progress-bar --fail --location --max-time 300 -o "${EXTRACT_DIR}/${PKG_NAME}" "${URL}"; then
+      echo "  [OK] Downloaded (${BUILD_DAY} build ${BUILD_NUM})"
+      DOWNLOADED=1
+      break 2
+    fi
+    echo "  Not available, trying previous build..."
+  done
 done
 
+# 兜底: 7天窗口全空时使用钉住的已验证 Daily 版本 (2026-11-02 实测 py310~313 均可用)
+PINNED_DAILY="20261031.2"
 if [[ ${DOWNLOADED} -ne 1 ]]; then
-  echo "  [ERROR] No daily build found for ${TODAY}"
-  echo "  [ERROR] URL pattern: ${DAILY_BASE_URL}/v${TORCH_VERSION}/${TODAY}.<N>/${PKG_NAME}"
+  URL="${DAILY_BASE_URL}/v${TORCH_VERSION}/${PINNED_DAILY}/${PKG_NAME}"
+  echo "  [WARN] No daily build in the last 7 days, falling back to pinned: ${URL}"
+  if curl --progress-bar --fail --location --max-time 300 -o "${EXTRACT_DIR}/${PKG_NAME}" "${URL}"; then
+    echo "  [OK] Downloaded (pinned ${PINNED_DAILY})"
+    DOWNLOADED=1
+  fi
+fi
+
+if [[ ${DOWNLOADED} -ne 1 ]]; then
+  echo "  [ERROR] No daily build found (7-day window and pinned ${PINNED_DAILY} both failed)"
+  echo "  [ERROR] URL pattern: ${DAILY_BASE_URL}/v${TORCH_VERSION}/<YYYYMMDD>.<N>/${PKG_NAME}"
   exit 1
 fi
 

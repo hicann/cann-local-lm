@@ -49,6 +49,26 @@ fi
 
 FAIL=0
 
+# venv 路径预装 torch(带重试): download.pytorch.org 在 UT 池偶发不可达(pip 内部重试
+# 不足以覆盖节点级网络故障), 预装成功后 build_test.sh 复用已有 .venv,
+# requirements 里 torch==2.9.0+cpu 已满足即跳过, 其余依赖走稳定的 huaweicloud 源
+if [ -z "${PY_FLAGS}" ]; then
+    for attempt in 1 2; do
+        echo "预装 torch 到 .venv (attempt ${attempt})..."
+        python3 -m venv .venv
+        if timeout 600 "${PWD}/.venv/bin/python3" -m pip install -q --upgrade pip \
+            -i https://repo.huaweicloud.com/repository/pypi/simple \
+           && timeout 600 "${PWD}/.venv/bin/python3" -m pip install -q "torch==2.9.0+cpu" \
+            --index-url https://download.pytorch.org/whl/cpu \
+            --extra-index-url https://repo.huaweicloud.com/repository/pypi/simple; then
+            echo "torch 预装 OK"
+            break
+        fi
+        echo "torch 预装失败 (attempt ${attempt})"
+        rm -rf .venv
+    done
+fi
+
 echo "=== [1/2] torch_delegate C++ UT (build_test.sh, GTest + ASAN) ==="
 # timeout 兜底: build_test.sh 内 pip/三方库下载无超时, 网络停滞会无限挂起 (124=超时)
 timeout 1800 bash build_test.sh ${PY_FLAGS}

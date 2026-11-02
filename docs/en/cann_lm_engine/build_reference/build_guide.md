@@ -10,7 +10,7 @@ English | [简体中文](../../../zh/cann_lm_engine/build_reference/build_guide.
 
 ## 0. In One Sentence
 
-The engine is pure standard C++17 with zero POSIX dependencies. It can be built natively on Linux to run UT, or cross-compiled into a HarmonyOS musl-targeted `.so` + 9 executables (UT/bbit/smoke) and self-signed. **The two build systems are independent** — the HarmonyOS build is a separate bypass (`cann_lm/engine/ohos/` + `build_ohos.sh`/`sign_ohos.sh`/`package_ohos.sh`/`build_package_ohos.sh` under `scripts/cann_lm_engine/`), which does not modify existing Linux build files and poses zero risk to Linux builds. A single HarmonyOS command does it all: `./scripts/cann_lm_engine/build_ohos.sh` (compile → auto-sign), or one-click `./scripts/cann_lm_engine/build_package_ohos.sh` (compile → sign → package `engine_ohos.run`).
+The engine is pure standard C++17 with zero POSIX dependencies. It can be built natively on Linux to run UT, or cross-compiled into a HarmonyOS musl-targeted `.so` + 9 executables (UT/bbit/smoke) and self-signed. **The two build systems are independent** — the HarmonyOS build is a separate bypass (`cann_lm/engine/ohos/` + `build_ohos.sh`/`sign_ohos.sh`/`build_package_ohos.sh` under `scripts/cann_lm_engine/`), which does not modify existing Linux build files and poses zero risk to Linux builds. A single HarmonyOS command does it all: `./scripts/cann_lm_engine/build_ohos.sh` (compile → auto-sign), or one-click `./scripts/cann_lm_engine/build_package_ohos.sh` (compile → sign → produce signed wheel).
 
 ---
 
@@ -26,9 +26,8 @@ The engine is pure standard C++17 with zero POSIX dependencies. It can be built 
 | `tools/binary-sign-tool.jar` | **HarmonyOS binary signing tool** (jar, architecture-independent); self-signing via `-selfSign 1`, injects `.codesign` segment; placed in `tools/`, **gitignored, not in repo** (see tools/README.md) | HarmonyOS |
 | `scripts/cann_lm_engine/build_ohos.sh` | **HarmonyOS build + sign entry**: validates `OHOS_SDK_NATIVE` (minimal SDK) + host `clang-18` → `cmake -G Unix Makefiles` build → 11-artifact validation + libc++ fallback → auto-calls `sign_ohos.sh` | HarmonyOS |
 | `scripts/cann_lm_engine/sign_ohos.sh` | **Signing script**: for each .so ×2 + **9 executables** under build_ohos/, produces `*_signed` | HarmonyOS |
-| `scripts/cann_lm_engine/package_ohos.sh` | **Packaging script**: generates `engine_ohos.run` from signed artifacts in build_ohos/ (11 artifacts stripped of `_signed` suffix, .so renamed, generates `run.sh` to run UT+bbit+smoke) | HarmonyOS |
-| `scripts/cann_lm_engine/build_package_ohos.sh` | **One-click script**: pre-checks java+jar → `build_ohos.sh` (compile+sign) → `package_ohos.sh` (package) → `engine_ohos.run`; supports `--clean` for full rebuild | HarmonyOS |
-| `build_ohos/` | **Build artifacts** (gitignored): 11 signed artifacts + run.sh | HarmonyOS |
+| `scripts/cann_lm_engine/build_package_ohos.sh` | **One-click script**: pre-checks java+jar → `build_ohos.sh` (compile+sign) → copy signed .so into wheel → `pip wheel` (produces `cann_lm_engine-*+signed*.whl`); supports `--clean` for full rebuild | HarmonyOS |
+| `build_ohos/` | **Build artifacts** (gitignored): 11 signed artifacts (.so + 9 executables) | HarmonyOS |
 | `/mnt/workspace/gtest-1.14.0.tar.gz` | GTest source (github v1.14.0, 867K), referenced locally by OHOS CMake FetchContent (CMake variable `GTEST_TAR` defaults to this path) | HarmonyOS |
 | `tests/` | GTest UT source + bbit black-box | Both |
 | `docs/build_reference/harmony_acl_build_analysis.md` | Complete analysis of reference project harmony_acl build system | HarmonyOS (reference) |
@@ -122,7 +121,7 @@ Produces **`libcann_lm_engine.so`** (aarch64-linux-ohos / musl) + `libc++_shared
 > - Linux host → [`build_linux_guide.md`](build_linux_guide.md)
 > - Windows (WSL) → [`build_win_guide.md`](build_win_guide.md)
 >
-> One command (common to both platforms): `bash scripts/cann_lm_engine/build_ohos.sh` (compile+sign), or one-click `bash scripts/cann_lm_engine/build_package_ohos.sh [--clean]` (compile+sign+package `engine_ohos.run`). Three pitfalls in §5, environment variables in §6.
+> One command (common to both platforms): `bash scripts/cann_lm_engine/build_ohos.sh` (compile+sign), or one-click `bash scripts/cann_lm_engine/build_package_ohos.sh [--clean]` (compile+sign+produce signed wheel). Three pitfalls in §5, environment variables in §6.
 
 ### 3.1 Artifact Quick Reference (flat in `build_ohos/`, 11 total + each `*_signed`)
 
@@ -135,15 +134,15 @@ Produces **`libcann_lm_engine.so`** (aarch64-linux-ohos / musl) + `libc++_shared
 | `api_smoke` / `c_api_smoke` | C++/C API smoke |
 | `*_signed` / `*_signed.so` for each of the above | Signed version (auto-produced by `build_ohos.sh`) |
 
-> Artifact verification (readelf to confirm musl target), standalone re-signing, packaging `engine_ohos.run` (`run.sh` runs 6 UT + bbit + 2 smoke), and device runtime flow are all in the platform-specific manuals. Host glibc **cannot directly run** these artifacts (they link against musl's `libc.so`); runtime verification must be on a HarmonyOS device (developer mode, allowing self-signed binaries).
+> Artifact verification (readelf to confirm musl target), standalone re-signing, producing the signed wheel (`.so` embedded in `cann_lm/lib/`), and device runtime flow are all in the platform-specific manuals. Host glibc **cannot directly run** these artifacts (they link against musl's `libc.so`); runtime verification must be on a HarmonyOS device (developer mode, allowing self-signed binaries).
 
 ### 3.2 Current Status (measured 2026-10-15)
 - ✅ `.so` + `libc++_shared.so` cross-compile passed (ELF AArch64, musl)
 - ✅ **9 executables cross-compile passed** (6 UT + bbit + 2 smoke; GTest FetchContent local source, static add_test)
 - ✅ **All 11 artifacts signed** (host java + `tools/binary-sign-tool.jar -selfSign 1`)
-- ✅ **Packaging passed** (`engine_ohos.run` contains all 11 artifacts + run.sh); one-click `build_package_ohos.sh` verified
+- ✅ **Signed wheel produced** (`cann_lm_engine-*+signed*.whl` with embedded .so); one-click `build_package_ohos.sh` verified
 - ✅ `model_executor_ut` / `ut_text_embedding` restored (backend hiai migration complete)
-- ⏳ HarmonyOS device runtime verification (awaiting device; package engine_ohos.run and push to device)
+- ⏳ HarmonyOS device runtime verification (awaiting device; push signed wheel to device, pip install)
 
 ---
 

@@ -3,16 +3,14 @@ requires = ["setuptools>=61", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "cann-lm-engine"
+name = "cann-local-lm-engine"
 dynamic = ["version"]
-description = "cann-device-lm engine Python bindings — ctypes passthrough over the C engine ABI"
+description = "cann-local-lm engine Python bindings — ctypes passthrough over the C engine ABI"
 requires-python = ">=3.8"
 dependencies = []  # pure stdlib (ctypes) — zero runtime deps
 
 [project.scripts]
-cann_lm = "cann_lm.cli:main"
-"cann_lm.generate" = "cann_lm.generate:main"
-"cann_lm.chat" = "cann_lm.chat:main"
+cllm = "cann_lm.cli:main"
 
 [tool.setuptools.dynamic]
 # 版本由环境变量 CANN_LM_ENGINE_VERSION 提供（签名版=0.1.0+signed，未签名=0.1.0）

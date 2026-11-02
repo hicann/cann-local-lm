@@ -14,7 +14,7 @@
 > - **CMake 组织**:未按 §Step B 在现有 `cann_lm/engine/CMakeLists.txt` 加 `OHOS_PLATFORM` 分支,而用**独立旁路** `cann_lm/engine/ohos/CMakeLists.txt`(源码清单手抄镜像),Linux 构建文件零改动、零回归。
 > - **脚本路径**:从顶层 `scripts/` 迁到 **`scripts/cann_lm_engine/`**(多一层,故脚本内 `REPO_ROOT` 用 `../..`)。
 > - **产物**:实际产 **11 个**(2 `.so` + 9 可执行:6 UT 含 `ut_text_embedding` + `bbit` + 2 smoke),各 `*_signed`。
-> - **打包**:`package_ohos.sh` 生成 `engine_ohos.run`(11 产物 + `run.sh` + README)。
+> - **打包**:`build_package_ohos.sh` 产签名 wheel `cann_lm_engine-*+signed*.whl`（.so 内嵌 `cann_lm/lib/`）。
 >
 > 实际流程详见 `build_guide.md` §3 与 `build_linux_guide.md`;脚本逐个见 `build_guide.md` §1 文件表。
 >
@@ -144,6 +144,6 @@ endif()
 - [x] .so vs UT 方案已决策(§3:并列,先 UT)
 - [x] OHOS toolchain + build 脚本就位(Step A — 实际为独立 `cann_lm/engine/ohos/ohos.toolchain.cmake` + `scripts/cann_lm_engine/build_ohos.sh`,见顶部"实际落地")
 - [x] CMake OHOS 分支接通,主机端仍能原样构建(Step B — 实际用旁路 `ohos/CMakeLists.txt`,非改现有 CMake,Linux 零回归)
-- [x] `cann_lm_engine.so` 产出并签名可加载(Step D — 11 产物全签名,`engine_ohos.run` 打包完成)
-- [ ] 鸿蒙 PC 上 UT 跑通 GREEN(Step E — 待设备实跑;`engine_ohos.run` 已就绪待 pull)
+- [x] `cann_lm_engine.so` 产出并签名可加载(Step D — 11 产物全签名,签名 wheel 产出完成)
+- [ ] 鸿蒙 PC 上 UT 跑通 GREEN(Step E — 待设备实跑;签名 wheel 已就绪待部署)
 - [ ] +1 +2 审查通过(Step F)

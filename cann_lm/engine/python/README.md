@@ -9,7 +9,7 @@ CANN-LM 推理引擎的 Python 绑定 —— 基于 ctypes 的 **C ABI 透传层
 - **惰性加载**：`import cann_lm` 不触碰 `.so`；首次构造 `Engine`（或显式调用 `get_library()`）时才解析库
 - **Pythonic 封装**：`Engine` / `Context` / `Request` / `Result` 句柄包装，上下文管理器自动释放 C 内存
 - **同步 + 异步**：`generate()` 阻塞返回 `Result`；`generate_async()` 返回 `Request`，支持流式回调
-- **CLI 开箱即用**：`cann_lm generate` / `cann_lm chat` 两条命令，config 驱动，mlx_lm 风格
+- **CLI 开箱即用**：`cllm generate` / `cllm chat` 两条命令，config 驱动，mlx_lm 风格
 
 ## 目录结构
 
@@ -73,16 +73,16 @@ bash scripts/build.sh cpp    # 详见 docs/build_guide.md
 ### generate — 单次文本生成
 
 ```bash
-cann_lm generate --config testcase.json --prompt "你好"
-# 或独立命令 / 模块模式：
-cann_lm.generate --config testcase.json --prompt "你好" --max-tokens 128 --stop </s>
+cllm generate --config testcase.json --prompt "你好"
+cllm generate --config testcase.json --prompt "你好" --max-tokens 128 --stop </s>
+# 模块模式（调试用）：
 python -m cann_lm.generate --config testcase.json --prompt "你好"
 ```
 
 ### chat — 交互式多轮对话
 
 ```bash
-cann_lm chat --config testcase.json
+cllm chat --config testcase.json
 # 进入 REPL：user> 输入，assistant> 回复；/quit 或 Ctrl-D 退出
 ```
 
@@ -108,7 +108,7 @@ cann_lm chat --config testcase.json
 ### `--show-paths` 排查示例
 
 ```bash
-cann_lm generate --config testcase.json --show-paths
+cllm generate --config testcase.json --show-paths
 # 输出每个配置路径的存在性，快速定位 "路径设了但引擎说找不到" 的问题
 ```
 

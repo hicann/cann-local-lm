@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -uo pipefail
 #=============================================================================
-# build_test.sh — cann-device-lm 顶层 C++ + Python 测试构建 + 运行入口
+# build_test.sh — cann-local-lm 顶层 C++ + Python 测试构建 + 运行入口
 #
 # 分发到子模块:
 #   1. scripts/cann_lm_engine/build_test.sh   — engine C++ UT (BUILD_ENGINE=ON + stub_ndk + ctest)

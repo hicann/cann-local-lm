@@ -3,7 +3,7 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "cann-lm"
+name = "cann-local-lm"
 version = "0.1.0"
 description = "CANN-LM converter: HF model -> epair (gemma4/qwen3/qwen3.5) + models"
 requires-python = ">=3.10"
@@ -18,7 +18,7 @@ dependencies = [
 ]
 
 [project.scripts]
-cann-lm-converter = "cann_lm.converter.cann_lm_converter:main"
+cllm-converter = "cann_lm.converter.cann_lm_converter:main"
 
 [tool.setuptools]
 # cann_lm 是 PEP 420 namespace 包 (cann-lm 装 converter+models, cann-lm-engine 装 engine);
@@ -29,6 +29,8 @@ packages = [
     "cann_lm.converter",
     "cann_lm.converter.export",
     "cann_lm.converter.export.ge_converters",
+    "cann_lm.converter.export.op_cpu",
+    "cann_lm.converter.export.op_pass",
     "cann_lm.converter.export.quant_swap",
     "cann_lm.converter.export.weight_format",
     "cann_lm.converter.quant",

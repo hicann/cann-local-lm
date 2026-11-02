@@ -6,15 +6,15 @@ set -euo pipefail
 # 整合两模块为一个 .run 分发物 (构建期无依赖, 安装后仍是两个独立入口):
 #   - compile:   cann_lm_compile 二进制 + lib/libtorch_delegate_backend.so
 #                + fusion_autoub_off.cfg (C++ epair→OM 编译工具, 运行时需 CANN)
-#   - converter: wheels/cann_lm-*.whl (HF→epair 导出, 运行时需 torch 生态)
+#   - converter: wheels/cann_local_lm-*.whl (HF→epair 导出, 运行时需 torch 生态)
 # 衔接: converter 导出 epair → cann_lm_compile 编译 OM (shell 手工, Python 不内嵌调用)
 #
 # 流程: build_cpp.sh(--no-tests --target cann_lm_compile) + build_wheel.sh
 #       → stage (binary+lib+cfg+whl+set_env) → patchelf rpath → makeself
-# 产物: build_out/cann_lm_compile_converter-<ver>-<arch>.run
+# 产物: build_out/cann_local_lm_converter-<ver>-<arch>.run
 # 安装: bash <pkg>.run --target /opt/cann-lm
 # 运行: source <CANN set_env.sh> && source /opt/cann-lm/set_env.sh
-#       && pip install /opt/cann-lm/wheels/cann_lm-*.whl   # converter (仅需 torch 时)
+#       && pip install /opt/cann-lm/wheels/cann_local_lm-*.whl   # converter (仅需 torch 时)
 #       && /opt/cann-lm/cann_lm_compile <ep_json> <weight_info> [out]  # compile
 #
 # 环境覆盖: VERSION / ARCH / THIRD_PARTY / BUILD_DIR / PIP(可指定 python -m pip)
@@ -23,7 +23,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$SCRIPT_DIR/../.." && pwd)"
 VERSION="${VERSION:-0.1.0}"
 ARCH="${ARCH:-$(uname -m)}"
-PKG_NAME="cann_lm_compile_converter-${VERSION}-${ARCH}"
+PKG_NAME="cann_local_lm_converter-${VERSION}-${ARCH}"
 STAGE="$REPO/build/package_stage/$PKG_NAME"
 DIST="${DIST:-$REPO/build_out}"
 THIRD_PARTY="${THIRD_PARTY:-$REPO/output/third_party}"
@@ -48,8 +48,8 @@ echo "### [2/5] build converter whl"
 mkdir -p "$DIST"
 "$PIP_CMD" wheel "$REPO/scripts/cann_lm_converter" --no-deps -w "$DIST" 2>&1 \
     | grep -E "Built|Created|error|Error" | tail -3
-WHL="$(ls -1 "$DIST"/cann_lm-*.whl 2>/dev/null | head -1 || true)"
-[[ -n "$WHL" ]] || { echo "ERROR: whl 构建失败 (build_out/ 无 cann_lm-*.whl)" >&2; exit 1; }
+WHL="$(ls -1 "$DIST"/cann_local_lm-*.whl 2>/dev/null | head -1 || true)"
+[[ -n "$WHL" ]] || { echo "ERROR: whl 构建失败 (build_out/ 无 cann_local_lm-*.whl)" >&2; exit 1; }
 echo "  whl: $WHL ($(du -h "$WHL" | cut -f1))"
 
 # ── 3. stage (binary + lib/ + cfg + wheels/ + set_env.sh) ──
@@ -63,12 +63,12 @@ cp "$WHL" "$STAGE/wheels/"
 # 生成 set_env.sh (安装后 source; 设 LD_LIBRARY_PATH + GE_FUSION_SWITCH_FILE; --npu 模式额外设 DEVICE + 探测 DOPT_PYTHON)
 cat > "$STAGE/set_env.sh" <<'SCRIPT'
 #!/bin/bash
-# set_env.sh — cann-device-lm 整合包 env (安装后 source)
+# set_env.sh — cann-local-lm 整合包 env (安装后 source)
 # 前置: 安装机需先 source CANN set_env.sh (提供 CANN lib64/driver/opp)
 #
 # 用法:
-#   source /opt/cann-device-lm/set_env.sh          # 编译/导出模式
-#   source /opt/cann-device-lm/set_env.sh --npu   # NPU 量化模式 (额外设 DEVICE + 探测 DOPT_PYTHON)
+#   source /opt/cann-local-lm/set_env.sh          # 编译/导出模式
+#   source /opt/cann-local-lm/set_env.sh --npu   # NPU 量化模式 (额外设 DEVICE + 探测 DOPT_PYTHON)
 
 INSTALL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export LD_LIBRARY_PATH="${INSTALL_DIR}/lib:${LD_LIBRARY_PATH:-}"
@@ -107,16 +107,16 @@ if [[ "${1:-}" == "--npu" ]]; then
         return 1
     }
     if _detect_dopt_python; then
-        echo "[cann-device-lm] NPU mode: DEVICE=npu, DOPT_PYTHON=$DOPT_PYTHON"
+        echo "[cann-local-lm] NPU mode: DEVICE=npu, DOPT_PYTHON=$DOPT_PYTHON"
     else
-        echo "[cann-device-lm] NPU mode: DEVICE=npu, DOPT_PYTHON 未探测到 (需手动 export DOPT_PYTHON=/path/to/python3)"
+        echo "[cann-local-lm] NPU mode: DEVICE=npu, DOPT_PYTHON 未探测到 (需手动 export DOPT_PYTHON=/path/to/python3)"
     fi
 fi
 
-echo "[cann-device-lm] env ready (INSTALL_DIR=$INSTALL_DIR, SOC=${SOC_VERSION})"
+echo "[cann-local-lm] env ready (INSTALL_DIR=$INSTALL_DIR, SOC=${SOC_VERSION})"
 echo "  OM 编译: $INSTALL_DIR/cann_lm_compile <model_json> <weights_index> [output_name]"
-echo "  converter 安装: pip install $INSTALL_DIR/wheels/cann_lm-*.whl"
-echo "  converter 运行: cann-lm-converter --help (需 torch 环境)"
+echo "  converter 安装: pip install $INSTALL_DIR/wheels/cann_local_lm-*.whl"
+echo "  converter 运行: cllm-converter --help (需 torch 环境)"
 SCRIPT
 chmod +x "$STAGE/set_env.sh"
 
@@ -155,4 +155,4 @@ echo "=== package ==="
 ls -lh "$DIST/$PKG_NAME.run" | awk '{print "  "$5, $9}'
 echo "  安装: bash $DIST/$PKG_NAME.run --extract=/opt/cann-lm"
 echo "  运行: source /opt/cann-lm/set_env.sh && /opt/cann-lm/cann_lm_compile <ep_json> <weight_info> [out]"
-echo "  converter: pip install /opt/cann-lm/wheels/cann_lm-*.whl && cann-lm-converter --help"
+echo "  converter: pip install /opt/cann-lm/wheels/cann_local_lm-*.whl && cllm-converter --help"

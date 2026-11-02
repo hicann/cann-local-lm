@@ -9,7 +9,7 @@
 torch==2.9.0
 # torchair / torch-delegate / cann_lm / cann_lm_engine 非 pip 包:
 #   torchair:     源码编译 (gitcode.com/Ascend/torchair.git, TARGET_PYTHON=本 venv, ABI 匹配)
-#   torch-delegate: 已合入 cann-device-lm 仓 torch_delegate/ 目录 (gitcode.com/cann/cann-device-lm)
+#   torch-delegate: 已合入 cann-local-lm 仓 torch_delegate/ 目录 (gitcode.com/cann/cann-local-lm)
 #   cann_lm:      bash scripts/build.sh deps (装进本 venv)
 #   CANN 包 (te/cann_ops_*/asc_*/es_*/hccl 等): 来自 CANN site-packages, 不装 pip
 #

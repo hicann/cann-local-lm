@@ -2,7 +2,7 @@
 #
 # run.sh — epair 导出 + OM 编译 (cann_lm_compile) 一键式验证
 #
-# 前置: .run 包已安装到 /opt/cann-device-lm/, cann_lm whl 已装进 P1 venv
+# 前置: .run 包已安装到 /opt/cann-local-lm/, cann_lm whl 已装进 P1 venv
 #
 # 流程: [1] 环境检查 → [2] 导出 epair → [3] cann_lm_compile 编译 OM
 #
@@ -15,14 +15,14 @@ MODEL="${1:-simple}"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # ── 环境设置 (从已安装的 .run 包) ──
-CANN_DEVICE_LM="${CANN_DEVICE_LM:-/opt/cann-device-lm}"
+CANN_LOCAL_LM="${CANN_LOCAL_LM:-/opt/cann-local-lm}"
 source "$HOME/Ascend/cann/set_env.sh"
-source "${CANN_DEVICE_LM}/set_env.sh"
+source "${CANN_LOCAL_LM}/set_env.sh"
 export TORCH_DEVICE_BACKEND_AUTOLOAD=0
 export CONVERTER_PYTHON="${CONVERTER_PYTHON:-/path/to/venv/bin/python}"
 
 PYTHON="${CONVERTER_PYTHON}"
-COMPILE_BIN="${CANN_DEVICE_LM}/cann_lm_compile"
+COMPILE_BIN="${CANN_LOCAL_LM}/cann_lm_compile"
 
 phase() { echo ""; echo "==== $1 ===="; }
 ok()   { echo "  [✓] $1"; }

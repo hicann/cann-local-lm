@@ -1,4 +1,4 @@
-# cann-device-lm环境依赖梳理
+# cann-local-lm环境依赖梳理
 
 简体中文 | [English](../en/env_dependencies.md)
 
@@ -17,9 +17,9 @@
 | 任务 | Part 1构建? | Part 2运行? | 备注 |
 |------|:----------:|:----------:|------|
 | 编 `cann_lm_compile` + backend `.so`（`scripts/build.sh cpp`） | ✓ | — | C++ 编译，产 `build/` 中间产物 |
-| 打 `cann_lm-*.whl` / `cann_lm_engine-*.whl`（`wheel`） | ✓ | — | pip纯源码打包 |
-| 打 `cann_lm_compile-*.run` / `engine_ohos-*.run`（`package` / `--pkg`） | ✓ | — | makeself自解压 |
-| ③a engine `.so` 鸿蒙交叉编译（→ `engine_ohos.run`） | ✓ | — | OHOS SDK（含SDK clang）+ 签名 |
+| 打 `cann_local_lm-*.whl` / `cann_local_lm_engine-*.whl`（`wheel`） | ✓ | — | pip纯源码打包 |
+| 打 `cann_lm_compile-*.run`（`package` / `--pkg`）+ 签名 engine wheel（`cann_local_lm_engine-*+signed*.whl`） | ✓ | — | makeself `.run`（编译工具）+ pip wheel（engine .so 内嵌） |
+| ③a engine `.so` 鸿蒙交叉编译（→ 签名 wheel `cann_local_lm_engine-*+signed*.whl`） | ✓ | — | OHOS SDK（含SDK clang）+ 签名 |
 | UT构建（`bash build.sh -u` / `tests`） | ✓ | — | GTest + ASAN（可选） |
 | ① 导出epair（converter） | — | ✓ | P1 venv + CANN |
 | ② kirinx90 omc编译（run `cann_lm_compile`） | — | ✓ | P1 venv（TBE/tvm）+ CANN |
@@ -128,7 +128,7 @@ bash scripts/build.sh cpp --asan && ctest --test-dir build
 |------|------|---------|------|
 | **torch** | 2.9.0+cpu | 2.9.0+cpu ✓ | torch-delegate `.venv`（`pip install torch==2.9.0 --index-url https://download.pytorch.org/whl/cpu`） |
 | **torchair** | 0.1 | OK ✓ | 源码编译（`gitcode.com/Ascend/torchair.git`，公开仓） |
-| **torch_delegate** | 0.1.0 | OK ✓ | 已合入cann-device-lm仓 `torch_delegate/` 目录（`gitcode.com/cann/cann-device-lm`） |
+| **torch_delegate** | 0.1.0 | OK ✓ | 已合入cann-local-lm仓 `torch_delegate/` 目录（`gitcode.com/cann/cann-local-lm`） |
 | **torch_npu** | **不装** | absent ✓（stub path OK） | 若装需 **2.9.0.post8**（TorchNPU 26.1.1，配CANN 9.3.0，见 §2.2）——但converter走stub路径**刻意不装**（设计决策，见 `cli_design.md`「converter与torch_npu的关系」） |
 
 > 完整包列表见 [`scripts/requirements-p1.txt`](../../scripts/requirements-p1.txt)（torchair/torch-delegate非pip包，需源码安装）。
@@ -138,7 +138,7 @@ bash scripts/build.sh cpp --asan && ctest --test-dir build
 **venv位置**（`build.conf` 派生）：`${PROJECT_ROOT}/deps/torch-delegate/.venv`（`CONVERTER_PYTHON` = 该venv的python）
 
 **两种安装方式**（详见 `build_guide.md`「安装上游组件」）：
-- **方式一源码构建**：clone torch-delegate → `./build.sh`（产 .venv）→ 装torch_delegate whl → clone torchair → `TARGET_PYTHON_PATH=venv bash build.sh -c` → 装torchair whl
+- **方式一源码构建**：clone torch-delegate → `./build.sh`（产 .venv）→ 装torch_delegate whl → clone torchair → `PYTHON_BIN_PATH=venv bash build.sh -c` → 装torchair whl + `packaging`/`cloudpickle`
 - **方式二whl直装**：自建venv + `pip install torch==2.9.0+cpu` + 装torch_delegate/torchair预编whl + numpy/protobuf；设 `export CONVERTER_PYTHON=/path/to/venv/bin/python`
 
 **关键校验**（`scripts/build.sh check` 检查项）：
@@ -239,10 +239,10 @@ pip install torchaudio==2.9.0 --force-reinstall --no-deps --user   # 装到 ~/.l
 |------|------|------|
 | musl libc | 鸿蒙系统提供 | C运行时（musl，非glibc） |
 | `libneural_network_core.so` | 鸿蒙系统库（Hiai/NNRT） | NPU推理（hiai ACL底层） |
-| `libc++_shared.so` | 随 `engine_ohos.run` 包提供 | C++ 运行时（与engine .so同目录） |
+| `libc++_shared.so` | 内嵌于签名 engine wheel（`cann_lm/lib/`） | C++ 运行时（与engine .so同目录） |
 | `libcann_lm_engine.so` | host交叉编译产（Part 1 §1.3）→ 部署到设备 | engine SHARED库（签名版） |
 
-> host侧只需完成Part 1构建（产 `engine_ohos.run`），产物部署到设备后由设备侧运行时承载。
+> host侧只需完成Part 1构建（产签名 engine wheel），产物部署到设备后由设备侧运行时承载。
 
 ---
 

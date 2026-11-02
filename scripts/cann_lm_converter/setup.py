@@ -13,7 +13,7 @@
 from setuptools import setup
 
 setup(
-    name="cann-lm",
+    name="cann-local-lm",
     version="0.1.0",
     description="CANN-LM converter: HF model -> epair (gemma4/qwen3.5) + models",
     python_requires=">=3.10",
@@ -28,7 +28,7 @@ setup(
     ],
     entry_points={
         "console_scripts": [
-            "cann-lm-converter=cann_lm.converter.cann_lm_converter:main",
+            "cllm-converter=cann_lm.converter.cann_lm_converter:main",
         ],
     },
     # 与 pyproject [tool.setuptools] 一致：cann_lm 是 PEP 420 namespace 包
@@ -38,6 +38,8 @@ setup(
         "cann_lm.converter",
         "cann_lm.converter.export",
         "cann_lm.converter.export.ge_converters",
+        "cann_lm.converter.export.op_cpu",
+        "cann_lm.converter.export.op_pass",
         "cann_lm.converter.export.quant_swap",
         "cann_lm.converter.export.weight_format",
         "cann_lm.converter.quant",

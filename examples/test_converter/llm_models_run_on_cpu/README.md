@@ -1,6 +1,6 @@
 # llm_models_run_on_cpu — 两模型 CPU 侧调试与验证脚本集
 
-cann-device-lm 两个模型（gemma4 / qwen3.5）在 **converter 环境（CPU-only，无 NPU）** 下的纯 Python 级调试与验证脚本：单元测试、端到端推理、vs HF 数值对齐、chunk 推理、epair 回环（`ep.module()`）、多轮对话、wrapper 自测。
+cann-local-lm 两个模型（gemma4 / qwen3.5）在 **converter 环境（CPU-only，无 NPU）** 下的纯 Python 级调试与验证脚本：单元测试、端到端推理、vs HF 数值对齐、chunk 推理、epair 回环（`ep.module()`）、多轮对话、wrapper 自测。
 
 > 这里验证的是 **PyTorch/epair 层**（导出前后、数值对齐、回环）。NPU 上的 **OM 编译 + 出字** 验证见 [`../export_llm_model/om_npu_verify/`](../export_llm_model/om_npu_verify)（`run_*_om.py` / `run_*_gen.py`）。
 
@@ -60,7 +60,7 @@ export QWEN3_5_HF_PATH=<qwen3.5 model dir>
 1. **必须 bfloat16**（float16 输出退化重复）。
 2. **验证 logits 用 greedy 而非 sampling**（sampling 随机性无法判 bug）。
 3. **gemma4 必须加 BOS**（id=2，tokenizer 不自动加）。
-4. **HF 对比需 `attn_implementation="eager"`**（对齐 cann-device-lm eager attention，非 sdpa）。
+4. **HF 对比需 `attn_implementation="eager"`**（对齐 cann-local-lm eager attention，非 sdpa）。
 5. **scatter-write**（KV cache 用 `index_copy` 写入预分配 buffer，K=kv_max）已改造两个模型。
 6. 详见各 `debug_*/skills/` 下的 SKILL.md。
 

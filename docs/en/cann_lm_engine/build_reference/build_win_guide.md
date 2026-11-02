@@ -113,7 +113,7 @@ bash scripts/cann_lm_engine/build_package_ohos.sh --clean
 ```
 
 ### Green Criteria
-Output ends with `=== build_ohos.sh 完成 ===` (Option 1) or `一键完成: engine_ohos.run` (Option 2), and **the make stage has no errors**.
+Output ends with `=== build_ohos.sh 完成 ===` (Option 1) or `=== build_package_ohos.sh 完成 ===` (Option 2), and **the make stage has no errors**.
 
 ### Build Flow Description (5 steps inside build_ohos.sh)
 1. **SDK validation**: Takes `OHOS_SDK_NATIVE` (default `/mnt/workspace/ohos_sdk/ohos_native/native`), validates `sysroot` subdirectory exists; checks host `clang-18`/`clang++-18` (`command -v`, prompts `apt install clang-18 llvm-18` if missing).
@@ -134,7 +134,8 @@ Output ends with `=== build_ohos.sh 完成 ===` (Option 1) or `一键完成: eng
 | `api_smoke` / `c_api_smoke` (each +`_signed`) | C++/C API smoke programs |
 
 ### Packaging (auto-run by Option 2, or run standalone)
-`package_ohos.sh` generates `engine_ohos.run` from signed artifacts in `build_ohos/`: 11 artifacts stripped of `_signed` suffix, executable bit restored, generates `run.sh` (runs 6 UT + bbit + 2 smoke, auto chmod + `LD_LIBRARY_PATH`) + README.md. On a HarmonyOS PC, after extraction run `./run.sh` to run all in one click.
+### Packaging (auto-executed by Option 2)
+`build_package_ohos.sh` copies the signed `.so` into `cann_lm/lib/` and runs `pip wheel` to produce `build_out/cann_lm_engine-*+signed*.whl` (embeds `.so` + `libc++_shared.so`) after compile+sign. On the HarmonyOS device, `pip install` then `cllm generate --config testcase.json` to run inference.
 
 ---
 

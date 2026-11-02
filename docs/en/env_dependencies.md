@@ -1,4 +1,4 @@
-# cann-device-lm Environment Dependencies Overview
+# cann-local-lm Environment Dependencies Overview
 
 English | [简体中文](../zh/env_dependencies.md)
 
@@ -17,9 +17,9 @@ English | [简体中文](../zh/env_dependencies.md)
 | Task | Part 1 Build? | Part 2 Runtime? | Notes |
 |------|:----------:|:----------:|------|
 | Compile `cann_lm_compile` + backend `.so` (`scripts/build.sh cpp`) | ✓ | — | C++ compilation, produces `build/` intermediate artifacts |
-| Build `cann_lm-*.whl` / `cann_lm_engine-*.whl` (`wheel`) | ✓ | — | pip pure source packaging |
-| Build `cann_lm_compile-*.run` / `engine_ohos-*.run` (`package` / `--pkg`) | ✓ | — | makeself self-extracting |
-| ③a engine `.so` HarmonyOS cross-compilation (→ `engine_ohos.run`) | ✓ | — | OHOS SDK (incl. SDK clang) + signing |
+| Build `cann_local_lm-*.whl` / `cann_local_lm_engine-*.whl` (`wheel`) | ✓ | — | pip pure source packaging |
+| Build `cann_lm_compile-*.run` (`package` / `--pkg`) + signed engine wheel (`cann_local_lm_engine-*+signed*.whl`) | ✓ | — | makeself `.run` (compile tool) + pip wheel (engine .so embedded) |
+| ③a engine `.so` HarmonyOS cross-compilation (→ signed wheel `cann_local_lm_engine-*+signed*.whl`) | ✓ | — | OHOS SDK (incl. SDK clang) + signing |
 | UT build (`bash build.sh -u` / `tests`) | ✓ | — | GTest + ASAN (optional) |
 | ① Export epair (converter) | — | ✓ | P1 venv + CANN |
 | ② kirinx90 omc compilation (run `cann_lm_compile`) | — | ✓ | P1 venv (TBE/tvm) + CANN |
@@ -128,7 +128,7 @@ bash scripts/build.sh cpp --asan && ctest --test-dir build
 |------|------|---------|------|
 | **torch** | 2.9.0+cpu | 2.9.0+cpu ✓ | torch-delegate `.venv` (`pip install torch==2.9.0 --index-url https://download.pytorch.org/whl/cpu`) |
 | **torchair** | 0.1 | OK ✓ | Source build (`gitcode.com/Ascend/torchair.git`, public repo) |
-| **torch_delegate** | 0.1.0 | OK ✓ | Merged into cann-device-lm repo `torch_delegate/` directory (`gitcode.com/cann/cann-device-lm`) |
+| **torch_delegate** | 0.1.0 | OK ✓ | Merged into cann-local-lm repo `torch_delegate/` directory (`gitcode.com/cann/cann-local-lm`) |
 | **torch_npu** | **not installed** | absent ✓ (stub path OK) | If installed, requires **2.9.0.post8** (TorchNPU 26.1.1, paired with CANN 9.3.0, see §2.2) — but the converter takes the stub path and **deliberately does not install it** (design decision, see `cli_design.md` "Relationship between converter and torch_npu") |
 
 > Full package list in [`scripts/requirements-p1.txt`](../../scripts/requirements-p1.txt) (torchair/torch-delegate are not pip packages; require source install).
@@ -138,7 +138,7 @@ bash scripts/build.sh cpp --asan && ctest --test-dir build
 **venv location** (derived from `build.conf`): `${PROJECT_ROOT}/deps/torch-delegate/.venv` (`CONVERTER_PYTHON` = that venv's python)
 
 **Two install methods** (see `build_guide.md` "Installing upstream components"):
-- **Method 1, source build**: clone torch-delegate → `./build.sh` (produces .venv) → install torch_delegate whl → clone torchair → `TARGET_PYTHON_PATH=venv bash build.sh -c` → install torchair whl
+- **Method 1, source build**: clone torch-delegate → `./build.sh` (produces .venv) → install torch_delegate whl → clone torchair → `PYTHON_BIN_PATH=venv bash build.sh -c` → install torchair whl + `packaging`/`cloudpickle`
 - **Method 2, direct whl install**: create venv + `pip install torch==2.9.0+cpu` + install prebuilt torch_delegate/torchair whls + numpy/protobuf; set `export CONVERTER_PYTHON=/path/to/venv/bin/python`
 
 **Key checks** (`scripts/build.sh check` check items):
@@ -239,10 +239,10 @@ pip install torchaudio==2.9.0 --force-reinstall --no-deps --user   # install to 
 |------|------|------|
 | musl libc | provided by HarmonyOS system | C runtime (musl, not glibc) |
 | `libneural_network_core.so` | HarmonyOS system library (Hiai/NNRT) | NPU inference (hiai ACL underlying) |
-| `libc++_shared.so` | provided with the `engine_ohos.run` package | C++ runtime (same directory as the engine .so) |
+| `libc++_shared.so` | embedded in the signed engine wheel (`cann_lm/lib/`) | C++ runtime (same directory as the engine .so) |
 | `libcann_lm_engine.so` | cross-compiled on host (Part 1 §1.3) → deployed to device | engine SHARED library (signed version) |
 
-> The host side only needs to complete the Part 1 build (producing `engine_ohos.run`); after the artifact is deployed to the device, the device-side runtime carries it.
+> The host side only needs to complete the Part 1 build (producing the signed engine wheel); after the artifact is deployed to the device, the device-side runtime carries it.
 
 ---
 

@@ -10,7 +10,7 @@
 
 ## 0. 一句话
 
-engine 是纯标准 C++17、零 POSIX 依赖,可在 Linux 本机直接构建跑 UT,也可交叉编译为鸿蒙 musl 目标的 `.so` + 8 个可执行(UT/bbit/smoke)并自签名。**两套构建相互独立**——鸿蒙构建是独立旁路(`cann_lm/engine/ohos/` + `scripts/build_ohos.sh` + `scripts/sign_ohos.sh` + `scripts/package_ohos.sh`),不改动现有 Linux 构建文件,Linux 构建零风险。鸿蒙一条命令到位:`./scripts/build_ohos.sh`(编译→自动签名)。
+engine 是纯标准 C++17、零 POSIX 依赖,可在 Linux 本机直接构建跑 UT,也可交叉编译为鸿蒙 musl 目标的 `.so` + 8 个可执行(UT/bbit/smoke)并自签名。**两套构建相互独立**——鸿蒙构建是独立旁路(`cann_lm/engine/ohos/` + `scripts/build_ohos.sh` + `scripts/sign_ohos.sh` + `scripts/build_package_ohos.sh`),不改动现有 Linux 构建文件,Linux 构建零风险。鸿蒙一条命令到位:`./scripts/build_ohos.sh`(编译→自动签名),或一键 `./scripts/build_package_ohos.sh`(编译→签名→产签名 wheel)。
 
 ---
 
@@ -26,9 +26,9 @@ engine 是纯标准 C++17、零 POSIX 依赖,可在 Linux 本机直接构建跑 
 | `cann_lm/engine/ohos/binary-sign-tool.jar` | **鸿蒙二进制签名工具**(jar,架构无关);自签名 `-selfSign 1`,注入 `.codesign` 段 | 鸿蒙 |
 | `scripts/build_ohos.sh` | **鸿蒙构建+签名入口**:校验 `OHOS_SDK_NATIVE`→cmake build→自动调 `sign_ohos.sh` | 鸿蒙 |
 | `scripts/sign_ohos.sh` | **签名脚本**:对 build_ohos/ 下 .so ×2 + 8 可执行各产 `*_signed` | 鸿蒙 |
-| `scripts/package_ohos.sh` | **打包脚本**:从 build_ohos/ 签名产物生成 `engine_ohos.run`(自解压部署包) | 鸿蒙 |
+| `scripts/build_package_ohos.sh` | **一键脚本**:预检 java+jar → `build_ohos.sh`(编译+签名) → 拷签名 .so 进 wheel → `pip wheel`(产 `cann_lm_engine-*+signed*.whl`) | 鸿蒙 |
 | `tools/`(含 `binary-sign-tool.jar`) | vendored 签名工具(12MB,jar,**gitignore 不入库**;见 tools/README.md) | 鸿蒙 |
-| `build_ohos/` | **构建产物**(gitignore):交叉编译签名 .so + UT + run.sh | 鸿蒙 |
+| `build_ohos/` | **构建产物**(gitignore):交叉编译签名 .so + UT/bbit/smoke 可执行 | 鸿蒙 |
 | `/mnt/workspace/gtest-1.14.0.tar.gz` | GTest 源码(github v1.14.0,867K),OHOS CMake FetchContent 本地引用 | 鸿蒙 |
 | `tests/`(cann_lm/engine/../../tests) | GTest UT 源码 + bbit 黑盒 | 两者 |
 | `.project/memory/gotchas.md` | OHOS 交叉编译六个必踩坑的根因与解法 | 鸿蒙(参考) |
@@ -189,13 +189,13 @@ readelf -h libcann_lm_engine.so | grep Machine
 
 ### 3.7 设备运行验证(需鸿蒙 PC / 设备)
 
-**先打包部署包**(`build_ohos/` 签名产物 → `engine_ohos.run`):
+**打签名 wheel**(`build_ohos/` 签名 .so → 内嵌进 wheel):
 ```bash
-./scripts/package_ohos.sh     # 打成自解压 .run 包
+./scripts/build_package_ohos.sh     # 编译+签名+产 build_out/cann_lm_engine-*+signed*.whl
 ```
-`engine_ohos.run` 是自包含部署包(自解压)。鸿蒙 PC 上解压后 `./run.sh` 一键跑全部。
+签名 wheel 内嵌 `.so`(`cann_lm/lib/`)。鸿蒙设备上 `pip install` 后 `cllm generate --config testcase.json` 运行推理（详见 [快速入门](../QUICKSTART.md)）。
 
-本机无链接设备时的约定流程:**打包 engine_ohos.run → 推到设备 → 解压 → `./run.sh`**。
+本机无链接设备时的约定流程:**产签名 wheel → 推到设备 → pip install → `cllm generate`**。
 
 ```bash
 export LD_LIBRARY_PATH=$(pwd)

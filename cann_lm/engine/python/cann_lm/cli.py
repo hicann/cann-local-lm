@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""cann_lm — top-level CLI (subcommand dispatcher, mlx_lm-style).
+"""cllm — top-level CLI (subcommand dispatcher, mlx_lm-style).
 
-`cann_lm generate ...` is the primary form; the standalone `cann_lm.generate`
-also works (both registered in pyproject). Future subcommands (chat, server, ...)
-slot in as additional `sub.add_parser(...)` calls in build_parser().
+`cllm generate ...` and `cllm chat ...` are the primary forms.
+Future subcommands slot in as additional `sub.add_parser(...)` calls
+in build_parser().
 """
 
 import argparse

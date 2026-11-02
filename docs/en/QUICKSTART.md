@@ -4,7 +4,7 @@ English | [简体中文](../zh/QUICKSTART.md)
 
 > End-to-end example: HF model → epair → omc → deployment. Environment dependencies are described in [env_dependencies.md](env_dependencies.md), and build commands in [Build Guide](build_guide.md).
 
-> **Prerequisites**: CANN + P1 venv are ready (see [Build Guide](build_guide.md) Part 1 + runtime prerequisites), and `cann_lm_compile_converter-*.run` has been obtained (build instructions in [Build Guide](build_guide.md) §2.1). HarmonyOS deployment also requires `cann_lm_engine_ohos-*.run` (output from the same §2.1).
+> **Prerequisites**: CANN + P1 venv are ready (see [Build Guide](build_guide.md) Part 1 + runtime prerequisites), and `cann_local_lm_converter-*.run` has been obtained (build instructions in [Build Guide](build_guide.md) §2.1). HarmonyOS deployment also requires the signed engine wheel `cann_local_lm_engine-*+signed*.whl` (produced by `--pkg` or `bash scripts/cann_lm_engine/build_package_ohos.sh`).
 
 ---
 
@@ -12,16 +12,16 @@ English | [简体中文](../zh/QUICKSTART.md)
 
 ```bash
 # 1. Extract .run package (automatically runs set_env.sh to print environment hints)
-bash /path/to/cann_lm_compile_converter-0.1.0-aarch64.run --extract=/opt/cann-device-lm
+bash /path/to/cann_local_lm_converter-0.1.0-aarch64.run --extract=/opt/cann-local-lm
 
-# 2. Install cann_lm whl into P1 venv (used by converter, provides cann-device-lm-converter CLI)
+# 2. Install cann_lm whl into P1 venv (used by converter, provides cllm-converter CLI)
 export CONVERTER_PYTHON=/path/to/venv/bin/python
-$CONVERTER_PYTHON -m pip install /opt/cann-device-lm/wheels/cann_lm-*.whl
+$CONVERTER_PYTHON -m pip install /opt/cann-local-lm/wheels/cann_local_lm-*.whl
 
-# 3. (Only needed for quantization) First source NPU env to detect DOPT_PYTHON, then install cann_lm whl into system python
-source /opt/cann-device-lm/set_env.sh --npu
-$DOPT_PYTHON -m pip install /opt/cann-device-lm/wheels/cann_lm-*.whl --no-deps --user
-# Note: If auto-detection fails, manually export DOPT_PYTHON=/path/to/python3 and re-run the previous line
+# 3. (Only needed for quantization) Set DOPT_PYTHON to the system python that has torch_npu
+export DOPT_PYTHON=/path/to/python3
+# Or auto-detect (requires CANN sourced first): source $HOME/Ascend/cann/set_env.sh && source /opt/cann-local-lm/set_env.sh --npu
+# First deployment only — if system python lacks cann_lm/dopt_lm: $DOPT_PYTHON -m pip install /opt/cann-local-lm/wheels/cann_local_lm-*.whl --no-deps --user
 ```
 
 ---
@@ -32,7 +32,7 @@ $DOPT_PYTHON -m pip install /opt/cann-device-lm/wheels/cann_lm-*.whl --no-deps -
 
 ```bash
 source $HOME/Ascend/cann/set_env.sh    # CANN
-source /opt/cann-device-lm/set_env.sh         # cann-device-lm (LD_LIBRARY_PATH + GE configuration)
+source /opt/cann-local-lm/set_env.sh         # cann-local-lm (LD_LIBRARY_PATH + GE configuration)
 export TORCH_DEVICE_BACKEND_AUTOLOAD=0 # Prevent torch from autoloading npu backend (P1 venv has no torch_npu)
 export CONVERTER_PYTHON=/path/to/venv/bin/python   # P1 venv python
 ```
@@ -53,7 +53,7 @@ export CONVERTER_PYTHON=/path/to/venv/bin/python   # P1 venv python
 **Standard export:**
 
 ```bash
-$CONVERTER_PYTHON -m cann_lm.converter.cann_lm_converter \
+cllm-converter \
     --hf-path <your-model-path> \
     --output-dir ./output/e2e \
     --mode prefill-decode --target-soc KirinX90
@@ -64,17 +64,18 @@ $CONVERTER_PYTHON -m cann_lm.converter.cann_lm_converter \
 **Quantized export (optional):**
 
 > **Quantization special requirements**:
-> - GPTQ quantization requires **NPU device acceleration** (the dopt subprocess runs on the NPU), requiring an additional **P2 environment** (system python + torch_npu 2.9.0.post8, isolated from P1 venv, cannot be shared).
-> - Requires `source /opt/cann-device-lm/set_env.sh --npu` (auto-detects `DOPT_PYTHON` + sets `DEVICE=npu`); if detection fails, manually `export DOPT_PYTHON=/path/to/python3`.
-> - The torchaudio version must match torch 2.9.0 (`pip install torchaudio==2.9.0`), otherwise an `undefined symbol` error will be reported.
+> - GPTQ quantization requires **NPU device acceleration** (the dopt subprocess runs on the NPU), requiring an additional **P2 environment** (system python + torch_npu, isolated from P1 venv, cannot be shared).
+> - Must `source $HOME/Ascend/cann/set_env.sh` first, then `source /opt/cann-local-lm/set_env.sh --npu` (auto-detects `DOPT_PYTHON` + sets `DEVICE=npu`); if detection fails, manually `export DOPT_PYTHON=/path/to/python3`.
+> - The torchaudio version must match the system python's torch, otherwise an `undefined symbol` error will be reported.
 > - Without an NPU, you can skip GPTQ and use `--quant-path` to consume existing dopt artifacts for offline quantization.
 
 ```bash
-# NPU quantization env (--npu auto-detects DOPT_PYTHON + sets DEVICE=npu)
-source /opt/cann-device-lm/set_env.sh --npu
+# NPU quantization env (CANN first, then --npu which needs ASCEND_HOME_PATH for DOPT_PYTHON detection)
+source $HOME/Ascend/cann/set_env.sh
+source /opt/cann-local-lm/set_env.sh --npu
 
 # Method 1: converter automatically invokes dopt (one-step, requires NPU)
-$CONVERTER_PYTHON -m cann_lm.converter.cann_lm_converter \
+cllm-converter \
     --hf-path <your-model-path> \
     --output-dir ./output/quant \
     --target-soc KirinX90 \
@@ -106,7 +107,7 @@ $DOPT_PYTHON -m dopt_lm.opt_main \
 cd ../..    # Back to repo root
 
 # Step 2: converter consumes dopt artifacts (offline quantization, no NPU required)
-$CONVERTER_PYTHON -m cann_lm.converter.cann_lm_converter \
+cllm-converter \
     --hf-path <your-model-path> \
     --output-dir ./output/quant \
     --target-soc KirinX90 \
@@ -118,7 +119,7 @@ $CONVERTER_PYTHON -m cann_lm.converter.cann_lm_converter \
 ### ② epair → omc (compilation)
 
 ```bash
-BIN=/opt/cann-device-lm/cann_lm_compile
+BIN=/opt/cann-local-lm/cann_lm_compile
 OUT=./output/e2e       # Standard export; for quantized export use ./output/quant
 for st in prefill decode; do
   mkdir -p "$OUT/$st"
@@ -150,15 +151,61 @@ Complete artifacts after ① export + ② compilation (`$OUT/` = `./output/e2e` 
 
 ## Deploy to HarmonyOS Device
 
-Push omc + weights to the HarmonyOS device and run with the engine produced by `cann_lm_engine_ohos-*.run`:
+### 1. Push engine + model artifacts
 
 ```bash
-# Install engine on HarmonyOS device (see build_guide.md §2.2)
-bash cann_lm_engine_ohos-0.1.0-aarch64.run --extract=/data/local/tmp/cann_lm_engine
+# Signed engine wheel (.so embedded in cann_lm/lib/, from --pkg or build_package_ohos.sh)
+hdc file send build_out/cann_local_lm_engine-0.1.0+signed-py3-none-any.whl /data/local/tmp/cann_lm_engine/
 
-# Push omc + weights to device
+# Model artifacts (omc + weights + tokenizer + model_config)
 hdc file send ./output/e2e /data/local/tmp/cann_lm_engine/
-
-# Run
-cd /data/local/tmp/cann_lm_engine && ./run.sh
 ```
+
+### 2. Install engine + write config on device
+
+```bash
+hdc shell
+cd /data/local/tmp/cann_lm_engine
+
+# Install engine wheel (.so auto-discovered from cann_lm/lib/)
+pip3 install cann_local_lm_engine-0.1.0+signed-py3-none-any.whl
+
+# Write testcase.json (model paths + tokenizer + sampling params)
+cat > testcase.json <<'EOF'
+{
+    "tokenizer_type": "BPE",
+    "tokenizer_path": "/data/local/tmp/cann_lm_engine/output/e2e/tokenizer.json",
+    "model_path_prefill": "/data/local/tmp/cann_lm_engine/output/e2e/prefill/prefill.omc",
+    "model_path_decode": "/data/local/tmp/cann_lm_engine/output/e2e/decode/decode.omc",
+    "model_meta_config": "/data/local/tmp/cann_lm_engine/output/e2e/model_config.json",
+    "model_weight_dir_prefill": "/data/local/tmp/cann_lm_engine/output/e2e/prefill/weight",
+    "model_weight_dir_decode": "/data/local/tmp/cann_lm_engine/output/e2e/decode/weight",
+    "sentences": [{
+        "prompt": "Hello",
+        "seed": 99, "topK": 1, "topP": 1.0,
+        "temperature": 1.0, "maxGenTokens": 128
+    }]
+}
+EOF
+```
+
+> **No pip available**: `unzip cann_local_lm_engine-*.whl -d . && export PYTHONPATH=.:$PYTHONPATH && export CANN_LM_LIB=./cann_lm/lib/libcann_lm_engine.so`
+>
+> **Weight directories**: if `GE_EXTERNAL_WEIGHT=2` was not set during compilation (embedded weights), `model_weight_dir_*` can point to the omc's directory.
+
+### 3. Run inference
+
+```bash
+# Single-shot generation
+cllm generate --config testcase.json --prompt "Hello"
+
+# Interactive multi-turn chat
+cllm chat --config testcase.json
+
+# Diagnose paths (no .so load, just checks file existence)
+cllm generate --config testcase.json --show-paths
+```
+
+> `.so` discovery order: `--lib PATH` > `$CANN_LM_LIB` > wheel's `cann_lm/lib/`. If loading fails, add the `.so` directory to `LD_LIBRARY_PATH` (`libc++_shared.so` must be in the same directory).
+>
+> C++ black-box tests (bbit/smoke) can be built separately via `bash build.sh --smoke`, pushed to device, and run with `./bbit --config testcase.json`. See [engine Python README](../../cann_lm/engine/python/README.md).

@@ -1,10 +1,10 @@
-# cann-device-lm构建指南
+# cann-local-lm构建指南
 
 简体中文 | [English](../en/build_guide.md)
 
-> 本文档聚焦 **cann-device-lm构建**：构建前置（Part 1）→ 一键构建+安装+使用（Part 2）→ 速查/FAQ（Part 3）。环境依赖说明见 [env_dependencies.md](env_dependencies.md)，端到端用例见 [快速入门](QUICKSTART.md)。
+> 本文档聚焦 **cann-local-lm构建**：构建前置（Part 1）→ 一键构建+安装+使用（Part 2）→ 速查/FAQ（Part 3）。环境依赖说明见 [env_dependencies.md](env_dependencies.md)，端到端用例见 [快速入门](QUICKSTART.md)。
 >
-> 以下命令除特别说明外，均在 **cann-device-lm仓根**执行（`cd /path/to/cann-device-lm`）。CANN安装路径以 `$HOME/Ascend` 为例（可按实际调整，后续所有 `source` 命令路径需同步替换）。
+> 以下命令除特别说明外，均在 **cann-local-lm仓根**执行（`cd /path/to/cann-local-lm`）。CANN安装路径以 `$HOME/Ascend` 为例（可按实际调整，后续所有 `source` 命令路径需同步替换）。
 
 ---
 
@@ -96,7 +96,7 @@ zip解压后包含：
 ### 安装与配置
 
 ```bash
-cd /path/to/cann-device-lm
+cd /path/to/cann-local-lm
 
 # 1. 解压 zip
 unzip -oq commandline-tools-linux-arm64-*.zip -d /your/ohos-sdk-path
@@ -115,7 +115,7 @@ apt install -y default-jre
 ### 验证
 
 ```bash
-$OHOS_SDK_NATIVE/llvm/bin/clang --version   # 期望: clang 15.0.4
+$OHOS_SDK_NATIVE/llvm/bin/clang --version   # 期望: 文件存在
 ls $OHOS_SDK_NATIVE/sysroot                 # 期望: 目录存在
 ls tools/binary-sign-tool.jar                # 期望: 文件存在
 ```
@@ -127,7 +127,7 @@ ls tools/binary-sign-tool.jar                # 期望: 文件存在
 
 ### P1 与 P2 环境说明
 
-cann-device-lm 的运行时分为两套互相隔离的环境：
+cann-local-lm 的运行时分为两套互相隔离的环境：
 
 | 环境 | 用途 | torch | torch_npu | 位置 | 说明 |
 |------|------|-------|-----------|------|------|
@@ -148,24 +148,40 @@ cann-device-lm 的运行时分为两套互相隔离的环境：
 
 ```bash
 source $HOME/Ascend/cann/set_env.sh
-cd /path/to/cann-device-lm
+cd /path/to/cann-local-lm
 
 # 1. torch-delegate：仓内源码构建（build.sh 自动创建 .venv [torch 2.9.0+cpu] + 编译 whl）
-cp -a torch_delegate deps/torch-delegate
+mkdir deps & cp -a torch_delegate deps/torch-delegate
 cd deps/torch-delegate && ./build.sh && .venv/bin/pip install --no-deps output/package/torch_delegate-*.whl
 
 # 2. torchair（二选一）：
 ```
 
-**方式 A：从源码编译**（`.so` 链 CANN stubs，converter 无需装 torch_npu）
+**方式 A：从源码编译**（converter 无需装 torch_npu）
 
 ```bash
 # .venv/bin/pip 即上一步 torch-delegate build.sh 创建的 P1 venv
-cd /path/to/cann-device-lm
-git clone https://gitcode.com/Ascend/torchair.git deps/torchair && \
-  cd deps/torchair && TARGET_PYTHON_PATH="$(realpath ../torch-delegate/.venv/bin/python)" bash build.sh -c && \
-  ../torch-delegate/.venv/bin/pip install --no-deps output/torchair-*.whl
+cd /path/to/cann-local-lm
+git clone https://gitcode.com/Ascend/torchair.git deps/torchair
+cd deps/torchair
+
+# ⚠️ 两个变量都要设，且不能用 realpath：
+#   1. realpath 会把 .venv/bin/python symlink 解析成系统 python 路径，丢失 venv 激活 → 找到系统 torch 而非 venv torch。
+#      用 $(cd ../torch-delegate && pwd)/.venv/bin/python 取绝对路径但保留 symlink。
+#   2. torchair build.sh main() 在 TARGET_PYTHON_PATH 为空时覆盖 PYTHON_BIN_PATH=$(which python3)（build.sh:136-139），
+#      故必须同时设 TARGET_PYTHON_PATH 阻止覆盖。
+#   另：清掉 stale tools/TORCH_VERSION 缓存（存在则 configure 跳过重新检测，configure:13）。
+rm -f tools/TORCH_VERSION tools/TORCH_INSTALLED_PATH tools/PYTHON_BIN_PATH tools/COMPILE_FLAGS
+rm -rf build/CMakeCache.txt build/CMakeFiles
+VENV_PY="$(cd ../torch-delegate && pwd)/.venv/bin/python"
+PYTHON_BIN_PATH="$VENV_PY" TARGET_PYTHON_PATH="$VENV_PY" bash build.sh -c
+
+# 装 whl（--no-deps 避免 pip 拉入 torch_npu；torchair 运行时依赖需手动补）
+../torch-delegate/.venv/bin/pip install --no-deps output/torchair-*.whl
+../torch-delegate/.venv/bin/pip install packaging cloudpickle
 ```
+
+> **验证 configure 选对 torch**：构建后 `cat tools/TORCH_VERSION` 应为 `20900`（torch 2.9.0）。若为 `20701`（torch 2.7.1）说明命中了系统 python 的 torch，`_torchair.so` ABI 不匹配，import 时报 `undefined symbol: _ZN2at14RecordFunction6beforeEPKcl`——需清除 `tools/TORCH_VERSION` 缓存后用正确的 `PYTHON_BIN_PATH` 重新构建。
 
 **方式 B：从 torch_npu whl 提取**（`.so` 来自 torch_npu 官方构建，须匹配 torch 版本）
 
@@ -184,13 +200,19 @@ cp -r /tmp/torch_npu_extracted/torch_npu/dynamo/torchair \
   $VENV/lib/$PY_VER/site-packages/torchair
 ```
 
-> 两种方式产出的 torchair 含相同的 `.so`（`_torchair.so`/`_npu_graph_executor.so` 等），差异在编译环境：方式 A 用 CANN stubs 编译，方式 B 用 torch_npu 官方构建。converter venv 不装 torch_npu，方式 A 是推荐路径。
+> 两种方式产出的 torchair 含相同的 `.so`（`_torchair.so`/`_npu_graph_executor.so` 等），差异在编译环境：方式 A 从源码编译（链本机 CANN），方式 B 用 torch_npu 官方构建。converter venv 不装 torch_npu。
+>
+> **方式 A 补依赖**：`--no-deps` 跳过了 torchair 声明的运行时依赖（`protobuf`/`decorator`/`psutil`/`scipy` 通常已由 CANN site-packages 或 torch 自动拉入，但 `packaging`/`cloudpickle` 需手动补——`torchair/__init__.py` 首行即 `from packaging import version`，缺失会导致 `ModuleNotFoundError`）。若不愿逐个补，也可 `pip install -r scripts/requirements-p1.txt` 一次性装齐。
 
 ### 校验
 
 ```bash
-bash scripts/build.sh check
+# 需先 source $HOME/Ascend/cann/set_env.sh
+TORCH_DEVICE_BACKEND_AUTOLOAD=0 deps/torch-delegate/.venv/bin/python -c "import torchair; print('OK', torchair.__file__)"
+# 预期: OK /mnt/workspace/.../deps/torch-delegate/.venv/lib/python3.12/site-packages/torchair/__init__.py
 ```
+
+> 此处仅验证 torchair import 是否成功（捕获 ABI 不匹配 / 缺依赖等问题）。完整基底校验（含 cann_lm / third_party）见 Part 2 末尾「[环境校验](#环境校验)」。
 
 ---
 
@@ -199,7 +221,7 @@ bash scripts/build.sh check
 ## 一键构建
 
 ```bash
-cd /path/to/cann-device-lm
+cd /path/to/cann-local-lm
 source $HOME/Ascend/cann/set_env.sh
 export OHOS_SDK_NATIVE=<解压目录>/command-line-tools/sdk/default/openharmony/native
 
@@ -208,16 +230,20 @@ bash build.sh --pkg
 
 > `--pkg` 自动下载+构建三方库（nlohmann_json / GTest / makeself，从gitcode镜像），首次运行下载，后续幂等跳过。
 
-产物 `dist/` 下两个 .run：`cann_lm_compile_converter-*.run`（Ascend910编译机）+ `cann_lm_engine_ohos-*.run`（鸿蒙设备）。
+产物落 `build_out/`（由 `build.sh` 的 `DIST` 变量控制，默认 `${REPO}/build_out`，可环境变量覆盖）：
+- `cann_local_lm_converter-*.run`（Ascend910 编译机，**必备**）—— 含 `cann_lm_compile` + `libtorch_delegate_backend.so` + cann_lm whl + set_env.sh
+- `cann_local_lm-*.whl`（converter whl，HF→epair 导出用）
+- `cann_local_lm_engine-*.whl`（engine python ctypes 绑定 whl，纯 python 不含 .so）
+- `deploy_ohos/`（engine OHOS 交叉编译产物：signed `libcann_lm_engine.so` + UT/bbit/smoke，**需 OHOS SDK**；缺 SDK 时该步跳过，不影响 910 OM 编译流程）
 
 ## 安装
 
 ```bash
 # Ascend910 编译机
-bash dist/cann_lm_compile_converter-0.1.0-aarch64.run --extract=/opt/cann-device-lm
+bash build_out/cann_local_lm_converter-0.1.0-aarch64.run --extract=/opt/cann-local-lm
 
-# 鸿蒙设备
-bash dist/cann_lm_engine_ohos-0.1.0-aarch64.run --extract=/data/local/tmp/cann_lm_engine
+# 鸿蒙设备（engine 签名 wheel，--pkg 或 build_package_ohos.sh 产出）
+pip3 install build_out/cann_local_lm_engine-0.1.0+signed-py3-none-any.whl
 ```
 
 ## 使用
@@ -225,14 +251,41 @@ bash dist/cann_lm_engine_ohos-0.1.0-aarch64.run --extract=/data/local/tmp/cann_l
 ```bash
 # Ascend910 编译 omc（安装机需先装 CANN + driver）
 source $HOME/Ascend/cann/set_env.sh    # CANN（提供 lib64/driver/opp）
-source /opt/cann-device-lm/set_env.sh         # cann-device-lm
-/opt/cann-device-lm/cann_lm_compile <ep_json> <weight_info> [output_name]
+source /opt/cann-local-lm/set_env.sh         # cann-local-lm
+/opt/cann-local-lm/cann_lm_compile <ep_json> <weight_info> [output_name]
 
-# 鸿蒙推理
-cd /data/local/tmp/cann_lm_engine && ./run.sh
+# 鸿蒙推理（完整部署流程见 [快速入门](QUICKSTART.md)）
+# cllm generate --config testcase.json --prompt "你好"
+# cllm chat --config testcase.json
 ```
 
+> **权值分离**：`/opt/cann-local-lm/set_env.sh` 默认不设 `GE_EXTERNAL_WEIGHT`，编译出的 OM **内嵌权重**（如 gemma4 5B 约 4.5G/段）。若需更小的 OM + 外置权值文件，编译前 `export GE_EXTERNAL_WEIGHT=2`，产物为 `<out>.om`（数十 M）+ `<out>/weight/*.bin`（外置权值，运行时加载）。
+
 > 端到端用例见 [快速入门](QUICKSTART.md)。
+
+## 环境校验
+
+完成上述构建（`--pkg` 或 `deps` + `cpp`）后，运行基底校验确认所有组件就绪：
+
+```bash
+bash scripts/build.sh check
+```
+
+预期输出（全部 ✓）：
+
+```
+  ✓ CANN ...
+  ✓ P1 venv ...
+  ✓ torch (2.9.0+cpu)
+  ✓ torchair
+  ✓ torch_delegate
+  ✓ cann_lm (converter)
+  ✓ third_party json
+```
+
+> 若 `cann_lm (converter)` 显示 ✗：运行 `bash scripts/build.sh deps` 装入 P1 venv（仅装 converter，不含 engine）。
+> 若 `third_party` 显示 ✗：运行 `bash build.sh third_party`（或 `--pkg` 已自动构建）。
+> 若 `torchair` 显示 ✗：见 [Q2](#q2-torchair--torch_delegate未安装)。
 
 ---
 
@@ -275,6 +328,17 @@ source $HOME/Ascend/cann/set_env.sh
 ### Q2: torchair / torch_delegate未安装
 
 见「运行时前置：P1 converter venv」节，按顺序装torch-delegate（产 `.venv`）→ torchair，然后 `bash scripts/build.sh deps && bash scripts/build.sh check`。
+
+若 torchair 已装但 `check` 仍报 `✗ torchair`，通常是 `import torchair` 失败（check 用 `2>/dev/null` 静默吞错）。手动复现定位：
+
+```bash
+source $HOME/Ascend/cann/set_env.sh
+TORCH_DEVICE_BACKEND_AUTOLOAD=0 deps/torch-delegate/.venv/bin/python -c "import torchair"
+```
+
+常见原因：
+- **`ModuleNotFoundError: No module named 'packaging'`**：方式 A 用 `--no-deps` 装的 torchair 缺运行时依赖，`pip install packaging cloudpickle` 补齐。
+- **`ImportError: undefined symbol: _ZN2at14RecordFunction6beforeEPKcl`**：torchair 编译时用了错误版本的 torch（如系统 python 的 torch 2.7.1，而非 venv 的 2.9.0）。检查 `cat deps/torchair/tools/TORCH_VERSION`——应为 `20900`，若为 `20701` 则需清 `tools/TORCH_VERSION` 缓存 + 用 `PYTHON_BIN_PATH`（非 `TARGET_PYTHON_PATH`）重新构建，详见方式 A 注释。
 
 ### Q3: omc编译退出码
 

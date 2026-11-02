@@ -4,7 +4,7 @@
 
 仓库不归档真实模型权重、量化产物或机器相关模型路径。默认输出目录 `output/` 已被 `.gitignore` 屏蔽。
 
-> **前置**：`.run` 包已安装（`/opt/cann-device-lm/`），`cann_lm` whl 已装进系统 python（`--no-deps --user`）。
+> **前置**：`.run` 包已安装（`/opt/cann-local-lm/`），`cann_lm` whl 已装进系统 python（`--no-deps --user`）。
 
 ## ST 用例
 
@@ -96,7 +96,7 @@ bash examples/test_converter/dopt_quantization_st/run.sh run \
 
 ## 环境与归档边界
 
-- `run.sh` 自动 `source /opt/cann-device-lm/set_env.sh --npu`（探测 `DOPT_PYTHON` + 设 `DEVICE=npu`）；探测失败时手动 `export DOPT_PYTHON=/path/to/python3`。
+- `run.sh` 自动 `source /opt/cann-local-lm/set_env.sh --npu`（探测 `DOPT_PYTHON` + 设 `DEVICE=npu`）；探测失败时手动 `export DOPT_PYTHON=/path/to/python3`。
 - `DOPT_PYTHON` 应指向安装了 `torch`、`torch_npu`、`transformers` 和 `PyYAML` 的 Python。
 - 默认 `HF_DATASETS_OFFLINE=1`、`WANDB_DISABLED=true`。
 - 设备号与原 demo 一致：gemma4 默认 1，Qwen3.5 默认 0；可用 `--gemma4-device-id`、`--qwen3-5-device-id` 覆盖。

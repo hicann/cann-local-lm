@@ -158,11 +158,11 @@ bash scripts/cann_lm_engine/build_package_ohos.sh
 
 ### Green Criteria
 
-Output ends with `=== build_ohos.sh 完成 ===` (Option 1) or `=== 一键完成: engine_ohos.run ===` (Option 2), and the make stage has no errors.
+Output ends with `=== build_ohos.sh 完成 ===` (Option 1) or `=== build_package_ohos.sh 完成 ===` (Option 2), and the make stage has no errors.
 
 ### One-click Script (`build_package_ohos.sh`)
 
-A minimal orchestration layer that only does: `--clean` (delete `build_ohos` for full rebuild) → pre-check java + jar → call `build_ohos.sh` (compile+sign) → `package_ohos.sh` (package) → final `ls engine_ohos.run`. SDK/clang-18/GTest/signing are all handled inside `build_ohos.sh`.
+A minimal orchestration layer that only does: `--clean` (delete `build_ohos` for full rebuild) → pre-check java + jar → call `build_ohos.sh` (compile+sign) → copy signed .so into wheel → `pip wheel` (produces `cann_lm_engine-*+signed*.whl`) → final `ls build_out/cann_lm_engine-*+signed*.whl`. SDK/clang-18/GTest/signing are all handled inside `build_ohos.sh`.
 
 ## 5. Artifacts
 
@@ -191,14 +191,11 @@ readelf -h libcann_lm_engine.so | grep Machine
 ```
 > These artifacts **cannot be run directly** on a Linux host (they link against musl's `libc.so`; the host uses glibc). Runtime verification must be on a HarmonyOS device.
 
-### Package Deploy Bundle (`package_ohos.sh`)
+### Produce Signed Wheel (`build_package_ohos.sh`)
 
-```bash
-bash scripts/cann_lm_engine/package_ohos.sh    # From build_ohos/ signed artifacts → engine_ohos.run
-```
-`engine_ohos.run` is a self-contained deploy bundle (intentionally committed for device git pull): signed artifacts renamed to loader-expected names (stripped of `_signed` suffix), includes `run.sh` (one-click runs 6 UT + bbit + 2 smoke, auto chmod + LD_LIBRARY_PATH) + `README.md`. `testcase.json` is manually maintained and preserved on repackage.
+`build_package_ohos.sh` automatically copies the signed `.so` into `cann_lm/lib/` and runs `pip wheel` to produce `build_out/cann_lm_engine-*+signed*.whl` (embeds `.so` + `libc++_shared.so`) after compile+sign.
 
-On device: after extracting engine_ohos.run, run `./run.sh` (or `./run.sh ut_c_api` for a single run).
+On device: `pip install cann_lm_engine-*+signed*.whl` then `cllm generate --config testcase.json` (see [Quick Start](../../QUICKSTART.md)). C++ tests (bbit/smoke) require separate `bash build.sh --smoke`, then push to device and run `./bbit --config testcase.json`.
 
 ## 6. Three Inevitable Pitfalls of HarmonyOS Cross-Compilation (first-time environment setup)
 
@@ -241,10 +238,10 @@ On device: after extracting engine_ohos.run, run `./run.sh` (or `./run.sh ut_c_a
 - ✅ `libcann_lm_engine.so` + `libc++_shared.so` cross-compile passed (ELF AArch64, musl target; `readelf -d` NEEDED `libc.so` not `libc.so.6`)
 - ✅ **9 executables cross-compile passed** (6 UT + bbit + 2 smoke; GTest local source FetchContent, static `add_test`)
 - ✅ **All artifacts signed** (`*_signed`, host java-21 + binary-sign-tool.jar `-selfSign 1`)
-- ✅ **Packaging passed** (`engine_ohos.run` contains all 11 artifacts + run.sh + README)
+- ✅ **Signed wheel produced** (`cann_lm_engine-*+signed*.whl` with embedded .so + libc++_shared.so)
 - ✅ `model_executor_ut` / `ut_text_embedding` restored (backend hiai migration complete)
 - ⏳ ut_sampler/ut_request_handle/ut_data_type_utils and other old backend API UTs were not migrated with hiai, not registered yet (source rewrite is a separate work item)
-- ⏳ HarmonyOS device runtime verification (awaiting device; after git commit of engine_ohos.run, device pulls)
+- ⏳ HarmonyOS device runtime verification (awaiting device; push signed wheel to device, pip install)
 
 ## 10. Submit Code
 

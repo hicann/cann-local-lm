@@ -1,4 +1,4 @@
-# cann-device-lm版本演进
+# cann-local-lm版本演进
 
 简体中文 | [English](../en/version_evolution.md)
 

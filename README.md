@@ -1,4 +1,4 @@
-# cann-device-lm
+# cann-local-lm
 
 简体中文 | [English](README_en.md)
 
@@ -8,15 +8,15 @@
 
 ## 🚀 概述
 
-cann-device-lm旨在基于 CANN，面向端侧设备，提供大模型转换工具与端到端推理引擎等能力，实现多种大语言大模型轻量、低延迟、低内存占用的高效推理。
+cann-local-lm旨在基于 CANN，面向端侧设备，提供大模型转换工具与端到端推理引擎等能力，实现多种大语言大模型轻量、低延迟、低内存占用的高效推理。
 
 ## ⬇️ 源码下载
 
 环境准备好后，下载与CANN版本配套的分支源码，通用命令如下，`${tag_version}` 替换为分支标签名：
 
 ```bash
-# 通用命令：git clone -b ${tag_version} https://gitcode.com/cann/cann-device-lm.git
-git clone -b 2026_09_22 https://gitcode.com/cann/cann-device-lm.git
+# 通用命令：git clone -b ${tag_version} https://gitcode.com/cann/cann-local-lm.git
+git clone -b 2026_09_22 https://gitcode.com/cann/cann-local-lm.git
 ```
 
 > 说明：若环境中已存在配套分支源码，可跳过本步骤。
@@ -30,7 +30,7 @@ git clone -b 2026_09_22 https://gitcode.com/cann/cann-device-lm.git
 ## 📂 目录结构
 
 ```
-cann-device-lm/
+cann-local-lm/
 ├── cann_lm/                  # 核心源码
 │   ├── converter/            # 导出工具链 (HF 模型 → epair → omc 编译)
 │   ├── engine/               # 推理引擎 (omc 加载 + 推理执行)
@@ -85,13 +85,13 @@ cann-device-lm/
 
 ## 🌐 生态集成
 
-以下项目与cann-device-lm存在上下游依赖或协作关系：
+以下项目与cann-local-lm存在上下游依赖或协作关系：
 
-- **[GE (Graph Engine)](https://gitcode.com/cann/ge)**：CANN图引擎，cann-device-lm的FX→GE转换和omc编译均基于GE能力
+- **[GE (Graph Engine)](https://gitcode.com/cann/ge)**：CANN图引擎，cann-local-lm的FX→GE转换和omc编译均基于GE能力
 - **[ops-math](https://gitcode.com/cann/ops-math)**：CANN数值计算算子库，为模型导出提供基础数学算子支持
 - **[ops-nn](https://gitcode.com/cann/ops-nn)**：CANN神经网络算子库，为模型导出提供NN层算子支持
-- **ops-transformers**（CANN大模型算子库,内部仓）：CANN大模型算子库，为模型导出提供Transformer结构算子支持
-- **[TorchAir](https://gitcode.com/Ascend/torchair)**：将GE接入PyTorch图模式，cann-device-lm converter通过torchair完成FX→GE转换
+- **[ops-transformer](https://gitcode.com/cann/ops-transformer)**：CANN大模型算子库，为模型导出提供Transformer结构算子支持
+- **[TorchAir](https://gitcode.com/Ascend/torchair)**：将GE接入PyTorch图模式，cann-local-lm converter通过torchair完成FX→GE转换
 - **[CANN Toolkit](https://hiascend.com/software/cann)**：CANN软件包（atc / acl），提供omc编译和NPU运行时
 
 ## 📝 相关信息
@@ -104,8 +104,8 @@ cann-device-lm/
 
 ## 💬 反馈与交流
 
-- **问题反馈**：通过GitCode [Issues](https://gitcode.com/cann/cann-device-lm/issues)提交问题
-- **社区互动**：通过GitCode [Discussions](https://gitcode.com/cann/cann-device-lm/discussions)参与交流
+- **问题反馈**：通过GitCode [Issues](https://gitcode.com/cann/cann-local-lm/issues)提交问题
+- **社区互动**：通过GitCode [Discussions](https://gitcode.com/cann/cann-local-lm/discussions)参与交流
 
 ---
 

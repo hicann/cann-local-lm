@@ -1,4 +1,4 @@
-"""cann-device-lm Python bindings — ctypes passthrough over the C engine ABI.
+"""cann-local-lm Python bindings — ctypes passthrough over the C engine ABI.
 
 Public surface (mirrors cann_lm/engine/api/c/c_api.h 1:1):
   Engine / Context / Request / Result   — handle wrappers (context-managed)

@@ -1,4 +1,4 @@
-# cann-device-lm
+# cann-local-lm
 
 English | [简体中文](README.md)
 
@@ -8,15 +8,15 @@ English | [简体中文](README.md)
 
 ## 🚀 Overview
 
-cann-device-lm aims to provide large model conversion tools and end-to-end inference engines based on CANN for edge devices, enabling lightweight, low-latency, and low-memory efficient inference for various large language models.
+cann-local-lm aims to provide large model conversion tools and end-to-end inference engines based on CANN for edge devices, enabling lightweight, low-latency, and low-memory efficient inference for various large language models.
 
 ## ⬇️ Source Code Download
 
 After the environment is prepared, download the branch source code matching the CANN version. The general command is as follows, replace `${tag_version}` with the branch tag name:
 
 ```bash
-# General command: git clone -b ${tag_version} https://gitcode.com/cann/cann-device-lm.git
-git clone -b 2026_09_22 https://gitcode.com/cann/cann-device-lm.git
+# General command: git clone -b ${tag_version} https://gitcode.com/cann/cann-local-lm.git
+git clone -b 2026_09_22 https://gitcode.com/cann/cann-local-lm.git
 ```
 
 > Note: If the matching branch source code already exists in the environment, you can skip this step.
@@ -30,7 +30,7 @@ git clone -b 2026_09_22 https://gitcode.com/cann/cann-device-lm.git
 ## 📂 Directory Structure
 
 ```
-cann-device-lm/
+cann-local-lm/
 ├── cann_lm/                  # Core source code
 │   ├── converter/            # Export toolchain (HF model → epair → omc compilation)
 │   ├── engine/               # Inference engine (omc loading + inference execution)
@@ -85,13 +85,13 @@ See [Quick Start](docs/en/QUICKSTART.md) for details, covering installation, epa
 
 ## 🌐 Ecosystem Integration
 
-The following projects have upstream/downstream dependencies or collaborative relationships with cann-device-lm:
+The following projects have upstream/downstream dependencies or collaborative relationships with cann-local-lm:
 
-- **[GE (Graph Engine)](https://gitcode.com/cann/ge)**: CANN Graph Engine; cann-device-lm's FX→GE conversion and omc compilation are both based on GE capabilities
+- **[GE (Graph Engine)](https://gitcode.com/cann/ge)**: CANN Graph Engine; cann-local-lm's FX→GE conversion and omc compilation are both based on GE capabilities
 - **[ops-math](https://gitcode.com/cann/ops-math)**: CANN numerical computation operator library, providing basic math operator support for model export
 - **[ops-nn](https://gitcode.com/cann/ops-nn)**: CANN neural network operator library, providing NN layer operator support for model export
-- **ops-transformers** (CANN LLM operator library, internal repo): CANN large model operator library, providing Transformer structure operator support for model export
-- **[TorchAir](https://gitcode.com/Ascend/torchair)**: Integrates GE into PyTorch graph mode; cann-device-lm converter completes FX→GE conversion via torchair
+- **[ops-transformer](https://gitcode.com/cann/ops-transformer)**: CANN LLM operator library, providing Transformer structure operator support for model export
+- **[TorchAir](https://gitcode.com/Ascend/torchair)**: Integrates GE into PyTorch graph mode; cann-local-lm converter completes FX→GE conversion via torchair
 - **[CANN Toolkit](https://hiascend.com/software/cann)**: CANN software package (atc / acl), providing omc compilation and NPU runtime
 
 ## 📝 Related Information
@@ -104,8 +104,8 @@ The following projects have upstream/downstream dependencies or collaborative re
 
 ## 💬 Feedback and Communication
 
-- **Issue Feedback**: Submit issues via GitCode [Issues](https://gitcode.com/cann/cann-device-lm/issues)
-- **Community Interaction**: Participate in discussions via GitCode [Discussions](https://gitcode.com/cann/cann-device-lm/discussions)
+- **Issue Feedback**: Submit issues via GitCode [Issues](https://gitcode.com/cann/cann-local-lm/issues)
+- **Community Interaction**: Participate in discussions via GitCode [Discussions](https://gitcode.com/cann/cann-local-lm/discussions)
 
 ---
 

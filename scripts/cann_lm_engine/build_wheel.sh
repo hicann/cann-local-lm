@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 #=============================================================================
-# build_wheel.sh — 打包 cann-lm-engine whl (engine python ctypes 绑定)
+# build_wheel.sh — 打包 cann-local-lm-engine whl (engine python ctypes 绑定)
 #
 # 源头: cann_lm/engine/python/(flat-layout 项目根, pyproject.toml 在此, 包 cann_lm/
 # 居其下)。本 whl 纯 python(ctypes 直通 C ABI, 零运行时依赖), 不含 C++ .so —
@@ -12,7 +12,7 @@ set -euo pipefail
 # 含 pkgutil.extend_path, 两 wheel 同 env 不互隐(cann_lm.Engine 与 cann_lm.converter 并存)。
 #
 # 用法: bash scripts/cann_lm_engine/build_wheel.sh
-# 产物: $REPO/build_out/cann_lm_engine-*.whl
+# 产物: $REPO/build_out/cann_local_lm_engine-*.whl
 #=============================================================================
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$SCRIPT_DIR/../.." && pwd)"
@@ -31,12 +31,12 @@ else
   PIP="python3 -m pip"
 fi
 
-echo "### build cann-lm-engine (engine python ctypes 绑定)"
+echo "### build cann-local-lm-engine (engine python ctypes 绑定)"
 echo "  源: $PY_SRC"
 echo "  pip: $PIP"
 (cd "$REPO/scripts/cann_lm_engine" && $PIP wheel . --no-deps -w "$DIST") 2>&1 | grep -E "Built|Created|error|Error" | tail -3
-rm -rf "$REPO/scripts/cann_lm_engine/cann_lm_engine.egg-info"  # 清理构建中间产物
+rm -rf "$REPO/scripts/cann_lm_engine/cann_local_lm_engine.egg-info"  # 清理构建中间产物
 echo ""
 echo "=== build_out/ ==="
-ls -la "$DIST"/cann_lm_engine-*.whl 2>/dev/null | awk '{print "  "$5, $9}' \
-  || { echo "  ✗ 无 cann_lm_engine-*.whl"; exit 1; }
+ls -la "$DIST"/cann_local_lm_engine-*.whl 2>/dev/null | awk '{print "  "$5, $9}' \
+  || { echo "  ✗ 无 cann_local_lm_engine-*.whl"; exit 1; }

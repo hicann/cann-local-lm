@@ -2,7 +2,7 @@
 
 把导出的 epair 编译为 OM，在 NPU 上运行验证：单 OM vs eager 对比、prefill+decode 文本生成（出字）。
 
-> 前置：`.run` 包已安装（`/opt/cann-device-lm/`），`cann_lm` whl 已装进 P1 venv + 系统 python。
+> 前置：`.run` 包已安装（`/opt/cann-local-lm/`），`cann_lm` whl 已装进 P1 venv + 系统 python。
 
 ## 目录结构
 
@@ -17,18 +17,18 @@ om_npu_verify/
 └── epair_qwen3_5_emb/          # qwen3.5 embeddings 入图产物
 ```
 
-> OM 编译工具 `cann_lm_compile` 在 `.run` 包内（`/opt/cann-device-lm/cann_lm_compile`）。`reg_register.h` 仅注册 `ChunkGatedDeltaRule`（CANN 库已内置其余算子）。
+> OM 编译工具 `cann_lm_compile` 在 `.run` 包内（`/opt/cann-local-lm/cann_lm_compile`）。`reg_register.h` 仅注册 `ChunkGatedDeltaRule`（CANN 库已内置其余算子）。
 
 ## 环境
 
 ```bash
 # 导出 epair 用（converter 模式）
 source $HOME/Ascend/cann/set_env.sh
-source /opt/cann-device-lm/set_env.sh
+source /opt/cann-local-lm/set_env.sh
 export CONVERTER_PYTHON=/path/to/venv/bin/python
 
 # NPU 出字验证用（NPU 模式，自动探测 DOPT_PYTHON）
-source /opt/cann-device-lm/set_env.sh --npu
+source /opt/cann-local-lm/set_env.sh --npu
 ```
 
 > HF 模型路径由调用方必填：`export GEMMA4_HF_PATH=<model dir>` / `export QWEN3_5_HF_PATH=<model dir>`
@@ -51,14 +51,14 @@ $CONVERTER_PYTHON -m cann_lm.converter.cann_lm_converter \
 ### 2. 编译 epair → OM
 
 ```bash
-source /opt/cann-device-lm/set_env.sh   # 设 GE_FUSION_SWITCH_FILE + SOC_VERSION
+source /opt/cann-local-lm/set_env.sh   # 设 GE_FUSION_SWITCH_FILE + SOC_VERSION
 
-/opt/cann-device-lm/cann_lm_compile \
+/opt/cann-local-lm/cann_lm_compile \
   epair_gemma4/prefill_ep_json_with_ascend_ir.json \
   epair_gemma4/weight_info.json \
   epair_gemma4/prefill
 
-/opt/cann-device-lm/cann_lm_compile \
+/opt/cann-local-lm/cann_lm_compile \
   epair_gemma4/decode_ep_json_with_ascend_ir.json \
   epair_gemma4/weight_info.json \
   epair_gemma4/decode
@@ -77,7 +77,7 @@ atc --mode=6 --om=prefill/prefill.om                        # model info
 ### 4. NPU 出字验证
 
 ```bash
-source /opt/cann-device-lm/set_env.sh --npu
+source /opt/cann-local-lm/set_env.sh --npu
 
 cd examples/test_converter/export_llm_model/om_npu_verify
 PREFILL_OM=epair_gemma4/prefill/prefill.om \

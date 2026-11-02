@@ -830,14 +830,14 @@ for (const auto &node : parser.Nodes()) {
 
 **Info coverage**:
 
-| Info | model_constants_config.json source | cann-device-lm source | Covered? |
+| Info | model_constants_config.json source | cann-local-lm source | Covered? |
 |------|---|---|---|
 | Constant data | `data/constants/tensor_N` files | `weights_*.bin` (`pack_weights` already packed) | Covered |
 | Constant name/type | `config` object's key and `is_param` | `input_specs`'s `kind` and `name` + `weight_info.json`'s `_is_weight` | Covered |
 | dtype/shape | `tensor_meta.dtype` / `tensor_meta.sizes` | C++ side derives from `ep_json` graph nodes | Covered |
 | Data storage location | `path_name` → `data/constants/` dir | `weight_info.json`'s `file` + `offset` | Covered |
 
-**Conclusion**: `model_constants_config.json` is PT2 archive format's redundant meta-info file. cann-device-lm covers all its info via following paths, **doesn't need to separately parse `model_constants_config.json`**:
+**Conclusion**: `model_constants_config.json` is PT2 archive format's redundant meta-info file. cann-local-lm covers all its info via following paths, **doesn't need to separately parse `model_constants_config.json`**:
 1. **Data**: `pack_weights` packs constant data to `weights_*.bin` via `gs.inputs_to_lifted_tensor_constants` + `ep.module().named_buffers()`
 2. **Meta-info**: C++ side `EpairModelParser` parses `input_specs` to get kind/name, `GeWeightLoader` gets data location + `_is_weight` from `weight_info.json` (distinguishes module state vs trace constant, fallback `input_specs`'s `PlaceholderKind`)
 3. **dtype/shape**: C++ side derives tensor meta from `ep_json`'s graph nodes

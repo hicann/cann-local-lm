@@ -2,9 +2,9 @@
 
 English | [简体中文](../zh/build_guide.md)
 
-> This document focuses on **cann-device-lm build**: build prerequisites (Part 1) → one-click build + install + usage (Part 2) → quick reference/FAQ (Part 3). For environment dependencies, see [env_dependencies.md](env_dependencies.md); for end-to-end examples, see [Quick Start](QUICKSTART.md).
+> This document focuses on **cann-local-lm build**: build prerequisites (Part 1) → one-click build + install + usage (Part 2) → quick reference/FAQ (Part 3). For environment dependencies, see [env_dependencies.md](env_dependencies.md); for end-to-end examples, see [Quick Start](QUICKSTART.md).
 >
-> Unless otherwise specified, all commands below are run from the **cann-device-lm repo root** (`cd /path/to/cann-device-lm`). The CANN install path uses `$HOME/Ascend` as an example (adjust as needed; all subsequent `source` command paths must be replaced accordingly).
+> Unless otherwise specified, all commands below are run from the **cann-local-lm repo root** (`cd /path/to/cann-local-lm`). The CANN install path uses `$HOME/Ascend` as an example (adjust as needed; all subsequent `source` command paths must be replaced accordingly).
 
 ---
 
@@ -96,7 +96,7 @@ After unzipping, the archive contains:
 ### Install and Configure
 
 ```bash
-cd /path/to/cann-device-lm
+cd /path/to/cann-local-lm
 
 # 1. Unzip
 unzip -oq commandline-tools-linux-arm64-*.zip -d /your/ohos-sdk-path
@@ -135,7 +135,7 @@ ls tools/binary-sign-tool.jar                # Expected: file exists
 
 ```bash
 source $HOME/Ascend/cann/set_env.sh
-cd /path/to/cann-device-lm
+cd /path/to/cann-local-lm
 
 # 1. torch-delegate: build from in-repo source (build.sh auto-creates .venv [torch 2.9.0+cpu] + compiles whl)
 cp -a torch_delegate deps/torch-delegate
@@ -144,15 +144,32 @@ cd deps/torch-delegate && ./build.sh && .venv/bin/pip install --no-deps output/p
 # 2. torchair (choose one):
 ```
 
-**Option A: Build from source** (`.so` linked against CANN stubs, no torch_npu needed for converter)
+**Option A: Build from source** (no torch_npu needed for converter)
 
 ```bash
 # .venv/bin/pip is the P1 venv created by torch-delegate build.sh above
-cd /path/to/cann-device-lm
-git clone https://gitcode.com/Ascend/torchair.git deps/torchair && \
-  cd deps/torchair && TARGET_PYTHON_PATH="$(realpath ../torch-delegate/.venv/bin/python)" bash build.sh -c && \
-  ../torch-delegate/.venv/bin/pip install --no-deps output/torchair-*.whl
+cd /path/to/cann-local-lm
+git clone https://gitcode.com/Ascend/torchair.git deps/torchair
+cd deps/torchair
+
+# ⚠️ Both variables must be set, and do NOT use realpath:
+#   1. realpath resolves the .venv/bin/python symlink to the system python path, losing venv activation
+#      → finds system torch instead of venv torch. Use $(cd ../torch-delegate && pwd)/.venv/bin/python
+#      to get an absolute path while preserving the symlink.
+#   2. torchair build.sh main() overwrites PYTHON_BIN_PATH=$(which python3) when TARGET_PYTHON_PATH is empty
+#      (build.sh:136-139), so TARGET_PYTHON_PATH must also be set to prevent the overwrite.
+# Also: clear stale tools/TORCH_VERSION cache (its presence makes configure skip re-detection, configure:13).
+rm -f tools/TORCH_VERSION tools/TORCH_INSTALLED_PATH tools/PYTHON_BIN_PATH tools/COMPILE_FLAGS
+rm -rf build/CMakeCache.txt build/CMakeFiles
+VENV_PY="$(cd ../torch-delegate && pwd)/.venv/bin/python"
+PYTHON_BIN_PATH="$VENV_PY" TARGET_PYTHON_PATH="$VENV_PY" bash build.sh -c
+
+# Install whl (--no-deps avoids pulling in torch_npu; torchair runtime deps need manual install)
+../torch-delegate/.venv/bin/pip install --no-deps output/torchair-*.whl
+../torch-delegate/.venv/bin/pip install packaging cloudpickle
 ```
+
+> **Verify configure picked the right torch**: after build, `cat tools/TORCH_VERSION` should show `20900` (torch 2.9.0). If it shows `20701` (torch 2.7.1), the build used the system python's torch — `_torchair.so` will have an ABI mismatch and `import` will fail with `undefined symbol: _ZN2at14RecordFunction6beforeEPKcl`. Clear the `tools/TORCH_VERSION` cache and rebuild with the correct `PYTHON_BIN_PATH`.
 
 **Option B: Extract from torch_npu whl** (`.so` from official torch_npu build, must match torch version)
 
@@ -171,13 +188,19 @@ cp -r /tmp/torch_npu_extracted/torch_npu/dynamo/torchair \
   $VENV/lib/$PY_VER/site-packages/torchair
 ```
 
-> Both methods produce torchair with the same `.so` files (`_torchair.so`/`_npu_graph_executor.so` etc.), differing only in build environment: Option A uses CANN stubs, Option B uses official torch_npu build. The converter venv does not install torch_npu; Option A is the recommended path.
+> Both methods produce torchair with the same `.so` files (`_torchair.so`/`_npu_graph_executor.so` etc.), differing only in build environment: Option A builds from source (linked against local CANN), Option B uses official torch_npu build. The converter venv does not install torch_npu; Option A is the recommended path.
+>
+> **Option A dependencies**: `--no-deps` skips torchair's declared runtime deps (`protobuf`/`decorator`/`psutil`/`scipy` are usually already provided by CANN site-packages or torch, but `packaging`/`cloudpickle` must be installed manually — `torchair/__init__.py` begins with `from packaging import version`, and a missing `packaging` causes `ModuleNotFoundError`). Alternatively, `pip install -r scripts/requirements-p1.txt` installs them all at once.
 
 ### Verify
 
 ```bash
-bash scripts/build.sh check
+# Requires source $HOME/Ascend/cann/set_env.sh first
+TORCH_DEVICE_BACKEND_AUTOLOAD=0 deps/torch-delegate/.venv/bin/python -c "import torchair; print('OK', torchair.__file__)"
+# Expected: OK /mnt/workspace/.../deps/torch-delegate/.venv/lib/python3.12/site-packages/torchair/__init__.py
 ```
+
+> This only verifies that `import torchair` succeeds (catches ABI mismatch / missing deps early). The full baseline check (including cann_lm / third_party) is at the end of Part 2: "[Environment Check](#environment-check)".
 
 ---
 
@@ -186,7 +209,7 @@ bash scripts/build.sh check
 ## One-click Build
 
 ```bash
-cd /path/to/cann-device-lm
+cd /path/to/cann-local-lm
 source $HOME/Ascend/cann/set_env.sh
 export OHOS_SDK_NATIVE=<extract-dir>/command-line-tools/sdk/default/openharmony/native
 
@@ -195,16 +218,20 @@ bash build.sh --pkg
 
 > `--pkg` auto-downloads and builds third-party libs (nlohmann_json / GTest / makeself, from the gitcode mirror); downloads on first run, idempotently skipped afterward.
 
-Artifacts under `dist/` are two `.run` files: `cann_lm_compile_converter-*.run` (Ascend910 build host) and `cann_lm_engine_ohos-*.run` (HarmonyOS device).
+Artifacts go under `build_out/` (controlled by `build.sh`'s `DIST` variable, default `${REPO}/build_out`, overridable via environment):
+- `cann_local_lm_converter-*.run` (Ascend910 build host, **required**) — contains `cann_lm_compile` + `libtorch_delegate_backend.so` + cann_lm whl + set_env.sh
+- `cann_local_lm-*.whl` (converter whl, for HF→epair export)
+- `cann_local_lm_engine-*.whl` (engine python ctypes binding whl, pure python without .so)
+- `deploy_ohos/` (engine OHOS cross-compile artifacts: signed `libcann_lm_engine.so` + UT/bbit/smoke, **requires OHOS SDK**; skipped when SDK is absent, does not affect the 910 OM compilation flow)
 
 ## Install
 
 ```bash
 # Ascend910 build host
-bash dist/cann_lm_compile_converter-0.1.0-aarch64.run --extract=/opt/cann-device-lm
+bash build_out/cann_local_lm_converter-0.1.0-aarch64.run --extract=/opt/cann-local-lm
 
-# HarmonyOS device
-bash dist/cann_lm_engine_ohos-0.1.0-aarch64.run --extract=/data/local/tmp/cann_lm_engine
+# HarmonyOS device (engine signed wheel, from --pkg or build_package_ohos.sh)
+pip3 install build_out/cann_local_lm_engine-0.1.0+signed-py3-none-any.whl
 ```
 
 ## Usage
@@ -212,14 +239,41 @@ bash dist/cann_lm_engine_ohos-0.1.0-aarch64.run --extract=/data/local/tmp/cann_l
 ```bash
 # Compile omc on Ascend910 (the build host must have CANN + driver installed first)
 source $HOME/Ascend/cann/set_env.sh    # CANN (provides lib64/driver/opp)
-source /opt/cann-device-lm/set_env.sh         # cann-device-lm
-/opt/cann-device-lm/cann_lm_compile <ep_json> <weight_info> [output_name]
+source /opt/cann-local-lm/set_env.sh         # cann-local-lm
+/opt/cann-local-lm/cann_lm_compile <ep_json> <weight_info> [output_name]
 
-# HarmonyOS inference
-cd /data/local/tmp/cann_lm_engine && ./run.sh
+# HarmonyOS inference (see QUICKSTART.md for full deployment flow)
+# cllm generate --config testcase.json --prompt "Hello"
+# cllm chat --config testcase.json
 ```
 
+> **Weight separation**: `/opt/cann-local-lm/set_env.sh` does not set `GE_EXTERNAL_WEIGHT` by default, so the compiled OM **embeds weights** (e.g. ~4.5G/segment for gemma4 5B). For a smaller OM plus external weight files, `export GE_EXTERNAL_WEIGHT=2` before compilation; the output is then `<out>.om` (tens of MB) + `<out>/weight/*.bin` (external weights, loaded at runtime).
+
 > For end-to-end examples, see [Quick Start](QUICKSTART.md).
+
+## Environment Check
+
+After completing the build above (`--pkg` or `deps` + `cpp`), run the baseline check to confirm all components are ready:
+
+```bash
+bash scripts/build.sh check
+```
+
+Expected output (all ✓):
+
+```
+  ✓ CANN ...
+  ✓ P1 venv ...
+  ✓ torch (2.9.0+cpu)
+  ✓ torchair
+  ✓ torch_delegate
+  ✓ cann_lm (converter)
+  ✓ third_party json
+```
+
+> If `cann_lm (converter)` shows ✗: run `bash scripts/build.sh deps` to install into P1 venv (converter only, not engine).
+> If `third_party` shows ✗: run `bash build.sh third_party` (or `--pkg` which builds it automatically).
+> If `torchair` shows ✗: see [Q2](#q2-torchair--torch_delegate-not-installed).
 
 ---
 
@@ -262,6 +316,17 @@ source $HOME/Ascend/cann/set_env.sh
 ### Q2: torchair / torch_delegate not installed
 
 See the "Runtime Prerequisite: P1 converter venv" section; install torch-delegate (produces `.venv`) → torchair in order, then `bash scripts/build.sh deps && bash scripts/build.sh check`.
+
+If torchair is installed but `check` still shows `✗ torchair`, the `import torchair` is likely failing (check silences errors with `2>/dev/null`). Reproduce to diagnose:
+
+```bash
+source $HOME/Ascend/cann/set_env.sh
+TORCH_DEVICE_BACKEND_AUTOLOAD=0 deps/torch-delegate/.venv/bin/python -c "import torchair"
+```
+
+Common causes:
+- **`ModuleNotFoundError: No module named 'packaging'`**: Option A installed torchair with `--no-deps`, skipping runtime deps. Run `pip install packaging cloudpickle` to fix.
+- **`ImportError: undefined symbol: _ZN2at14RecordFunction6beforeEPKcl`**: torchair was compiled against the wrong torch version (e.g. system python's torch 2.7.1 instead of the venv's 2.9.0). Check `cat deps/torchair/tools/TORCH_VERSION` — it should be `20900`; if `20701`, clear the `tools/TORCH_VERSION` cache and rebuild with `PYTHON_BIN_PATH` (not `TARGET_PYTHON_PATH`). See Option A notes for details.
 
 ### Q3: omc compilation exit code
 

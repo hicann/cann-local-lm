@@ -10,7 +10,7 @@ English | [简体中文](../../zh/reference/build_guide.md)
 
 ## 0. In One Sentence
 
-The engine is pure standard C++17 with zero POSIX dependencies. It can be built natively on Linux to run UT, and also cross-compiled into a HarmonyOS musl target `.so` + 8 executables (UT/bbit/smoke) with self-signing. **The two build systems are independent of each other** — the HarmonyOS build is a standalone bypass (`cann_lm/engine/ohos/` + `scripts/build_ohos.sh` + `scripts/sign_ohos.sh` + `scripts/package_ohos.sh`) that does not modify any existing Linux build files, so the Linux build carries zero risk. HarmonyOS build is a single command: `./scripts/build_ohos.sh` (compile → auto-sign).
+The engine is pure standard C++17 with zero POSIX dependencies. It can be built natively on Linux to run UT, and also cross-compiled into a HarmonyOS musl target `.so` + 8 executables (UT/bbit/smoke) with self-signing. **The two build systems are independent of each other** — the HarmonyOS build is a standalone bypass (`cann_lm/engine/ohos/` + `scripts/build_ohos.sh` + `scripts/sign_ohos.sh` + `scripts/build_package_ohos.sh`) that does not modify any existing Linux build files, so the Linux build carries zero risk. HarmonyOS build is a single command: `./scripts/build_ohos.sh` (compile → auto-sign), or one-click `./scripts/build_package_ohos.sh` (compile → sign → produce signed wheel).
 
 ---
 
@@ -26,9 +26,9 @@ The engine is pure standard C++17 with zero POSIX dependencies. It can be built 
 | `cann_lm/engine/ohos/binary-sign-tool.jar` | **HarmonyOS binary signing tool** (jar, architecture-independent); self-signs with `-selfSign 1`, injects the `.codesign` segment | HarmonyOS |
 | `scripts/build_ohos.sh` | **HarmonyOS build + sign entry**: validates `OHOS_SDK_NATIVE` → cmake build → auto-invokes `sign_ohos.sh` | HarmonyOS |
 | `scripts/sign_ohos.sh` | **Signing script**: for each of the 2 .so + 8 executables under build_ohos/, produces a `*_signed` copy | HarmonyOS |
-| `scripts/package_ohos.sh` | **Packaging script**: generates `engine_ohos.run` (self-extracting deployment bundle) from the signed artifacts in build_ohos/ | HarmonyOS |
+| `scripts/build_package_ohos.sh` | **One-click script**: pre-checks java+jar → `build_ohos.sh` (compile+sign) → copy signed .so into wheel → `pip wheel` (produces `cann_lm_engine-*+signed*.whl`) | HarmonyOS |
 | `tools/` (contains `binary-sign-tool.jar`) | Vendored signing tool (12MB, jar, **gitignored, not committed**; see tools/README.md) | HarmonyOS |
-| `build_ohos/` | **Build artifacts** (gitignored): cross-compiled signed .so + UT + run.sh | HarmonyOS |
+| `build_ohos/` | **Build artifacts** (gitignored): cross-compiled signed .so + UT/bbit/smoke executables | HarmonyOS |
 | `/mnt/workspace/gtest-1.14.0.tar.gz` | GTest source (github v1.14.0, 867K); referenced locally via OHOS CMake FetchContent | HarmonyOS |
 | `tests/` (cann_lm/engine/../../tests) | GTest UT sources + bbit black-box | Both |
 | `.project/memory/gotchas.md` | Root causes and fixes for the six unavoidable pitfalls of OHOS cross-compilation | HarmonyOS (reference) |
@@ -189,13 +189,13 @@ Signing produces a same-named `*_signed` (for executables) and `*_signed.so` (fo
 
 ### 3.7 Device Runtime Verification (requires a HarmonyOS PC / device)
 
-**First package the deployment bundle** (`build_ohos/` signed artifacts → `engine_ohos.run`):
+**Build the signed wheel** (`build_ohos/` signed .so → embedded in wheel):
 ```bash
-./scripts/package_ohos.sh     # Package into a self-extracting .run bundle
+./scripts/build_package_ohos.sh     # compile+sign+produce build_out/cann_lm_engine-*+signed*.whl
 ```
-`engine_ohos.run` is a self-contained deployment bundle (self-extracting). After extracting it on a HarmonyOS PC, `./run.sh` runs everything in one step.
+The signed wheel embeds the `.so` (`cann_lm/lib/`). On the HarmonyOS device, `pip install` then `cllm generate --config testcase.json` to run inference (see [Quick Start](../QUICKSTART.md)).
 
-Convention when no device is connected on the host: **package engine_ohos.run → push to device → extract → `./run.sh`**.
+Convention when no device is connected on the host: **produce signed wheel → push to device → pip install → `cllm generate`**.
 
 ```bash
 export LD_LIBRARY_PATH=$(pwd)

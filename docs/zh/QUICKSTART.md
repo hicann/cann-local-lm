@@ -4,7 +4,7 @@
 
 > 端到端用例：HF模型 → epair → omc → 部署。环境依赖见 [env_dependencies.md](env_dependencies.md)，构建命令见 [构建指南](build_guide.md)。
 
-> **前置**：CANN + P1 venv已就绪（见 [构建指南](build_guide.md) Part 1 + 运行时前置），且已拿到 `cann_lm_compile_converter-*.run`（自行构建见 [构建指南](build_guide.md) §2.1）。鸿蒙部署还需 `cann_lm_engine_ohos-*.run`（同 §2.1产出）。
+> **前置**：CANN + P1 venv已就绪（见 [构建指南](build_guide.md) Part 1 + 运行时前置），且已拿到 `cann_local_lm_converter-*.run`（自行构建见 [构建指南](build_guide.md) §2.1）。鸿蒙部署还需签名 engine wheel `cann_local_lm_engine-*+signed*.whl`（`--pkg` 或 `bash scripts/cann_lm_engine/build_package_ohos.sh` 产出）。
 
 ---
 
@@ -12,16 +12,16 @@
 
 ```bash
 # 1. 解压 .run 包（自动运行 set_env.sh 打印环境提示）
-bash /path/to/cann_lm_compile_converter-0.1.0-aarch64.run --extract=/opt/cann-device-lm
+bash /path/to/cann_local_lm_converter-0.1.0-aarch64.run --extract=/opt/cann-local-lm
 
-# 2. 装 cann_lm whl 进 P1 venv（converter 用，提供 cann-device-lm-converter CLI）
+# 2. 装 cann_lm whl 进 P1 venv（converter 用，提供 cllm-converter CLI）
 export CONVERTER_PYTHON=/path/to/venv/bin/python
-$CONVERTER_PYTHON -m pip install /opt/cann-device-lm/wheels/cann_lm-*.whl
+$CONVERTER_PYTHON -m pip install /opt/cann-local-lm/wheels/cann_local_lm-*.whl
 
-# 3.（仅量化需要）先 source NPU env 探测 DOPT_PYTHON，再装 cann_lm whl 进系统 python
-source /opt/cann-device-lm/set_env.sh --npu
-$DOPT_PYTHON -m pip install /opt/cann-device-lm/wheels/cann_lm-*.whl --no-deps --user
-# 注：若自动探测失败，手动 export DOPT_PYTHON=/path/to/python3 后重跑上一行
+# 3.（仅量化需要）设 DOPT_PYTHON 指向装了 torch_npu 的系统 python
+export DOPT_PYTHON=/path/to/python3
+# 或自动探测（需先 source CANN）：source $HOME/Ascend/cann/set_env.sh && source /opt/cann-local-lm/set_env.sh --npu
+# 首次部署若系统 python 缺 cann_lm/dopt_lm：$DOPT_PYTHON -m pip install /opt/cann-local-lm/wheels/cann_local_lm-*.whl --no-deps --user
 ```
 
 ---
@@ -32,7 +32,7 @@ $DOPT_PYTHON -m pip install /opt/cann-device-lm/wheels/cann_lm-*.whl --no-deps -
 
 ```bash
 source $HOME/Ascend/cann/set_env.sh    # CANN
-source /opt/cann-device-lm/set_env.sh         # cann-device-lm（LD_LIBRARY_PATH + GE 配置）
+source /opt/cann-local-lm/set_env.sh         # cann-local-lm（LD_LIBRARY_PATH + GE 配置）
 export TORCH_DEVICE_BACKEND_AUTOLOAD=0 # 阻止 torch autoload npu backend（P1 venv 无 torch_npu）
 export CONVERTER_PYTHON=/path/to/venv/bin/python   # P1 venv python
 ```
@@ -53,7 +53,7 @@ export CONVERTER_PYTHON=/path/to/venv/bin/python   # P1 venv python
 **普通导出：**
 
 ```bash
-$CONVERTER_PYTHON -m cann_lm.converter.cann_lm_converter \
+cllm-converter \
     --hf-path <你的模型路径> \
     --output-dir ./output/e2e \
     --mode prefill-decode --target-soc KirinX90
@@ -64,17 +64,18 @@ $CONVERTER_PYTHON -m cann_lm.converter.cann_lm_converter \
 **量化导出（可选）：**
 
 > **量化特殊要求**：
-> - GPTQ量化需 **NPU设备加速**（dopt子进程跑在NPU上），需额外准备 **P2环境**（系统python + torch_npu 2.9.0.post8，与P1 venv隔离，不能共用）。
-> - 需 `source /opt/cann-device-lm/set_env.sh --npu`（自动探测 `DOPT_PYTHON` + 设 `DEVICE=npu`），探测失败时手动 `export DOPT_PYTHON=/path/to/python3`。
-> - torchaudio版本须与torch 2.9.0一致（`pip install torchaudio==2.9.0`），否则报 `undefined symbol`。
+> - GPTQ量化需 **NPU设备加速**（dopt子进程跑在NPU上），需额外准备 **P2环境**（系统python + torch_npu，与P1 venv隔离，不能共用）。
+> - 需先 `source $HOME/Ascend/cann/set_env.sh` 再 `source /opt/cann-local-lm/set_env.sh --npu`（自动探测 `DOPT_PYTHON` + 设 `DEVICE=npu`），探测失败时手动 `export DOPT_PYTHON=/path/to/python3`。
+> - torchaudio版本须与系统python的torch一致，否则报 `undefined symbol`。
 > - 无NPU时可跳过GPTQ，用 `--quant-path` 消费已有dopt产物做离线量化。
 
 ```bash
-# NPU 量化 env（--npu 自动探测 DOPT_PYTHON + 设 DEVICE=npu）
-source /opt/cann-device-lm/set_env.sh --npu
+# NPU 量化 env（先 CANN 再 --npu，后者探测 DOPT_PYTHON 依赖 ASCEND_HOME_PATH）
+source $HOME/Ascend/cann/set_env.sh
+source /opt/cann-local-lm/set_env.sh --npu
 
 # 方式一：converter 自动调 dopt（一步到位，需 NPU）
-$CONVERTER_PYTHON -m cann_lm.converter.cann_lm_converter \
+cllm-converter \
     --hf-path <你的模型路径> \
     --output-dir ./output/quant \
     --target-soc KirinX90 \
@@ -106,7 +107,7 @@ $DOPT_PYTHON -m dopt_lm.opt_main \
 cd ../..    # 回到仓根
 
 # Step 2: converter 消费 dopt 产物（离线量化，不需 NPU）
-$CONVERTER_PYTHON -m cann_lm.converter.cann_lm_converter \
+cllm-converter \
     --hf-path <你的模型路径> \
     --output-dir ./output/quant \
     --target-soc KirinX90 \
@@ -118,7 +119,7 @@ $CONVERTER_PYTHON -m cann_lm.converter.cann_lm_converter \
 ### ② epair → omc（编译）
 
 ```bash
-BIN=/opt/cann-device-lm/cann_lm_compile
+BIN=/opt/cann-local-lm/cann_lm_compile
 OUT=./output/e2e       # 普通导出；量化导出用 ./output/quant
 for st in prefill decode; do
   mkdir -p "$OUT/$st"
@@ -150,15 +151,61 @@ done
 
 ## 部署到鸿蒙设备
 
-将omc + 权值推到鸿蒙设备，用 `cann_lm_engine_ohos-*.run` 产出的engine跑：
+### 1. 推送 engine + 模型产物
 
 ```bash
-# 鸿蒙设备上安装 engine（见 build_guide.md §2.2）
-bash cann_lm_engine_ohos-0.1.0-aarch64.run --extract=/data/local/tmp/cann_lm_engine
+# engine 签名 wheel（.so 内嵌在 cann_lm/lib/，--pkg 或 build_package_ohos.sh 产出）
+hdc file send build_out/cann_local_lm_engine-0.1.0+signed-py3-none-any.whl /data/local/tmp/cann_lm_engine/
 
-# 推 omc + 权值到设备
+# 模型产物（omc + 权值 + tokenizer + model_config）
 hdc file send ./output/e2e /data/local/tmp/cann_lm_engine/
-
-# 运行
-cd /data/local/tmp/cann_lm_engine && ./run.sh
 ```
+
+### 2. 设备上安装 engine + 编写配置
+
+```bash
+hdc shell
+cd /data/local/tmp/cann_lm_engine
+
+# 装 engine wheel（.so 自动从 cann_lm/lib/ 发现）
+pip3 install cann_local_lm_engine-0.1.0+signed-py3-none-any.whl
+
+# 编写 testcase.json（模型路径 + tokenizer + 采样参数）
+cat > testcase.json <<'EOF'
+{
+    "tokenizer_type": "BPE",
+    "tokenizer_path": "/data/local/tmp/cann_lm_engine/output/e2e/tokenizer.json",
+    "model_path_prefill": "/data/local/tmp/cann_lm_engine/output/e2e/prefill/prefill.omc",
+    "model_path_decode": "/data/local/tmp/cann_lm_engine/output/e2e/decode/decode.omc",
+    "model_meta_config": "/data/local/tmp/cann_lm_engine/output/e2e/model_config.json",
+    "model_weight_dir_prefill": "/data/local/tmp/cann_lm_engine/output/e2e/prefill/weight",
+    "model_weight_dir_decode": "/data/local/tmp/cann_lm_engine/output/e2e/decode/weight",
+    "sentences": [{
+        "prompt": "你好",
+        "seed": 99, "topK": 1, "topP": 1.0,
+        "temperature": 1.0, "maxGenTokens": 128
+    }]
+}
+EOF
+```
+
+> **无 pip 时**：`unzip cann_local_lm_engine-*.whl -d . && export PYTHONPATH=.:$PYTHONPATH && export CANN_LM_LIB=./cann_lm/lib/libcann_lm_engine.so`
+>
+> **权值目录**：编译时若未设 `GE_EXTERNAL_WEIGHT=2`（内嵌权值），`model_weight_dir_*` 可指向 omc 同目录。
+
+### 3. 运行推理
+
+```bash
+# 单次生成
+cllm generate --config testcase.json --prompt "你好"
+
+# 交互式多轮对话
+cllm chat --config testcase.json
+
+# 排查路径（不加载 .so，仅检查文件存在性）
+cllm generate --config testcase.json --show-paths
+```
+
+> `.so` 发现顺序：`--lib PATH` > `$CANN_LM_LIB` > wheel 内 `cann_lm/lib/`。加载失败时将 `.so` 所在目录加入 `LD_LIBRARY_PATH`（`libc++_shared.so` 需同目录）。
+>
+> C++ 黑盒测试（bbit/smoke）可通过 `bash build.sh --smoke` 单独构建，推送后 `./bbit --config testcase.json` 运行。详见 [engine Python README](../../cann_lm/engine/python/README.md)。

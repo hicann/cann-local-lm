@@ -4,27 +4,28 @@
 
 ## 概览：build.sh做什么
 
-仓库根 `build.sh` 是**全量构建/打包/UT的唯一入口**，只支持3个子命令：
+仓库根 `build.sh` 是**全量构建/打包/UT的唯一入口**。主入口为 `--pkg`/`-u`/`-h`；另支持 `check`/`deps`/`cpp`/`wheel`/`third_party`/`package`/`all`/`smoke` 等子命令（日常开发用，详见 [build_guide.md](../build_guide.md) Part 3 速查）。`--pkg` 全量流程：
 
 | 命令 | 作用 | 产物 |
 |------|------|------|
-| `bash build.sh --pkg` | 编译三部分并打包 | `dist/` 下两个 `.run` 分发物 |
+| `bash build.sh --pkg` | 编译三部分并打包 | `build_out/` 下 `compile_converter-*.run`（必备）+ `dist/` 下签名 engine wheel（需完整 OHOS 环境，缺则仅产 compile_converter.run） |
 | `bash build.sh -u` | 编译含UT的部分并运行 | 测试结果（无持久产物） |
 | `bash build.sh -h` | 打印帮助 | — |
 
-### `--pkg` 的4个阶段
+### `--pkg` 的5个阶段
 
 ```
-[1/4] compile     build_cpp.sh --no-tests --target cann_lm_compile
+[1/5] compile      build_cpp.sh --no-tests --target cann_lm_compile
                    → build/cann_lm_compile (epair→OM 编译工具, ~308K)
                    → build/libtorch_delegate_backend.so (C++ backend, ~845K)
-[2/4] converter   纯源码 pip wheel (--no-deps)
-                   → dist/cann_lm-<ver>-py3-none-any.whl (converter 导出 whl)
-[3/4] engine      OHOS 交叉编译 + 签名 + 打包 (build_package_ohos.sh)
-                   → engine_ohos.run (libcann_lm_engine.so + 6 UT + bbit + 2 smoke + run.sh)
-[4/4] 打包        两个 .run 自解压分发物
-                   → dist/cann_lm_compile_converter-<ver>-<arch>.run (compile+converter)
-                   → dist/cann_lm_engine_ohos-<ver>-<arch>.run       (engine 部署包)
+[2/5] converter    纯源码 pip wheel (--no-deps)
+                   → build_out/cann_lm-<ver>-py3-none-any.whl (converter 导出 whl)
+[3/5] engine whl   engine python ctypes 绑定 whl (纯 python, 不依赖 OHOS)
+                   → build_out/cann_local_lm_engine-<ver>-py3-none-any.whl
+[4/5] engine OHOS  OHOS 交叉编译 + 签名 (build_package_ohos.sh, 需 OHOS SDK)
+                   → deploy_ohos/ (signed libcann_lm_engine.so + UT/bbit/smoke)
+[5/5] 打包         .run 自解压分发物
+                   → build_out/cann_local_lm_converter-<ver>-<arch>.run (compile+converter, 必备)
 ```
 
 > ⚠️ **任一阶段失败，`--pkg` 立即中断**（`|| return 1` 链式退出），不会继续后续阶段、也不会打包不完整的现有产物。
@@ -102,7 +103,7 @@ bash build.sh --pkg
 
 ▶ [2/4] converter: build cann_lm wheel (--no-deps 纯源码打包)
   Created wheel for cann-lm: filename=cann_lm-0.1.0-py3-none-any.whl size=163313   ← 阶段2 关键行
-  ✓ converter whl: .../dist/cann_lm-0.1.0-py3-none-any.whl (160K)                  ← 阶段2 成功标志
+  ✓ converter whl: .../build_out/cann_lm-0.1.0-py3-none-any.whl (160K)                  ← 阶段2 成功标志
 
 ▶ [3/4] engine: OHOS 交叉编译 (build_package_ohos.sh, 强制环境检查)
   ✓ 编译器: SDK clang (.../23/native/llvm/bin/clang)                               ← 5 项前置检查全 ✓
@@ -123,18 +124,17 @@ bash build.sh --pkg
 === sign binaries ===
   ✓ libcann_lm_engine.so -> libcann_lm_engine_signed.so
   ✓ ... (其余 10 项)                                                            ← 签名全 ✓
-=== [2/2] 打包部署包(package_ohos.sh → engine_ohos.run) ===
-  ✓ libcann_lm_engine_signed.so -> libcann_lm_engine.so
-  ✓ ... (11 项全 ✓)                                                            ← 打包全 ✓
-  ✓ engine 交叉编译 + 打包完成: engine_ohos.run (libcann_lm_engine.so + UT/bbit/smoke)   ← 阶段3 成功标志
+=== [2/2] 打包签名 wheel (build_package_ohos.sh → cann_local_lm_engine-*+signed*.whl) ===
+  ✓ copy signed .so → cann_lm/lib/libcann_lm_engine.so
+  ✓ copy libc++_shared.so → cann_lm/lib/
+  ✓ pip wheel → build_out/cann_local_lm_engine-0.1.0+signed-py3-none-any.whl   ← 阶段3 成功标志
 
-▶ [4/4] 打包 .run (compile_converter + engine_ohos)
+▶ [4/4] 打包 .run (compile_converter)
   ... makeself 压缩 ...
-  Self-extractable archive ".../cann_lm_compile_converter-0.1.0-x86_64.run" successfully created.
-  Self-extractable archive ".../cann_lm_engine_ohos-0.1.0-x86_64.run" successfully created.
-▶ 打包结果 (dist/)
-  533K .../dist/cann_lm_compile_converter-0.1.0-x86_64.run
-  2.7M .../dist/cann_lm_engine_ohos-0.1.0-x86_64.run
+  Self-extractable archive ".../cann_local_lm_converter-0.1.0-x86_64.run" successfully created.
+▶ 打包结果
+  533K .../build_out/cann_local_lm_converter-0.1.0-x86_64.run
+  845K .../build_out/cann_local_lm_engine-0.1.0+signed-py3-none-any.whl
 ▶ === --pkg 完成 ===                                                                 ← 整体成功标志
 ```
 
@@ -148,7 +148,7 @@ bash build.sh --pkg
 | **[1/4] compile** | `CMake Error ... Could NOT find GTest / nlohmann_json` | `output/third_party` 里json/gtest只有tar没解压产物 | 补 §2.1-2 |
 | **[3/4] engine前置** | 多个 `✗`（缺编译器 / OHOS_SDK_NATIVE无效 / 缺jar / 缺GTest tar）+ `✗ engine交叉编译前置不满足; 已中断 --pkg` | §2.2任一未满足 | 按 §2.2补齐，`export` 环境变量 |
 | **[3/4] engine configure** | `CMake Error at .../ohos/CMakeLists.txt:97: FATAL_ERROR "GTest source tarball not found: /mnt/workspace/gtest-1.14.0.tar.gz"` | 没 `export GTEST_TAR`，用了写死的默认路径 | `export GTEST_TAR=<真实存在的tar>` 重跑 |
-| **[4/4]打包** | `✗ engine_ohos.run未生成, 打包失败` | 阶段3没跑出产物（前置被中断，或产物校验有 `[缺]`） | 回阶段3修 |
+| **[4/4]打包** | `✗ engine 签名 wheel 未生成, 打包失败` | 阶段3没跑出产物（前置被中断，或产物校验有 `[缺]`） | 回阶段3修 |
 | **[4/4]打包** | `⚠ compile/converter产物不全, 跳过compile_converter.run` | 阶段1/2产物缺失但脚本继续 | 完整 `--pkg` 一次跑通 |
 
 
@@ -156,13 +156,12 @@ bash build.sh --pkg
 
 ```bash
 # ① .run 自解压完整性（"All good" = 通过）
-bash dist/cann_lm_compile_converter-0.1.0-x86_64.run --extract=/tmp/x1 --noexec
-bash dist/cann_lm_engine_ohos-0.1.0-x86_64.run     --extract=/tmp/x2 --noexec
+bash build_out/cann_local_lm_converter-0.1.0-x86_64.run --extract=/tmp/x1 --noexec
 # 预期输出: Verifying archive integrity... All good.
 
 # ② compile 工具冒烟（需 CANN 环境）
 source <cann>/set_env.sh && ./build/cann_lm_compile   # 打印 usage 即正常
-# ③ engine 部署包: 推到鸿蒙设备 解压后 ./run.sh
+# ③ engine 签名 wheel: 推到鸿蒙设备 pip install 后 cllm generate --config testcase.json
 ```
 
 ---
@@ -259,5 +258,6 @@ bash scripts/cann_lm_converter/build_wheel.sh                                   
 **Q2：没有OHOS SDK / 不想交叉编译，`-u` 能跑吗？**
 能。`-u` 不依赖OHOS SDK（engine host UT用host gcc + stub NDK）。只有 `--pkg` 的 `[3/4]` 需要SDK。
 
-**Q3：engine_ohos.run装到设备跑不起来？**
-见 `engine_ohos.run` 解压后README：需开发者模式（自签名）、目录可写可执行（避开noexec）、`.so` 名字不可改。
+**Q3：engine wheel 装到设备跑不起来？**
+
+`.so` 加载失败常见原因：未开发者模式（自签名 `.so` 被拒）、`libc++_shared.so` 不在同目录、`.so` 名被改。用 `cllm generate --config testcase.json --show-paths` 排查路径，或 `--lib <path>` 显式指定 `.so`。

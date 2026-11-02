@@ -158,11 +158,11 @@ bash scripts/cann_lm_engine/build_package_ohos.sh
 
 ### 绿判据
 
-输出末尾出现 `=== build_ohos.sh 完成 ===`（方式一）或 `=== 一键完成: engine_ohos.run ===`（方式二），且 make 阶段无 error。
+输出末尾出现 `=== build_ohos.sh 完成 ===`（方式一）或 `=== build_package_ohos.sh 完成 ===`（方式二），且 make 阶段无 error。
 
 ### 一键脚本（`build_package_ohos.sh`）
 
-精简编排层，只做：`--clean`（删 `build_ohos` 全量重建）→ 预检 java + jar → 调 `build_ohos.sh`（编译+签名）→ `package_ohos.sh`（打包）→ 收尾 `ls engine_ohos.run`。SDK/clang-18/GTest/签名全部由 `build_ohos.sh` 内部处理。
+精简编排层，只做：`--clean`（删 `build_ohos` 全量重建）→ 预检 java + jar → 调 `build_ohos.sh`（编译+签名）→ 拷签名 .so 进 wheel → `pip wheel`（产 `cann_lm_engine-*+signed*.whl`）→ 收尾 `ls build_out/cann_lm_engine-*+signed*.whl`。SDK/clang-18/GTest/签名全部由 `build_ohos.sh` 内部处理。
 
 ## 5. 产物
 
@@ -191,14 +191,11 @@ readelf -h libcann_lm_engine.so | grep Machine
 ```
 > 在 Linux 本机**无法直接运行**这些产物（它们链接 musl 的 `libc.so`，本机是 glibc）。运行验证必须在鸿蒙设备上。
 
-### 打包部署包（`package_ohos.sh`）
+### 产签名 wheel（`build_package_ohos.sh`）
 
-```bash
-bash scripts/cann_lm_engine/package_ohos.sh    # 从 build_ohos/ 签名产物 → engine_ohos.run
-```
-`engine_ohos.run` 是自包含部署包（有意入库供设备 git pull）：签名产物重命名为加载器期望名（去 `_signed` 后缀），含 `run.sh`（一键跑 6 UT + bbit + 2 smoke，自动 chmod + LD_LIBRARY_PATH）+ `README.md`。`testcase.json` 手工维护，重打包保留。
+`build_package_ohos.sh` 在编译+签名后自动将签名 `.so` 拷入 `cann_lm/lib/` 并 `pip wheel` 产出 `build_out/cann_lm_engine-*+signed*.whl`（内嵌 `.so` + `libc++_shared.so`）。
 
-设备端：解压 engine_ohos.run 后 `./run.sh`（或 `./run.sh ut_c_api` 单跑）。
+设备端：`pip install cann_lm_engine-*+signed*.whl` 后 `cllm generate --config testcase.json`（详见 [快速入门](../../QUICKSTART.md)）。C++ 测试（bbit/smoke）需单独 `bash build.sh --smoke` 构建，推到设备后 `./bbit --config testcase.json`。
 
 ## 6. 鸿蒙交叉编译三个必踩坑（首次环境准备）
 
@@ -241,10 +238,10 @@ bash scripts/cann_lm_engine/package_ohos.sh    # 从 build_ohos/ 签名产物 �
 - ✅ `libcann_lm_engine.so` + `libc++_shared.so` 交叉编译通过（ELF AArch64，musl 目标；`readelf -d` NEEDED `libc.so` 非 `libc.so.6`）
 - ✅ **9 个可执行交叉编译通过**（6 UT + bbit + 2 smoke；GTest 本地源码 FetchContent，静态 `add_test`）
 - ✅ **全部产物签名完成**（`*_signed`，本机 java-21 + binary-sign-tool.jar `-selfSign 1`）
-- ✅ **打包通过**（`engine_ohos.run` 含全 11 产物 + run.sh + README）
+- ✅ **签名 wheel 产出**（`cann_lm_engine-*+signed*.whl` 内嵌 .so + libc++_shared.so）
 - ✅ `model_executor_ut` / `ut_text_embedding` 已恢复（backend hiai 迁移完成）
 - ⏳ ut_sampler/ut_request_handle/ut_data_type_utils 等旧 backend API UT 未随 hiai 迁移，暂未注册（源码重写属独立工作项）
-- ⏳ 鸿蒙设备实跑验证（待设备；git 提交 engine_ohos.run 后设备 pull）
+- ⏳ 鸿蒙设备实跑验证（待设备；签名 wheel 推设备 pip install）
 
 ## 10. 提交代码
 

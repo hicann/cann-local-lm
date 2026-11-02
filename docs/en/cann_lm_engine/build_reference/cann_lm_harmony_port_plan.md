@@ -14,7 +14,7 @@ English | [简体中文](../../../zh/cann_lm_engine/build_reference/cann_lm_harm
 > - **CMake organization**: Instead of adding an `OHOS_PLATFORM` branch to the existing `cann_lm/engine/CMakeLists.txt` per §Step B, an **independent bypass** `cann_lm/engine/ohos/CMakeLists.txt` is used (source list manually mirrored), with zero changes and zero regression to Linux build files.
 > - **Script paths**: Migrated from the top-level `scripts/` to **`scripts/cann_lm_engine/`** (one extra level, so `REPO_ROOT` inside scripts uses `../..`).
 > - **Artifacts**: Actually produces **11 artifacts** (2 `.so` + 9 executables: 6 UT including `ut_text_embedding` + `bbit` + 2 smoke), each with `*_signed`.
-> - **Packaging**: `package_ohos.sh` generates `engine_ohos.run` (11 artifacts + `run.sh` + README).
+> - **Packaging**: `build_package_ohos.sh` produces signed wheel `cann_lm_engine-*+signed*.whl` (`.so` embedded in `cann_lm/lib/`).
 >
 > For the actual flow, see `build_guide.md` §3 and `build_linux_guide.md`; for individual scripts, see the file table in `build_guide.md` §1.
 >
@@ -144,6 +144,6 @@ endif()
 - [x] .so vs UT scheme decided (§3: parallel, UT first)
 - [x] OHOS toolchain + build script in place (Step A — actually independent `cann_lm/engine/ohos/ohos.toolchain.cmake` + `scripts/cann_lm_engine/build_ohos.sh`, see top "Actual implementation")
 - [x] CMake OHOS branch connected, host-side can still build as-is (Step B — actually uses bypass `ohos/CMakeLists.txt`, not modifying existing CMake, Linux zero regression)
-- [x] `cann_lm_engine.so` produced and signed, loadable (Step D — 11 artifacts all signed, `engine_ohos.run` packaging complete)
-- [ ] UT runs GREEN on HarmonyOS PC (Step E — awaiting device runtime; `engine_ohos.run` ready, awaiting pull)
+- [x] `cann_lm_engine.so` produced and signed, loadable (Step D — 11 artifacts all signed, signed wheel produced)
+- [ ] UT runs GREEN on HarmonyOS PC (Step E — awaiting device runtime; signed wheel ready for deployment)
 - [ ] +1 +2 review passed (Step F)

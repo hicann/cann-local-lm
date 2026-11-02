@@ -4,27 +4,28 @@ English | [简体中文](../../zh/reference/compilation_guide.md)
 
 ## Overview: What build.sh Does
 
-The repository-root `build.sh` is the **single entry point for full build / packaging / UT**, and supports only 3 subcommands:
+The repository-root `build.sh` is the **single entry point for full build / packaging / UT**. Main entries are `--pkg`/`-u`/`-h`; it also supports subcommands like `check`/`deps`/`cpp`/`wheel`/`third_party`/`package`/`all`/`smoke` (for daily development, see [build_guide.md](../build_guide.md) Part 3 Quick Reference). The `--pkg` full flow:
 
 | Command | Purpose | Artifact |
 |----------|---------|----------|
-| `bash build.sh --pkg` | Compile all three parts and package | Two `.run` distributions under `dist/` |
+| `bash build.sh --pkg` | Compile all three parts and package | `compile_converter-*.run` under `build_out/` (required) + signed engine wheel under `dist/` (requires complete OHOS environment) |
 | `bash build.sh -u` | Compile the parts containing UTs and run them | Test results (no persistent artifact) |
 | `bash build.sh -h` | Print help | — |
 
-### The 4 Stages of `--pkg`
+### The 5 Stages of `--pkg`
 
 ```
-[1/4] compile     build_cpp.sh --no-tests --target cann_lm_compile
+[1/5] compile      build_cpp.sh --no-tests --target cann_lm_compile
                    → build/cann_lm_compile (epair→OM compilation tool, ~308K)
                    → build/libtorch_delegate_backend.so (C++ backend, ~845K)
-[2/4] converter   pure-source pip wheel (--no-deps)
-                   → dist/cann_lm-<ver>-py3-none-any.whl (converter export whl)
-[3/4] engine      OHOS cross-compile + sign + package (build_package_ohos.sh)
-                   → engine_ohos.run (libcann_lm_engine.so + 6 UT + bbit + 2 smoke + run.sh)
-[4/4] package     Two self-extracting .run distributions
-                   → dist/cann_lm_compile_converter-<ver>-<arch>.run (compile+converter)
-                   → dist/cann_lm_engine_ohos-<ver>-<arch>.run       (engine deployment package)
+[2/5] converter    pure-source pip wheel (--no-deps)
+                   → build_out/cann_lm-<ver>-py3-none-any.whl (converter export whl)
+[3/5] engine whl   engine python ctypes binding whl (pure python, no OHOS dependency)
+                   → build_out/cann_local_lm_engine-<ver>-py3-none-any.whl
+[4/5] engine OHOS  OHOS cross-compile + sign (build_package_ohos.sh, requires OHOS SDK)
+                   → deploy_ohos/ (signed libcann_lm_engine.so + UT/bbit/smoke)
+[5/5] package      self-extracting .run distribution
+                   → build_out/cann_local_lm_converter-<ver>-<arch>.run (compile+converter, required)
 ```
 
 > ⚠️ **If any stage fails, `--pkg` aborts immediately** (chained `|| return 1` exit). It will not continue to subsequent stages, nor will it package incomplete existing artifacts.
@@ -102,7 +103,7 @@ bash build.sh --pkg
 
 ▶ [2/4] converter: build cann_lm wheel (--no-deps pure-source packaging)
   Created wheel for cann-lm: filename=cann_lm-0.1.0-py3-none-any.whl size=163313   ← stage-2 key line
-  ✓ converter whl: .../dist/cann_lm-0.1.0-py3-none-any.whl (160K)                  ← stage-2 success marker
+  ✓ converter whl: .../build_out/cann_lm-0.1.0-py3-none-any.whl (160K)                  ← stage-2 success marker
 
 ▶ [3/4] engine: OHOS cross-compile (build_package_ohos.sh, hard env check)
   ✓ Compiler: SDK clang (.../23/native/llvm/bin/clang)                               ← 5 prerequisite checks all ✓
@@ -123,18 +124,17 @@ bash build.sh --pkg
 === sign binaries ===
   ✓ libcann_lm_engine.so -> libcann_lm_engine_signed.so
   ✓ ... (remaining 10)                                                            ← all signed ✓
-=== [2/2] package deployment bundle (package_ohos.sh → engine_ohos.run) ===
-  ✓ libcann_lm_engine_signed.so -> libcann_lm_engine.so
-  ✓ ... (all 11 ✓)                                                               ← all packaged ✓
-  ✓ engine cross-compile + packaging complete: engine_ohos.run (libcann_lm_engine.so + UT/bbit/smoke)   ← stage-3 success marker
+=== [2/2] package signed wheel (build_package_ohos.sh → cann_local_lm_engine-*+signed*.whl) ===
+  ✓ copy signed .so → cann_lm/lib/libcann_lm_engine.so
+  ✓ copy libc++_shared.so → cann_lm/lib/
+  ✓ pip wheel → build_out/cann_local_lm_engine-0.1.0+signed-py3-none-any.whl   ← stage-3 success marker
 
-▶ [4/4] package .run (compile_converter + engine_ohos)
+▶ [4/4] package .run (compile_converter)
   ... makeself compressing ...
-  Self-extractable archive ".../cann_lm_compile_converter-0.1.0-x86_64.run" successfully created.
-  Self-extractable archive ".../cann_lm_engine_ohos-0.1.0-x86_64.run" successfully created.
-▶ Package results (dist/)
-  533K .../dist/cann_lm_compile_converter-0.1.0-x86_64.run
-  2.7M .../dist/cann_lm_engine_ohos-0.1.0-x86_64.run
+  Self-extractable archive ".../cann_local_lm_converter-0.1.0-x86_64.run" successfully created.
+▶ Package results
+  533K .../build_out/cann_local_lm_converter-0.1.0-x86_64.run
+  845K .../build_out/cann_local_lm_engine-0.1.0+signed-py3-none-any.whl
 ▶ === --pkg complete ===                                                          ← overall success marker
 ```
 
@@ -148,7 +148,7 @@ bash build.sh --pkg
 | **[1/4] compile** | `CMake Error ... Could NOT find GTest / nlohmann_json` | In `output/third_party` json/gtest only have tar, no extracted artifacts | Fix §2.1-2 |
 | **[3/4] engine prereq** | Multiple `✗` (missing compiler / invalid OHOS_SDK_NATIVE / missing jar / missing GTest tar) + `✗ engine cross-compile prerequisites not met; aborted --pkg` | Any §2.2 item unmet | Fulfill per §2.2; `export` env vars |
 | **[3/4] engine configure** | `CMake Error at .../ohos/CMakeLists.txt:97: FATAL_ERROR "GTest source tarball not found: /mnt/workspace/gtest-1.14.0.tar.gz"` | Didn't `export GTEST_TAR`; used the hardcoded default path | `export GTEST_TAR=<actually-existing tar>` and rerun |
-| **[4/4] package** | `✗ engine_ohos.run not generated, packaging failed` | Stage 3 produced no artifact (prerequisite aborted, or artifact verification found `[missing]`) | Go back and fix stage 3 |
+| **[4/4] package** | `✗ engine signed wheel not generated, packaging failed` | Stage 3 produced no artifact (prerequisite aborted, or artifact verification found `[missing]`) | Go back and fix stage 3 |
 | **[4/4] package** | `⚠ compile/converter artifacts incomplete, skipping compile_converter.run` | Stage 1/2 artifacts missing but script continued | Run a complete `--pkg` to completion once |
 
 
@@ -156,13 +156,12 @@ bash build.sh --pkg
 
 ```bash
 # ① .run self-extraction integrity ("All good" = pass)
-bash dist/cann_lm_compile_converter-0.1.0-x86_64.run --extract=/tmp/x1 --noexec
-bash dist/cann_lm_engine_ohos-0.1.0-x86_64.run     --extract=/tmp/x2 --noexec
+bash build_out/cann_local_lm_converter-0.1.0-x86_64.run --extract=/tmp/x1 --noexec
 # Expected output: Verifying archive integrity... All good.
 
 # ② compile tool smoke test (requires CANN env)
 source <cann>/set_env.sh && ./build/cann_lm_compile   # printing usage means OK
-# ③ engine deployment package: push to OHOS device, extract, then ./run.sh
+# ③ engine signed wheel: push to OHOS device, pip install, then cllm generate --config testcase.json
 ```
 
 ---
@@ -231,7 +230,7 @@ bash build.sh -u
 
 | Printed text | Meaning |
 |--------------|---------|
-| `▶ === --pkg complete ===` | **--pkg overall success** (all 4 stages green) |
+| `▶ === --pkg complete ===` | **--pkg overall success** (all 5 stages green) |
 | `▶ === -u all passed ===` | **-u overall success** (all 3 segments green) |
 | `▶ === -u has failures (see above) ===` | -u has failures; scroll up for `✗`; most often the known model_executor_ut failure |
 | `✓ <item> ...` | This check / artifact succeeded |
@@ -259,5 +258,6 @@ bash scripts/cann_lm_converter/build_wheel.sh                                   
 **Q2: I don't have the OHOS SDK / don't want to cross-compile — can `-u` still run?**
 Yes. `-u` does not depend on the OHOS SDK (engine host UT uses host gcc + stub NDK). Only `[3/4]` of `--pkg` needs the SDK.
 
-**Q3: engine_ohos.run won't run after being installed on the device?**
-See the README inside the extracted `engine_ohos.run`: requires developer mode (self-signed), a directory that is writable and executable (avoid noexec), and the `.so` name must not be changed.
+**Q3: engine wheel won't run after being installed on the device?**
+
+Common `.so` load failure causes: developer mode not enabled (self-signed `.so` rejected), `libc++_shared.so` not in the same directory, `.so` name changed. Use `cllm generate --config testcase.json --show-paths` to diagnose paths, or `--lib <path>` to specify the `.so` explicitly.

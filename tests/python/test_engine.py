@@ -126,12 +126,39 @@ class TestEngineLifecycle:
 
 
 @needs_lib
+class TestSetContext:
+    """ADR-0002 (bbit.cpp §2b): unregistered id -> NOT_FOUND (S3); created
+    context activates (SUCCESS); re-setting the active one is idempotent (S5,
+    c_api.h:177)."""
+
+    def test_set_context_not_found_then_activate(self):
+        with Engine() as eng:
+            with pytest.raises(CannLmStatusError) as ei:
+                eng.set_context(999)
+            assert ei.value.status == Status.NOT_FOUND
+            ctx = eng.create_context()
+            eng.set_context(ctx)  # Context object form
+            eng.set_context(ctx.id)  # raw-id form; already active -> idempotent
+
+
+@needs_lib
 class TestGenerate:
+    def test_generate_without_active_context_rejected(self):
+        # ADR-0002 S2 (bbit.cpp §2b): Generate before SetContext ->
+        # INVALID_STATE. The pipeline checks this FIRST (before tokenize/
+        # backend work), so it holds on the no-model host-stub too.
+        with Engine() as eng:
+            eng.create_context()  # created but NOT activated
+            with pytest.raises(CannLmStatusError) as ei:
+                eng.generate("hello")
+            assert ei.value.status == Status.INVALID_STATE
+
     def test_generate_returns_result_or_raises_on_host_stub(self):
         with Engine() as eng:
             ctx = eng.create_context()
+            eng.set_context(ctx)
             try:
-                r = eng.generate("hello", ctx)
+                r = eng.generate("hello")
                 assert isinstance(r, Result)
             except CannLmStatusError as e:
                 # host-stub: no backend -> FAILURE; partial result may be attached
@@ -153,9 +180,14 @@ class TestRequestAsync:
         # both the synchronous-raise path and the deferred Request path.
         with Engine() as eng:
             ctx = eng.create_context()
+            eng.set_context(ctx)
             seen = []
+            # callback contract is (token_id, text) — two args; seen.append
+            # alone would raise TypeError inside the trampoline (swallowed)
+            # and never record, silently skipping the callback path.
+            cb = lambda tok, text: seen.append((tok, text))  # noqa: E731
             try:
-                req = eng.generate_async("hello", ctx, callback=seen.append)
+                req = eng.generate_async("hello", callback=cb)
             except CannLmStatusError as e:
                 assert e.status in (
                     Status.FAILURE,

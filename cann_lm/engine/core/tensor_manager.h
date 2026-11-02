@@ -104,8 +104,7 @@ public:
                                int batch, int num_attention_head_dims, DataType dtype,
                                std::vector<std::shared_ptr<ITensorBuffer>>* out);
 
-    /// 显式 dims 版批量通道（旧 EnsureKvLayout relayout 通道——该机制已随
-    /// Cache_pool_simplify.md 改造删除；本重载保留供 UT 引用，择机另批清理）。
+    /// 显式 dims 版批量通道（保留供 UT 引用；生产路径走 descs 版）。
     /// dims 须非空且逐维 > 0、dtype 非 RESERVED，维度乘积 × dtype
     /// 字节数 uint64 溢出防护同四参版；命名/输出序同四参版
     /// （kv_cache_k_<layer>/kv_cache_v_<layer>，[k,v] 对，all-or-nothing）。

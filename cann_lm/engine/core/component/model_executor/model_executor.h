@@ -1,10 +1,11 @@
 // ═══════════════════════════════════════════════════════════════════════════
-// ModelExecutor（v0.13：builtModel 改用 backend/api built_model.h；R9 RebindKvPool
-// + KV 工位记账 kv_*_slots_；临时调试 dump_round_/NextDumpRound）。
-// 前向壳 + 控制面：Load(CreateBuiltModel+Restore + Init + CreateTensor) / Forward(mm->Run) / Unload(mm->DeInit)
-// 输入/输出 tensor 用私有 input_tensors_/output_tensors_（ITensorBuffer，经 TensorManager 代理申请）
-// single-flight；prefill/decode 两实例共享 KV 池零拷贝。
-// LoRA：搁置。
+// ModelExecutor（v0.13：Session/SetContext——Load 期 KV 工位 desc 记账 + 空占位，
+// RebindKvPool 保留为 SetContext 内部工位刷新原语，ADR-0002）。
+// 前向壳 + 控制面：Load(CreateBuiltModel+Restore + Init + CreateTensor) / Forward(model_manager->Run) /
+// Unload(model_manager->DeInit) 输入/输出 tensor 用私有 input_tensors_/output_tensors_（ITensorBuffer，经 TensorManager
+// 代理申请） single-flight；prefill/decode 两实例经模板池薄壳转发面共享活动 Context KV （Load 期不建 KV 显存，创建点在
+// CreateContext；F1：vector 直持 shared_ptr，
+//  SetContext 必须显式 RebindKvPool 刷新工位）。LoRA：搁置。
 // ═══════════════════════════════════════════════════════════════════════════
 #pragma once
 
@@ -30,10 +31,15 @@
 namespace cann_lm::engine {
 
 /// 模型执行器配置承载结构体（SR20260903001：自 tensor_manager.h 迁入，D-06）。
-/// 字段集承接 meta_json model_config 段 schema（docs/model_executor/model_config.md，15 字段）。
+/// 字段集承接 meta_json model_config 段 schema（原 docs/model_executor/
+/// model_config.md 15 字段 + init_token_len + sliding_window_head_dim，
+/// 共 17 字段——2026-10-27 增 sw_hd，sliding_kv_seq_dim_rebind S1）。
 struct ModelConfig {
     int hidden_size = 0;
-    int max_io_tokens = 0;
+    /// 单请求总 token 预算（REQ-9 预算闸基准）：输入 + 生成共享。meta 缺省
+    /// （键缺失/null）⇒ 默认 4096；显式配置 ≤0 ⇒ 段降级、已部署形态 Init 以
+    /// meta_json invalid 终止（解析层把关，TC_204 先例同口径）。
+    int max_io_tokens = 4096;
     std::string model_type;       // 承载不校验（本期不驱动分支）
     int num_hidden_layers = 0;    // KV 缓存层数
     std::vector<int> prefill_len; // prefill 长度档位（本期取 [0]）
@@ -58,6 +64,19 @@ struct ModelConfig {
     /// mask_full 同值，非 gemma4 图零影响）；>0 = sliding_attention 层窗口宽
     /// （gemma4-e2b = 512）。InputAssembler 消费（mask_sliding 填充）。
     int sliding_window = 0;
+    // ── Gemma4 滑窗层 KV 形状（sliding_kv_seq_dim_rebind 新图契约 flag）──
+    /// meta_json model_config.sliding_window_head_dim。0/缺省 = 旧契：滑窗层
+    /// 序列轴期望 kv_cache_max_len、末维期望 head_dim（与 full 层同形，
+    /// mask_sliding 走 kv_max 大环）；>0 = 新契：滑窗层序列轴期望 =
+    /// sliding_window + max(prefill_len)、末维期望 = 本值；mask_sliding 列宽
+    /// 随之 = W+P。KvCachePool（R3 期望）/CorrectTensorDescs（修形）/
+    /// InputAssembler（填充）/pipeline keep_cap 消费。
+    int sliding_window_head_dim = 0;
+    /// meta_json model_config.init_token_len。0/缺省 = 无锚定段（全缓冲圆环，
+    /// MapSlot 纯模绕回——R5 退化分支，零行为变化）；0 < v < kv_cache_max_len =
+    /// 锚定段 [0,v) 永不覆写（MapSlot 环形枝点）、miss 重建时恢复本配置值。
+    /// KvCachePool 构造消费（模板池 + 每 Context 池同参）。
+    int init_token_len = 0;
     // ── Embedding dequant scale 维度修正（跨段：embedding_config 消费）──
     bool embedding_per_group = false; // PerGroup=true; PerToken=false
     int embedding_group_size = 0;     // PerGroup 必填；PerToken 忽略
@@ -71,12 +90,12 @@ struct ForwardOptions {
     bool dump = false;         ///< dfx 开关
 };
 
-// ── 原地更新族（KV/线性状态）输入工位命名解析（问题 3 方案 b，2026-10-10）──
+// ── 原地更新族（KV/线性状态）输入工位命名解析 ──
 // 引擎旧约定族：past_key_in<层> / past_value_in<层>；
 // HF 命名族：past_key_values_<层>_<0|1>（omc 导出名原样，末位 0=key / 1=value，
 // 与 HF past_key_values[i][0|1] 同构——10101015_debug.log input[3]/[4] 实名）。
 // 两族同语义，Load 工位绑定、CorrectTensorDescs 修正/保护统一在此解析；
-// 置于头文件与 kEmbedSlotName 同口径（tests/cpp/engine 可直接锁语义——model_executor_ut
+// 置于头文件与 kEmbedSlotName 同口径（tests/ut 可直接锁语义——model_executor_ut
 // 为 hiai WIP 预损坏目标，独立 UT 仅能经头文件缝隙触达本命名族）。
 inline constexpr char kPastKeyPrefix[] = "past_key_in";
 inline constexpr char kPastValuePrefix[] = "past_value_in";
@@ -156,23 +175,79 @@ inline bool IsInPlaceUpdateSlotName(const std::string& name)
            name.find(kConvStateInPrefix) == 0 || name.find(kRStateInPrefix) == 0;
 }
 
+/// 配置 prefill 档位上界（sliding_kv_seq_dim_rebind D1）：P = max(prefill_len)；
+/// 空数组 → 0（新契 D10 校验已挡空组合，此处回退仅防御）。
+/// 单源：KvCachePool 期望 / mask 列宽 / keep_cap 三处共用，防口径漂移。
+inline int PrefillMaxLen(const std::vector<int>& prefill_len) noexcept
+{
+    if (prefill_len.empty())
+        return 0;
+    return *std::max_element(prefill_len.begin(), prefill_len.end());
+}
+
+/// 新契越界组合校验（sliding_kv_seq_dim_rebind D10 宁拒勿错）——meta 解析
+/// 双路径单源（pipeline_executor ParseModelSection 与 golden_verify
+/// ParseModelConfig 共用，防两处手工同步漂移）：字段自检（sw>0、sw_hd≥0）
+/// 之后调用；sw_hd>0（新契）须 sw>0 且 prefill 档非空全正，否则 C=W+P
+/// 算不出——静默兜底会让配置者拿到错误形状期望。合法 → true，越界 → false
+/// （调用方按段降级处理）。
+inline bool SlidingHeadDimComboValid(int sliding_window, int sw_head_dim, const std::vector<int>& prefill_len) noexcept
+{
+    if (sw_head_dim < 0 || sliding_window < 0)
+        return false;
+    if (sw_head_dim == 0)
+        return true; // 旧契：无组合约束
+    if (sliding_window <= 0)
+        return false;
+    if (prefill_len.empty())
+        return false;
+    for (const int p : prefill_len) {
+        if (p <= 0)
+            return false;
+    }
+    return true;
+}
+
+/// 滑窗层 KV 序列容量 + mask 列宽（sliding_kv_seq_dim_rebind 唯一口径 D4/D5）：
+/// 仅新契（sliding_window_head_dim>0，由调用方判定）调用；sw>0 且 P>0 →
+/// C = W + P（attend 窗宽仍 W；C 恒 > W，纯模环 j%C，attend 槽恒存本代内容
+/// ——方案 §2.2 三段论证：块内互异 + 本块覆写不到窗口旧位 + 跨块同理）；
+/// 任一非正 → 0（防御；新契 D10 已挡空组合）。旧契（sw_head_dim=0）无滑窗
+/// 小环概念——滑窗层与 full 层同槽域 kv_max，消费点直用 kv_max，不经本助手。
+inline std::size_t SlidingLayerWidth(int sliding_window, int prefill_max) noexcept
+{
+    if (sliding_window > 0 && prefill_max > 0) {
+        return static_cast<std::size_t>(sliding_window) + static_cast<std::size_t>(prefill_max);
+    }
+    return 0;
+}
+
 /// 具体类。PrefillExecutor 与 DecodeExecutor 是该类的两个实例，非子类。
 class ModelExecutor {
 public:
-    ModelExecutor(std::shared_ptr<KvCachePool> pool, std::shared_ptr<InputAssembler> asm_,
+    ModelExecutor(std::shared_ptr<KvCachePool> pool, std::shared_ptr<InputAssembler> assembler,
                   std::shared_ptr<DfxCollector> dfx);
 
     Status AttachPool(std::shared_ptr<KvCachePool> pool);
-    Status AttachAssembler(std::shared_ptr<InputAssembler> asm_);
+    Status AttachAssembler(std::shared_ptr<InputAssembler> assembler);
     /// Qwen3.5 线性状态池接线（support_qwen3.5.md §4.5-1）。可空 = 非 Qwen3.5
     /// （不作为就绪条件；图带状态工位而池缺失时 Load 显式报错）。生命周期锁内赋值。
     Status AttachStatePool(std::shared_ptr<LinearStatePool> pool);
 
-    /// PromptCache 换绑 KV 池（R9）：按 Load 期记的 kv_*_slots_ 工位下标，
-    /// 把 input_tensors_/output_tensors_ 中的 KV tensor 指针替换为新池同层
-    /// KTensor/VTensor。未 Load / 非 KV 型图 → 仅换 pool_（Attach 口径）。
-    /// 层数不一致 → 拒（构造期 bug，宁拒不混绑）。lifecycle_mutex 串行。
+    /// 工位重绑（Session/SetContext 内部原语，ADR-0002 + F1 事实修正）：
+    /// 把 input_tensors_/output_tensors_ 中 KV 族条目（Load 期记 kv_input_slots_/
+    /// kv_output_slots_ 下标）逐条替换到 new_pool 的同层 K/V tensor——执行器
+    /// vector 直持 shared_ptr（F1："模板池薄壳指向"不会自动刷新 vector），
+    /// SetContext 必须**显式调用本原语**刷新工位。O(KV 工位数) 指针替换，不拷数据。
+    /// 前提：new_pool 与当前池层数/层表一致（池同源构造保证）；Load 期 KV 工位为
+    /// 空占位（ADR-0002）——本原语在 SetContext（无在飞窗口）填实。LinearStatePool
+    /// 为 pipeline 级共享，不在重绑面。
     Status RebindKvPool(std::shared_ptr<KvCachePool> new_pool);
+
+    /// KV 工位清空占位（DestroyContext(活动) 消费，ADR-0002）：把 input_tensors_/
+    /// output_tensors_ 中 KV 族条目逐条置空占位、pool_ 引用置空——回"未指向"态。
+    /// S2（无活动 Context Generate 拒绝）保证空占位工位不可能被 Run 消费。
+    Status DetachKvPool();
 
     // ── 控制面 ──
     /// Load：单图位双态入口（prefill/decode 执行器各传各自 omc 图位，D-10）。
@@ -187,10 +262,10 @@ public:
     /// seq_len：序列长度，兼做 prefill/decode 模式判别（>1=prefill, ==1=decode），
     ///          用于修正 om 图 tensorDesc 中的占位维度。
     /// share_weights_model_id：权重共享绑定（decode 执行器消费）。>0 = 源模型
-    ///    （prefill）ModelId() 返回值，Load 内在 mm Init 之前填入
+    ///    （prefill）ModelId() 返回值，Load 内在 model_manager Init 之前填入
     ///    ModelInitOptions::shareWeightsModelId。绑定后本模型照常按自身 weight
     ///    实参 InitWeights；哪些权值复用源模型已加载份由底层同源规则决定
-    ///    （部分共享），上层无需感知（docs/seperate_pd_weights.md §4.2）；
+    ///    （部分共享），上层无需感知（docs/separate_pd_weights.md §4.2）；
     ///    0 = 不绑定（默认，行为不变）。绑定失败（老 ROM 缺符号）快速失败：Load 返 FAILURE。
     Status Load(const ArtifactSource& omc, const std::string& weight, const ModelConfig& config, int seq_len,
                 uint32_t share_weights_model_id = 0);
@@ -200,9 +275,8 @@ public:
     // ── 前向面 ──
     Status SetInputData(const std::shared_ptr<ITensorBuffer>& data);
     Status Forward(const ForwardOptions& opts);
-    // 【临时调试代码 — 验证完成后删除】
-    // 跳过 InputAssembler，直接用已填充的 input_tensors_ 调 mm->Run()。
-    // 用于精度验证：golden 二进制文件直接灌入输入工位后前向，不经过 assembler
+    // 精度验证通道：跳过 InputAssembler，直接用已填充的 input_tensors_ 调
+    // model_manager->Run()。golden 二进制文件直接灌入输入工位后前向，不经过 assembler
     // 填 position_ids/attention_mask/KV 光标等。调用方须自行填充全部输入工位。
     Status ForwardRaw();
     std::shared_ptr<ITensorBuffer> Logits() const;
@@ -219,7 +293,7 @@ public:
     /// 线性状态池只读暴露（未 Attach → 空；Scheduler ResetLane 接线消费）。
     std::shared_ptr<LinearStatePool> StatePool() const noexcept;
     /// 本模型权重共享源 id 暴露（供 decode 执行器绑定为 share_weights_model_id）。
-    /// Load 成功后有效（mm Init 后经 GetModelID 取值）；Unload/重载清零。
+    /// Load 成功后有效（model_manager Init 后经 GetModelID 取值）；Unload/重载清零。
     /// 0 = 未加载 / 取值失败 = 不绑定。
     uint32_t ModelId() const noexcept { return model_id_; }
     explicit operator bool() const noexcept;
@@ -233,26 +307,32 @@ public:
     ModelExecutor& operator=(ModelExecutor&&) noexcept;
 
 private:
-    /// 【临时调试】dump 轮次自增（仅 DebugDumpEnabled 时；forward_mutex_ 区内调用）。
-    /// 返回自增前的轮次号（同一轮 in/out dump 同号，便于逐轮精度对比）。
+    /// dump 轮次分配：dump 开启时自增并返回新轮次号（forward_mutex_ 已被
+    /// Forward/ForwardRaw 持有，此处无需再取锁）；未开启返回当前值不自增。
     std::size_t NextDumpRound();
 
-    std::shared_ptr<IModelManager> mm_; ///< Load 时经 hiai::CreateModelManager() 创建并持有
+    std::shared_ptr<IModelManager> model_manager_; ///< Load 时经 hiai::CreateModelManager() 创建并持有
     std::shared_ptr<KvCachePool> pool_;
     std::shared_ptr<LinearStatePool> state_pool_; ///< Qwen3.5 线性状态池（可空 = 非 Qwen3.5）
-    std::shared_ptr<InputAssembler> asm_;
+    std::shared_ptr<InputAssembler> assembler_;
     std::shared_ptr<DfxCollector> dfx_;
     ModelConfig config_{};
 
     std::vector<std::shared_ptr<ITensorBuffer>> input_tensors_;
     std::vector<std::shared_ptr<ITensorBuffer>> output_tensors_;
     std::unordered_map<std::string, std::size_t> input_name_index_; ///< name→index 映射（Load 后建）
-    /// KV 工位记账（R9 RebindKvPool 消费）：每条 = {tensor 下标, 层号, is_value(0/1)}。
-    std::vector<std::array<std::size_t, 3>> kv_input_slots_;
-    std::vector<std::array<std::size_t, 3>> kv_output_slots_;
-    std::size_t logits_index_ = 0; ///< logits 工位下标（shape 定位；0=回退首输出）
-    uint32_t model_id_ = 0;        ///< mm Init 后 GetModelID 取值（权重共享源 id；Load 成功后有效）
-    std::size_t dump_round_ = 0;   ///< 【临时调试】dump 轮次（NextDumpRound 自增）
+    /// KV 工位在 input/output_tensors_ 中的下标（Load 期记录，RebindKvPool/
+    /// DetachKvPool 消费；ADR-0002：Load 期对应槽位为空占位，SetContext 换绑填实）。
+    std::vector<std::array<std::size_t, 3>> kv_input_slots_;  ///< [tensor 下标, 全局层号, is_value]
+    std::vector<std::array<std::size_t, 3>> kv_output_slots_; ///< [tensor 下标, 全局层号, is_value]
+    /// Load 期已记账 KV desc 账本镜像（seq = kv_input_slots_ 同序；SetContext
+    /// 换绑时复验新池 tensor desc 与账本一致——半建池防御的执行器侧二次把关）。
+    std::vector<TensorDesc> kv_slot_descs_;
+    std::size_t logits_index_ = 0; ///< logits 工位下标（Q13 裁定：定 0 号位 output[0]）
+    uint32_t model_id_ = 0; ///< model_manager Init 后 GetModelID 取值（权重共享源 id；Load 成功后有效）
+    /// dump 轮次计数（debug_tensor_dump 文件名用）：每次前向自增，同一轮
+    /// in/out dump 同号。仅 DebugDumpEnabled() 时递增——未开开关零行为。
+    std::size_t dump_round_ = 0;
 
     std::mutex forward_mutex_;   ///< single-flight
     std::mutex lifecycle_mutex_; ///< load/unload 串行

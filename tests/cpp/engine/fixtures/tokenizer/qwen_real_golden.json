@@ -1,0 +1,103 @@
+{
+    "vocab_size": 248070,
+    "cases": [
+     {
+      "text": "Hello world",
+      "ids": [
+       9419,
+       1814
+      ],
+      "decoded": "Hello world"
+     },
+     {
+      "text": "你好世界",
+      "ids": [
+       109266,
+       96748
+      ],
+      "decoded": "你好世界"
+     },
+     {
+      "text": "it's a test",
+      "ids": [
+       275,
+       579,
+       264,
+       1228
+      ],
+      "decoded": "it's a test"
+     },
+     {
+      "text": "The quick brown fox jumps over the lazy dog",
+      "ids": [
+       760,
+       3841,
+       13477,
+       37550,
+       33075,
+       888,
+       279,
+       15217,
+       5388
+      ],
+      "decoded": "The quick brown fox jumps over the lazy dog"
+     },
+     {
+      "text": "中文 与 English 混合 的句子",
+      "ids": [
+       99986,
+       220,
+       95999,
+       6163,
+       220,
+       101742,
+       220,
+       125671
+      ],
+      "decoded": "中文 与 English 混合 的句子"
+     },
+     {
+      "text": "数字与标点：123, 456.789!",
+      "ids": [
+       99129,
+       95999,
+       141111,
+       4960,
+       16,
+       17,
+       18,
+       11,
+       220,
+       19,
+       20,
+       21,
+       13,
+       22,
+       23,
+       24,
+       0
+      ],
+      "decoded": "数字与标点：123, 456.789!"
+     },
+     {
+      "text": "hello <|im_end|> world",
+      "ids": [
+       14556,
+       220,
+       248046,
+       1814
+      ],
+      "decoded": "hello  world"
+     },
+     {
+      "text": "😀 emoji 表情",
+      "ids": [
+       169706,
+       40958,
+       220,
+       100815
+      ],
+      "decoded": "😀 emoji 表情"
+     }
+    ]
+   }

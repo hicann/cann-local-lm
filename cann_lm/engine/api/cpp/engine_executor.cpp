@@ -29,6 +29,12 @@ public:
             return Status::SUCCESS;
         return pipeline_->DestroyContext(cid);
     }
+    Status SetContext(ContextId cid)
+    {
+        if (!pipeline_)
+            return Status::SUCCESS;
+        return pipeline_->SetContext(cid);
+    }
     Status ConfigureContext(ContextId cid, const ContextOptions& opts)
     {
         if (!pipeline_)
@@ -42,18 +48,18 @@ public:
         return pipeline_->CancelContext(cid);
     }
 
-    Status Generate(const Prompt& p, const Context& c, const SamplingParams& s, const RequestOptions& ro, Result* out)
+    Status Generate(const Prompt& p, const SamplingParams& s, const RequestOptions& ro, Result* out)
     {
         if (!pipeline_)
             return Status::FAILURE;
-        return pipeline_->Generate(p, c, s, ro, out);
+        return pipeline_->Generate(p, s, ro, out);
     }
-    Status GenerateAsync(const Prompt& p, const Context& c, const SamplingParams& s, const RequestOptions& ro,
-                         RequestHandle* out, StreamCallback cb)
+    Status GenerateAsync(const Prompt& p, const SamplingParams& s, const RequestOptions& ro, RequestHandle* out,
+                         StreamCallback cb)
     {
         if (!pipeline_)
             return Status::FAILURE;
-        return pipeline_->GenerateAsync(p, c, s, ro, out, cb);
+        return pipeline_->GenerateAsync(p, s, ro, out, cb);
     }
 
 private:
@@ -67,7 +73,7 @@ private:
         Status st = PipelineExecutorFactory::create(PipelineType::Autoregressive, artifact_, options_, &pipeline_);
         if (!st.ok()) {
             CANN_LLM_LOGE("engine.init: pipeline create failed (st=%d)", st.code);
-            init_status_ = st; // 加载失败即终止（2026-09-22）：记失败码供 InitStatus 上抛
+            init_status_ = st; // 加载失败即终止：记失败码供 InitStatus 上抛
         }
     }
 };
@@ -84,21 +90,21 @@ EngineExecutor& EngineExecutor::operator=(EngineExecutor&&) noexcept = default;
 
 Status EngineExecutor::CreateContext(Context* out) { return impl_->CreateContext(out); }
 Status EngineExecutor::DestroyContext(ContextId cid) { return impl_->DestroyContext(cid); }
+Status EngineExecutor::SetContext(ContextId cid) { return impl_->SetContext(cid); }
 Status EngineExecutor::ConfigureContext(ContextId cid, const ContextOptions& o)
 {
     return impl_->ConfigureContext(cid, o);
 }
 Status EngineExecutor::CancelContext(ContextId cid) { return impl_->CancelContext(cid); }
 
-Status EngineExecutor::Generate(const Prompt& p, const Context& c, const SamplingParams& s, const RequestOptions& ro,
-                                Result* out)
+Status EngineExecutor::Generate(const Prompt& p, const SamplingParams& s, const RequestOptions& ro, Result* out)
 {
-    return impl_->Generate(p, c, s, ro, out);
+    return impl_->Generate(p, s, ro, out);
 }
-Status EngineExecutor::GenerateAsync(const Prompt& p, const Context& c, const SamplingParams& s,
-                                     const RequestOptions& ro, RequestHandle* out, StreamCallback cb)
+Status EngineExecutor::GenerateAsync(const Prompt& p, const SamplingParams& s, const RequestOptions& ro,
+                                     RequestHandle* out, StreamCallback cb)
 {
-    return impl_->GenerateAsync(p, c, s, ro, out, cb);
+    return impl_->GenerateAsync(p, s, ro, out, cb);
 }
 
 } // namespace cann_lm::engine

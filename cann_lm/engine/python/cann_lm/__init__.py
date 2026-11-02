@@ -15,7 +15,8 @@ libcann_lm_engine.so whose architecture matches the running Python, e.g.:
     import cann_lm
     with cann_lm.Engine() as eng:        # no-model form (c_api.h:155)
         ctx = eng.create_context()
-        r = eng.generate("hello", ctx)   # Result on SUCCESS; CannLmStatusError
+        eng.set_context(ctx)             # ADR-0002: activate the context
+        r = eng.generate("hello")        # Result on SUCCESS; CannLmStatusError
                                         # (with .result) on FAILURE
 """
 

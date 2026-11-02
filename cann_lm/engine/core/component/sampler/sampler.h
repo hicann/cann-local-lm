@@ -3,15 +3,16 @@
 // 算法本体（6 步流水线，无状态静态纯函数，接口形态不变）：
 // ①ApplyRepetitionPenalty → ②ApplyTemperature → ③TopK（precomputed 在场则复用，
 // 覆盖 cfg.top_k）→ ④ApplyTopP → ⑤Normalize → ⑥Pick。①必须在 ③④ 之前（rep 改变
-// top-k 截断集）；①②可交换（均为标量乘）。期望行为锚定：tests/cpp/engine/test_sampler.cpp。
-// 历史：算法层曾移植自 core/sample/ 参考原型（v0.10，2026-10-19 随原型目录删除移除双锚定）。
+// top-k 截断集）；①②可交换（均为标量乘）。期望行为锚定：tests/ut/ut_sampler.cpp。
+// R1 贪心快路径（perf_optimize.md §4.1）：do_sample=false 时 ⑤⑥ 被 argmax(x)
+// 短路（softmax 单调保序，tie-break 同首个最大值下标），probs 空返回（惰性
+// 产出——接入层只消费 next_token_id）；概率采样路径 ⑤⑥ 原样。
 //
 // 引擎接入层（成员 Sample，PipelineExecutor 后处理调用）与参考实现的差异，
 // 对齐 docs/pipeline+engine_executor/SPEC.md §4.1.5（F-SAMPLE）：
 //   - 输入是 ITensorBuffer（batched logits，按 slot 取行），非 std::vector<float>；
 //   - 旋钮来自对外 SamplingParams（temperature/top_k/top_p/seed/repetition_penalty）。
-//     2026-09-07 松绑：seed 与 repetition_penalty 经 SamplingParams 对外（原 F-SAMPLE
-//     "不读历史"约束解除）——rep penalty 读**本请求已生成** token（generated_ids 入参，
+//     rep penalty 读**本请求已生成** token（generated_ids 入参，
 //     RunLoop 传 req->token_ids；不含 prompt/跨轮历史）；seed≠0 时 per-call 建 seeded
 //     RNG（可复现，仅 do_sample 时有意义）。precomputed_topk 仍不对外（无来源通道）；
 //   - do_sample 无对外开关，映射规则：temperature!=1 或 top_k>0 或 top_p∈(0,1) 任一
@@ -20,7 +21,7 @@
 //     视为关闭（贪心下仍生效——对齐 HF processors 语义）。
 //   - prefill chunk（chunk_len>1）的 logits 行语义待真实后端落地时核对：自回归续写应
 //     取 chunk 末位置而非 slot 0 对应首位置，中间 chunk 不应采样——当前 host 前向桩
-//     不可达（2026-09-07 外审 M-1 登记，届时在 RunLoop/接入层二选一处理）。
+//     不可达（外审 M-1 登记，届时在 RunLoop/接入层二选一处理）。
 //
 // 已知限制：logits 支持 FLOAT32 与 FLOAT16（fp16 行内展开为 float 再进算法层）。
 #pragma once
@@ -62,10 +63,11 @@ struct SamplerInputs {
     std::optional<PrecomputedTopK> precomputed_topk;
 };
 
-// 返回：选中的 token + 归一化概率分布（和≈1）
+// 返回：选中的 token + 归一化概率分布（和≈1；R1 贪心快路径下 probs 惰性
+// 不物化——空向量，需分布者走 do_sample）
 struct SamplerOutput {
     int32_t next_token_id = 0;
-    std::vector<float> probs; // [vocab]
+    std::vector<float> probs; // [vocab]；贪心快路径为空
 };
 
 // Sampler：算法层（静态纯函数，无需实例化）+ 引擎接入层（成员方法，pipeline 按值持有）。

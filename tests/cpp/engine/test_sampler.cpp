@@ -14,6 +14,7 @@
 // （同 ut_share_weights_executor HostTensorBuffer 模式），不再依赖任何 backend
 // 运行时/so：接入层只消费 GetData/GetSize/GetTensorDesc，自实现即足。
 #include "core/component/sampler/sampler.h"
+#include "utils/data_type_utils.h" // FloatToHalfBits（R1_4 fp16 位型构造）
 
 #include <gtest/gtest.h>
 
@@ -404,7 +405,9 @@ TEST(SamplerAlgoTest, FullPipelineGreedyPicksArgmax)
     SamplerConfig cfg; // 默认贪心
     SamplerOutput out = Sampler::Sample(std::move(in), cfg);
     EXPECT_EQ(out.next_token_id, 1);
-    ASSERT_EQ(out.probs.size(), 3u);
+    // R1（perf_optimize.md §4.1/§5 R1③）：贪心快路径 probs 惰性产出——
+    // 接入层只消费 next_token_id，贪心下不再物化 262K 概率分布。
+    EXPECT_TRUE(out.probs.empty());
 }
 
 TEST(SamplerAlgoTest, FullPipelineSeededSamplingIsReproducible)
@@ -469,6 +472,125 @@ TEST(SamplerTest, SampleWithRepetitionPenaltyDownweightsGenerated_TC216)
     rep.repetition_penalty = 2.0f;
     ASSERT_EQ(sampler.Sample(logits_buf, 0, rep, /*generated_ids=*/{0}, &out).code, Status::SUCCESS);
     EXPECT_EQ(out, 1u);
+}
+
+// ── R1 贪心免归一化快路径（perf_optimize.md §4.1/§5 R1，2026-10-27）──────────
+// ① 快路径与改前输出逐 token 一致：含并列最大值首个胜出的 tie-break 对抗——
+//   softmax 保序（贪心下 top-k/top-p 均 no-op，logits 原样进归一化），
+//   argmax(x) ≡ argmax(Normalize(x))，须有专门用例锁 tie 取首个（改前
+//   Normalize+argmax(probs) 同样取首个，语义逐字保留）。
+// ② do_sample=true 回归：softmax/multinomial 路径不被贪心短路触碰。
+TEST(SamplerAlgoTest, GreedyShortpathTieBreakFirstMaxWins_R1_1)
+{
+    // 并列最大 3.0 出现在下标 1 与 3：argmax 语义 = 首个（下标 1）
+    SamplerInputs in;
+    in.logits = {1.0f, 3.0f, 0.5f, 3.0f, 2.0f};
+    SamplerConfig cfg; // 默认贪心
+    SamplerOutput out = Sampler::Sample(std::move(in), cfg);
+    EXPECT_EQ(out.next_token_id, 1);
+    EXPECT_TRUE(out.probs.empty()); // R1③：probs 惰性产出
+}
+
+TEST(SamplerAlgoTest, GreedyShortpathMatchesLegacyNormalizeArgmax_R1_2)
+{
+    // 对抗性等价抽样：同一 logits 下贪心快路径 id ≡ 手工 Normalize+argmax(id)。
+    // 段内逐 token 独立、覆盖含相等/负值/0 间隔的多形态。等价前提 = 输入差量
+    // 可被 softmax 的 (float)ei 量化分辨（> 半 ulp ~3e-8 的近 1.0 域）。
+    const std::vector<float> cases[] = {
+        {0.1f, 0.7f, 0.2f},
+        {-5.0f, -1.0f, -3.0f},
+        {2.0f, 2.0f, 2.0f},             // 全并列 → 下标 0
+        {1e-4f, 2e-4f, 0.0f},           // 近零域（差量 >> float ulp）
+        {3.3f, 3.3f, -7.0f, 0.0f, 3.3f} // 间隔重复最大
+    };
+    for (const auto& logits : cases) {
+        SamplerInputs in;
+        in.logits = logits;
+        SamplerConfig cfg; // 贪心
+        const SamplerOutput out = Sampler::Sample(std::move(in), cfg);
+        // 改前行为复刻：Normalize + argmax（Pick 贪心分支）
+        const auto probs = Sampler::Normalize(logits);
+        const int32_t legacy = Sampler::Pick(probs, /*do_sample=*/false, std::nullopt);
+        EXPECT_EQ(out.next_token_id, legacy);
+    }
+}
+
+TEST(SamplerAlgoTest, GreedyShortpathSubUlpCollapseDeviationDocumented_R1_2b)
+{
+    // 登记偏差（perf_optimize.md §4.1 亚 ulp 尾带）：{1e-8, 2e-8, 0} 的差量 <
+    // softmax_stable (float)ei 量化的半 ulp ⇒ exp(-1e-8) 与 exp(-2e-8) 同舍入
+    // 1.0f ⇒ 改前 Normalize 后三值并列 → argmax 取下标 0（首个）。快路径按
+    // 原始 logits 严格比较取下标 1（更大者胜，信息不丢——更贴近输入）。
+    // 部署输入为 fp16 量化 logits：两 token 差 <6e-8 且同时存活 fp16 仅在
+    // denormal 尾带，实际不可达；本用例显式锁界防漂移归因，勿改回 0。
+    SamplerInputs in;
+    in.logits = {1e-8f, 2e-8f, 0.0f};
+    SamplerConfig cfg; // 贪心
+    const SamplerOutput out = Sampler::Sample(std::move(in), cfg);
+    EXPECT_EQ(out.next_token_id, 1);
+}
+
+TEST(SamplerAlgoTest, SeededSamplingUnchangedByGreedyShortpath_R1_3)
+{
+    // R1②：do_sample=true 全量路径回归（seeded 可复现——贪心短路不触碰
+    // softmax/multinomial 输出）
+    SamplerConfig cfg;
+    cfg.do_sample = true;
+    cfg.seed = 42;
+    SamplerInputs a_in;
+    a_in.logits = {0.2f, 5.0f, 4.9f, 0.0f};
+    const SamplerOutput a = Sampler::Sample(a_in, cfg);
+    const SamplerOutput b = Sampler::Sample(a_in, cfg);
+    EXPECT_EQ(a.next_token_id, b.next_token_id);
+    ASSERT_EQ(a.probs.size(), 4u); // 概率采样仍物化 probs
+    double sum = 0.0;
+    for (float p : a.probs)
+        sum += p;
+    EXPECT_NEAR(sum, 1.0, 1e-5);
+}
+
+// ── R1 接入层：行免中转贪心 + fp16 等价（§4.1 配套 + §5 R1④）────────────────
+// ④ fp16 行免中转：HalfBitsToFloat 逐元素展开对照——快路径扫描在 fp16 位型
+//   原地完成，输出须与"先整行转 fp32 再 argmax"逐 token 一致；贪心 +
+//   repetition_penalty 启用时仍走算法层全量路径（rep 降权语义不变）。
+TEST(SamplerTest, GreedyShortpathFp16RowEquivToExpand_R1_4)
+{
+    Sampler sampler;
+    SamplingParams greedy; // 默认参数 → 贪心（小词表 top_k 原 no-op）
+
+    // 非并列 + 并列两种行形态；fp16 位型数据（等价上浮到 fp32 也作对照行）
+    const std::vector<float> fp32_row = {1.5f, 4.0f, 4.0f, -2.0f, 0.25f};
+    std::vector<uint16_t> fp16_row(fp32_row.size());
+    for (size_t i = 0; i < fp32_row.size(); ++i) {
+        fp16_row[i] = FloatToHalfBits(fp32_row[i]);
+    }
+    // fp16 缓冲：dims={1,5} FLOAT16，数据位型 uint16
+    TensorDesc d16;
+    d16.dataType = DataType::FLOAT16;
+    d16.dims = {1, 5};
+    auto buf16 = std::make_shared<HostTensorBuffer>(d16);
+    buf16->mutable_data().assign(
+        reinterpret_cast<const uint8_t*>(fp16_row.data()),
+        reinterpret_cast<const uint8_t*>(fp16_row.data()) + fp16_row.size() * sizeof(uint16_t));
+
+    TokenId out = 0;
+    ASSERT_EQ(sampler.Sample(*buf16, 0, greedy, /*generated_ids=*/{}, &out).code, Status::SUCCESS);
+    EXPECT_EQ(out, 1u); // 并列 4.0@1 与@4 前者仍首个最大（HalfBits 保序）
+
+    // 对照：同一行先整行转 fp32 再走 fp32 贪心快路径，id 须一致
+    auto buf32 = MakeLogits({1, 5}, fp32_row);
+    TokenId out32 = 0;
+    ASSERT_EQ(sampler.Sample(*buf32, 0, greedy, /*generated_ids=*/{}, &out32).code, Status::SUCCESS);
+    EXPECT_EQ(out, out32);
+
+    // rep 启用 + 贪心：不短路（降权须作用），行为与改前全量路径一致。
+    // 行内两个并列最大 4.0@{1,2}，rep=3.0 且已生成 {1,2}：两处 4.0/3≈1.33 <
+    // 1.5 ⇒ 选下标 0——若误短路，会直接选 1（原始 argmax）。
+    SamplingParams rep;
+    rep.repetition_penalty = 3.0f;
+    TokenId rep_out = 0;
+    ASSERT_EQ(sampler.Sample(*buf16, 0, rep, /*generated_ids=*/{1, 2}, &rep_out).code, Status::SUCCESS);
+    EXPECT_EQ(rep_out, 0u);
 }
 
 } // namespace

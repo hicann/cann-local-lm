@@ -9,7 +9,7 @@
 // 与 embed_scales 工位，tokenId/embedding 双路径）。
 // host 只搬运与值展开，不反量化——乘 scale 永远在 NPU（D-01）。
 // InMemory 表/scale 一律存于堆内存（unique_ptr<char[]>）——TensorBuffer 仅用于
-// 模型输入/输出工位，不得作通用 host 大容量存储（2026-10-09 设备事故修正）。
+// 模型输入/输出工位，不得作通用 host 大容量存储（TensorBuffer 内存对 CPU 可能不可写）。
 // 内部帮手 TableSource（M-02）/ 类型转换（M-03）为 .cpp 内 detail 实现细节，
 // 不出现在本公开头。
 // ═══════════════════════════════════════════════════════════════════════════
@@ -50,8 +50,7 @@ enum class EmbeddingQuantMode { PerToken, PerGroup };
 /// FillInputs 路径选择（选择权归 model_executor D-07，非本模块自决）。
 enum class EmbeddingPath { TokenId, Embedding };
 
-/// embedding 输入工位名（问题 1 工位命名歧义修复，2026-10-10 方案 b——
-/// docs/failed_problem.md 关联问题 1 / docs/repair_1009.md §7 遗留 1）：
+/// embedding 输入工位名（omc 导出名歧义仲裁）：
 /// 引擎规范名 input_embed，omc 常见导出别名 embeddings（om 侧不改名，引擎
 /// 统一在此解析；FillInputs/维度修正/SetInputData/debug inject 四消费点共用）。
 inline constexpr char kEmbedSlotName[] = "input_embed";
@@ -69,9 +68,8 @@ inline std::unordered_map<std::string, std::size_t>::const_iterator FindEmbedSlo
 /// om 输入 desc 工位名匹配（维度修正等按名遍历场景）：规范名或别名。
 inline bool IsEmbedSlotName(const std::string& name) { return name == kEmbedSlotName || name == kEmbedSlotAlias; }
 
-/// embedding scale 输入工位名（2026-10-14 床证补全——docs/failed_problem.md
-/// 问题 1 同源遗漏）：引擎规范名 embed_scales，omc 新转换器导出别名
-/// embeddings_scale（1014 gemma4 c42 实名，解析同 FindEmbedSlot 口径）。
+/// embedding scale 输入工位名：引擎规范名 embed_scales，omc 转换器导出别名
+/// embeddings_scale（gemma4 c42 实名，解析同 FindEmbedSlot 口径）。
 inline constexpr char kEmbedScaleSlotName[] = "embed_scales";
 inline constexpr char kEmbedScaleSlotAlias[] = "embeddings_scale";
 
@@ -91,10 +89,9 @@ inline bool IsEmbedScaleSlotName(const std::string& name)
 }
 
 /// gemma4 per-token identity 查表的两个模型输入工位名。工位名正拼
-/// per_layer_token_identity_scale（2026-10-19 拼写契约迁移：Q1/Q4/Q8 时代
-/// 契约拼写 per_layer_token_identity_sacle 弃用——老转换器导出的图须重导出；
-/// c42 新转换器实名即此正拼）。meta 键仅规范拼写 token_identity_scale_type
-/// （旧拼写兼容同日移除）——读取处见 pipeline_executor.cpp ParseEmbeddingSection。
+/// per_layer_token_identity_scale（老转换器时代契约拼写 ..._sacle 已弃用，
+/// 须以新转换器重导出图）。meta 键亦仅规范拼写 token_identity_scale_type
+/// ——读取处见 pipeline_executor.cpp ParseEmbeddingSection。
 inline constexpr char kTokenIdentitySlotName[] = "per_layer_token_identity";
 inline constexpr char kTokenIdentityScaleSlotName[] = "per_layer_token_identity_scale";
 
@@ -123,15 +120,15 @@ struct EmbeddingConfig {
     EmbeddingLoadMode load_mode = EmbeddingLoadMode::InMemory;
 
     // ── per_layer_token_identity（gemma4，docs/gemma4_token_identity.md）──
-    /// 合并文件布局（2026-10-09 变更）：identity 表不再独立成文件，而以
+    /// 合并文件布局：identity 表不独立成文件，而以
     /// [vocab, W] 行优先紧排在 embedding_weights 主表段之后（段偏移 =
     /// vocab × hidden × 主表元素大小）；scale 段同理以 [vocab] PerToken
     /// 紧排在 embedding_dequant_scale 主 scale 段之后。是否读取由 pipeline
     /// 依图工位判定（以图为准，B-10）：图带工位 ⇒ 从偏移处读取，本结构只携带读取类型。
     /// meta 键 token_identity_type：identity 段读取类型；缺省 fp16（Q10）。
     EmbeddingType token_identity_type = EmbeddingType::Fp16;
-    /// meta 键 token_identity_scale_type：scale 段读取类型（仅规范拼写，旧契约
-    /// 拼写兜底已于 2026-10-19 移除）。缺省 fp16；仅图带 scale 工位时被消费——
+    /// meta 键 token_identity_scale_type：scale 段读取类型（仅规范拼写，无
+    /// 旧拼写兜底）。缺省 fp16；仅图带 scale 工位时被消费——
     /// pipeline 依图回填 None = 不读。
     EmbeddingScaleType token_identity_scale_type = EmbeddingScaleType::Fp16;
     /// 非来自 meta_json：LoadTokenIdentity 自工位 dims 尾维连乘推导后回填。
@@ -145,7 +142,7 @@ struct EmbeddingConfig {
     /// 主表与 identity 解析互相独立：weights 空仍解析 identity 读取类型（合并布局下
     /// identity 数据与主表同一文件，启用与否由图工位判定，Q12）；但 identity host
     /// 查表只服务 Embedding 部署形态（TokenId 形态 identity 由图内自理，
-    /// pipeline InitEmbedding_ 门控——2026-09-22 变更）。
+    /// pipeline InitEmbedding_ 门控）。
     /// 错误：未知枚举 → INVALID_ARGUMENT（解析步骤转段降级）。
     static Status FromSection(const std::string& weights, const std::string& dequant_scale,
                               const std::string& type,                // "fp32"|"fp16"|"int8"|"int4"
@@ -197,7 +194,7 @@ public:
                       size_t count);
 
     /// gemma4 per_layer_token_identity 表加载（docs/gemma4_token_identity.md §5.2；
-    /// 2026-10-09 合并文件布局——Q12）：与 Load 同构的第二个表源（独立状态，
+    /// 合并文件布局——Q12）：与 Load 同构的第二个表源（独立状态，
     /// 不混用 loaded_）。数据取自 config.table_path 的主表段之后（段偏移 =
     /// vocab × hidden × 主表元素大小）；scale 段（token_identity_scale_type ≠ None 时）
     /// 取自 config.scale_path 的主 scale 段之后（PerToken 恒 vocab 项，主表
@@ -210,8 +207,8 @@ public:
     Status LoadTokenIdentity(const EmbeddingConfig& config, size_t row_width);
 
     // ── 访问器（pipeline / UT 用；均不抛异常）──
-    // Table()/Scale()（曾暴露存储 TensorBuffer）已删除：InMemory 存储现为堆内存，
-    // TensorBuffer 仅用于模型输入/输出工位（2026-10-09 设备事故修正）。
+    // 无 Table()/Scale() 存储暴露接口：TensorBuffer 仅用于模型输入/输出工位，
+    // 表数据消费一律走 FillInputs / FillTokenIdentitySlot_（Gather 亦经其行搬运）。
     EmbeddingType TableType() const;    // 未加载 → Fp32（哨兵）+ Loaded() 判别
     EmbeddingLoadMode LoadMode() const; // 未加载 → InMemory（哨兵）
     bool Loaded() const;
@@ -220,8 +217,8 @@ public:
 private:
     /// FillInputs 内部 helper（§5.3）：identity 未启用 → SUCCESS（零行为变化）；
     /// 启用则查两工位按 token 落位（scale PerToken）。仅 Embedding 路径分派时
-    /// 执行一次（TokenId 部署形态不查表，identity 由图内自理——2026-09-22
-    /// 变更）；错误原样上抛（Scheduler 现行只 WARN，不阻断）。
+    /// 执行（TokenId 部署形态不查表，identity 由图内自理）；错误原样上抛
+    /// （Scheduler 现行只 WARN，不阻断）。
     Status FillTokenIdentitySlot_(const std::vector<std::shared_ptr<ITensorBuffer>>& inputs,
                                   const std::unordered_map<std::string, size_t>& name_index, const TokenId* ids,
                                   size_t count);

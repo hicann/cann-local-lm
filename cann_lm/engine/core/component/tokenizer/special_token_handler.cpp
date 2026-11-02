@@ -6,12 +6,37 @@
 
 namespace cann_lm::engine {
 
-// ── M-06 SpecialTokenHandler（v0.7：零注入缺省 + 截断预算 + 剥离集）────────
+// ── M-06 SpecialTokenHandler（v0.7：零注入缺省 + 截断预算 + 剥离集 +
+//    meta special_tokens 映射/解映射——D-3 meta 优先 + WARN）────────────────
 
 void SpecialTokenHandler::configure(const TokenizerConfig& cfg, std::vector<int> strip_ids)
 {
     cfg_ = cfg;
+
+    // meta special_tokens 消费（D-3/D-4）：id→literal 查找表（decode 解映射）；
+    // id<0 条目 WARN 跳过（与具名字段 -1 哨兵语义对齐，不静默）；同 id 双字面量
+    // WARN 保首条（id→literal 映射天然单值，歧义显式化）
+    id2lit_.clear();
+    std::vector<int> meta_ids;
+    meta_ids.reserve(cfg.special_tokens.size());
+    for (const auto& [lit, tid] : cfg.special_tokens) {
+        if (tid < 0) {
+            CANN_LLM_LOGW("tokenizer.special.meta: negative id ignored (literal=%s, id=%d)", lit.c_str(), tid);
+            continue;
+        }
+        if (auto [it, inserted] = id2lit_.emplace(tid, lit); !inserted) {
+            CANN_LLM_LOGW("tokenizer.special.meta: duplicate id (id=%d, literal=%s kept, %s dropped)", tid,
+                          it->second.c_str(), lit.c_str());
+            continue;
+        }
+        meta_ids.push_back(tid);
+    }
+
+    // meta special id 并入剥离集（视为 special，skip_special_tokens 一并剥离）；
+    // 与产物 special_strip_ids 归并去重
+    strip_ids.insert(strip_ids.end(), meta_ids.begin(), meta_ids.end());
     std::sort(strip_ids.begin(), strip_ids.end());
+    strip_ids.erase(std::unique(strip_ids.begin(), strip_ids.end()), strip_ids.end());
     strip_ids_ = std::move(strip_ids);
 }
 
@@ -87,6 +112,42 @@ std::optional<int> SpecialTokenHandler::id(std::string_view name) const
     if (name == "unk")
         return cfg_.unk_token_id >= 0 ? std::optional<int>(cfg_.unk_token_id) : std::nullopt;
     return std::nullopt;
+}
+
+std::vector<std::pair<std::string, int>> SpecialTokenHandler::merged_added_tokens(
+    const std::vector<std::pair<std::string, int>>& vocab_added) const
+{
+    std::vector<std::pair<std::string, int>> merged = vocab_added;
+    // D-3：meta 显式配置权威——同字面量冲突 → meta 覆盖 + WARN（不静默，
+    // meta 可覆盖词表产物的 id 指配）
+    for (const auto& [lit, tid] : cfg_.special_tokens) {
+        if (tid < 0)
+            continue; // configure 已 WARN，此处静默跳过
+        // C++17：结构化绑定不可被 lambda 捕获（clang 拒，g++ 扩展收——CI clang
+        // 实证）；具名别名后按引用捕获
+        const std::string& literal = lit;
+        auto it = std::find_if(merged.begin(), merged.end(), [&literal](const auto& e) { return e.first == literal; });
+        if (it != merged.end()) {
+            if (it->second != tid) {
+                CANN_LLM_LOGW(
+                    "tokenizer.special.meta: literal conflict, meta wins (literal=%s, vocab_id=%d, meta_id=%d)",
+                    lit.c_str(), it->second, tid);
+                it->second = tid;
+            }
+        } else {
+            merged.emplace_back(lit, tid);
+        }
+    }
+    return merged;
+}
+
+std::optional<std::string_view> SpecialTokenHandler::literal(int id) const
+{
+    // meta 解映射：词表外 id 的出字面量通道（decode 查序：meta 先于 vocab）
+    auto it = id2lit_.find(id);
+    if (it == id2lit_.end())
+        return std::nullopt;
+    return std::string_view(it->second);
 }
 
 } // namespace cann_lm::engine

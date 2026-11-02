@@ -283,9 +283,10 @@ class _FakeEngine:
     def create_context(self):
         return _FakeContext()
 
-    def generate(
-        self, prompt, ctx, sampling_params=None, max_tokens=0, stop_strings=None
-    ):
+    def set_context(self, ctx):
+        pass  # ADR-0002: chat.run activates the session context before generate
+
+    def generate(self, prompt, sampling_params=None, max_tokens=0, stop_strings=None):
         self._calls += 1
         if self._calls <= _FakeEngine.fail_first_n:
             import cann_lm

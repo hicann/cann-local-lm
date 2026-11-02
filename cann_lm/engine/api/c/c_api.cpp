@@ -29,7 +29,7 @@
 // ────────────────────────── Opaque Handle Definitions ──────────────────────────
 
 struct CANN_LMEngine_Executor {
-    std::unique_ptr<cann_lm::engine::EngineExecutor> ee;
+    std::unique_ptr<cann_lm::engine::EngineExecutor> engine_executor;
     std::unordered_map<uint64_t, cann_lm::engine::Context> contexts;
 };
 
@@ -60,6 +60,7 @@ static cann_lm::engine::ModelArtifact to_cpp_artifact(const CANN_LMEngine_ModelA
     art.decode_weight = a->decode_weight ? a->decode_weight : "";
     art.meta_json.path = a->meta_json_path ? a->meta_json_path : "";
     art.meta_json.data = {a->meta_json_buf.data, a->meta_json_buf.size};
+    art.isEnableSharedWeight = a->isEnableSharedWeight;
     return art;
 }
 
@@ -154,11 +155,11 @@ extern "C" CANN_LMEngine_Status CANN_LMEngine_ExecutorCreate(const CANN_LMEngine
         auto art = to_cpp_artifact(artifact);
         auto opts = to_cpp_options(options);
         auto e = std::make_unique<CANN_LMEngine_Executor>();
-        e->ee = std::make_unique<cann_lm::engine::EngineExecutor>(art, opts);
-        // 加载失败即终止（2026-09-22）：模型图位已配置而加载失败（含权重
+        e->engine_executor = std::make_unique<cann_lm::engine::EngineExecutor>(art, opts);
+        // 加载失败即终止：模型图位已配置而加载失败（含权重
         // InitWeights，如设备端 NPU 配额耗尽）→ 构造内已终止初始化并完成
         // 卸载 → 此处不交出半初始化实例（*out 保持 null），失败码原样上抛。
-        const cann_lm::engine::Status init = e->ee->InitStatus();
+        const cann_lm::engine::Status init = e->engine_executor->InitStatus();
         if (!init.ok()) {
             CANN_LLM_LOGE("c_api.create: engine init failed (st=%d), executor not created", init.code);
             return status_to_c(init);
@@ -184,7 +185,7 @@ extern "C" CANN_LMEngine_Status CANN_LMEngine_ContextCreate(CANN_LMEngine_Execut
     *out = 0;
     try {
         cann_lm::engine::Context ctx;
-        auto s = executor->ee->CreateContext(&ctx);
+        auto s = executor->engine_executor->CreateContext(&ctx);
         if (!s.ok())
             return status_to_c(s);
         auto id = ctx.id();
@@ -205,8 +206,24 @@ extern "C" CANN_LMEngine_Status CANN_LMEngine_ContextDestroy(CANN_LMEngine_Execu
         return CANN_LM_ENGINE_INVALID_ARGUMENT;
     try {
         cann_lm::engine::ContextId cid{context_id};
-        auto s = executor->ee->DestroyContext(cid);
+        auto s = executor->engine_executor->DestroyContext(cid);
         executor->contexts.erase(static_cast<uint64_t>(context_id));
+        return status_to_c(s);
+    } catch (const std::exception& e) {
+        return log_exception(__func__, e.what());
+    } catch (...) {
+        return log_exception(__func__, "unknown exception");
+    }
+}
+
+extern "C" CANN_LMEngine_Status CANN_LMEngine_ExecutorSetContext(CANN_LMEngine_Executor* executor,
+                                                                 CANN_LMEngine_ContextId context_id)
+{
+    if (!executor)
+        return CANN_LM_ENGINE_INVALID_ARGUMENT;
+    try {
+        cann_lm::engine::ContextId cid{context_id};
+        auto s = executor->engine_executor->SetContext(cid);
         return status_to_c(s);
     } catch (const std::exception& e) {
         return log_exception(__func__, e.what());
@@ -222,7 +239,7 @@ extern "C" CANN_LMEngine_Status CANN_LMEngine_ContextCancel(CANN_LMEngine_Execut
         return CANN_LM_ENGINE_INVALID_ARGUMENT;
     try {
         cann_lm::engine::ContextId cid{context_id};
-        auto s = executor->ee->CancelContext(cid);
+        auto s = executor->engine_executor->CancelContext(cid);
         return status_to_c(s);
     } catch (const std::exception& e) {
         return log_exception(__func__, e.what());
@@ -232,24 +249,24 @@ extern "C" CANN_LMEngine_Status CANN_LMEngine_ContextCancel(CANN_LMEngine_Execut
 }
 
 // ────────────────────────── Inference ──────────────────────────
+// （ADR-0002 Q2：删除 context_id 参数——请求一律归属 Executor 当前活动 Context）
 
-extern "C" CANN_LMEngine_Status CANN_LMEngine_ExecutorGenerate(
-    CANN_LMEngine_Executor* executor, const char* prompt_text, CANN_LMEngine_ContextId context_id,
-    const CANN_LMEngine_SamplingParams* params, const CANN_LMEngine_RequestOptions* options, CANN_LMEngine_Result* out)
+extern "C" CANN_LMEngine_Status CANN_LMEngine_ExecutorGenerate(CANN_LMEngine_Executor* executor,
+                                                               const char* prompt_text,
+                                                               const CANN_LMEngine_SamplingParams* params,
+                                                               const CANN_LMEngine_RequestOptions* options,
+                                                               CANN_LMEngine_Result* out)
 {
     if (!executor || !prompt_text || !out)
         return CANN_LM_ENGINE_INVALID_ARGUMENT;
     *out = CANN_LMEngine_Result{};
     try {
-        auto it = executor->contexts.find(static_cast<uint64_t>(context_id));
-        if (it == executor->contexts.end())
-            return CANN_LM_ENGINE_NOT_FOUND;
         cann_lm::engine::Prompt prompt;
         prompt.text = prompt_text;
         auto sp = to_cpp_params(params);
         auto ro = to_cpp_request_options(options);
         cann_lm::engine::Result cpp_result;
-        auto s = executor->ee->Generate(prompt, it->second, sp, ro, &cpp_result);
+        auto s = executor->engine_executor->Generate(prompt, sp, ro, &cpp_result);
         if (s.ok() || s.code == cann_lm::engine::Status::FAILURE) {
             fill_c_result(cpp_result, out);
         }
@@ -262,24 +279,21 @@ extern "C" CANN_LMEngine_Status CANN_LMEngine_ExecutorGenerate(
 }
 
 extern "C" CANN_LMEngine_Status CANN_LMEngine_ExecutorGenerateAsync(
-    CANN_LMEngine_Executor* executor, const char* prompt_text, CANN_LMEngine_ContextId context_id,
-    const CANN_LMEngine_SamplingParams* params, const CANN_LMEngine_RequestOptions* options,
-    CANN_LMEngine_Request** out, CANN_LMEngine_StreamCallback callback, void* user_data)
+    CANN_LMEngine_Executor* executor, const char* prompt_text, const CANN_LMEngine_SamplingParams* params,
+    const CANN_LMEngine_RequestOptions* options, CANN_LMEngine_Request** out, CANN_LMEngine_StreamCallback callback,
+    void* user_data)
 {
     if (!executor || !prompt_text || !out)
         return CANN_LM_ENGINE_INVALID_ARGUMENT;
     *out = nullptr;
     try {
-        auto it = executor->contexts.find(static_cast<uint64_t>(context_id));
-        if (it == executor->contexts.end())
-            return CANN_LM_ENGINE_NOT_FOUND;
         cann_lm::engine::Prompt prompt;
         prompt.text = prompt_text;
         auto sp = to_cpp_params(params);
         auto ro = to_cpp_request_options(options);
         auto cb = wrap_callback(callback, user_data);
         cann_lm::engine::RequestHandle cpp_handle;
-        auto s = executor->ee->GenerateAsync(prompt, it->second, sp, ro, &cpp_handle, cb);
+        auto s = executor->engine_executor->GenerateAsync(prompt, sp, ro, &cpp_handle, cb);
         if (s.ok()) {
             auto req = std::make_unique<CANN_LMEngine_Request>();
             req->handle = std::move(cpp_handle);

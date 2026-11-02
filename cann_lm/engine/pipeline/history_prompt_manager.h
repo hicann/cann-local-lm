@@ -1,4 +1,4 @@
-// HistoryPromptManager —— PromptCache 缓存台账（design §3，2026-10-15 定稿）。
+// HistoryPromptManager —— PromptCache 缓存台账（design §3）。
 // 语义改造（R1，remove_multi_turn.md 落地后）：
 //   旧语义（已删）：引擎多轮记忆——Read 出历史拼进 prompt、Append 写回。
 //   新语义：**缓存台账**——记录"已写入该 Context KV 的 token 逻辑序"，
@@ -28,7 +28,7 @@ public:
     struct MatchStats {
         std::size_t history_len = 0; ///< 比对前台账长
         std::size_t lcp = 0;         ///< 最长公共前缀（miss = 0）
-        bool wrapped = false;        ///< 绕回已发生（台账长 > kv_max）
+        bool wrapped = false;        ///< 绕回已发生（台账长 > keep_cap 复用保真容量）
     };
 
     /// 命中判定（每轮 Generate、encode 之后、切块之前，单点单次）：
@@ -36,13 +36,20 @@ public:
     /// spec REQ-4）返回可复用逻辑长度 [0, ret)。内部完成台账截断/清空：
     ///   - ret > 0：台账已截到 ret（pool 记账回退到 ret 由 pipeline 侧处理）；
     ///   - ret == 0：miss，台账已清空（pipeline 侧再清池记账）。
-    /// 绕回判定参数 kv_max / wrapped 由调用方传入（台账不含池引用）：
-    ///   wrapped = 台账长 > kv_max（绕回已发生）⇒ 仅"输入完全覆盖台账"
-    ///   （LCP == 台账长）才复用（R6），否则 miss 清账。
-    /// R7：全命中（LCP == 台账长）复用长 = 台账长 − 1（末 token 强制重算，
-    /// logits 只存在于 prefill 输出中）。台账长 1 时复用长 0 = 等价全量重算。
+    /// 绕回判定参数 keep_cap / wrapped 由调用方传入（台账不含池引用，
+    /// 亦无层型信息——门值取值口径见 pipeline GenerateAsync）：
+    ///   keep_cap = 复用保真容量 = 各层环容量最小值（sliding_kv_seq_dim_rebind
+    ///   D6：新契 min(kv_max, C=W+P)、旧契 kv_max）。wrapped = 台账长 >
+    ///   keep_cap ⇒ 仅"输入完全覆盖台账"（LCP == 台账长）才复用（R6），
+    ///   否则 miss 清账。收窄动因：先绕回的窄环层只保留最近环容量个
+    ///   token 的新主，台账超门后部分命中复用的该层窗尾已落被覆写圈——
+    ///   门仍按 kv_max 判会放走"静默读旧代"复用，故取各层环最小值。
+    /// R7（一般化）：本轮增量段为空——全命中（LCP == 台账长，含绕回全覆盖）
+    /// 或前缀重合（LCP == 输入长 < 台账长）——复用长 = 边界 − 1（末 token 强制
+    /// 重算：logits 只存在于 prefill 输出中，不重推无采样输入）。边界长 1 时
+    /// 复用长 0 = 等价全量重算。
     /// stats 非空时全程填写（含 early return：LCP=0/wrapped 按比对前台账长判）。
-    std::size_t MatchCachedTokens(const std::vector<TokenId>& input, std::size_t kv_max, MatchStats* stats = nullptr);
+    std::size_t MatchCachedTokens(const std::vector<TokenId>& input, std::size_t keep_cap, MatchStats* stats = nullptr);
 
     /// decode 每步追加采样输出 token（进 KV 后立即记，REQ-2）。
     void AppendDecodedToken(TokenId id);
@@ -61,11 +68,22 @@ public:
     /// 清空台账（miss / 请求失败回退 / DestroyContext）。
     void Clear() noexcept;
 
-    // ── initTokenLen 锚定段记账（R5/R13；宿主 pipeline 维护，池侧同步）──
-    /// 锚定段长记录：首个全量 prefill 完成时由 pipeline 设置
-    /// （total_written ≤ kv_max 时 = total_written；超长 prompt 场景 = 0）。
+    // ── initTokenLen 锚定段记账（R5/R13）──
+    /// 锚定段长镜像记录：值随配置恒定（镜像 meta_json model_config.
+    /// init_token_len，CreateContext 构造期一次写入）。真源在 KvCachePool
+    /// （MapSlot 消费），本镜像供台账侧对账/观测。
     void SetInitTokenLen(std::size_t len) noexcept;
     std::size_t InitTokenLen() const noexcept;
+
+    // ── 工位绑定 ──
+    /// 记录台账当前绑定 KvCachePool 的哪个工位（SlotId）：pipeline 在首个
+    /// prefill 完成记账点以请求实际占用的工位回写；下轮命中时直用该登记
+    /// 工位续写（ResumeSlot 回退后 scheduler 跳过 AllocKvSlot，不清零），
+    /// 完全未命中则清零该登记工位（ResetLedgerOnSlot）。单 batch 仅一个
+    /// 台账、绑定 0 号工位——多 batch（多台账×多工位）为遗留事项，
+    /// 见 tmp_docs/AR202610211451.md §7。
+    void SetKvSlotId(int slot) noexcept;
+    int KvSlotId() const noexcept;
 
     /// R3 门控：含 linear_attention 层的模型整个 feature 降级为不存在。
     /// enabled_ 由 pipeline 构造期一次写入（NumLinearLayers > 0 ⇒ false），
@@ -79,6 +97,7 @@ private:
 
     std::vector<TokenId> tokens_;    ///< 逻辑序全量台账（已写入 KV 的 token）
     std::size_t init_token_len_ = 0; ///< 锚定段长记账（与池同值同步）
+    int kv_slot_id_ = 0;             ///< 工位绑定记录（单 batch 恒 0；多 batch 遗留）
     bool enabled_ = true;            ///< R3 门控（构造期定，只读）
     mutable std::mutex mtx_;         ///< 粗粒度防御互斥（比对 vs 追加）
 };

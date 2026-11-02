@@ -189,7 +189,12 @@ ensure_mirror_gtest() {
     # 检测: nm 静态库是否含 B5cxx11 符号 (新 ABI 独有, 无需 demangle).
     local compiler_abi
     compiler_abi="$(printf '#include <string>' | ${CXX:-c++} -E -dM -x c++ - 2>/dev/null | grep -c '_GLIBCXX_USE_CXX11_ABI 1')"
-    if [[ "$compiler_abi" -ge 1 ]] && ! nm "${gt}/lib/libgtest.a" 2>/dev/null | grep -q 'B5cxx11'; then
+    # 用 grep -c 而非 grep -q: -q 命中即退出会让 nm 收 SIGPIPE, set -o pipefail 下
+    # 管道状态被 141 覆盖, ! 取反后条件恒真 → 新 ABI 库被误判旧 ABI (有 tar.gz 时
+    # 每次无谓重建, 无 tar.gz 时误报镜像不完整). -c 全量读完无此问题.
+    local gtest_new_abi
+    gtest_new_abi="$(nm "${gt}/lib/libgtest.a" 2>/dev/null | grep -c 'B5cxx11' || true)"
+    if [[ "$compiler_abi" -ge 1 && "$gtest_new_abi" -eq 0 ]]; then
       if [[ -f "${gt}/googletest-1.14.0.tar.gz" ]]; then
         _warn "lib_cache/gtest 为旧 ABI(=0) 构建, 编译器默认新 ABI(=1), 用 tar.gz 现场重建 (否则 UT 链接期 undefined reference)"
       else
@@ -477,7 +482,11 @@ cmd_pkg() {
 
 # ── --smoke: 从 examples/test_engine/ 独立构建 smoke + bbit（OHOS clang）──
 cmd_smoke() {
-  _log "=== cann-local-lm smoke 构建 (--smoke) ==="
+  # --no-signed: 跳过 smoke 二进制签名（与 --pkg 同名 flag 语义一致）
+  for a in "$@"; do
+    [[ "$a" == "--no-signed" ]] && export NO_SIGN=1
+  done
+  _log "=== cann-device-lm smoke 构建 (--smoke${NO_SIGN:+ --no-signed}) ==="
   need_cann || return 1
 
   # 前置: engine 已编译（build_ohos/ 有 libcann_lm_engine.so）
@@ -511,9 +520,11 @@ cmd_smoke() {
   _step "cmake build (api_smoke c_api_smoke golden_verify bbit)"
   cmake --build "$smoke_build" -j"$(nproc)" 2>&1 | grep -E "Built|error|Error" | tail -10
 
-  # 签名（如果有 jar）
+  # 签名（如果有 jar）; --no-signed 跳过
   local jar="$REPO/tools/binary-sign-tool.jar"
-  if [[ -f "$jar" ]] && command -v java >/dev/null 2>&1; then
+  if [[ "${NO_SIGN:-0}" == "1" ]]; then
+    _skip "smoke 二进制签名 (--no-signed)"
+  elif [[ -f "$jar" ]] && command -v java >/dev/null 2>&1; then
     _step "sign smoke binaries"
     for f in api_smoke c_api_smoke golden_verify bbit; do
       if [[ -f "$smoke_build/$f" ]]; then
@@ -563,7 +574,7 @@ subcommand:
   pkg|--pkg     全量构建 + 打包: compile C++ / converter whl / engine OHOS → whl + .run (dist/)
   ut|-u         编译含 UT 的部分并运行: C++ UT (engine+converter ASAN) / Python UT
   smoke|--smoke  从 examples/test_engine/ 独立构建 smoke + bbit（OHOS clang，需先 --pkg）
-  --no-signed   与 --pkg 连用: engine .so 不签名 (跳过 java/jar 签名步骤)
+  --no-signed   与 --pkg / --smoke 连用: 跳过签名 (engine .so / smoke 二进制, 不走 java/jar)
 
 env 映射: check·deps·cpp·tests·package→②cann / ①export 仅供日常 source 跑 converter / wheel·third_party 无 env
   pkg/ut: third_party(json/gtest/makeself) 必需; --pkg 的 compile / -u 的 tests 需先 source CANN set_env.sh;
@@ -592,6 +603,10 @@ while [[ $# -gt 0 ]]; do
     check|deps|third_party|cpp|wheel|package|all|smoke|--smoke)
             CMD="${1#--}"; shift; break;;
     -h|--help|help) usage; exit 0;;
+    # 子命令 (位置参数): 收集进 CMD 后 shift; 重构时漏配会使所有子命令落到
+    # unknown arg (bash build.sh third_party / check / cpp 等文档化用法全挂)
+    check|deps|third_party|cpp|wheel|package|all|pkg|ut|smoke|--smoke)
+            CMD="$1"; shift;;
     *)      echo "unknown arg: $1" >&2; usage; exit 1;;
   esac
 done

@@ -1,7 +1,7 @@
 #include "pipeline/preprocessor.h"
 #include "infra/log.h"
 #include "utils/common_utils.h"
-#include "utils/debug_tensor_dump.h" // 【临时调试】tokenizer ids dump（golden 对齐）
+#include "utils/debug_tensor_dump.h" // tokenizer ids dump（golden 对齐，env 开关默认关）
 
 #include <algorithm>
 #include <cstddef>
@@ -41,13 +41,12 @@ Status Preprocessor::PreparePrefill(const Prompt& prompt, std::vector<std::vecto
     // 调试：打印 tokenize 后的 TokenId 结果
     CANN_LLM_LOGD("preprocess.prefill: prompt tokenized, count=%zu, ids=[%s]", ids.size(), CvtVectorToStr(ids).c_str());
 
-    // 【临时调试代码 — 验证完成后删除】tokenizer encode 结果落盘（DebugDumpTokenizerIds
-    // 同体例：CANN_LM_DEBUG_DUMP_TENSORS=1 总闸 + CANN_LM_DEBUG_DUMP_DIR 共用；
-    // env 未设零行为变化）。产出 prefill_tokenizer_ids.bin（int32 裸数组），
-    // 与 Python 参考 tokenizer.encode 逐值比对；同轮的 prefill_in_* dump 的
+    // tokenizer encode 结果落盘（与工位 dump 同一总闸 CANN_LM_DEBUG_DUMP_TENSORS，
+    // env 未设零行为变化）。产出 prefill_tokenizer_ids.bin（int32 裸数组），与
+    // Python 参考 tokenizer.encode 逐值比对；同轮的 prefill_in_* dump 的
     // embeddings 前 count 行即该 id 序列查表结果（含 pad_token 补齐行=0）。
-    // 增量轮（PromptCache reusable>0）同 dump 同文件名（覆写为当轮全量 ids），
-    // 文件名前缀 prefill 与轮次无关——对精度比对取"最近一次 encode"即够用。
+    // 增量轮（PromptCache reusable>0）同 dump 同文件名（覆写为当轮全量 ids）:
+    // 对精度比对取"最近一次 encode"即够用。
     DebugDumpTokenizerIds("prefill", ids, "ids");
 
     // int（tokenizer 面）→ TokenId（engine 面）：历史悠久双型（token id 语义
@@ -83,10 +82,12 @@ Status Preprocessor::SliceChunks(const std::vector<TokenId>& ids, std::size_t re
         return Status::INVALID_ARGUMENT;
     }
 
-    // 增量切块（R8/REQ-6）：仅作用 [reusable, ids.size())；
-    // reusable == ids.size()（全命中极端）⇒ 空块链，Submit 拒空——上游
-    // Match 全命中场景 reusable-1 已保证至少 1 个真实块。
-    // ids 为空 = 历史 zero-token prompt 行为保持（空块链同旧）。
+    // 增量切块（R8/REQ-6）：仅作用 [reusable, ids.size())。
+    // 契约（DTS202610220945 Fix A）：ids 非空时 Match 出参恒 reusable <
+    // ids.size()（末 token 强制重算一般化，全命中/前缀重合皆减 1），不产空块链；
+    // reusable == ids.size() 形态在此仍按空链返回（防御语义不改，不承担钳制）。
+    // 空块链两处可达：ids 为空（zero-token prompt 历史行为）与上游回归——
+    // 下游由 Scheduler::Step 空块守卫兜底终态化，不依赖 Submit 拒空。
     if (ids.empty()) {
         return Status::SUCCESS;
     }

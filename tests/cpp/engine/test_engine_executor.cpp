@@ -40,9 +40,9 @@ ModelArtifact MissingModelArtifact()
 
 TEST(EngineExecutorTest, CreateContextSucceeds_TC001)
 {
-    EngineExecutor ee(DummyArtifact());
+    EngineExecutor engine_executor(DummyArtifact());
     Context ctx;
-    auto s = ee.CreateContext(&ctx);
+    auto s = engine_executor.CreateContext(&ctx);
     EXPECT_TRUE(s.ok());
     EXPECT_TRUE(static_cast<bool>(ctx));
     EXPECT_TRUE(static_cast<bool>(ctx.id()));
@@ -50,95 +50,97 @@ TEST(EngineExecutorTest, CreateContextSucceeds_TC001)
 
 TEST(EngineExecutorTest, DestroyContextReturnsSuccessIdempotent)
 {
-    EngineExecutor ee(DummyArtifact());
-    auto s = ee.DestroyContext(ContextId{42});
+    EngineExecutor engine_executor(DummyArtifact());
+    auto s = engine_executor.DestroyContext(ContextId{42});
     EXPECT_TRUE(s.ok());
 }
 
 TEST(EngineExecutorTest, ConfigureContextReturnsNotFound_TC101)
 {
-    EngineExecutor ee(DummyArtifact());
+    EngineExecutor engine_executor(DummyArtifact());
     ContextOptions opts;
-    auto s = ee.ConfigureContext(ContextId{99}, opts);
+    auto s = engine_executor.ConfigureContext(ContextId{99}, opts);
     EXPECT_EQ(s.code, Status::NOT_FOUND);
 }
 
 TEST(EngineExecutorTest, CancelContextReturnsNotFound_TC102)
 {
-    EngineExecutor ee(DummyArtifact());
-    auto s = ee.CancelContext(ContextId{99});
+    EngineExecutor engine_executor(DummyArtifact());
+    auto s = engine_executor.CancelContext(ContextId{99});
     EXPECT_EQ(s.code, Status::NOT_FOUND);
 }
 
 TEST(EngineExecutorTest, ConfigureContextSucceedsAfterCreate)
 {
-    EngineExecutor ee(DummyArtifact());
+    EngineExecutor engine_executor(DummyArtifact());
     Context ctx;
-    ASSERT_TRUE(ee.CreateContext(&ctx).ok());
+    ASSERT_TRUE(engine_executor.CreateContext(&ctx).ok());
     ContextOptions opts;
-    auto s = ee.ConfigureContext(ctx.id(), opts);
+    auto s = engine_executor.ConfigureContext(ctx.id(), opts);
     EXPECT_TRUE(s.ok());
 }
 
 TEST(EngineExecutorTest, CancelContextSucceedsAfterCreate)
 {
-    EngineExecutor ee(DummyArtifact());
+    EngineExecutor engine_executor(DummyArtifact());
     Context ctx;
-    ASSERT_TRUE(ee.CreateContext(&ctx).ok());
-    auto s = ee.CancelContext(ctx.id());
+    ASSERT_TRUE(engine_executor.CreateContext(&ctx).ok());
+    auto s = engine_executor.CancelContext(ctx.id());
     EXPECT_TRUE(s.ok());
 }
 
 TEST(EngineExecutorTest, GenerateReturnsFailureOnEmptyContext)
 {
-    // empty context (id=0) → NOT_FOUND (no such context)
-    EngineExecutor ee(DummyArtifact());
-    Context ctx;
+    // ADR-0002 S2：无活动 Context（未 SetContext）→ INVALID_STATE
+    EngineExecutor engine_executor(DummyArtifact());
     Prompt prompt;
     prompt.text = "hello";
     SamplingParams sp;
     Result result;
-    auto s = ee.Generate(prompt, ctx, sp, RequestOptions{}, &result);
-    EXPECT_FALSE(s.ok());
+    auto s = engine_executor.Generate(prompt, sp, RequestOptions{}, &result);
+    EXPECT_EQ(s.code, Status::INVALID_STATE);
 }
 
 TEST(EngineExecutorTest, GenerateReturnsFailureOnValidContextStubEra)
 {
-    // Context exists but tokenizer is stub (encode returns FAILURE) → Generate fails
-    EngineExecutor ee(DummyArtifact());
+    // 活动 Context 就绪但 tokenizer 为 stub（encode 返回 FAILURE）→ Generate 失败
+    EngineExecutor engine_executor(DummyArtifact());
     Context ctx;
-    ASSERT_TRUE(ee.CreateContext(&ctx).ok());
+    ASSERT_TRUE(engine_executor.CreateContext(&ctx).ok());
+    ASSERT_TRUE(engine_executor.SetContext(ctx.id()).ok());
     Prompt prompt;
     prompt.text = "hello";
     SamplingParams sp;
     Result result;
-    auto s = ee.Generate(prompt, ctx, sp, RequestOptions{}, &result);
+    auto s = engine_executor.Generate(prompt, sp, RequestOptions{}, &result);
     EXPECT_FALSE(s.ok());
+    EXPECT_NE(s.code, Status::INVALID_STATE); // S2 已过门，失败源于 stub encode
 }
 
 TEST(EngineExecutorTest, GenerateAsyncReturnsFailureOnEmptyContext)
 {
-    EngineExecutor ee(DummyArtifact());
-    Context ctx;
+    EngineExecutor engine_executor(DummyArtifact());
     Prompt prompt;
     prompt.text = "hello";
     SamplingParams sp;
     RequestHandle handle;
-    auto s = ee.GenerateAsync(prompt, ctx, sp, RequestOptions{}, &handle);
-    EXPECT_FALSE(s.ok());
+    auto s = engine_executor.GenerateAsync(prompt, sp, RequestOptions{}, &handle);
+    EXPECT_EQ(s.code, Status::INVALID_STATE);
 }
 
 TEST(EngineExecutorTest, GenerateAsyncReturnsFailureOnValidContextStubEra)
 {
-    EngineExecutor ee(DummyArtifact());
+    EngineExecutor engine_executor(DummyArtifact());
     Context ctx;
-    ASSERT_TRUE(ee.CreateContext(&ctx).ok());
+    ASSERT_TRUE(engine_executor.CreateContext(&ctx).ok());
+    ASSERT_TRUE(engine_executor.SetContext(ctx.id()).ok());
     Prompt prompt;
     prompt.text = "hello";
     SamplingParams sp;
     RequestHandle handle;
-    auto s = ee.GenerateAsync(prompt, ctx, sp, RequestOptions{}, &handle);
+    auto s = engine_executor.GenerateAsync(prompt, sp, RequestOptions{}, &handle);
     EXPECT_FALSE(s.ok());
+    EXPECT_NE(s.code, Status::INVALID_STATE);
 }
 
 // UT-TC-EE-011 (DRIFT-1 修复): 名宣称 INVALID_STATE 但实际两次均返回 FAILURE
@@ -146,20 +148,21 @@ TEST(EngineExecutorTest, GenerateAsyncReturnsFailureOnValidContextStubEra)
 // 详见 docs/ut/SPEC.md §4.1 / docs/ut/DESIGN.md §8。
 TEST(EngineExecutorTest, ConcurrentGenerateSameContextReturnsFailureStubEra)
 {
-    EngineExecutor ee(DummyArtifact());
+    EngineExecutor engine_executor(DummyArtifact());
     Context ctx;
-    ASSERT_TRUE(ee.CreateContext(&ctx).ok());
+    ASSERT_TRUE(engine_executor.CreateContext(&ctx).ok());
+    ASSERT_TRUE(engine_executor.SetContext(ctx.id()).ok());
     Prompt prompt;
     prompt.text = "hello";
     SamplingParams sp;
     RequestHandle h1;
     // stub 时代下 PreparePrefill 同步失败（BPETokenizer::encode 返回 FAILURE），
     // active_generates_ 经 RAII 在返回前清除 → 第二次 GenerateAsync 不会触发 INVALID_STATE。
-    auto s1 = ee.GenerateAsync(prompt, ctx, sp, RequestOptions{}, &h1);
+    auto s1 = engine_executor.GenerateAsync(prompt, sp, RequestOptions{}, &h1);
     EXPECT_FALSE(s1.ok());
     // 第二次调用同样返回 FAILURE（不是 INVALID_STATE，因 active 标记已被首次调用清除）
     RequestHandle h2;
-    auto s2 = ee.GenerateAsync(prompt, ctx, sp, RequestOptions{}, &h2);
+    auto s2 = engine_executor.GenerateAsync(prompt, sp, RequestOptions{}, &h2);
     EXPECT_FALSE(s2.ok());
 }
 
@@ -173,13 +176,13 @@ TEST(EngineExecutorTest, ConcurrentGenerateSameContextReturnsFailureStubEra)
 TEST(EngineExecutorTest, LoadFailureAbortsInitAndReports)
 {
     test_util::StderrCapture cap;
-    EngineExecutor ee(MissingModelArtifact());
+    EngineExecutor engine_executor(MissingModelArtifact());
     const std::string out = cap.Stop();
     EXPECT_NE(out.find("loader.load"), std::string::npos);
     EXPECT_NE(out.find("pipeline.init"), std::string::npos);
-    EXPECT_FALSE(ee.InitStatus().ok());
+    EXPECT_FALSE(engine_executor.InitStatus().ok());
     Context ctx; // 默认构造的出参 out（失败实例调用方出参）
-    auto s = ee.CreateContext(&ctx);
+    auto s = engine_executor.CreateContext(&ctx);
     EXPECT_EQ(s.code, Status::FAILURE);
 }
 
@@ -205,14 +208,14 @@ ModelArtifact DeployedWithMetaJson(const char (&meta)[N])
 TEST(EngineExecutorTest, MetaJsonSyntaxFatalAbortsInitOnDeployedForm)
 {
     test_util::StderrCapture cap;
-    EngineExecutor ee(DeployedWithMetaJson("{ not valid json"));
+    EngineExecutor engine_executor(DeployedWithMetaJson("{ not valid json"));
     const std::string out = cap.Stop();
     EXPECT_NE(out.find("pipeline.init"), std::string::npos);
     EXPECT_NE(out.find("meta_json invalid"), std::string::npos);
     EXPECT_EQ(out.find("loader.load.restore"), std::string::npos);
-    EXPECT_EQ(ee.InitStatus().code, Status::INVALID_ARGUMENT);
+    EXPECT_EQ(engine_executor.InitStatus().code, Status::INVALID_ARGUMENT);
     Context ctx;
-    auto s = ee.CreateContext(&ctx);
+    auto s = engine_executor.CreateContext(&ctx);
     EXPECT_EQ(s.code, Status::FAILURE);
 }
 
@@ -221,14 +224,15 @@ TEST(EngineExecutorTest, MetaJsonSyntaxFatalAbortsInitOnDeployedForm)
 TEST(EngineExecutorTest, MetaJsonMissingModelSectionFatalAbortsInit)
 {
     test_util::StderrCapture cap;
-    EngineExecutor ee(DeployedWithMetaJson(R"json({"tokenizer_config":{"tokenizer_file":"dummy.json"}})json"));
+    EngineExecutor engine_executor(
+        DeployedWithMetaJson(R"json({"tokenizer_config":{"tokenizer_file":"dummy.json"}})json"));
     const std::string out = cap.Stop();
     EXPECT_NE(out.find("pipeline.init"), std::string::npos);
     EXPECT_NE(out.find("meta_json invalid"), std::string::npos);
     EXPECT_EQ(out.find("loader.load.restore"), std::string::npos);
-    EXPECT_EQ(ee.InitStatus().code, Status::INVALID_ARGUMENT);
+    EXPECT_EQ(engine_executor.InitStatus().code, Status::INVALID_ARGUMENT);
     Context ctx;
-    auto s = ee.CreateContext(&ctx);
+    auto s = engine_executor.CreateContext(&ctx);
     EXPECT_EQ(s.code, Status::FAILURE);
 }
 
@@ -236,15 +240,34 @@ TEST(EngineExecutorTest, MetaJsonMissingModelSectionFatalAbortsInit)
 TEST(EngineExecutorTest, MetaJsonBadModelSectionFatalAbortsInit)
 {
     test_util::StderrCapture cap;
-    EngineExecutor ee(
+    EngineExecutor engine_executor(
         DeployedWithMetaJson(R"json({"model_config":{"kv_cache_max_len":-1,"num_hidden_layers":2}})json"));
     const std::string out = cap.Stop();
     EXPECT_NE(out.find("pipeline.init"), std::string::npos);
     EXPECT_NE(out.find("meta_json invalid"), std::string::npos);
     EXPECT_EQ(out.find("loader.load.restore"), std::string::npos);
-    EXPECT_EQ(ee.InitStatus().code, Status::INVALID_ARGUMENT);
+    EXPECT_EQ(engine_executor.InitStatus().code, Status::INVALID_ARGUMENT);
     Context ctx;
-    auto s = ee.CreateContext(&ctx);
+    auto s = engine_executor.CreateContext(&ctx);
+    EXPECT_EQ(s.code, Status::FAILURE);
+}
+
+// 情形④（U2 部署形态半，方案 §3.1 D2）：max_io_tokens 显式 ≤ 0 = 配置
+// 非法 ⇒ 同 ③ 段降级 → C-1 门以 meta_json invalid 终止。REQ-9 预算闸的
+// 解析层把关在部署形态的致命面（静默降默认 4096 会让配置者拿到相反行为）。
+TEST(EngineExecutorTest, MaxIoTokensNonPositiveFatalAbortsInitOnDeployedForm)
+{
+    test_util::StderrCapture cap;
+    EngineExecutor engine_executor(DeployedWithMetaJson(
+        R"json({"model_config":{"kv_cache_max_len":512,"num_hidden_layers":4,
+                            "max_io_tokens":0}})json"));
+    const std::string out = cap.Stop();
+    EXPECT_NE(out.find("pipeline.init"), std::string::npos);
+    EXPECT_NE(out.find("meta_json invalid"), std::string::npos);
+    EXPECT_EQ(out.find("loader.load.restore"), std::string::npos);
+    EXPECT_EQ(engine_executor.InitStatus().code, Status::INVALID_ARGUMENT);
+    Context ctx;
+    auto s = engine_executor.CreateContext(&ctx);
     EXPECT_EQ(s.code, Status::FAILURE);
 }
 
@@ -256,27 +279,56 @@ TEST(EngineExecutorTest, BadMetaJsonToleratedWhenOmcAbsent)
     ModelArtifact a = DummyArtifact();
     static const char kBadMeta[] = "{ not valid json";
     a.meta_json.data = Buffer{kBadMeta, sizeof(kBadMeta) - 1};
-    EngineExecutor ee(a);
+    EngineExecutor engine_executor(a);
     (void)cap.Stop();
-    EXPECT_TRUE(ee.InitStatus().ok());
+    EXPECT_TRUE(engine_executor.InitStatus().ok());
     Context ctx;
-    EXPECT_TRUE(ee.CreateContext(&ctx).ok());
+    EXPECT_TRUE(engine_executor.CreateContext(&ctx).ok());
 }
 
-// context 不存在：NOT_FOUND 粗码 + pipeline.submit 日志详因（同步路径）。
-TEST(EngineExecutorTest, GenerateAsyncNotFoundLogsPipelineSubmit)
+// ADR-0002 SetContext 语义矩阵（S2/S3/S5/S6）基础用例——host/stub 形态
+// （零 desc 账本 → 零 tensor Context 合法，生命周期 API 恒成功，Q12 裁定 a）。
+TEST(EngineExecutorTest, SetContextNotFoundOnUnregisteredId_S3)
 {
-    EngineExecutor ee(DummyArtifact());
-    test_util::StderrCapture cap;
-    Context ctx; // 未注册（id 不在 contexts_ 中）
+    EngineExecutor engine_executor(DummyArtifact());
+    EXPECT_EQ(engine_executor.SetContext(ContextId{99}).code, Status::NOT_FOUND);
+}
+
+TEST(EngineExecutorTest, SetContextSucceedsAndIdempotent_S5)
+{
+    EngineExecutor engine_executor(DummyArtifact());
+    Context ctx;
+    ASSERT_TRUE(engine_executor.CreateContext(&ctx).ok());
+    EXPECT_TRUE(engine_executor.SetContext(ctx.id()).ok());
+    EXPECT_TRUE(engine_executor.SetContext(ctx.id()).ok()); // 幂等
+}
+
+TEST(EngineExecutorTest, DestroyActiveContextReturnsToNoActiveState_S6)
+{
+    EngineExecutor engine_executor(DummyArtifact());
+    Context ctx;
+    ASSERT_TRUE(engine_executor.CreateContext(&ctx).ok());
+    ASSERT_TRUE(engine_executor.SetContext(ctx.id()).ok());
+    EXPECT_TRUE(engine_executor.DestroyContext(ctx.id()).ok());
+    // 无活动 Context：Generate 拒绝（S2 门禁回位）
     Prompt prompt;
     prompt.text = "hello";
     SamplingParams sp;
     RequestHandle handle;
-    auto s = ee.GenerateAsync(prompt, ctx, sp, RequestOptions{}, &handle);
+    EXPECT_EQ(engine_executor.GenerateAsync(prompt, sp, RequestOptions{}, &handle).code, Status::INVALID_STATE);
+    // 重销毁幂等（S8）
+    EXPECT_TRUE(engine_executor.DestroyContext(ctx.id()).ok());
+}
+
+// context 不存在：SetContext NOT_FOUND 粗码 + pipeline.set_context 日志详因。
+TEST(EngineExecutorTest, SetContextNotFoundLogsPipelineSetContext)
+{
+    EngineExecutor engine_executor(DummyArtifact());
+    test_util::StderrCapture cap;
+    auto s = engine_executor.SetContext(ContextId{99});
     const std::string out = cap.Stop();
     EXPECT_EQ(s.code, Status::NOT_FOUND);
-    EXPECT_NE(out.find("pipeline.submit"), std::string::npos);
+    EXPECT_NE(out.find("pipeline.set_context"), std::string::npos);
 }
 
 } // namespace
@@ -336,7 +388,8 @@ TEST(ConfigParseTest, ThreeSectionsParsed_TC001)
                          "prefill_len": [1024], "decode_len": [16],
                          "pad_token_id": 0, "vocab_size": 153376,
                          "vocab_align_size": 153376,
-                         "kv_cache_max_len": 16384, "kv_cache_format": "nd"},
+                         "kv_cache_max_len": 16384, "kv_cache_format": "nd",
+                         "init_token_len": 256},
         "embedding_config": {"embedding_weights": "t.bin",
                              "embedding_dequant_scale": "s.bin",
                              "embedding_quant_mode": "per_token",
@@ -352,6 +405,8 @@ TEST(ConfigParseTest, ThreeSectionsParsed_TC001)
     EXPECT_EQ(pipe.ParsedModelConfig().vocab_size, 153376u);
     ASSERT_EQ(pipe.ParsedModelConfig().prefill_len.size(), 1u);
     EXPECT_EQ(pipe.ParsedModelConfig().prefill_len[0], 1024);
+    // init_token_len（2026-10-22 静态化）：显式供给值解析落位
+    EXPECT_EQ(pipe.ParsedModelConfig().init_token_len, 256);
     // tokenizer 段（pad 跨段 = 0）
     EXPECT_EQ(pipe.ParsedTokenizerConfig().bos_token_id, 2);
     EXPECT_EQ(pipe.ParsedTokenizerConfig().eos_token_id, 1);
@@ -376,6 +431,239 @@ TEST(ConfigParseTest, MetaJsonOverridesOptions_TC002)
     opts.default_chunk_size = 512;
     AutoregressivePipelineExecutor pipe(a, opts);
     EXPECT_EQ(pipe.ParsedPrefillChunkSize(), 2048);
+}
+
+// ── init_token_len 解析（2026-10-22 静态化）──
+
+// 缺省 0：无锚定段（全缓冲圆环），迁移零行为变化的解析层锚点。
+// TC_002 同 json 本就缺字段，这里补显式断言。
+TEST(ConfigParseTest, InitTokenLenDefaultZero)
+{
+    ModelArtifact a;
+    a.meta_json.data = Buf(R"({"model_config":{"kv_cache_max_len":512,
+        "num_hidden_layers":4}})");
+    AutoregressivePipelineExecutor pipe(a, EngineOptions{});
+    EXPECT_EQ(pipe.ParsedModelConfig().init_token_len, 0);
+}
+
+// 数字字符串容错（"128" 与 128 等价，TC_202 同口径）
+TEST(ConfigParseTest, InitTokenLenNumericStringTolerated)
+{
+    ModelArtifact a;
+    a.meta_json.data = Buf(R"({"model_config":{"kv_cache_max_len":512,
+        "num_hidden_layers":4,"init_token_len":"128"}})");
+    AutoregressivePipelineExecutor pipe(a, EngineOptions{});
+    EXPECT_EQ(pipe.ParsedModelConfig().init_token_len, 128);
+}
+
+// 越界 → 段降级（负值 / ≥ kv_cache_max_len；口径同 sliding_window<0——
+// 显式拒绝优于静默降 0）。rendered 为部署形态时构造失败由 C-1 用例族覆盖，
+// 此处锁解析语义本身：同段其他字段一并不采信（fallback 桩默认）。
+TEST(ConfigParseTest, InitTokenLenOutOfRangeDegradesSection)
+{
+    {
+        ModelArtifact a;
+        a.meta_json.data = Buf(R"({"model_config":{"kv_cache_max_len":512,
+            "num_hidden_layers":4,"init_token_len":512}})"); // == kv_max
+        test_util::StderrCapture cap;
+        AutoregressivePipelineExecutor pipe(a, EngineOptions{});
+        const std::string out = cap.Stop();
+        // omc 双空（无模型部署形态）⇒ C-1 门不触发（D-1 温和口径），
+        // 段降级走桩默认：num_hidden_layers 回 2、init_token_len 回 0
+        EXPECT_NE(out.find("字段类型非法或容量非法"), std::string::npos);
+        EXPECT_EQ(pipe.ParsedModelConfig().num_hidden_layers, 2);
+        EXPECT_EQ(pipe.ParsedModelConfig().init_token_len, 0);
+    }
+    {
+        ModelArtifact a;
+        a.meta_json.data = Buf(R"({"model_config":{"kv_cache_max_len":512,
+            "num_hidden_layers":4,"init_token_len":-8}})");
+        test_util::StderrCapture cap;
+        AutoregressivePipelineExecutor pipe(a, EngineOptions{});
+        const std::string out = cap.Stop();
+        EXPECT_NE(out.find("字段类型非法或容量非法"), std::string::npos);
+        EXPECT_EQ(pipe.ParsedModelConfig().init_token_len, 0);
+    }
+}
+
+// ── max_io_tokens 解析（方案 support_input_max_io_len_202610222243 §3.1
+//    D2，REQ-9 预算闸的解析层锚点；口径同 init_token_len 组）──
+
+// 缺省（键缺失/null）⇒ 字段默认 4096（输入上界归口值；与 kv_max 解耦）。
+TEST(ConfigParseTest, MaxIoTokensDefault4096)
+{
+    {
+        ModelArtifact a;
+        a.meta_json.data = Buf(R"({"model_config":{"kv_cache_max_len":512,
+            "num_hidden_layers":4}})");
+        AutoregressivePipelineExecutor pipe(a, EngineOptions{});
+        EXPECT_EQ(pipe.ParsedModelConfig().max_io_tokens, 4096);
+    }
+    { // 显式 null 同缺省
+        ModelArtifact a;
+        a.meta_json.data = Buf(R"({"model_config":{"kv_cache_max_len":512,
+            "num_hidden_layers":4,"max_io_tokens":null}})");
+        AutoregressivePipelineExecutor pipe(a, EngineOptions{});
+        EXPECT_EQ(pipe.ParsedModelConfig().max_io_tokens, 4096);
+    }
+}
+
+// 显式供给解析落位（含数字字符串容错，TC_202 同口径）。
+TEST(ConfigParseTest, MaxIoTokensExplicitParsed)
+{
+    ModelArtifact a;
+    a.meta_json.data = Buf(R"({"model_config":{"kv_cache_max_len":512,
+        "num_hidden_layers":4,"max_io_tokens":"2048"}})");
+    AutoregressivePipelineExecutor pipe(a, EngineOptions{});
+    EXPECT_EQ(pipe.ParsedModelConfig().max_io_tokens, 2048);
+}
+
+// 越界（≤ 0 = 配置非法）→ 段降级（口径同 init_token_len 越界：显式拒绝优于
+// 静默降默认——配置者显式写了 0/-1，静默给 4096 = 相反行为）。rendered 为
+// 部署形态时构造失败由下方 MaxIoTokensNonPositiveFatalAbortsInitOnDeployedForm
+// 承接（C-1 门），此处锁解析语义本身：同段其他字段一并不采信（桩默认）。
+TEST(ConfigParseTest, MaxIoTokensNonPositiveDegradesSection)
+{
+    {
+        ModelArtifact a;
+        a.meta_json.data = Buf(R"({"model_config":{"kv_cache_max_len":512,
+            "num_hidden_layers":4,"max_io_tokens":0}})");
+        test_util::StderrCapture cap;
+        AutoregressivePipelineExecutor pipe(a, EngineOptions{});
+        const std::string out = cap.Stop();
+        EXPECT_NE(out.find("字段类型非法或容量非法"), std::string::npos);
+        EXPECT_EQ(pipe.ParsedModelConfig().num_hidden_layers, 2); // 段降级回桩默认
+        EXPECT_EQ(pipe.ParsedModelConfig().kv_cache_max_len, 16);
+        EXPECT_EQ(pipe.ParsedModelConfig().max_io_tokens, 4096); // 桩默认（非采信值）
+    }
+    {
+        ModelArtifact a;
+        a.meta_json.data = Buf(R"({"model_config":{"kv_cache_max_len":512,
+            "num_hidden_layers":4,"max_io_tokens":-1}})");
+        test_util::StderrCapture cap;
+        AutoregressivePipelineExecutor pipe(a, EngineOptions{});
+        const std::string out = cap.Stop();
+        EXPECT_NE(out.find("字段类型非法或容量非法"), std::string::npos);
+        EXPECT_EQ(pipe.ParsedModelConfig().max_io_tokens, 4096);
+    }
+}
+
+// ── sliding_window_head_dim 解析（sliding_kv_seq_dim_rebind D10；审查 SP-1：
+//    方案 §5 U1 要求的 meta 解析拒绝元组此前缺位——"U1"编号已被 S5 修形用例
+//    占用，本组补齐 meta 级 D10 面；判据单源 SlidingHeadDimComboValid 已有
+//    直测，此处锁 pipeline 解析链端到端）──
+
+// 合法新契元组：sw>0 + sw_hd>0 + prefill 档非空全正 → 解析落位（17 字段
+// 之第 17 字段 sliding_window_head_dim 的直连观测点）。
+TEST(ConfigParseTest, SwHeadDimValidTupleParsed)
+{
+    ModelArtifact a;
+    a.meta_json.data = Buf(R"({"model_config":{"kv_cache_max_len":512,
+        "num_hidden_layers":4,"sliding_window":256,
+        "sliding_window_head_dim":128,"prefill_len":[1024, 2048]}})");
+    AutoregressivePipelineExecutor pipe(a, EngineOptions{});
+    const auto& mc = pipe.ParsedModelConfig();
+    EXPECT_EQ(mc.sliding_window, 256);
+    EXPECT_EQ(mc.sliding_window_head_dim, 128);
+    ASSERT_EQ(mc.prefill_len.size(), 2u);
+    EXPECT_EQ(mc.prefill_len[1], 2048);
+}
+
+// 越界组合（D10）：sw_hd>0 搭配 sw=0 / prefill_len 缺省空 / prefill 档含
+// 非正值 → 段降级（同段其他字段一并不采信，桩默认 kv_len=16/nhl=2）。
+// sw=0 / sw<0 的段降级在 sliding_window 解析既有面（TC_204 同口径），此处
+// 锁的是组合校验三元组——合法单字段组装不出 C=W+P 时整段拒绝。
+TEST(ConfigParseTest, SwHeadDimD10TuplesDegradeSection)
+{
+    const char* cases[] = {
+        // sw_hd>0 ∧ sw=0：窗口没配——新契滑窗层无窗可言
+        R"({"model_config":{"kv_cache_max_len":512,"num_hidden_layers":4,
+            "sliding_window_head_dim":128}})",
+        // sw_hd>0 ∧ prefill_len 空数组：P 无档——C = W+P 算不出
+        R"({"model_config":{"kv_cache_max_len":512,"num_hidden_layers":4,
+            "sliding_window":256,"sliding_window_head_dim":128,
+            "prefill_len":[]}})",
+        // sw_hd>0 ∧ prefill 档含 0（非正值）
+        R"({"model_config":{"kv_cache_max_len":512,"num_hidden_layers":4,
+            "sliding_window":256,"sliding_window_head_dim":128,
+            "prefill_len":[1024, 0]}})",
+        // sw_hd>0 ∧ prefill 档含负值
+        R"({"model_config":{"kv_cache_max_len":512,"num_hidden_layers":4,
+            "sliding_window":256,"sliding_window_head_dim":128,
+            "prefill_len":[-4]}})",
+    };
+    for (const char* json : cases) {
+        ModelArtifact a;
+        a.meta_json.data = Buf(json);
+        test_util::StderrCapture cap;
+        AutoregressivePipelineExecutor pipe(a, EngineOptions{});
+        const std::string out = cap.Stop();
+        EXPECT_NE(out.find("字段类型非法或容量非法"), std::string::npos) << "json=" << json;
+        // 段降级：全段不采信（含 sliding_window 自身——组合非法牵连整段）
+        EXPECT_EQ(pipe.ParsedModelConfig().kv_cache_max_len, 16) << json;
+        EXPECT_EQ(pipe.ParsedModelConfig().num_hidden_layers, 2) << json;
+        EXPECT_EQ(pipe.ParsedModelConfig().sliding_window_head_dim, 0) << json;
+    }
+}
+
+// ── U1 提交闸（方案 §3.1 §5 U1，REQ-9）────
+// stub-era 达闸路径：装上真 BPE 词表（WriteTempBpeVocab，EncodeOptions 无
+// special 注入——add_bos/add_eos 缺省 false）⇒ encode 'a'*N → N 个 id，构造
+// 可控 ids 长度直触提交闸（闸在 Match/台账/池动作之前——"cache untouched"；
+// encode 失败先于闸（stub-era 前提），故必须真词表）。断言面：
+//   65 > max_io_tokens=64 → INVALID_ARGUMENT + promptcache.capacity 日志；
+//   64 ≤ 64               → 过闸（后续走 stub-era not-ready/其他失败，
+//   只要不是本闸的 INVALID_ARGUMENT capacity 语义即可——区分方式：日志
+//   不含 promptcache.capacity）。worker 线程对两形态无副作用（闸先于 Submit）。
+TEST(ConfigParseTest, SubmissionGateRejectsOverBudgetInputU1)
+{
+    const std::string vocab = WriteTempBpeVocab(); // {"a":0,"b":1}
+    ModelArtifact a;
+    a.meta_json.data = Buf(std::string(R"({"model_config":{"kv_cache_max_len":512,
+        "num_hidden_layers":4,"max_io_tokens":64},
+        "tokenizer_config":{"tokenizer_file":")") +
+                           vocab + R"("}})");
+    AutoregressivePipelineExecutor pipe(a, EngineOptions{});
+    ASSERT_TRUE(pipe.TokenizerReady());
+    Context ctx;
+    ASSERT_TRUE(pipe.CreateContext(&ctx).ok());
+    ASSERT_TRUE(pipe.SetContext(ctx.id()).ok());
+
+    { // 65 token > 预算 64：拒绝（INVALID_ARGUMENT + capacity 日志）
+        Prompt prompt;
+        prompt.text = std::string(65, 'a');
+        RequestHandle handle;
+        test_util::StderrCapture cap;
+        auto s = pipe.GenerateAsync(prompt, SamplingParams{}, RequestOptions{}, &handle,
+                                    /*callback=*/{});
+        const std::string out = cap.Stop();
+        EXPECT_EQ(s.code, Status::INVALID_ARGUMENT);
+        EXPECT_NE(out.find("promptcache.capacity"), std::string::npos);
+    }
+    { // 64 token == 预算边界：严格 '>' 判 ⇒ 放行对比。本例只锁提交闸语义
+        // （提交成功 + capacity 日志缺席）。提交后的终态是 stub-era 形态：worker
+        //  RunLoop → Scheduler Step 命中 "prefill executor not ready"
+        // （scheduler.cpp not-ready 分支，本 binary 无 hiai 工厂覆盖）⇒ req 终态
+        //  Failed → Wait 按契约返回 FAILURE + FinishReason::Error（request_handle
+        //  cpp Wait Failed 分支）。RunLoop 侧预算数量断言（64+1>=64 即停、
+        //  FinishReason=MaxTokens、promptcache.budget 日志）host 真链用例未建
+        // （spec:208 验收债务，code_review P2）；现证物 = 真机 V-F4
+        // （meta max_io_tokens=230、input 199 + generated 31 >= 230 恰差值终止）。
+        Prompt prompt;
+        prompt.text = std::string(64, 'a');
+        RequestHandle handle;
+        test_util::StderrCapture cap;
+        auto s = pipe.GenerateAsync(prompt, SamplingParams{}, RequestOptions{}, &handle,
+                                    /*callback=*/{});
+        const std::string out = cap.Stop();
+        EXPECT_TRUE(s.ok()) << "边界 64 <= 64 过闸（提交成功）";
+        EXPECT_EQ(out.find("promptcache.capacity"), std::string::npos);
+        Result result;
+        auto ws = handle.Wait(&result);
+        EXPECT_FALSE(ws.ok());
+        EXPECT_EQ(ws.code, Status::FAILURE);                  // stub-era Failed 终态
+        EXPECT_EQ(result.finish_reason, FinishReason::Error); // 非 MaxTokens：RunLoop 未达
+    }
 }
 
 // TC_203：prefill_len 空数组 → options 回退
@@ -1201,6 +1489,57 @@ TEST(IsInPlaceUpdateSlotNameTest, RejectsNonFamilyAndMidStringPrefix_TC312)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// SlidingLayerWidth / PrefillMaxLen（sliding_kv_seq_dim_rebind S2/S4 单源
+// 助手，U3 边界锁）：新契（sw_head_dim>0）滑窗层序列容量 C = W + P
+// （mask_sliding 列宽、池期望 seq_dim、keep_cap 同源）。
+// CorrectTensorDescs（mask_sliding 修形）+ InputAssembler（填充）+ pipeline
+// （PromptCache 绕回门 keep_cap）三消费点单源。旧契不经本助手（消费点直用
+// kv_max）；b688221 的 SlidingMaskWidth 口径整体废弃（D8，过渡图从未产出）。
+// ═══════════════════════════════════════════════════════════════════════════
+
+// U3：C = W + P 仅在两入参全正时成立；任一非正（0/负——D10 已挡空组合，
+// 此处回退仅防御）→ 0。gemma4 实形 W=256、P=2048 → C=2304。
+TEST(SlidingLayerWidthTest, WidthIsWindowPlusPrefillMax_U3)
+{
+    EXPECT_EQ(SlidingLayerWidth(256, 2048), 2304u) << "gemma4 实形 C=W+P";
+    EXPECT_EQ(SlidingLayerWidth(1, 1), 2u) << "最小 W=1/P=1 边界";
+    EXPECT_EQ(SlidingLayerWidth(0, 2048), 0u) << "W=0 防御回 0";
+    EXPECT_EQ(SlidingLayerWidth(256, 0), 0u) << "P=0 防御回 0";
+    EXPECT_EQ(SlidingLayerWidth(-5, 2048), 0u) << "负 W 按 0";
+    EXPECT_EQ(SlidingLayerWidth(256, -1), 0u) << "负 P 按 0";
+    EXPECT_EQ(PrefillMaxLen(std::vector<int>{1024, 2048, 512}), 2048) << "P = 数组最大档";
+    EXPECT_EQ(PrefillMaxLen(std::vector<int>{2048}), 2048) << "单档位直取";
+    EXPECT_EQ(PrefillMaxLen(std::vector<int>{}), 0) << "空数组防御回 0";
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// SlidingHeadDimComboValid（D10 越界组合校验单源，ST-4 抽取后直测判据本身；
+// meta 级端到端面见 ConfigParseTest.SwHeadDim* 两例，池期望面见 TC_613/614）。
+// 接受面 = 旧契（sw_hd=0 无组合约束）+ 新契合法（sw>0 ∧ prefill 非空全正，
+// C=W+P 可算）；拒绝面 = 字段自检负值 + D10 三元组（sw=0 / prefill 空 /
+// prefill 含非正档）。
+// ═══════════════════════════════════════════════════════════════════════════
+
+TEST(SlidingHeadDimComboTest, GateAcceptsOldContractAndRejectsD10Tuples)
+{
+    // 接受面——旧契（sw_hd=0）：无组合约束（sw / prefill 任何形态均直落）
+    EXPECT_TRUE(SlidingHeadDimComboValid(0, 0, {}));
+    EXPECT_TRUE(SlidingHeadDimComboValid(256, 0, {}));
+    EXPECT_TRUE(SlidingHeadDimComboValid(0, 0, {1024}));
+    // 接受面——新契合法：sw>0 且 prefill 档非空全正
+    EXPECT_TRUE(SlidingHeadDimComboValid(256, 128, {1024, 2048}));
+    EXPECT_TRUE(SlidingHeadDimComboValid(4, 64, {8}));
+    // 拒绝面——字段自检：sw / sw_hd 任一负值即拒（段降级前置判据）
+    EXPECT_FALSE(SlidingHeadDimComboValid(-1, 0, {}));
+    EXPECT_FALSE(SlidingHeadDimComboValid(0, -1, {1024}));
+    // 拒绝面——D10 三元组（sw_hd>0 搭配）：sw=0 / prefill 空 / 含非正档
+    EXPECT_FALSE(SlidingHeadDimComboValid(0, 64, {1024}));
+    EXPECT_FALSE(SlidingHeadDimComboValid(256, 64, {}));
+    EXPECT_FALSE(SlidingHeadDimComboValid(256, 64, {0}));
+    EXPECT_FALSE(SlidingHeadDimComboValid(256, 64, {2048, -1}));
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Cache_pool_simplify.md（2026-10-15 定稿实施）：KV tensor 按 om 图工位
 // desc 惰性直建，KV 池与 LinearStatePool 统一 verify-or-create 语义。本组
 // 锁定 KvCachePool::EnsureKvTensor：
@@ -1435,24 +1774,28 @@ TEST(KvPoolEnsureTest, LayerNotInPoolReturnsFailure_TC607)
     EXPECT_EQ(pool.TensorCount(), 0u);
 }
 
-// TC_610：滑窗层期望末维——sliding_attention 层期望末维 = sliding_window
-// （gemma4 异构期望口径），图末维 ≠ 期望 → R3b 告警档放行直建（2026-10-15
-// 裁定：仅告警、每池一次）；kv_len/batch 仍致命档。K 与 V 同层可异形
-// （各按自己图 desc 建——om 是权威）
+// TC_610：滑窗层期望末维——sw_hd=0（旧契，尾参缺省）sliding_attention 层
+// 期望末维 = head_dim（与 full 层同形；sliding_kv_seq_dim_rebind D2 改写，
+// SP-5②：旧版按"期望末维 = sliding_window"建池断言——b688221 废口径 D8 下
+// 该期望因末维失配仅 WARN 恒过、断言在错误前提上通过），图末维 ≠ 期望 →
+// R3b 告警档放行直建（2026-10-15 裁定：仅告警、每池一次）；kv_len/batch
+// 仍致命档。K 与 V 同层可异形（各按自己图 desc 建——om 是权威）。新契
+// sw_hd>0 面见 TC_613/TC_614。
 TEST(KvPoolEnsureTest, SlidingLayerEndDimMismatchWarnsOnly_TC610)
 {
     if (!HostBackendAvailable()) {
         GTEST_SKIP() << "host 无 NDK/stub so：CreateTensor 不可用";
     }
     KvCachePool pool(2, 16, 2, 1, 8, {"sliding_attention", "full_attention"},
-                     /*sliding_window=*/4);
-    ASSERT_EQ(pool.NumKvLayers(), 2); // 两建池层
-    // layer 0（sliding）：期望末维 4，图末维 4 → 期望命中直建
-    ASSERT_EQ(pool.EnsureKvTensor(0, false, MakeGraphKvDesc({2, 1, 16, 4})).code, Status::SUCCESS);
-    EXPECT_EQ(pool.KTensor(0)->GetTensorDesc().dims, (std::vector<int32_t>{2, 1, 16, 4}));
-    // 同层 V0 末维 ≠ 期望（图 8 ≠ 期望 4）→ 告警档直建（K/V 同层异形允许）
-    ASSERT_EQ(pool.EnsureKvTensor(0, true, MakeGraphKvDesc({2, 1, 16, 8})).code, Status::SUCCESS);
-    EXPECT_EQ(pool.VTensor(0)->GetTensorDesc().dims, (std::vector<int32_t>{2, 1, 16, 8}));
+                     /*sliding_window=*/4); // sw_hd 缺省 0 = 旧契
+    ASSERT_EQ(pool.NumKvLayers(), 2);       // 两建池层
+    // layer 0（sliding，旧契）：期望末维 = head_dim = 8，图末维 8 → 命中直建
+    ASSERT_EQ(pool.EnsureKvTensor(0, false, MakeGraphKvDesc({2, 1, 16, 8})).code, Status::SUCCESS);
+    EXPECT_EQ(pool.KTensor(0)->GetTensorDesc().dims, (std::vector<int32_t>{2, 1, 16, 8}));
+    // 同层 V0 末维 ≠ 期望（图 4，b688221 过渡图口径形 ≠ 期望 8）→ 告警档
+    // 直建（K/V 同层异形允许；om 权威）
+    ASSERT_EQ(pool.EnsureKvTensor(0, true, MakeGraphKvDesc({2, 1, 16, 4})).code, Status::SUCCESS);
+    EXPECT_EQ(pool.VTensor(0)->GetTensorDesc().dims, (std::vector<int32_t>{2, 1, 16, 4}));
     // layer 1（full）：期望末维 8，图末维 8 → 正常
     ASSERT_EQ(pool.EnsureKvTensor(1, false, MakeGraphKvDesc({2, 1, 16, 8})).code, Status::SUCCESS);
     EXPECT_EQ(pool.TensorCount(), 3u);
@@ -1489,6 +1832,79 @@ TEST(KvPoolEnsureTest, AllLinearPoolSilentEmpty_TC612)
     EXPECT_FALSE(pool.KTensor(0));
     EXPECT_EQ(pool.EnsureKvTensor(0, false, MakeGraphKvDesc({2, 1, 16, 8})).code, Status::FAILURE);
     EXPECT_EQ(pool.EnsureKvTensor(1, false, MakeGraphKvDesc({2, 1, 16, 8})).code, Status::FAILURE);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 新契 typed 池期望（sliding_kv_seq_dim_rebind D1/D2；审查 SP-2 补 §5 U2
+// 缺口、SP-3 补 §4/U6 兼容矩阵双向 fatal 缺口）。期望面（仅 R3 比对值，
+// 不参与建 tensor——om 权威 R1）：
+//   新契池（prefill_max>0 ∧ sw_hd>0）：sliding 层 = [b, h, C=W+P, sw_hd]、
+//     full 层 = [b, h, kv_max, head_dim]（双层池同池异形）；
+//   旧契池（尾参缺省 0）：sliding 层与 full 层同形 [b, h, kv_max, head_dim]。
+// 兼容矩阵（D7 fail-loud）：kv_len 维（dims[2]）失配恒 INVALID_ARGUMENT——
+//   新契 meta 配旧形图（期 C、图 kv_max）与旧契池配新形图（期 kv_max、
+//   图 C）双向都 fatal；末维 dim（dims[3]）失配仍告警档放行（om 权威）。
+// 池小形状：b=2 / kv_max=16 / h=1 / head_dim=8；W=4 / P=8 ⇒ C=12、sw_hd=64。
+// ═══════════════════════════════════════════════════════════════════════════
+
+// TC_613：新契双层池期望——sliding 层 expect seq=C=W+P、末维=sw_hd，full
+// 层 expect 旧形 [b,h,kv_max,head_dim]。期望命中可直测（图 dims 按期望给 →
+// SUCCESS 且不产生末维/heads 告警路径语义分叉）；末维失配只走告警档。
+TEST(KvPoolEnsureTest, NewContractPoolPerLayerExpectDims_TC613)
+{
+    if (!HostBackendAvailable()) {
+        GTEST_SKIP() << "host 无 NDK/stub so：CreateTensor 不可用";
+    }
+    KvCachePool pool(2, 16, 2, 1, 8, {"sliding_attention", "full_attention"},
+                     /*sliding_window=*/4, /*init_token_len=*/0,
+                     /*prefill_max=*/8, /*sw_head_dim=*/64);
+    ASSERT_EQ(pool.NumKvLayers(), 2);
+    // layer 0（sliding，新契）：期望 {2,1,12,64}（C=4+8、sw_hd=64）——期望
+    // 命中直建（无告警路径，dims 原样落位）
+    ASSERT_EQ(pool.EnsureKvTensor(0, false, MakeGraphKvDesc({2, 1, 12, 64})).code, Status::SUCCESS);
+    EXPECT_EQ(pool.KTensor(0)->GetTensorDesc().dims, (std::vector<int32_t>{2, 1, 12, 64}));
+    // layer 0 V 末维失配（图 8 < 期望 64）→ 告警档放行直建（D2 末维非
+    // 致命维；om 权威口径与旧契 TC_610 同档）
+    ASSERT_EQ(pool.EnsureKvTensor(0, true, MakeGraphKvDesc({2, 1, 12, 8})).code, Status::SUCCESS);
+    EXPECT_EQ(pool.VTensor(0)->GetTensorDesc().dims, (std::vector<int32_t>{2, 1, 12, 8}));
+    // layer 1（full，不受新契影响）：期望 {2,1,16,8}（kv_max/head_dim）——
+    // 双层池同池异形：sliding 层 C/sw_hd 与 full 层 kv_max/head_dim 并存
+    ASSERT_EQ(pool.EnsureKvTensor(1, false, MakeGraphKvDesc({2, 1, 16, 8})).code, Status::SUCCESS);
+    EXPECT_EQ(pool.KTensor(1)->GetTensorDesc().dims, (std::vector<int32_t>{2, 1, 16, 8}));
+    EXPECT_EQ(pool.TensorCount(), 3u);
+}
+
+// TC_614：兼容矩阵双向 fatal（D7/U6）——kv_len 维（dims[2]）失配 = 致命档：
+//   新契池配旧形图 {..,kv_max,..}：期望 12（C）、图 16 → INVALID_ARGUMENT；
+//   旧契池配新形图 {..,C,..}：期望 16（kv_max）、图 12 → INVALID_ARGUMENT。
+// 两向都拦 = meta 契约 flag（sw_hd）与图代错配时至 Load 终止，不静默带病运行。
+TEST(KvPoolEnsureTest, ContractMismatchFatalBothDirections_TC614)
+{
+    // 正向：新契池（期望 sliding 层 seq=C=12）配旧形图（kv_max=16）
+    {
+        KvCachePool pool(2, 16, 2, 1, 8, {"sliding_attention", "full_attention"},
+                         /*sliding_window=*/4, /*init_token_len=*/0,
+                         /*prefill_max=*/8, /*sw_head_dim=*/64);
+        EXPECT_EQ(pool.EnsureKvTensor(0, false, MakeGraphKvDesc({2, 1, 16, 64})).code, Status::INVALID_ARGUMENT)
+            << "新契池×旧形图：kv_len 16≠12";
+        EXPECT_EQ(pool.EnsureKvTensor(0, false, MakeGraphKvDesc({2, 1, 16, 8})).code, Status::INVALID_ARGUMENT)
+            << "新契池×旧全形图";
+        // full 层不受新契期望影响（期 16 图 16 → 命中）
+        EXPECT_EQ(pool.EnsureKvTensor(1, false, MakeGraphKvDesc({2, 1, 16, 8})).code, Status::SUCCESS);
+        EXPECT_FALSE(pool.KTensor(0)) << "致命拒不落位";
+    }
+    // 反向：旧契池（期望 sliding 层 seq=kv_max=16——尾参缺省 0 表示旧契）
+    // 配新形图（C=12）
+    {
+        KvCachePool pool(2, 16, 2, 1, 8, {"sliding_attention", "full_attention"},
+                         /*sliding_window=*/4); // init/prefill_max/sw_hd 全缺省
+        EXPECT_EQ(pool.EnsureKvTensor(0, false, MakeGraphKvDesc({2, 1, 12, 64})).code, Status::INVALID_ARGUMENT)
+            << "旧契池×新形图：kv_len 12≠16";
+        // 同层末维=sw_hd 形态也救不了（致命维先拦——seq 轴失配即拒）
+        EXPECT_EQ(pool.EnsureKvTensor(0, false, MakeGraphKvDesc({2, 1, 12, 8})).code, Status::INVALID_ARGUMENT)
+            << "旧契池×新形图（旧末维）";
+        EXPECT_EQ(pool.TensorCount(), 0u);
+    }
 }
 
 // TC_607：显式 dims 批量通道参数防御——out 空指针 / layer_ids 空、含负 /

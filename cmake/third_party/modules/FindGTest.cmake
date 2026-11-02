@@ -105,7 +105,7 @@ if(GTest_FIND_REQUIRED)
         "[GTest] find_library(gtest) -> '${_GTEST_LIBRARY}'\n"
         "[GTest] find_library(gtest_main) -> '${_GTEST_MAIN_LIBRARY}'\n"
         "[GTest] Options:\n"
-        "[GTest]   1. Build third-party libraries: ./build_third_party.sh\n"
+        "[GTest]   1. Build third-party libraries: bash build.sh third_party\n"
         "[GTest]   2. Specify CANN_3RD_LIB_PATH: -DCANN_3RD_LIB_PATH=/path/to/third_party\n"
         "[GTest]   3. Specify GTest_DIR: -DGTest_DIR=/path/to/gtest/lib/cmake/GTest"
     )

@@ -112,3 +112,4 @@ examples/test_converter/export_llm_model/cann_lm_cli_export/extract_node_weight.
 /models/
 build_smoke/
 deploy_ohos/
+tmp_docs

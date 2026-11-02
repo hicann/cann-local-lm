@@ -36,15 +36,15 @@ int LinearStatePool::GroupIndex(int layer) const noexcept
 std::shared_ptr<ITensorBuffer> LinearStatePool::ConvTensor(int layer) const
 {
     std::lock_guard<std::mutex> lk(mtx_);
-    const int g = GroupIndex(layer);
-    return g < 0 ? nullptr : tensors_[static_cast<std::size_t>(g)].first;
+    const int group = GroupIndex(layer);
+    return group < 0 ? nullptr : tensors_[static_cast<std::size_t>(group)].first;
 }
 
 std::shared_ptr<ITensorBuffer> LinearStatePool::RTensor(int layer) const
 {
     std::lock_guard<std::mutex> lk(mtx_);
-    const int g = GroupIndex(layer);
-    return g < 0 ? nullptr : tensors_[static_cast<std::size_t>(g)].second;
+    const int group = GroupIndex(layer);
+    return group < 0 ? nullptr : tensors_[static_cast<std::size_t>(group)].second;
 }
 
 std::size_t LinearStatePool::TensorCount() const noexcept
@@ -60,15 +60,15 @@ std::size_t LinearStatePool::TensorCount() const noexcept
 Status LinearStatePool::EnsureStateTensor(int layer, StateKind kind, const TensorDesc& desc)
 {
     std::lock_guard<std::mutex> lk(mtx_);
-    const int g = GroupIndex(layer);
-    if (g < 0) {
+    const int group = GroupIndex(layer);
+    if (group < 0) {
         CANN_LLM_LOGE("state_pool.ensure: layer %d is not linear_attention "
                       "(pool linear layers = %d) —— 图带状态工位而配置未声明",
                       layer, NumLinearLayers());
         return Status::INVALID_ARGUMENT;
     }
-    auto& slot = (kind == StateKind::Conv) ? tensors_[static_cast<std::size_t>(g)].first :
-                                             tensors_[static_cast<std::size_t>(g)].second;
+    auto& slot = (kind == StateKind::Conv) ? tensors_[static_cast<std::size_t>(group)].first :
+                                             tensors_[static_cast<std::size_t>(group)].second;
     const char* kind_name = (kind == StateKind::Conv) ? "conv" : "r";
 
     // 已就绪 → 跨图一致性校验后复用（prefill/decode 双图状态形状把关点）
@@ -99,12 +99,12 @@ Status LinearStatePool::EnsureStateTensor(int layer, StateKind kind, const Tenso
     TensorDesc d = desc; // 形状/dtype 以图工位 desc 为权威（§5 D1）
     d.tensorName = std::string(kind == StateKind::Conv ? "conv_state_layer_" : "rstate_layer_") + std::to_string(layer);
     std::shared_ptr<ITensorBuffer> t;
-    Status st = TensorManager::Instance().CreateTensor(d, /*modelId=*/0, &t);
-    if (!st.ok()) {
+    Status create_status = TensorManager::Instance().CreateTensor(d, /*modelId=*/0, &t);
+    if (!create_status.ok()) {
         CANN_LLM_LOGE("state_pool.ensure: layer %d kind %s CreateTensor failed "
                       "(st=%d)",
-                      layer, kind_name, st.code);
-        return st;
+                      layer, kind_name, create_status.code);
+        return create_status;
     }
     // 创建即整体清零（图首次读须是干净状态）
     std::memset(t->GetData(), 0, t->GetSize());
@@ -118,15 +118,15 @@ Status LinearStatePool::EnsureStateTensor(int layer, StateKind kind, const Tenso
 Status LinearStatePool::ResetLane(SlotId slot)
 {
     std::lock_guard<std::mutex> lk(mtx_);
-    for (std::size_t g = 0; g < tensors_.size(); ++g) {
-        for (auto& t : {tensors_[g].first, tensors_[g].second}) {
+    for (std::size_t group = 0; group < tensors_.size(); ++group) {
+        for (auto& t : {tensors_[group].first, tensors_[group].second}) {
             if (!t)
                 continue;
             const auto& dims = t->GetTensorDesc().dims;
             if (dims.empty() || dims[0] <= 0) {
                 CANN_LLM_LOGW("state_pool.reset_lane: invalid batch dim (layer "
                               "group %zu)",
-                              g);
+                              group);
                 continue;
             }
             const auto batch = static_cast<SlotId>(dims[0]);

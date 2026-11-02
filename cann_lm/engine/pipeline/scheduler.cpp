@@ -2,6 +2,7 @@
 
 #include "core/component/text_embedding/text_embedding.h" // SR20260828001：FillInputs 接线
 #include "infra/log.h"
+#include "utils/perf_timer.h" // NowUs/UsToMs：推理耗时观测（perf.* 协议见其头注释）
 
 #include <utility>
 
@@ -23,7 +24,9 @@ Scheduler::~Scheduler() = default;
 void Scheduler::RollbackCache_(const std::shared_ptr<RequestImpl>& req)
 {
     // R10 回退调度器侧统一入口：幂等（闭包首次生效后重灌天然幂等）；
-    // 未注入（R3 无台账场景 / 历史遗留直接构造 RequestImpl 的 UT）安全跳过。
+    // 仅 Failed/Canceled 终态请求可进（REQ-8：Completed 记账保留供下轮
+    // 复用——由各调用点判定，本入口不复查）；未注入（R3 无台账场景 /
+    // 历史遗留直接构造 RequestImpl 的 UT）安全跳过。
     if (req && req->rollback_cache)
         req->rollback_cache();
 }
@@ -42,7 +45,13 @@ void Scheduler::ReclaimAndFill_()
         }
         auto s = slot.req->status.load(std::memory_order_acquire);
         if (s == RequestStatus::Completed || s == RequestStatus::Canceled || s == RequestStatus::Failed) {
-            RollbackCache_(slot.req); // Canceled/Failed 需回退；Completed 闭包内 no-op
+            // R10 回退仅 Canceled/Failed（REQ-8）：回退 = 恢复提交前快照 =
+            // "本轮当未发生"，只服务失败/取消请求的一致性；Completed 成功链
+            // 台账/池记账必须保留，供同 Context 下轮比对复用（free the lane,
+            // keep the books）。槽位清理（FreeKvSlot/重置）对三类终态照常。
+            if (s != RequestStatus::Completed) {
+                RollbackCache_(slot.req);
+            }
             if (pool && slot.kv_slot >= 0)
                 (void)pool->FreeKvSlot(slot.kv_slot);
             slot.active = false;
@@ -67,9 +76,25 @@ void Scheduler::ReclaimAndFill_()
             break;
         auto entry = std::move(pending_decode_.front());
         pending_decode_.pop_front();
+        // 终态请求不入 decode 池（首 token 终止竞速防御，ut_pipeline_budget
+        // U4 定案）：末块出口被 pipeline 侧预算闸/stop_token
+        // 终结（SetTerminal Completed）后，请求从 pending_decode_ 取出时已
+        // 终态——照旧入池会把终态覆写回 Decoding（下方 status.store），
+        // 已完成请求续跑 decode 多采样越界 token。此处直接跳过即可：
+        // 槽位/记账已由 pipeline 终态点（ClearActiveGenerate_）+ 本函数
+        // 首段终态清理分支按各自职责收尾，无 KV 工位泄漏（kv_slot 在
+        // prefill 已绑且 Completed 允许复用账面）。
+        if (entry.req->status.load(std::memory_order_acquire) != RequestStatus::Decoding) {
+            continue;
+        }
         slot.req = std::move(entry.req);
         slot.kv_slot = entry.kv_slot;
         slot.active = true;
+        // decode 阶段起点观测（首次入池写一次；重新入池的场景（decode 池
+        // 逐出后再入）保持原起点——统计解码整体墙钟，不按入池分段）
+        if (slot.req && slot.req->decode_start_us == 0) {
+            slot.req->decode_start_us = NowUs();
+        }
         slot.req->status.store(RequestStatus::Decoding, std::memory_order_release);
     }
 }
@@ -89,6 +114,11 @@ Status Scheduler::Submit(std::vector<std::vector<TokenId>> prefill_chunks, std::
         task.id = id;
         task.req = req;
         task.chunks = std::move(prefill_chunks);
+        // 工位直用：预绑定工位随 task 入队，Step 的 kv_slot<0 检查直通
+        // （不再 AllocKvSlot 清零）。
+        if (req->kv_slot_prefilled >= 0) {
+            task.kv_slot = req->kv_slot_prefilled;
+        }
         prefill_queue_.push_back(std::move(task));
     }
 
@@ -128,7 +158,29 @@ Status Scheduler::Step(StepOutput* out)
     if (has_prefill && prefill_ready) {
         auto& task = prefill_queue_.front();
 
-        // 分配 KV 槽（首次处理该 task 时）
+        // 空块守卫（DTS202610220945 Fix B）：空 chunks = 无任何可前向输入，
+        // 无 logits 可产出，请求无法推进——空 prompt / 上游回归可达（Fix A 后
+        // 命中路径恒 ≥1 真实块，本守卫为防御纵深）。镜像 not-ready 终态模式
+        // （本函数尾部分支：Failed + R10 回退 + 出队 + FAILURE）。
+        // 不调 FreeKvSlot：kv_slot == -1 = 尚未分配无事可释放；预绑定工位
+        // （kv_slot_prefilled ≥ 0）归缓存绑定所有——Free 会置 active=false，
+        // 回退闭包只恢复记账不恢复 active，留下被下次 AllocKvSlot 复用清账
+        // 的脏窗口（本 PR 不引入该窗口）。
+        if (task.chunks.empty()) {
+            CANN_LLM_LOGE("pipeline.step: empty prefill chunks (req=%llu), "
+                          "request marked failed",
+                          static_cast<unsigned long long>(task.id.value));
+            task.req->SetTerminal(RequestStatus::Failed, FinishReason::Error);
+            RollbackCache_(task.req); // R10：回退随 req 携带（幂等）
+            prefill_queue_.pop_front();
+            return Status::FAILURE;
+        }
+
+        // 分配 KV 槽（首次处理该 task 时）。命中请求的预绑定工位
+        // （kv_slot ≥ 0，Submit 期随台账登记工位预置）直通——AllocKvSlot
+        // 的复用/驱逐路径会清零槽记账，把 GenerateAsync 里 ResumeSlot
+        // 刚恢复到 LCP 的 total_written 抹掉（Bug：S2 增量块从绝对位 0
+        // 覆写缓存前缀 KV）。
         if (task.kv_slot < 0) {
             auto pool = prefill_executor_->Pool();
             if (!pool || !pool->AllocKvSlot(&task.kv_slot).ok()) {
@@ -151,8 +203,17 @@ Status Scheduler::Step(StepOutput* out)
 
         // 捕获 req 副本（防止 pop 后 task 引用悬空）
         auto req = task.req;
+        // 实际工位回写（预绑定直通 / Alloc 分配两路统一；worker 单线程
+        // 无竞态）：pipeline 首 prefill 完成记账点消费——台账工位记录使
+        // miss 请求下轮命中直用时也拿真实工位（多 batch 遗留的取值链）。
+        req->kv_slot_actual = task.kv_slot;
         const auto& chunk = task.chunks[task.next_chunk];
         const size_t chunk_len = chunk.size(); // 切块保证非空
+        // 首个块记 prefill 阶段起点（末块耗尽点消费）
+        if (task.next_chunk == 0 && task.first_chunk_start_us == 0) {
+            task.first_chunk_start_us = NowUs();
+        }
+        const std::int64_t chunk_start = NowUs();
 
         ForwardOptions opts;
         opts.batch = 1;
@@ -164,17 +225,17 @@ Status Scheduler::Step(StepOutput* out)
         // SR20260828001 §2.2 接线点（prefill）：input_embed 工位改由 FillInputs 填充
         // （embedding/tokenId 两路径皆然，路径按 text_embedding 是否 Loaded 分派）；
         // SetInputData 保留为外部直填通道，Scheduler 不再调用。
-        // B-1 修复（2026-09-23，failed_but_not_processed.md §7.1）：FillInputs 失败 =
-        // 前向输入工位未被正确填充，带着未填充/残值工位 Forward 只会产出串扰或垃圾
-        // logits。升级为请求终态 Failed 并出队，与同函数 kv alloc / debug inject /
-        // Forward 失败分支同构（decode 侧 v0.9 语义保留，见 §7.0 B-2 排除项）。
+        // B-1：FillInputs 失败 = 前向输入工位未被正确填充，带着未填充/残值工位
+        // Forward 只会产出串扰或垃圾 logits。升级为请求终态 Failed 并出队，
+        // 与同函数 kv alloc / debug inject / Forward 失败分支同构（decode 侧
+        // 语义保留，见 §7.0 B-2 排除项）。
         //
-        // golden 对齐（2026-10-16，accuracy_requirements.md）：Python 标杆
-        // build_prefill 是「ids 先补满图行宽（pad_token_id）再整批查表」——embedding
-        // 族工位（embeddings/embeddings_scale/per_layer_token_identity/…_scale）的
-        // padding 行 = pad_token_id(=0) 表行（golden dump 实测 padding 行互全同且 ==
-        // 表第 0 行）。本引擎原只填 chunk_len 有效行，尾部留残值 → dump 与 golden
-        // 不一致。改为：chunk 短于图行宽时复制补满 pad_token_id，count = 图行宽；
+        // golden 对齐（accuracy_requirements.md）：Python 标杆 build_prefill 是
+        // 「ids 先补满图行宽（pad_token_id）再整批查表」——embedding 族工位
+        // （embeddings/embeddings_scale/per_layer_token_identity/…_scale）的
+        // padding 行 = pad_token_id(=0) 表行（golden dump 实测 padding 行互全同
+        // 且 == 表第 0 行）。本引擎只填 chunk_len 有效行、尾部留残值会与 golden
+        // 不一致。故：chunk 短于图行宽时复制补满 pad_token_id，count = 图行宽；
         // 整块（== 行宽）零复制（常态快路径不受影响）。全行确定性填充与局部
         // padding/续 arange 语义共存：有效行位置不变，mask padding 行全屏蔽
         // 不参与有效计算。pad_token_id 取自 model_config（pad 缺省 0 兜底，
@@ -197,13 +258,13 @@ Status Scheduler::Step(StepOutput* out)
                 fill_src = fill_ids.data();
                 fill_count = static_cast<std::size_t>(graph_rows);
             }
-            Status fst = text_embedding_->FillInputs(
+            Status fill_status = text_embedding_->FillInputs(
                 prefill_executor_->InputTensors(), prefill_executor_->InputNameIndex(),
                 text_embedding_->Loaded() ? EmbeddingPath::Embedding : EmbeddingPath::TokenId, fill_src, fill_count);
-            if (!fst.ok()) {
+            if (!fill_status.ok()) {
                 CANN_LLM_LOGE("pipeline.step: prefill FillInputs failed (st=%d), "
                               "request marked failed",
-                              fst.code);
+                              fill_status.code);
                 req->SetTerminal(RequestStatus::Failed, FinishReason::Error);
                 auto pool = prefill_executor_->Pool();
                 if (pool && task.kv_slot >= 0)
@@ -211,7 +272,7 @@ Status Scheduler::Step(StepOutput* out)
                 // R10 回退载体：失败请求照填 out->slots（同上）
                 out->slots = {req};
                 prefill_queue_.pop_front();
-                return fst;
+                return fill_status;
             }
         }
         auto st = prefill_executor_->Forward(opts);
@@ -229,14 +290,33 @@ Status Scheduler::Step(StepOutput* out)
             return st;
         }
 
+        // 每轮 prefill 完成观测（本轮 forward 时长 = FillInputs + assembler
+        // 填充 + Forward；req id 归因，块号/块长供多块序列对账）
+        CANN_LLM_LOGD("perf.prefill.chunk: req=%llu chunk=%zu/%zu chunk_len=%zu elapsed=%.3f ms",
+                      static_cast<unsigned long long>(task.id.value), task.next_chunk, task.chunks.size(), chunk_len,
+                      UsToMs(NowUs() - chunk_start));
+
         task.next_chunk++;
 
         // chunk 耗尽 → task 出 prefill 队列，req 入 pending_decode（携带 kv_slot）
         if (task.next_chunk >= task.chunks.size()) {
+            // prefill 整体完成观测（自首块起点累计，含批间调度等待；
+            // 须在 pop_front 之前——pop 后 task 引用失效）。
+            // 吞吐分子 = 本轮实际前向 tokens（全量 − 命中复用段，与切块
+            // 区间 [reusable, len) 同口径；命中复用段不计入）
+            const double prefill_ms = UsToMs(NowUs() - task.first_chunk_start_us);
+            const std::size_t prefill_fed = req->prompt_ids.size() - req->reusable_len;
+            CANN_LLM_LOGI("perf.prefill.total: req=%llu chunks=%zu input_tokens=%zu "
+                          "reusable=%zu elapsed=%.3f ms speed=%.1f tokens/s",
+                          static_cast<unsigned long long>(task.id.value), task.chunks.size(), req->prompt_ids.size(),
+                          req->reusable_len, prefill_ms, prefill_ms > 0.0 ? prefill_fed * 1000.0 / prefill_ms : 0.0);
             SlotId kv = task.kv_slot;
             prefill_queue_.pop_front();
             req->status.store(RequestStatus::Decoding, std::memory_order_release);
             pending_decode_.push_back({req, kv});
+            // 末块完成点旗（采样/记账唯一点）：中间块出口不进本分支，
+            // 恒 false——pipeline RunLoop 依此跳过采样与台账记账。
+            out->is_prefill_last = true;
         }
 
         out->logits = prefill_executor_->Logits(); // v0.9：logits 取自 output_tensors_
@@ -264,7 +344,8 @@ Status Scheduler::Step(StepOutput* out)
                 last_token = slot.req->token_ids.back();
             }
 
-            // 分配不再存在 → 无失败模式（原 CreateTensor 失败分支已移除）
+            // PrepareDecodeStep 在本调用点恒成功（唯一失败面是 out 空指针，
+            // 此处恒传栈上有效对象——其内无其他失败路径）
             std::vector<TokenId> input;
             (void)preprocessor_->PrepareDecodeStep(last_token, &input);
             batch_ids.insert(batch_ids.end(), input.begin(), input.end());
@@ -281,6 +362,7 @@ Status Scheduler::Step(StepOutput* out)
         opts.chunk_len = 1;
         opts.slots = slots;
         opts.dump = false;
+        const std::int64_t decode_step_start = NowUs();
 
         std::shared_ptr<ITensorBuffer> logits;
         // SR20260828001 §2.2 接线点（decode）：同 prefill 点，FillInputs 取代 SetInputData。
@@ -297,14 +379,14 @@ Status Scheduler::Step(StepOutput* out)
             if (graph_batch > static_cast<int>(fill_ids.size())) {
                 fill_ids.resize(static_cast<std::size_t>(graph_batch), fill_ids.front());
             }
-            Status fst = text_embedding_->FillInputs(
+            Status fill_status = text_embedding_->FillInputs(
                 decode_executor_->InputTensors(), decode_executor_->InputNameIndex(),
                 text_embedding_->Loaded() ? EmbeddingPath::Embedding : EmbeddingPath::TokenId, fill_ids.data(),
                 static_cast<std::size_t>(fill_ids.size()));
-            if (!fst.ok()) {
+            if (!fill_status.ok()) {
                 CANN_LLM_LOGW("pipeline.step: decode FillInputs failed (st=%d), "
                               "input_embed slot not filled",
-                              fst.code);
+                              fill_status.code);
             }
         }
         auto st = decode_executor_->Forward(opts);
@@ -327,6 +409,13 @@ Status Scheduler::Step(StepOutput* out)
             }
             return st;
         }
+
+        // 每轮 decode 完成观测（本批 forward 时长 = FillInputs + assembler 填充
+        // + Forward；batch = 本批活跃请求数。RequestImpl 无请求编号面，首个
+        // 请求以 context id 归因（批次逐轮同构，其余请求见各自终态日志）。
+        CANN_LLM_LOGD("perf.decode.step: batch=%zu ctx0=%llu elapsed=%.3f ms", active_reqs.size(),
+                      static_cast<unsigned long long>(active_reqs.front()->context_id.value),
+                      UsToMs(NowUs() - decode_step_start));
 
         out->logits = decode_executor_->Logits(); // v0.9：logits 取自 output_tensors_
         out->slots = std::move(active_reqs);
@@ -462,6 +551,21 @@ int Scheduler::ActiveDecodeCount() const noexcept
             ++n;
     }
     return n;
+}
+
+bool Scheduler::HasActiveTasks()
+{
+    std::lock_guard<std::mutex> lk(mtx_);
+    // prefill 队列 / pending_decode / decode 池 active 任一非空 = 有活任务
+    // （S4 在飞口径第二支——active_generates_ 标记清除与最终出队间的小窗
+    // 兜底；SetContext 持 pipeline context_mtx_ 调用，与 Submit 同互斥面）。
+    if (!prefill_queue_.empty() || !pending_decode_.empty())
+        return true;
+    for (const auto& slot : decode_pool_) {
+        if (slot.active)
+            return true;
+    }
+    return false;
 }
 
 int Scheduler::PendingPrefillCount() const noexcept { return static_cast<int>(prefill_queue_.size()); }

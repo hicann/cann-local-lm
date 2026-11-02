@@ -38,6 +38,7 @@ TEST(CApiTest, NullExecutorReturnsInvalidArgument)
     EXPECT_EQ(CANN_LMEngine_ContextCreate(nullptr, &id), CANN_LM_ENGINE_INVALID_ARGUMENT);
     EXPECT_EQ(CANN_LMEngine_ContextCancel(nullptr, 0), CANN_LM_ENGINE_INVALID_ARGUMENT);
     EXPECT_EQ(CANN_LMEngine_ContextDestroy(nullptr, 0), CANN_LM_ENGINE_INVALID_ARGUMENT);
+    EXPECT_EQ(CANN_LMEngine_ExecutorSetContext(nullptr, 0), CANN_LM_ENGINE_INVALID_ARGUMENT);
 }
 
 TEST(CApiTest, RequestIsDoneReturnsFalseForNull) { EXPECT_EQ(CANN_LMEngine_RequestIsDone(nullptr), 0); }
@@ -59,9 +60,10 @@ TEST(CApiTest, GenerateOnNonexistentContextReturnsNotFound)
     CANN_LMEngine_Executor* exec = nullptr;
     ASSERT_EQ(CANN_LMEngine_ExecutorCreate(&p, &opts, &exec), CANN_LM_ENGINE_SUCCESS);
 
+    // ADR-0002 S2：无活动 Context → INVALID_STATE（非 NOT_FOUND）
     CANN_LMEngine_Result result{};
-    auto s = CANN_LMEngine_ExecutorGenerate(exec, "hello", 999, nullptr, nullptr, &result);
-    EXPECT_EQ(s, CANN_LM_ENGINE_NOT_FOUND);
+    auto s = CANN_LMEngine_ExecutorGenerate(exec, "hello", nullptr, nullptr, &result);
+    EXPECT_EQ(s, CANN_LM_ENGINE_INVALID_STATE);
 
     CANN_LMEngine_ExecutorDestroy(exec);
 }
@@ -98,7 +100,7 @@ TEST(CApiTest, ContextCancelSucceedsOnCreatedContext)
 
 TEST(CApiTest, GenerateReturnsFailureOnCreatedContextStubEra)
 {
-    // Context exists but tokenizer is stub → Generate returns FAILURE
+    // 活动 Context 就绪但 tokenizer 为 stub → Generate 非成功（S2 已过门）
     CANN_LMEngine_ModelArtifact p = MakeEmptyArtifact();
     CANN_LMEngine_EngineOptions opts{};
     CANN_LMEngine_Executor* exec = nullptr;
@@ -106,12 +108,24 @@ TEST(CApiTest, GenerateReturnsFailureOnCreatedContextStubEra)
 
     CANN_LMEngine_ContextId id = 0;
     ASSERT_EQ(CANN_LMEngine_ContextCreate(exec, &id), CANN_LM_ENGINE_SUCCESS);
+    // ADR-0002：SetContext 后 Generate 归属活动 Context
+    ASSERT_EQ(CANN_LMEngine_ExecutorSetContext(exec, 999),
+              CANN_LM_ENGINE_NOT_FOUND); // S3 未注册
+    ASSERT_EQ(CANN_LMEngine_ExecutorSetContext(exec, id),
+              CANN_LM_ENGINE_SUCCESS); // 激活
+    ASSERT_EQ(CANN_LMEngine_ExecutorSetContext(exec, id),
+              CANN_LM_ENGINE_SUCCESS); // S5 幂等
 
     CANN_LMEngine_SamplingParams params{};
     CANN_LMEngine_Result result{};
-    auto s = CANN_LMEngine_ExecutorGenerate(exec, "hello", id, &params, nullptr, &result);
+    auto s = CANN_LMEngine_ExecutorGenerate(exec, "hello", &params, nullptr, &result);
     EXPECT_NE(s, CANN_LM_ENGINE_SUCCESS);
+    EXPECT_NE(s, CANN_LM_ENGINE_INVALID_STATE); // 不是 S2，是 stub encode 失败
     CANN_LMEngine_ResultDestroy(&result);
+
+    // S6：销毁活动 Context（无在飞）→ SUCCESS；此后 Generate 回 S2 拒绝
+    ASSERT_EQ(CANN_LMEngine_ContextDestroy(exec, id), CANN_LM_ENGINE_SUCCESS);
+    EXPECT_EQ(CANN_LMEngine_ExecutorGenerate(exec, "hello", &params, nullptr, &result), CANN_LM_ENGINE_INVALID_STATE);
 
     CANN_LMEngine_ExecutorDestroy(exec);
 }

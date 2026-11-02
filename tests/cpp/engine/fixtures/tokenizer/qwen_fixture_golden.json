@@ -1,0 +1,144 @@
+{
+    "vocab_size": 422,
+    "cases": [
+     {
+      "text": "Hello world",
+      "ids": [
+       329,
+       309
+      ],
+      "decoded": "Hello world"
+     },
+     {
+      "text": "你好世界",
+      "ids": [
+       419,
+       234
+      ],
+      "decoded": "你好世界"
+     },
+     {
+      "text": "it's a test",
+      "ids": [
+       262,
+       322,
+       380,
+       302
+      ],
+      "decoded": "it's a test"
+     },
+     {
+      "text": "hello<|endoftext|>world",
+      "ids": [
+       284,
+       420,
+       363,
+       269
+      ],
+      "decoded": "helloworld"
+     },
+     {
+      "text": "  leading and trailing spaces   ",
+      "ids": [
+       220,
+       220,
+       352,
+       406,
+       263,
+       403,
+       413,
+       317,
+       381,
+       220
+      ],
+      "decoded": "  leading and trailing spaces   "
+     },
+     {
+      "text": "tabs\tand\nnewlines",
+      "ids": [
+       83,
+       335,
+       82,
+       377,
+       198,
+       77,
+       343,
+       414
+      ],
+      "decoded": "tabs\tand\nnewlines"
+     },
+     {
+      "text": "数字 12345 混合",
+      "ids": [
+       371,
+       367,
+       400,
+       220,
+       16,
+       17,
+       18,
+       19,
+       20,
+       220,
+       162,
+       115,
+       115,
+       161,
+       238,
+       230
+      ],
+      "decoded": "数字 12345 混合"
+     },
+     {
+      "text": "punct!@#$%^&*()",
+      "ids": [
+       311,
+       318,
+       319,
+       320,
+       321,
+       323
+      ],
+      "decoded": "punct!@#$%^&*()"
+     },
+     {
+      "text": "aü ok",
+      "ids": [
+       340,
+       120,
+       384
+      ],
+      "decoded": "aü ok"
+     },
+     {
+      "text": "mixed 你好 english",
+      "ids": [
+       310,
+       387,
+       382,
+       347,
+       350,
+       71
+      ],
+      "decoded": "mixed 你好 english"
+     },
+     {
+      "text": "<tool_call>run<|im_end|>",
+      "ids": [
+       421,
+       81,
+       272,
+       278,
+       348,
+       334,
+       293
+      ],
+      "decoded": "<tool_call>run<|im_end|>"
+     },
+     {
+      "text": "",
+      "ids": [],
+      "decoded": ""
+     }
+    ]
+   }

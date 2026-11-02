@@ -1,6 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════
-// 【临时调试代码 — 验证完成后删除】DebugTensorDump 实现。
-// 详见 debug_tensor_dump.h 的说明。
+// DebugTensorDump 实现（env 开关默认关）。详见 debug_tensor_dump.h 的说明。
 // ═══════════════════════════════════════════════════════════════════════════
 #include "utils/debug_tensor_dump.h"
 
@@ -195,7 +194,7 @@ void DebugDumpTensors(const std::vector<std::shared_ptr<ITensorBuffer>>& tensors
 
 void DebugDumpTokenizerIds(const char* mode, const std::vector<int32_t>& ids, const char* name)
 {
-    // 【临时调试代码 — 验证完成后删除】tokenizer 结果 dump（golden 对齐）。
+    // tokenizer 结果 dump（golden 对齐）。
     // naive/env 语义与 DebugDumpTensors 完全同体例：
     //   - 总闸 CANN_LM_DEBUG_DUMP_TENSORS 未开 → 立即返回，零文件零日志；
     //   - 目录/建目录逻辑与工位 dump 共用（DumpDir/EnsureDir）；

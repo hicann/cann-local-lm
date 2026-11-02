@@ -1,5 +1,6 @@
 #include "core/component/tokenizer/tokenizer.h"
 #include "core/component/tokenizer/tokenizer_detail.h"
+#include "infra/log.h" // CANN_LLM_LOGW（meta id 冲突告警）
 
 #include <array>
 #include <locale>
@@ -18,10 +19,8 @@ namespace cann_lm::engine {
 
 namespace {
 
-// D-10 预切分正则（用户拍板 2026-09-01；aplha 笔误已订正为 alpha，保留
-// [a-zA-Z]ü 分支）。字节级匹配——C locale 下 ASCII 分类稳定（OHOS musl 安全）。
-// D-10 预切分正则（用户拍板 2026-09-01；aplha 笔误已订正为 alpha，保留
-// [a-zA-Z]ü 分支）。字节级匹配。**钉死 classic locale 编译**（外审 F-07）：
+// D-10 预切分正则（含 [a-zA-Z]ü 分支）。
+// 字节级匹配。**钉死 classic locale 编译**（外审 F-07）：
 // 否则 std::regex 按构造时全局 locale 分类 [:alpha:]——宿主进程切到单字节
 // 扩展字符集（如 ISO-8859-1）时 0x80-0xFF 字节分类改变，切分静默分叉。
 const std::regex& PretokRegex()
@@ -78,6 +77,19 @@ QwenTokenizer::QwenTokenizer(const TokenizerConfig& cfg, Status* status)
             *status = vocab_st;
         return;
     }
+    // 词表 added ∪ meta special_tokens 合并提取表（D-3：meta 优先 + WARN；
+    // 构造期一次性，encode 热路径零额外查表）
+    added_lookup_ = specials_.merged_added_tokens(vocab_.added_tokens());
+    // id 冲突告警：meta id 撞词表已有字面量（decode 查序 meta 在前 = meta 赢；
+    // 同字面量冲突已在 merged_added_tokens 内 WARN）
+    for (const auto& [lit, tid] : cfg.special_tokens) {
+        if (tid < 0)
+            continue;
+        if (auto vl = vocab_.id_to_token(tid); vl && *vl != lit) {
+            CANN_LLM_LOGW("tokenizer.special.meta: id conflict, meta wins (id=%d, vocab=%s, meta=%s)", tid,
+                          std::string(*vl).c_str(), lit.c_str());
+        }
+    }
     // merges → wstring 域 rank 表（构造期一次性，用户拍板口径）
     {
         std::wstring a, b;
@@ -107,9 +119,10 @@ Status QwenTokenizer::encode(std::string_view text, const EncodeOptions& opts, s
     if (!tokenizer_detail::ValidUtf8(text))
         return Status::INVALID_ARGUMENT;
 
-    // ① AddedToken 提取（左最长，先于预切分，作用于原文）
+    // ① AddedToken 提取（左最长，先于预切分，作用于原文）；
+    //   提取表 = 词表 added ∪ meta special_tokens（meta 命中 → 目标特殊 id，映射）
     std::vector<tokenizer_detail::AddedSegment> segments;
-    tokenizer_detail::ExtractAddedTokens(text, vocab_.added_tokens(), &segments);
+    tokenizer_detail::ExtractAddedTokens(text, added_lookup_, &segments);
 
     const auto unk_id = specials_.id("unk");
 
@@ -167,13 +180,19 @@ Status QwenTokenizer::decode(const std::vector<int>& ids, const DecodeOptions& o
             return st;
     }
 
-    // id→字面量→ByteLevel 字节还原（映射码点 → 原字节；非映射码点按原样输出）
+    // id→字面量→ByteLevel 字节还原（映射码点 → 原字节；非映射码点按原样输出）；
+    // meta 解映射优先（D-3：命中即字面量原样输出，不走字节还原——
+    // 词表外 id 的出字面量通道）
     const auto& dec = ByteDecoder();
     std::wstring literal;
     for (const int id : kept) {
+        if (auto meta_lit = specials_.literal(id)) {
+            *out_text += std::string(*meta_lit);
+            continue;
+        }
         auto lit = vocab_.id_to_token(id);
         if (!lit)
-            continue; // 词表外 id：跳过（不中断）
+            continue; // 词表外且非 meta 映射 id：跳过（不中断）
         if (!tokenizer_detail::Utf8ToWide(*lit, &literal)) {
             *out_text += std::string(*lit); // 非法 UTF-8 字面量：原样追加
             continue;

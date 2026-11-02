@@ -27,7 +27,7 @@ CANN_3RD_LIB_PATH="${CANN_3RD_LIB_PATH:-}"
 if [[ -z "${ASCEND_HOME_PATH:-}" ]]; then
     echo "ERROR: ASCEND_HOME_PATH 未设. 先 source scripts/cann_lm_compile/set_env.sh" >&2; exit 1
 fi
-# 镜像下校验 lib_cache/json; 非镜像校验 output/third_party/json
+# 镜像下校验 lib_cache/json; 非镜像校验 output/third_party/{json,gtest}
 if [[ "$MIRROR_THIRD_PARTY_VAL" == "ON" ]]; then
     if [[ ! -d "${CANN_3RD_LIB_PATH}/lib_cache/json/include/nlohmann" ]]; then
         echo "ERROR: 镜像三方库缺失: ${CANN_3RD_LIB_PATH}/lib_cache/json/include/nlohmann" >&2; exit 1
@@ -35,6 +35,9 @@ if [[ "$MIRROR_THIRD_PARTY_VAL" == "ON" ]]; then
 else
     if [[ ! -d "${THIRD_PARTY}/json" ]]; then
         echo "ERROR: third_party 缺失: ${THIRD_PARTY}/json (先 bash build.sh third_party)" >&2; exit 1
+    fi
+    if [[ ! -d "${THIRD_PARTY}/gtest" ]]; then
+        echo "ERROR: third_party 缺失: ${THIRD_PARTY}/gtest (先 bash build.sh third_party)" >&2; exit 1
     fi
 fi
 

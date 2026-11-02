@@ -11,9 +11,8 @@
 namespace cann_lm::engine {
 
 namespace {
-/// 调试用 dims 格式化（临时）——与下方两条申请日志同属 DEBUG-TODO-REMOVE
-/// 打包删除（grep "[DEBUG-TODO-REMOVE]" 一并清除）。[a, b, c] 方括号包裹，
-/// 与 kv_cache_pool 的 FormatDimsForLog 日志风格一致。
+/// dims 的 [a, b, c] 方括号格式化（日志用，与 kv_cache_pool 的 FormatDimsForLog
+/// 日志风格一致）。
 std::string DebugFormatDims(const std::vector<int32_t>& dims)
 {
     std::string s = "[";
@@ -38,12 +37,10 @@ Status TensorManager::CreateTensor(const TensorDesc& desc, int modelId, std::sha
 {
     if (!out)
         return Status::INVALID_ARGUMENT;
-    // [DEBUG-TODO-REMOVE] 调试日志：tensor 申请入口（name/dims/dtype/modelId）。
-    // spec 联调期排查用，正式版删除（与本文件内同名标记一并清除）。
-    CANN_LLM_LOGD("tensor_mgr.create: name='%s', dims=%s, dtype=%d modelId=%d "
-                  "[DEBUG-TODO-REMOVE]",
-                  desc.tensorName.c_str(), DebugFormatDims(desc.dims).c_str(), static_cast<int>(desc.dataType),
-                  modelId);
+    // 调试日志：tensor 申请入口（name/dims/dtype/modelId）。OHOS 形态 LOGD
+    // 受 hilog 级别控制；host 形态无门控、恒输出到 stderr。
+    CANN_LLM_LOGD("tensor_mgr.create: name='%s', dims=%s, dtype=%d modelId=%d", desc.tensorName.c_str(),
+                  DebugFormatDims(desc.dims).c_str(), static_cast<int>(desc.dataType), modelId);
     // 委托 backend CreateNDTensorBuffer 工厂（NDK 通路；host 无 so 时返回 nullptr）
     auto tb = hiai::CreateNDTensorBuffer(desc);
     if (!tb)
@@ -52,7 +49,7 @@ Status TensorManager::CreateTensor(const TensorDesc& desc, int modelId, std::sha
     if (!tb->GetData())
         return Status::FAILURE;
     *out = tb;
-    (void)modelId; // 桩：modelId 暂忽略（真实后端按 modelId 绑定 NPU 上下文）
+    (void)modelId; // modelId 仅参与日志，不参与分配（backend 工厂按 desc 创建）
     return Status::SUCCESS;
 }
 
@@ -129,12 +126,10 @@ Status TensorManager::CreateKvCacheTensorWithDescs(const std::vector<TensorDesc>
         return Status::INVALID_ARGUMENT;
     if (descs.empty())
         return Status::INVALID_ARGUMENT;
-    // [DEBUG-TODO-REMOVE] 调试日志：KV tensor 批量申请入口（逐 desc
-    // name/dims/dtype）。spec 联调期排查用，正式版删除（同上打包清除）。
+    // 调试日志：KV tensor 批量申请入口（逐 desc name/dims/dtype）。
     for (const auto& d : descs) {
-        CANN_LLM_LOGD("tensor_mgr.create_kv: name='%s', dims=%s, dtype=%d "
-                      "[DEBUG-TODO-REMOVE]",
-                      d.tensorName.c_str(), DebugFormatDims(d.dims).c_str(), static_cast<int>(d.dataType));
+        CANN_LLM_LOGD("tensor_mgr.create_kv: name='%s', dims=%s, dtype=%d", d.tensorName.c_str(),
+                      DebugFormatDims(d.dims).c_str(), static_cast<int>(d.dataType));
     }
     // 逐个 desc 校验 + 溢出防护
     const auto mul = [](uint64_t a, uint64_t b, uint64_t* r) -> bool {

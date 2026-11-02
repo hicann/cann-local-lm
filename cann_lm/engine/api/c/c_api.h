@@ -2,6 +2,12 @@
 // CANN-LM Engine C API — Stable ABI boundary for cross-language binding.
 //
 // ⚠ ABI CHANGELOG（pre-release，布局尚无兼容承诺）：
+//   2026-10-30 — ModelArtifact 尾部新增 isEnableSharedWeight（bool，默认 false，
+//               sizeof 88 → 96；旧字段偏移不变）。false = decode 不绑定
+//               share-weights（share_weights_model_id 保持 0）。
+//   2026-10-21 — ADR-0002 Session/SetContext：新增 ExecutorSetContext（显式激活
+//               活动 Context）；ExecutorGenerate/GenerateAsync 请求一律归属 Executor
+//               当前活动 Context（无活动 → 拒绝）。外部绑定须按本版头文件重新生成。
 //   2026-09-07 — SamplingParams 重排（max_tokens/stop_token_ids/stop_strings 移出，
 //               新增 seed/repetition_penalty，字段顺序变更）；新增 RequestOptions
 //               结构；ExecutorGenerate/GenerateAsync 各增 options 参数。
@@ -24,6 +30,7 @@
 #ifndef CANN_LM_ENGINE_C_API_H
 #define CANN_LM_ENGINE_C_API_H
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -81,7 +88,7 @@ typedef struct {
 } CANN_LMEngine_Buffer;
 
 /// SR20260903001 合并构件：prefill/decode 双图位 + prefill/decode 双权重路径
-/// （权重拆分：docs/seperate_pd_weights.md §4.1）+ meta_json，
+/// （权重拆分：docs/separate_pd_weights.md §4.1）+ meta_json，
 /// 双态字段路径（const char*，NULL = 未提供）/buffer（data==NULL = 未提供），
 /// 取值 buffer 优先（路径被忽略）。
 typedef struct {
@@ -93,6 +100,9 @@ typedef struct {
     const char* decode_weight;  ///< decode 权重路径（NULL → ""；图与权重分离）
     const char* meta_json_path;
     CANN_LMEngine_Buffer meta_json_buf;
+    /// 是否使能 prefill/decode 权重共享绑定（false = 不绑定，
+    /// decode 侧 share_weights_model_id 保持 0；尾部追加，旧字段偏移不变）
+    bool isEnableSharedWeight;
 } CANN_LMEngine_ModelArtifact;
 
 typedef struct {
@@ -118,8 +128,9 @@ typedef struct {
     float repetition_penalty; ///< 1.0 = 关闭；>1 对已生成 token 降权
 } CANN_LMEngine_SamplingParams;
 
-/// 请求级终止参数（镜像 C++ RequestOptions）。长度未超限时，停止仅由
-/// stop_token_ids / stop_strings 控制（与 tokenizer 配置的 eos 无关）。
+/// 请求级终止参数（镜像 C++ RequestOptions）。长度未超限时，停止由
+/// stop_token_ids / stop_strings 与 meta eos_token_id 共同控制（eos 命中 →
+/// StopToken；token_ids 含 eos、text 不含、不入 PromptCache 台账）。
 typedef struct {
     int max_tokens;                              ///< 0/负 = 默认上限 1024
     const CANN_LMEngine_TokenId* stop_token_ids; ///< NULL = 无
@@ -147,7 +158,7 @@ typedef void (*CANN_LMEngine_StreamCallback)(CANN_LMEngine_TokenId token, const 
 
 /// 单一构造入口（SR20260903001：合并原 ExecutorCreate + ExecutorCreateFromBuffer）。
 /// 模型图位（omc path/buffer）已配置而加载失败 → 构造内终止初始化并完成卸载，
-/// 返回失败码且 *out 保持 NULL（2026-09-22）；图位全空（无模型形态）构造成功，
+/// 返回失败码且 *out 保持 NULL；图位全空（无模型形态）构造成功，
 /// 生命周期 API 可用、推理报错。
 CANN_LMEngine_Status CANN_LMEngine_ExecutorCreate(const CANN_LMEngine_ModelArtifact* artifact,
                                                   const CANN_LMEngine_EngineOptions* options,
@@ -161,18 +172,23 @@ CANN_LMEngine_Status CANN_LMEngine_ContextCreate(CANN_LMEngine_Executor* executo
 
 CANN_LMEngine_Status CANN_LMEngine_ContextDestroy(CANN_LMEngine_Executor* executor, CANN_LMEngine_ContextId context_id);
 
+/// 显式激活 Context（ADR-0002 Session/SetContext）。未注册 id → 失败；
+/// 有在飞请求 → 拒绝；目标即当前活动 → 幂等成功。此后 Generate/GenerateAsync
+/// 均归属该 Context 直至另行切换/销毁。
+CANN_LMEngine_Status CANN_LMEngine_ExecutorSetContext(CANN_LMEngine_Executor* executor,
+                                                      CANN_LMEngine_ContextId context_id);
+
 CANN_LMEngine_Status CANN_LMEngine_ContextCancel(CANN_LMEngine_Executor* executor, CANN_LMEngine_ContextId context_id);
 
 // ────────────────────────── Inference ──────────────────────────
 
+// （ADR-0002 Q2：删除 context_id 参数——请求一律归属 Executor 当前活动 Context）
 CANN_LMEngine_Status CANN_LMEngine_ExecutorGenerate(CANN_LMEngine_Executor* executor, const char* prompt_text,
-                                                    CANN_LMEngine_ContextId context_id,
                                                     const CANN_LMEngine_SamplingParams* params,
                                                     const CANN_LMEngine_RequestOptions* options, ///< NULL = 全默认
                                                     CANN_LMEngine_Result* out);
 
 CANN_LMEngine_Status CANN_LMEngine_ExecutorGenerateAsync(CANN_LMEngine_Executor* executor, const char* prompt_text,
-                                                         CANN_LMEngine_ContextId context_id,
                                                          const CANN_LMEngine_SamplingParams* params,
                                                          const CANN_LMEngine_RequestOptions* options, ///< NULL = 全默认
                                                          CANN_LMEngine_Request** out,

@@ -1,8 +1,7 @@
 // cann_lm/engine/core/component/sampler/sampler.cpp — L3 Sampler 实现
 //
-// 算法层：6 步纯函数流水线，期望行为见 tests/cpp/engine/test_sampler.cpp；引擎接入层：
+// 算法层：6 步纯函数流水线，期望行为见 tests/ut/ut_sampler.cpp；引擎接入层：
 // ITensorBuffer 行提取 + SamplingParams → SamplerConfig 映射（规则见 sampler.h 头注释）。
-// 历史：算法层曾移植自 core/sample/ 参考原型（2026-10-19 随原型目录删除一并收口至此）。
 #include "core/component/sampler/sampler.h"
 
 #include "utils/data_type_utils.h" // HalfBitsToFloat（FLOAT16 logits → float32）
@@ -193,9 +192,17 @@ SamplerOutput Sampler::Sample(SamplerInputs in, const SamplerConfig& cfg)
         x = ApplyTopK(std::move(x), cfg.top_k);
     }
     x = ApplyTopP(std::move(x), cfg.top_p);
+    // 贪心免归一化快路径（R1，perf_optimize.md §4.1）：softmax 单调保序 ⇒
+    // argmax(x) ≡ argmax(Normalize(x))；tie-break 语义逐字保留（argmax 首个
+    // 最大值下标，:40-46 不动）。probs 惰性产出——引擎接入层只消费
+    // next_token_id（:244），probs 无消费者，免 262K exp + double 累加 +
+    // 262K 概率分配。do_sample=true 路径不改（softmax/multinomial 原样）。
+    if (!cfg.do_sample) {
+        return SamplerOutput{argmax(x), std::vector<float>()};
+    }
     std::vector<float> probs = Normalize(x);
     int32_t id = Pick(probs, cfg.do_sample, cfg.seed);
-    return SamplerOutput{id, probs};
+    return SamplerOutput{id, std::move(probs)};
 }
 
 // ────────────── 引擎接入层 ──────────────
@@ -252,23 +259,10 @@ Status Sampler::Sample(ITensorBuffer& batch_logits, int slot, const SamplingPara
     if (static_cast<size_t>(slot) >= rows)
         return Status::INVALID_ARGUMENT; // slot 越界
 
-    // 取 slot 行（拷贝进算法层 vector；后续如需零拷贝 Span/Tensor 变体，
-    // 待真实通路接入后按需替换）
-    SamplerInputs in;
-    if (dtype == DataType::FLOAT16) {
-        const uint16_t* row = static_cast<const uint16_t*>(data) + static_cast<size_t>(slot) * vocab;
-        in.logits.resize(vocab);
-        for (size_t i = 0; i < vocab; ++i)
-            in.logits[i] = HalfBitsToFloat(row[i]);
-    } else {
-        const float* row = static_cast<const float*>(data) + static_cast<size_t>(slot) * vocab;
-        in.logits.assign(row, row + vocab);
-    }
-    in.generated_ids.assign(generated_ids.begin(), generated_ids.end());
-
-    // SamplingParams → SamplerConfig（映射规则见 sampler.h 头注释）：
+    // SamplingParams → SamplerConfig（映射规则见 sampler.h 头注释）。前移到行
+    // 提取之前：贪心 + 无 top-k/p 时整行向量物化被免掉（R1 配套）。
     // 默认参数 → 贪心；任一采样旋钮非默认 → 概率采样（temp==0 经钳制退化为贪心）。
-    // repetition_penalty / seed：2026-09-07 经 SamplingParams 对外（F-SAMPLE 松绑），
+    // repetition_penalty / seed：经 SamplingParams 对外（F-SAMPLE），
     // 关闭值 = 1.0 及一切非法值（<=0/NaN——C ABI 零初始化得 0.0，须与 top_k/top_p
     // 同按"越界视为关闭"处理，否则 p=0 除零污染分布）；precomputed_topk 仍不对外。
     SamplerConfig cfg;
@@ -283,6 +277,59 @@ Status Sampler::Sample(ITensorBuffer& batch_logits, int slot, const SamplingPara
     if (params.seed != 0)
         cfg.seed = params.seed;
     cfg.do_sample = params.temperature != 1.0f || cfg.top_k.has_value() || cfg.top_p.has_value();
+
+    // ── R1 配套：行免中转贪心（§4.1）──在源 dtype 位型上直接搜第一个最大值
+    // 下标（fp16 逐元素 HalfBitsToFloat 比较，先转后比，与 fp32 行同 tie-break），
+    // 免 262K float 物化 + 拷贝往返。走此短路的前提 = 贪心（!do_sample 已蕴含
+    // temperature==1.0f，见上 :257 映射）+ 无重复惩罚（无已生成上下文可降权）；
+    // 其余（do_sample / rep penalty）进 6 步算法层全量路径——softmax/
+    // multinomial 行为不变。fp16 逐位比较不可行（符号位/指数位序 ≠ 数值序），
+    // 故转换开销保留在扫描内联里，与向量物化版相比仍免一次整行分配。
+    if (!cfg.do_sample && !cfg.repetition_penalty.has_value()) {
+        const size_t slot_base = static_cast<size_t>(slot) * vocab;
+        int32_t best = 0;
+        if (dtype == DataType::FLOAT16) {
+            const uint16_t* row = static_cast<const uint16_t*>(data) + slot_base;
+            float bestv = HalfBitsToFloat(row[0]);
+            for (size_t i = 1; i < vocab; ++i) {
+                const float v = HalfBitsToFloat(row[i]);
+                if (v > bestv) {
+                    bestv = v;
+                    best = static_cast<int32_t>(i);
+                }
+            }
+        } else {
+            const float* row = static_cast<const float*>(data) + slot_base;
+            float bestv = row[0];
+            for (size_t i = 1; i < vocab; ++i) {
+                if (row[i] > bestv) {
+                    bestv = row[i];
+                    best = static_cast<int32_t>(i);
+                }
+            }
+        }
+        *out = static_cast<TokenId>(best);
+        return Status::SUCCESS;
+    }
+
+    // 取 slot 行（拷贝进算法层 vector；后续如需零拷贝 Span/Tensor 变体，
+    // 待真实通路接入后按需替换）
+    SamplerInputs in;
+    if (dtype == DataType::FLOAT16) {
+        const uint16_t* row = static_cast<const uint16_t*>(data) + static_cast<size_t>(slot) * vocab;
+        in.logits.resize(vocab);
+        for (size_t i = 0; i < vocab; ++i)
+            in.logits[i] = HalfBitsToFloat(row[i]);
+    } else {
+        const float* row = static_cast<const float*>(data) + static_cast<size_t>(slot) * vocab;
+        in.logits.assign(row, row + vocab);
+    }
+    // generated_ids 剪枝（R1 配套）：默认零拷贝——算法层入参面是
+    // const vector<int32_t>&（ApplyRepetitionPenalty），仅重复惩罚真正启用
+    // 且非空时才按值物化（贪心/无惩罚轮次免上下文整拷贝）。
+    if (cfg.repetition_penalty.has_value() && !generated_ids.empty()) {
+        in.generated_ids.assign(generated_ids.begin(), generated_ids.end());
+    }
 
     SamplerOutput res = Sample(std::move(in), cfg);
     *out = static_cast<TokenId>(res.next_token_id); // 算法层返回 [0, vocab) 下标

@@ -1,0 +1,139 @@
+{
+    "vocab_size": 350,
+    "cases": [
+     {
+      "text": "hello world",
+      "ids": [
+       336,
+       341
+      ],
+      "decoded": "hello world"
+     },
+     {
+      "text": "你好",
+      "ids": [
+       305,
+       266,
+       237,
+       306,
+       242,
+       266
+      ],
+      "decoded": "你好"
+     },
+     {
+      "text": "Hello, Gemma!",
+      "ids": [
+       37,
+       8,
+       15,
+       15,
+       18,
+       67,
+       66,
+       36,
+       8,
+       16,
+       16,
+       4,
+       69
+      ],
+      "decoded": "Hello, Gemma!"
+     },
+     {
+      "text": "<start_of_image>caption",
+      "ids": [
+       349,
+       6,
+       4,
+       19,
+       23,
+       12,
+       18,
+       17
+      ],
+      "decoded": "caption"
+     },
+     {
+      "text": "  double  spaces  ",
+      "ids": [
+       66,
+       66,
+       7,
+       18,
+       24,
+       5,
+       15,
+       8,
+       66,
+       66,
+       22,
+       19,
+       4,
+       6,
+       8,
+       22,
+       66,
+       66
+      ],
+      "decoded": "  double  spaces  "
+     },
+     {
+      "text": "byte fallback: é 😀",
+      "ids": [
+       5,
+       28,
+       23,
+       8,
+       66,
+       9,
+       4,
+       15,
+       15,
+       5,
+       4,
+       6,
+       14,
+       73,
+       66,
+       272,
+       246,
+       66,
+       317,
+       236,
+       229,
+       205
+      ],
+      "decoded": "byte fallback: é 😀"
+     },
+     {
+      "text": "The quick brown fox",
+      "ids": [
+       49,
+       333,
+       66,
+       20,
+       24,
+       12,
+       6,
+       14,
+       66,
+       5,
+       21,
+       18,
+       26,
+       17,
+       66,
+       9,
+       18,
+       27
+      ],
+      "decoded": "The quick brown fox"
+     },
+     {
+      "text": "",
+      "ids": [],
+      "decoded": ""
+     }
+    ]
+   }

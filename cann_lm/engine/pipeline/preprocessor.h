@@ -51,6 +51,11 @@ public:
     Status SliceChunks(const std::vector<TokenId>& ids, std::size_t reusable,
                        std::vector<std::vector<TokenId>>* out_chunks);
 
+    /// tokenizer 接线（perf_optimize.md §3.5 L5）：构造期 tokenizer 异步创建
+    /// （∥ 执行器 Load），join 后由 pipeline 回填。nullptr = 未就绪（
+    /// PreparePrefill 持空防御返回 INVALID_STATE，语义同构造期坏 tokenizer）。
+    void SetTokenizer(TokenizerBase* tokenizer) { tokenizer_ = tokenizer; }
+
 private:
     TokenizerBase* tokenizer_;      // 非拥有
     TextEmbedding* text_embedding_; // 非拥有（load+bind 由 M-02 init）

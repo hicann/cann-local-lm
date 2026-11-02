@@ -205,9 +205,11 @@ protected:
 // ── 正常路径 TC_001~TC_010 ──────────────────────────────────────────────────
 
 // TC_001：PerToken InMemory 加载成功。2026-10-09 契约变化：InMemory 表/scale
-// 改存堆内存，原 Table()/Scale() 访问器已删——存在性/尺寸断言以行为级等价替：
-// 装载后截断盘上 fixture，Gather 全词表仍逐字节命中 → 整表 128B + 主 scale 段
-// 64B 已全量驻 host 堆内存且此后不依赖文件（D-08）。
+// 改存堆内存，原 Table()/Scale() 访问器已删——存在性/尺寸断言以行为级等价替。
+// 2026-10-28 L2 再变更：InMemory 表载体重写为 mmap 只读映射（原"装载后截断
+// 盘上 fixture 证明驻堆"与 MAP_PRIVATE 载体互斥——截断收缩 inode 后访问
+// 越尾页 SIGBUS，且"数据不依赖文件"对 mmap 载体本就不成立）；驻留证明
+// 改为 Gather 全词表逐字节命中（映射建立即数据就绪），scale 段仍堆载体。
 TEST_F(TextEmbeddingTest, LoadPerTokenInMemorySuccess_TC001)
 {
     auto s = emb_.Load(Int8PerTokenConfig(EmbeddingLoadMode::InMemory));
@@ -218,8 +220,6 @@ TEST_F(TextEmbeddingTest, LoadPerTokenInMemorySuccess_TC001)
 
     // 行为级（替原 Table()/Scale() 非 null + GetSize）：全 16 行 + 全 16 scale
     // 逐字节对 fixture，兼证主表段/scale 段两端与全量消费
-    ASSERT_EQ(0, ::truncate(table_path_.c_str(), 0));
-    ASSERT_EQ(0, ::truncate(scale_path_.c_str(), 0));
     std::vector<TokenId> ids(kVocab);
     for (size_t v = 0; v < kVocab; ++v)
         ids[v] = static_cast<TokenId>(v);
@@ -1665,6 +1665,118 @@ TEST_F(TextEmbeddingTest, FillInputsEmbeddingViaScaleAlias_TC511)
     const auto* sc = static_cast<const float*>(iscale->GetData());
     for (size_t i = 0; i < kCount; ++i)
         EXPECT_FLOAT_EQ(sc[i], IdentityScale(idx[i]));
+}
+
+// ── L2 mmap 段源组（perf_optimize.md §3.2/§5：InMemory 载体 mmap 化对账）─────
+// 2026-10-28 实施：InMemory 表源由 new[]+f.read 堆载体换 mmap 只读映射
+// （detail::MmapTableSource；主表段 require_exact=false 超长放行沿用 Q12、
+// identity 段 require_exact=true 短/超长均拒——原"读毕恰为文件尾"语义逐字
+// 保留，B-10 几何闭环）。本组锁四契约：行等价（全词表 ReadRow/RowPtr 双
+// 通道逐字节命中）、截断拒绝（map 前拒，无 SIGBUS 窗口）、非 0 段偏映射的
+// 行地址算（identity 段 offset=128）、Load 端到端（InMemory 全链
+// Loaded/FillInputs 不回退）。
+
+// TC_L2_1：行等价——InMemory mmap 载体全词表 Gather 逐字节命中
+// （ReadRow=memcpy 通道；映射建立即数据就绪）。
+TEST_F(TextEmbeddingTest, MmapRowEquivalenceTC_L2_1)
+{
+    ASSERT_TRUE(emb_.Load(Int8PerTokenConfig(EmbeddingLoadMode::InMemory)).ok());
+    std::vector<TokenId> ids(kVocab);
+    for (size_t v = 0; v < kVocab; ++v)
+        ids[v] = static_cast<TokenId>(v);
+    auto out_e = MakeBuf("out_embed", DataType::INT8, {kVocab, kHidden});
+    auto out_s = MakeBuf("out_scales", DataType::FLOAT32, {kVocab});
+    ASSERT_TRUE(emb_.Gather(ids.data(), kVocab, out_e, out_s).ok());
+    const auto* rows = static_cast<const int8_t*>(out_e->GetData());
+    const auto* sc = static_cast<const float*>(out_s->GetData());
+    for (size_t v = 0; v < kVocab; ++v) {
+        for (size_t h = 0; h < kHidden; ++h)
+            EXPECT_EQ(rows[v * kHidden + h], TableValue(v, h)) << "v=" << v << " h=" << h;
+        EXPECT_FLOAT_EQ(sc[v], 0.5f + static_cast<float>(v));
+    }
+}
+
+// TC_L2_2：段长不足 ⇒ INVALID_ARGUMENT（map 前拒——无 SIGBUS 窗口）；
+// 主表段 require_exact=false：超长（identity 段后随）放行，文件尾多字节放行。
+TEST_F(TextEmbeddingTest, MmapTruncatedRejectsBeforeMapTC_L2_2)
+{
+    // 主表段差 1 字节
+    const std::string short_path = TempPath("l2_short");
+    ASSERT_TRUE(WriteFile(short_path, merged_table_.data(), table_.size() - 1));
+    EmbeddingConfig c = Int8PerTokenConfig(EmbeddingLoadMode::InMemory);
+    c.table_path = short_path;
+    EXPECT_EQ(emb_.Load(c).code, Status::INVALID_ARGUMENT);
+    EXPECT_FALSE(emb_.Loaded());
+
+    // 合并布局本体（192B，identity 段后随）与尾多 1 字节均放行（Q12 超长）
+    const std::string long_path = TempPath("l2_long");
+    std::vector<int8_t> extra = merged_table_;
+    extra.push_back(0);
+    ASSERT_TRUE(WriteFile(long_path, extra.data(), extra.size()));
+    c.table_path = long_path;
+    ASSERT_TRUE(emb_.Load(c).ok());
+    const TokenId edges[2] = {0, static_cast<TokenId>(kVocab - 1)};
+    auto out_e = MakeBuf("out_embed", DataType::INT8, {2, kHidden});
+    auto out_s = MakeBuf("out_scales", DataType::FLOAT32, {2});
+    ASSERT_TRUE(emb_.Gather(edges, 2, out_e, out_s).ok());
+    const auto* rows = static_cast<const int8_t*>(out_e->GetData());
+    for (size_t h = 0; h < kHidden; ++h)
+        EXPECT_EQ(rows[h], TableValue(0, h));
+    for (size_t h = 0; h < kHidden; ++h)
+        EXPECT_EQ(rows[kHidden + h], TableValue(kVocab - 1, h));
+
+    RemoveFile(short_path);
+    RemoveFile(long_path);
+}
+
+// TC_L2_3：非 0 段偏映射行地址——identity 段 offset=128B（主表段之后），
+// LoadTokenIdentity InMemory 走 MmapTableSource 段偏建映射；行 0 = 映射首行，
+// 3 行样本值与 fixture 逐值对（行宽 4 != kHidden 交叉防两表混用）。
+// 消费经 FillTokenIdentitySlot_（Embedding 路径，RowPtr 直读通道）。
+TEST_F(TextEmbeddingTest, MmapNonZeroSegmentOffsetTC_L2_3)
+{
+    ASSERT_TRUE(emb_.Load(Int8PerTokenConfig(EmbeddingLoadMode::InMemory)).ok());
+    ASSERT_TRUE(emb_.LoadTokenIdentity(IdentityConfig(EmbeddingLoadMode::InMemory), kWidth).ok());
+    ASSERT_TRUE(emb_.IdentityLoaded());
+
+    const TokenId ids[kCount] = {3, 0, 15};
+    const size_t idx[kCount] = {3, 0, 15};
+    auto slot_e = MakeBuf("input_embed", DataType::INT8, {kCount, kHidden});
+    auto slot_s = MakeBuf("embed_scales", DataType::FLOAT32, {kCount});
+    auto ident = MakeBuf(kTokenIdentitySlotName, DataType::FLOAT32, {kCount, kWidth});
+    auto iscale = MakeBuf(kTokenIdentityScaleSlotName, DataType::FLOAT32, {kCount});
+    std::vector<std::shared_ptr<ITensorBuffer>> inputs{slot_e, slot_s, ident, iscale};
+    std::unordered_map<std::string, size_t> name_index{
+        {"input_embed", 0}, {"embed_scales", 1}, {kTokenIdentitySlotName, 2}, {kTokenIdentityScaleSlotName, 3}};
+    ASSERT_TRUE(emb_.FillInputs(inputs, name_index, EmbeddingPath::Embedding, ids, kCount).ok());
+
+    // 主表/主 scale 照常（行 0 基址 = 文件头）
+    const auto* emb_rows = static_cast<const int8_t*>(slot_e->GetData());
+    for (size_t i = 0; i < kCount; ++i)
+        for (size_t h = 0; h < kHidden; ++h)
+            EXPECT_EQ(emb_rows[i * kHidden + h], TableValue(idx[i], h));
+    const auto* emb_sc = static_cast<const float*>(slot_s->GetData());
+    for (size_t i = 0; i < kCount; ++i)
+        EXPECT_FLOAT_EQ(emb_sc[i], 0.5f + idx[i]);
+    // identity 段：行 0 = offset 128 处（IdentityValue 表），段偏换算正确
+    const auto* rows = static_cast<const float*>(ident->GetData());
+    for (size_t i = 0; i < kCount; ++i)
+        for (size_t w = 0; w < kWidth; ++w)
+            EXPECT_FLOAT_EQ(rows[i * kWidth + w], static_cast<float>(IdentityValue(idx[i], w)));
+    const auto* sc = static_cast<const float*>(iscale->GetData());
+    for (size_t i = 0; i < kCount; ++i)
+        EXPECT_FLOAT_EQ(sc[i], IdentityScale(idx[i]));
+}
+
+// TC_L2_4：Load 端到端不回退——InMemory 主表 + identity 双段 mmap 全链
+// （TC_403 同链），四工位落位逐值断言复用权威助手。
+TEST_F(TextEmbeddingTest, MmapLoadEndToEndTC_L2_4)
+{
+    ASSERT_TRUE(emb_.Load(Int8PerTokenConfig(EmbeddingLoadMode::InMemory)).ok());
+    ASSERT_TRUE(emb_.LoadTokenIdentity(IdentityConfig(EmbeddingLoadMode::InMemory), kWidth).ok());
+    EXPECT_TRUE(emb_.Loaded());
+    EXPECT_TRUE(emb_.IdentityLoaded());
+    FillEmbeddingPathAndExpectAllSlots(emb_);
 }
 
 } // namespace

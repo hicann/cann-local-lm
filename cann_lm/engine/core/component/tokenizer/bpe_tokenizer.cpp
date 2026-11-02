@@ -1,5 +1,6 @@
 #include "core/component/tokenizer/tokenizer.h"
 #include "core/component/tokenizer/tokenizer_detail.h"
+#include "infra/log.h" // CANN_LLM_LOGW（meta id 冲突告警）
 
 #include <array>
 #include <cstdio>
@@ -93,6 +94,19 @@ BPETokenizer::BPETokenizer(const TokenizerConfig& cfg, Status* status)
             *status = Status::FAILURE;
         return;
     }
+    // 词表 added ∪ meta special_tokens 合并提取表（D-3：meta 优先 + WARN；
+    // 构造期一次性，encode 热路径零额外查表）
+    added_lookup_ = specials_.merged_added_tokens(vocab_.added_tokens());
+    // id 冲突告警：meta id 撞词表已有字面量（decode 查序 meta 在前 = meta 赢；
+    // 同字面量冲突已在 merged_added_tokens 内 WARN）
+    for (const auto& [lit, tid] : cfg.special_tokens) {
+        if (tid < 0)
+            continue;
+        if (auto vl = vocab_.id_to_token(tid); vl && *vl != lit) {
+            CANN_LLM_LOGW("tokenizer.special.meta: id conflict, meta wins (id=%d, vocab=%s, meta=%s)", tid,
+                          std::string(*vl).c_str(), lit.c_str());
+        }
+    }
     // merges → 字符串域 rank 表（构造期一次性）
     for (size_t i = 0; i < vocab_.merges().size(); ++i) {
         merge_ranks_.emplace(vocab_.merges()[i], static_cast<int>(i));
@@ -118,9 +132,10 @@ Status BPETokenizer::encode(std::string_view text, const EncodeOptions& opts, st
         unk_id = vocab_.token_to_id(vocab_.unk_token());
     }
 
-    // ① AddedToken 提取（左最长，先于归一化/预切分，作用于原文）
+    // ① AddedToken 提取（左最长，先于归一化/预切分，作用于原文）；
+    //   提取表 = 词表 added ∪ meta special_tokens（meta 命中 → 目标特殊 id，映射）
     std::vector<tokenizer_detail::AddedSegment> segments;
-    tokenizer_detail::ExtractAddedTokens(text, vocab_.added_tokens(), &segments);
+    tokenizer_detail::ExtractAddedTokens(text, added_lookup_, &segments);
 
     for (const auto& seg : segments) {
         if (seg.is_added) {
@@ -213,13 +228,19 @@ Status BPETokenizer::decode(const std::vector<int>& ids, const DecodeOptions& op
             return st;
     }
 
-    // id→字面量：ByteFallback(<0xXX>) 展开为字节；其余 ▁→" " 还原后拼接
-    // （decoder Sequence[Replace(▁→" "), ByteFallback, Fuse] 语义）
+    // id→字面量：meta 解映射优先（D-3：命中即字面量原样输出，不走 ▁ 归一/
+    // ByteFallback——词表外 id 的出字面量通道）；其余 ByteFallback(<0xXX>)
+    // 展开为字节；▁→" " 还原后拼接（decoder Sequence[Replace(▁→" "),
+    // ByteFallback, Fuse] 语义）
     const bool has_replace = vocab_.has_replace_normalizer();
     for (const int id : kept) {
+        if (auto meta_lit = specials_.literal(id)) {
+            *out_text += std::string(*meta_lit);
+            continue;
+        }
         auto lit = vocab_.id_to_token(id);
         if (!lit)
-            continue; // 词表外 id：跳过（不中断）
+            continue; // 词表外且非 meta 映射 id：跳过（不中断）
         unsigned char byte = 0;
         if (ParseByteFallbackLiteral(*lit, &byte)) {
             out_text->push_back(static_cast<char>(byte));

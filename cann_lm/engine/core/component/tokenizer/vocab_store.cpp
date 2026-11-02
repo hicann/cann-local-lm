@@ -1,10 +1,16 @@
 #include "core/component/tokenizer/tokenizer.h"
 
+#include "infra/log.h"
+
 #include <nlohmann/json.hpp>
+
+#include <sys/stat.h>
 
 #include <algorithm>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <fstream>
 #include <sstream>
 
@@ -391,11 +397,343 @@ private:
 
 } // namespace
 
-// ── VocabStore ──────────────────────────────────────────────────────────────
-Status VocabStore::load(const VocabSource& src)
+// ── L4 .bincache sidecar（perf_optimize.md §3.4）──────────────────────────────
+// 二进制缓存：紧邻 tokenizer.json 的 "<json>.bincache"。收益 = 二次启动起
+// 绕过 SAX+hash 构建（262K 词表 ~870ms → 顺序 read + 容器批量填充 ~百 ms 级）。
+// 正确性由回退保证：一致性键（magic+version+源 size+mtime）任一不符、或读取
+// 中途任何失败 ⇒ 整包丢弃走 JSON 全量（行为 = 现状）。缓存装载走与 JSON 完全
+// 相同的构建+校验管道（仅输入源不同），使结构合法性（F-01 上界/双向映射冲突
+// 拒/merges 交叉校验）在缓存面同样成立——被篡改/位漂的缓存最坏以失败告终回
+// 退，不产 polluted 字表。first-run 落盘失败（只读分区）静默——第二次启动
+// 照走 JSON。
+// 运维开关（2026-10-30 反转为默认关，opt-in）：env `CANN_LM_TOKENIZER_
+// BINCACHE` 显式开启缓存面——设置且非 "0" 才试命中+落盘；未设/显式 "0" =
+// JSON 直载（= L4 合入前的基线行为：sidecar 不读不写，部署目录零副作用）。
+// 归因：缓存收益仅在"目录持久、多次启动"形态成立——"开机整目录还原"形态
+// 下缓存每次被抹，miss 态反而比无缓存多付 Serialize 16.5MB 写（真机实测
+// miss 1267ms > 基线 925.6ms，perf_optimize.md §6.4），且默认开会令未受益
+// 部署凭空多出 sidecar 文件。故默认走 JSON 直载，确知目录持久的部署显式开。
+
+namespace {
+
+// 头部 POD 定长、字段显式逐段 r/w（不做整 struct memcpy——规避 padding 布局
+// 与字节序假设落盘；段间无 alignment 要求，r/w 全部经 helper）。
+constexpr char kCacheMagic[8] = {'C', 'L', 'M', 'V', 'B', 'I', 'N', '1'};
+constexpr std::uint32_t kCacheVersion = 1;
+
+/// 缓存面总开关（env CANN_LM_TOKENIZER_BINCACHE，默认关/opt-in）：设置且
+/// 非"0"即开——运维侧 export 任意非空值即开，显式 ="0" 关闭。取值语义与
+/// debug_tensor_dump 的"非空即设"对齐（"0"为显式关）。每次 load 各查一次
+/// 不缓存——load 一生一次，无热路径开销。
+bool BincacheEnabled()
 {
-    // 局部构建、成功才提交成员（外审 F-02：任何失败路径不留"半加载可用"实例——
-    // 失败实例 vocab_size()==0，encode/decode 恒 FAILURE）
+    const char* v = std::getenv("CANN_LM_TOKENIZER_BINCACHE");
+    return v != nullptr && v[0] != '\0' && std::strcmp(v, "0") != 0;
+}
+
+// 源文件一致性键（mtime 以 st_mtime 秒粒度——同秒内改写由 size 兜底；部署
+// 产物 mtime 由镜像/OTA 整目录替换，粒度足够）
+bool SourceKey(const std::filesystem::path& json_path, std::uint64_t* size, std::int64_t* mtime)
+{
+    struct stat sb {};
+    if (::stat(json_path.c_str(), &sb) != 0)
+        return false;
+    // fit：fs::file_size() 返回 uintmax_t（host 64 位），st_size 为有符号——
+    // 双向入宽符号统一后再写缓存头
+    *size = static_cast<std::uint64_t>(sb.st_size);
+    *mtime = static_cast<std::int64_t>(sb.st_mtime);
+    return true;
+}
+
+bool WriteU32(std::ostream& out, std::uint32_t v)
+{
+    return static_cast<bool>(out.write(reinterpret_cast<const char*>(&v), 4));
+}
+bool ReadU32(std::istream& in, std::uint32_t* v) { return static_cast<bool>(in.read(reinterpret_cast<char*>(v), 4)); }
+bool WriteI64(std::ostream& out, std::int64_t v)
+{
+    return static_cast<bool>(out.write(reinterpret_cast<const char*>(&v), 8));
+}
+bool ReadI64(std::istream& in, std::int64_t* v) { return static_cast<bool>(in.read(reinterpret_cast<char*>(v), 8)); }
+bool WriteStr(std::ostream& out, const std::string& s)
+{
+    if (s.size() > 0xFFFFFFFFu)
+        return false;
+    if (!WriteU32(out, static_cast<std::uint32_t>(s.size())))
+        return false;
+    return static_cast<bool>(out.write(s.data(), static_cast<std::streamsize>(s.size())));
+}
+bool ReadStr(std::istream& in, std::string* s)
+{
+    std::uint32_t n = 0;
+    if (!ReadU32(in, &n))
+        return false;
+    s->assign(n, '\0');
+    if (n == 0)
+        return true;
+    in.read(s->data(), static_cast<std::streamsize>(n));
+    return static_cast<std::size_t>(in.gcount()) == static_cast<std::size_t>(n);
+}
+
+/// 键位回填（load 落缓存成功路径）：头部 offset 12（8 magic + 4 version）起
+/// 12 字（u32 lo + u32 hi + i64 mtime）。半写窗口安全：truncate 起步首 8 字
+/// 即零 → magic 失配拒；本函数执行前（键位为零）对任何真实源恒失配拒。
+void PlugKey(const std::filesystem::path& cache_path, std::uint64_t size, std::int64_t mtime)
+{
+    std::ofstream f(cache_path, std::ios::binary | std::ios::in);
+    if (!f)
+        return;
+    f.seekp(12, std::ios::beg);
+    WriteU32(f, static_cast<std::uint32_t>(size));
+    WriteU32(f, static_cast<std::uint32_t>(size >> 32));
+    WriteI64(f, mtime);
+}
+
+} // namespace
+
+Status VocabStore::Serialize(const std::filesystem::path& cache_path) const
+{
+    // 落盘失败静默（load 分流点 (void)Serialize——只读分区/权限缺失为常态
+    // 部署形态，缓存纯增益，不改变加载结果）。公开重载仅写数据段（键位补
+    // 写由 load 分流点 TakeKey+PatchKey 完成——Serialize 不持 json 路径）。
+    std::ofstream out(cache_path, std::ios::binary | std::ios::trunc);
+    if (!out)
+        return Status::FAILURE;
+
+    out.write(kCacheMagic, 8);
+    WriteU32(out, kCacheVersion);
+    WriteU32(out, 0); // source_size_lo 键位（load 分流点回填，见 PlugKey）
+    WriteU32(out, 0); // source_size_hi
+    WriteI64(out, 0); // source_mtime 键位
+    WriteU32(out, static_cast<std::uint32_t>(tok2id_.size()));
+    WriteU32(out, static_cast<std::uint32_t>(id2tok_.size()));
+    WriteU32(out, static_cast<std::uint32_t>(merges_.size()));
+    WriteU32(out, static_cast<std::uint32_t>(added_tokens_.size()));
+    WriteU32(out, static_cast<std::uint32_t>(special_strip_ids_.size()));
+
+    for (const auto& [lit, id] : tok2id_) {
+        if (!WriteStr(out, lit))
+            return Status::FAILURE;
+        if (!WriteU32(out, static_cast<std::uint32_t>(id)))
+            return Status::FAILURE;
+    }
+    for (const auto& s : id2tok_) {
+        if (!WriteStr(out, s))
+            return Status::FAILURE;
+    }
+    for (const auto& [a, b] : merges_) {
+        if (!WriteStr(out, a))
+            return Status::FAILURE;
+        if (!WriteStr(out, b))
+            return Status::FAILURE;
+    }
+    for (const auto& [lit, id] : added_tokens_) {
+        if (!WriteStr(out, lit))
+            return Status::FAILURE;
+        if (!WriteU32(out, static_cast<std::uint32_t>(id)))
+            return Status::FAILURE;
+    }
+    for (const int id : special_strip_ids_) {
+        if (!WriteU32(out, static_cast<std::uint32_t>(id)))
+            return Status::FAILURE;
+    }
+    if (!WriteStr(out, model_type_))
+        return Status::FAILURE;
+    if (!out.write(reinterpret_cast<const char*>(&byte_fallback_), 1)) {
+        return Status::FAILURE;
+    }
+    if (!WriteStr(out, unk_token_))
+        return Status::FAILURE;
+    if (!out.write(reinterpret_cast<const char*>(&has_replace_normalizer_), 1)) {
+        return Status::FAILURE;
+    }
+    if (!WriteStr(out, replace_normalizer_.first))
+        return Status::FAILURE;
+    if (!WriteStr(out, replace_normalizer_.second))
+        return Status::FAILURE;
+    out.flush();
+    return out.good() ? Status::SUCCESS : Status::FAILURE;
+}
+
+Status VocabStore::TryLoadFromCache(const std::filesystem::path& json_path, const std::filesystem::path& cache_path)
+{
+    // 键校验失败/文件缺失/任何读失败 → FAILURE（调用方回退 JSON 全量）。
+    std::uint64_t src_size = 0;
+    std::int64_t src_mtime = 0;
+    if (!SourceKey(json_path, &src_size, &src_mtime))
+        return Status::FAILURE;
+
+    std::ifstream in(cache_path, std::ios::binary);
+    if (!in)
+        return Status::FAILURE;
+
+    char magic[8] = {};
+    if (!in.read(magic, 8) || std::memcmp(magic, kCacheMagic, 8) != 0) {
+        return Status::FAILURE;
+    }
+    std::uint32_t version = 0;
+    if (!ReadU32(in, &version) || version != kCacheVersion)
+        return Status::FAILURE;
+    std::uint64_t size_key = 0;
+    if (!ReadU32(in, reinterpret_cast<std::uint32_t*>(&size_key))) {
+        return Status::FAILURE;
+    }
+    {
+        std::uint32_t hi = 0;
+        if (!ReadU32(in, &hi))
+            return Status::FAILURE;
+        size_key |= static_cast<std::uint64_t>(hi) << 32;
+    }
+    if (size_key != src_size)
+        return Status::FAILURE;
+    std::int64_t mtime_key = 0;
+    if (!ReadI64(in, &mtime_key) || mtime_key != src_mtime) {
+        return Status::FAILURE;
+    }
+
+    // 计数（读入后与实际段长一致由"读到流尾"兜底——段计数不足/超出时流读
+    // 失败即回退，不做全量前读校验）
+    std::uint32_t vocab_num = 0, id2tok_num = 0, merge_num = 0, added_num = 0, special_num = 0;
+    if (!ReadU32(in, &vocab_num) || !ReadU32(in, &id2tok_num) || !ReadU32(in, &merge_num) || !ReadU32(in, &added_num) ||
+        !ReadU32(in, &special_num)) {
+        return Status::FAILURE;
+    }
+    if (vocab_num == 0 || id2tok_num == 0)
+        return Status::FAILURE; // 空词表非法
+
+    // 局部构建（与 JSON 完全相同的校验管道——F-02/F-01/merges 交叉校验）
+    std::unordered_map<std::string, int> tok2id;
+    std::vector<std::string> id2tok;
+    std::vector<std::pair<std::string, std::string>> merges;
+    std::vector<std::pair<std::string, int>> added_tokens;
+    std::vector<int> special_strip_ids;
+    std::string model_type, unk_token;
+    bool byte_fallback = false;
+    bool has_replace_normalizer = false;
+    std::pair<std::string, std::string> replace_normalizer;
+
+    constexpr std::int64_t kMaxReasonableTokenId = 10'000'000;
+
+    tok2id.reserve(vocab_num);
+    for (std::uint32_t i = 0; i < vocab_num; ++i) {
+        std::string lit;
+        std::uint32_t id32 = 0;
+        if (!ReadStr(in, &lit) || !ReadU32(in, &id32))
+            return Status::FAILURE;
+        if (id32 > static_cast<std::uint32_t>(kMaxReasonableTokenId)) {
+            return Status::FAILURE;
+        }
+        if (!tok2id.emplace(std::move(lit), static_cast<int>(id32)).second) {
+            return Status::FAILURE; // 同一字面量双 id
+        }
+    }
+    id2tok.reserve(id2tok_num);
+    for (std::uint32_t i = 0; i < id2tok_num; ++i) {
+        std::string s;
+        if (!ReadStr(in, &s))
+            return Status::FAILURE;
+        id2tok.push_back(std::move(s));
+    }
+    if (id2tok.size() != id2tok_num)
+        return Status::FAILURE;
+    for (std::uint32_t i = 0; i < id2tok_num; ++i) {
+        // 同一 id 多字面量：非空字面量冲突拒；空串（gap id）放行——与 JSON
+        // 路径 id2tok 空 gap 语义一致（id_to_token 对空串返回 nullopt）
+        const std::string& s = id2tok[i];
+        if (!s.empty() && !tok2id.count(s))
+            return Status::FAILURE;
+    }
+    merges.reserve(merge_num);
+    for (std::uint32_t i = 0; i < merge_num; ++i) {
+        std::string a, b;
+        if (!ReadStr(in, &a) || !ReadStr(in, &b))
+            return Status::FAILURE;
+        merges.emplace_back(std::move(a), std::move(b));
+    }
+    added_tokens.reserve(added_num);
+    for (std::uint32_t i = 0; i < added_num; ++i) {
+        std::string lit;
+        std::uint32_t id32 = 0;
+        if (!ReadStr(in, &lit) || !ReadU32(in, &id32))
+            return Status::FAILURE;
+        if (id32 > static_cast<std::uint32_t>(kMaxReasonableTokenId)) {
+            return Status::FAILURE;
+        }
+        added_tokens.emplace_back(std::move(lit), static_cast<int>(id32));
+    }
+    special_strip_ids.reserve(special_num);
+    for (std::uint32_t i = 0; i < special_num; ++i) {
+        std::uint32_t id32 = 0;
+        if (!ReadU32(in, &id32))
+            return Status::FAILURE;
+        if (id32 > static_cast<std::uint32_t>(kMaxReasonableTokenId)) {
+            return Status::FAILURE;
+        }
+        special_strip_ids.push_back(static_cast<int>(id32));
+    }
+    // 后置排序（缓存写出序未必有序——特殊集源序无序）
+    std::sort(special_strip_ids.begin(), special_strip_ids.end());
+    // merges 交叉校验（与 JSON 路径同构：引用 token 必在词表）
+    for (const auto& [a, b] : merges) {
+        if (!tok2id.count(a) || !tok2id.count(b))
+            return Status::FAILURE;
+    }
+    // id 一致性：id2tok 非空槽位的 id 必须回查 tok2id 一致（防 id↔lit 翻转位
+    // 漂——双表互证）
+    for (std::uint32_t i = 0; i < id2tok_num; ++i) {
+        const std::string& s = id2tok[i];
+        if (s.empty())
+            continue;
+        auto it = tok2id.find(s);
+        if (it == tok2id.end() || it->second != static_cast<int>(i)) {
+            return Status::FAILURE;
+        }
+    }
+
+    // 尾部元信息
+    std::uint8_t byte_fback_u8 = 0;
+    std::uint8_t has_replace_u8 = 0;
+    if (!ReadStr(in, &model_type))
+        return Status::FAILURE;
+    if (!in.read(reinterpret_cast<char*>(&byte_fback_u8), 1))
+        return Status::FAILURE;
+    if (!ReadStr(in, &unk_token))
+        return Status::FAILURE;
+    if (!in.read(reinterpret_cast<char*>(&has_replace_u8), 1))
+        return Status::FAILURE;
+    std::string pat, rep;
+    if (!ReadStr(in, &pat) || !ReadStr(in, &rep))
+        return Status::FAILURE;
+    // 尾字节之后必须恰为 EOF（防拼接到别的缓存的截断头+段组合通过校验）
+    if (in.get() != std::istream::traits_type::eof())
+        return Status::FAILURE;
+
+    byte_fallback = byte_fback_u8 != 0;
+    has_replace_normalizer = has_replace_u8 != 0;
+    if (has_replace_normalizer && pat.empty())
+        return Status::FAILURE;
+    if (has_replace_normalizer)
+        replace_normalizer = {std::move(pat), std::move(rep)};
+
+    // 全部校验通过：提交成员
+    tok2id_ = std::move(tok2id);
+    id2tok_ = std::move(id2tok);
+    merges_ = std::move(merges);
+    added_tokens_ = std::move(added_tokens);
+    special_strip_ids_ = std::move(special_strip_ids);
+    model_type_ = std::move(model_type);
+    byte_fallback_ = byte_fallback;
+    unk_token_ = std::move(unk_token);
+    has_replace_normalizer_ = has_replace_normalizer;
+    replace_normalizer_ = std::move(replace_normalizer);
+    return Status::SUCCESS;
+}
+
+// ── VocabStore ──────────────────────────────────────────────────────────────
+
+// L4：JSON 全量解析（原 load 本体，SAX → 九成员局部构建 → 校验 → 提交）。
+Status VocabStore::load_from_json_(const VocabSource& src)
+{
     std::unordered_map<std::string, int> tok2id;
     std::vector<std::string> id2tok;
     std::vector<std::pair<std::string, std::string>> merges;
@@ -510,6 +848,43 @@ Status VocabStore::load(const VocabSource& src)
     has_replace_normalizer_ = has_replace_normalizer;
     replace_normalizer_ = std::move(replace_normalizer);
     return Status::SUCCESS;
+}
+
+// load 入口（L4 分流）：path 态且 BincacheEnabled（env CANN_LM_TOKENIZER_
+// BINCACHE，默认未设 = 关）→ 先试 .bincache → 失败回退 JSON 全量；成功且
+// JSON 路径生效时静默落缓存。默认关与 bytes 态（内存）无缓存面，直走 JSON
+// （= L4 合入前基线行为：sidecar 不读不写）。
+Status VocabStore::load(const VocabSource& src)
+{
+    if (const auto* path = std::get_if<std::filesystem::path>(&src.artifact)) {
+        if (!BincacheEnabled()) {
+            CANN_LLM_LOGD("vocab.bincache: cache off (env CANN_LM_TOKENIZER_BINCACHE unset/\"0\"), "
+                          "json direct, path=%s",
+                          path->c_str());
+            return load_from_json_(src);
+        }
+        // 先试缓存（键校验在 TryLoadFromCache 内部：源不存在时 SourceKey 失败
+        // → FAILURE，与现状 exists() 拒绝语义一致）
+        std::filesystem::path cache = *path;
+        cache += ".bincache";
+        if (TryLoadFromCache(*path, cache).ok()) {
+            CANN_LLM_LOGD("vocab.bincache: cache hit path=%s", path->c_str());
+            return Status::SUCCESS;
+        }
+        const Status st = load_from_json_(src);
+        if (st.ok()) {
+            // 静默落缓存（失败无声——下次启动照走 JSON）：先取源键再写数据，
+            // 后键位回填（两个窗口：truncate 首字节仍非 CLMVBIN1 即整包拒，
+            // 键位零值对任何真实源恒失配——半写缓存不可用，安全）。
+            std::uint64_t src_size = 0;
+            std::int64_t src_mtime = 0;
+            if (SourceKey(*path, &src_size, &src_mtime) && Serialize(cache).ok()) {
+                PlugKey(cache, src_size, src_mtime);
+            }
+        }
+        return st;
+    }
+    return load_from_json_(src);
 }
 
 std::optional<int> VocabStore::token_to_id(std::string_view tok) const

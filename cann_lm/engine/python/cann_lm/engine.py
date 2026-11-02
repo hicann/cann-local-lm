@@ -117,6 +117,7 @@ def build_model_artifact(
     decode_weight=None,
     meta_json_path=None,
     meta_json_data=None,
+    is_enable_shared_weight=False,
 ):
     """Build a CANN_LMEngine_ModelArtifact (1:1 with c_api.h:87).
 
@@ -124,6 +125,9 @@ def build_model_artifact(
     (bytes-like) -> CANN_LMEngine_Buffer (NULL/size 0 when None). Returns
     (artifact, keepalive). The C side stores buffer data as a *view* (no copy),
     so keepalive must outlive the model-load phase — keep it on the Engine.
+
+    is_enable_shared_weight: enable prefill/decode share-weights binding
+    (isEnableSharedWeight). False = decode keeps share_weights_model_id=0.
     """
     keepalive = []
     art = CANN_LMEngine_ModelArtifact()
@@ -148,6 +152,8 @@ def build_model_artifact(
     if meta_json_data is not None:
         art.meta_json_buf, ka = build_buffer(meta_json_data)
         keepalive.extend(ka)
+
+    art.isEnableSharedWeight = bool(is_enable_shared_weight)
 
     return art, keepalive
 
@@ -269,6 +275,10 @@ class Engine:
     options:  None (NULL -> C++ defaults), an EngineOptions struct, or the
               (struct, keepalive) tuple from build_engine_options().
     lib_path: explicit .so path; else discovered via get_library().
+
+    Generate flow (ADR-0002): create_context() -> set_context() ->
+    generate()/generate_async() — requests belong to the Executor's active
+    context; generating with no active context raises INVALID_STATE.
     """
 
     def __init__(self, artifact=None, options=None, lib_path=None):
@@ -362,6 +372,18 @@ class Engine:
         raise_for_status(status, "ContextCreate")
         return Context(self, int(out.value))
 
+    def set_context(self, context):
+        """Activate `context` (a Context or raw id) as the Executor's active
+        context (ADR-0002). generate()/generate_async() requests then belong
+        to it until switched or destroyed. Unregistered id -> NOT_FOUND;
+        in-flight requests -> INVALID_STATE; target == active -> idempotent
+        success (c_api.h:177)."""
+        ctx_id = context.id if isinstance(context, Context) else int(context)
+        raise_for_status(
+            self._lib.CANN_LMEngine_ExecutorSetContext(self._handle, ctx_id),
+            "ExecutorSetContext",
+        )
+
     def destroy_context(self, context_id):
         raise_for_status(
             self._lib.CANN_LMEngine_ContextDestroy(self._handle, int(context_id)),
@@ -379,22 +401,22 @@ class Engine:
     def generate(
         self,
         prompt,
-        context,
         sampling_params=None,
         max_tokens=0,
         stop_token_ids=None,
         stop_strings=None,
     ):
-        """Synchronous generate. Returns Result on SUCCESS; raises
-        CannLmStatusError (with .result) on non-SUCCESS (FAILURE still fills a
-        partial Result, attached to the exception).
+        """Synchronous generate on the Executor's ACTIVE context (ADR-0002:
+        set via set_context(); no active context -> CannLmStatusError
+        INVALID_STATE). Returns Result on SUCCESS; raises CannLmStatusError
+        (with .result) on non-SUCCESS (FAILURE still fills a partial Result,
+        attached to the exception).
 
         sampling_params: None (NULL -> C++ defaults) or a SamplingParams struct
                          (use build_sampling_params() — a zero-init struct gives
                          0.0 values, NOT the 1.0 C++ defaults).
         """
         prompt_b = prompt.encode("utf-8") if isinstance(prompt, str) else bytes(prompt)
-        ctx_id = context.id if isinstance(context, Context) else int(context)
         params_ptr = (
             ct.byref(sampling_params)
             if isinstance(sampling_params, CANN_LMEngine_SamplingParams)
@@ -407,7 +429,6 @@ class Engine:
         status = self._lib.CANN_LMEngine_ExecutorGenerate(
             self._handle,
             prompt_b,
-            ctx_id,
             params_ptr,
             ct.byref(req_opts),
             ct.byref(c_result),
@@ -420,18 +441,17 @@ class Engine:
     def generate_async(
         self,
         prompt,
-        context,
         sampling_params=None,
         max_tokens=0,
         stop_token_ids=None,
         stop_strings=None,
         callback=None,
     ):
-        """Asynchronous generate. Returns a Request. `callback(token_id, text)`
-        fires per decoded token on the pipeline thread (must not block or call
+        """Asynchronous generate on the Executor's ACTIVE context (ADR-0002 —
+        see generate()). Returns a Request. `callback(token_id, text)` fires
+        per decoded token on the pipeline thread (must not block or call
         Engine APIs). callback=None -> no streaming (poll Request instead)."""
         prompt_b = prompt.encode("utf-8") if isinstance(prompt, str) else bytes(prompt)
-        ctx_id = context.id if isinstance(context, Context) else int(context)
         params_ptr = (
             ct.byref(sampling_params)
             if isinstance(sampling_params, CANN_LMEngine_SamplingParams)
@@ -445,7 +465,6 @@ class Engine:
         status = self._lib.CANN_LMEngine_ExecutorGenerateAsync(
             self._handle,
             prompt_b,
-            ctx_id,
             params_ptr,
             ct.byref(req_opts),
             ct.byref(out),
@@ -475,6 +494,12 @@ class Context:
 
     def cancel(self):
         self._engine.cancel_context(self._id)
+
+    def activate(self):
+        """Make this the Engine's active context (Engine.set_context,
+        ADR-0002) — subsequent generate()/generate_async() calls belong to
+        it until switched or destroyed."""
+        self._engine.set_context(self._id)
 
     def destroy(self):
         if self._id is not None:

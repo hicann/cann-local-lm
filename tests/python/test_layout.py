@@ -7,7 +7,7 @@ Expected offsets computed by hand from c_api.h for an LP64 target (pointers &
 size_t = 8 bytes, int/uint32/float/enum = 4 bytes, uint64 = 8 bytes):
 
   Buffer            : {void* data@0; size_t size@8}                        -> 16
-  ModelArtifact     : 8 ptr/buffer fields, no internal padding             -> 88
+  ModelArtifact     : 8 ptr/buffer fields + bool@88 + tail pad(7)         -> 96
   EngineOptions     : 3 ints + pad(4) + 2 ptrs                             -> 32
   SamplingParams    : 3x4 + pad(4) + uint64@16 + float@24 + pad(4)         -> 32
   RequestOptions    : int + pad(4) + ptr + size_t + ptr + size_t           -> 40
@@ -57,8 +57,8 @@ class TestBuffer:
 
 
 class TestModelArtifact:
-    def test_sizeof_is_88(self):
-        assert ct.sizeof(CANN_LMEngine_ModelArtifact) == 88
+    def test_sizeof_is_96(self):
+        assert ct.sizeof(CANN_LMEngine_ModelArtifact) == 96
 
     def test_field_offsets(self):
         cls = CANN_LMEngine_ModelArtifact
@@ -70,6 +70,7 @@ class TestModelArtifact:
         assert field_offset(cls, "decode_weight") == 56
         assert field_offset(cls, "meta_json_path") == 64
         assert field_offset(cls, "meta_json_buf") == 72
+        assert field_offset(cls, "isEnableSharedWeight") == 88
 
     def test_pointer_fields_are_8_bytes(self):
         cls = CANN_LMEngine_ModelArtifact

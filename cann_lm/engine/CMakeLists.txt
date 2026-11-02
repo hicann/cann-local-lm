@@ -55,6 +55,9 @@ set(CANN_LM_ENGINE_SRCS
 add_library(cann_lm_engine STATIC ${CANN_LM_ENGINE_SRCS})
 
 # nlohmann/json: find_package (Findnlohmann_json.cmake, 含 vendored fallback)
+# 挂自研 Find 模块 (engine 作用域可达): CI 镜像直连 (-DCANN_3RD_LIB_PATH, 纯头文件
+# 布局无 share/cmake config) 只能走模块的头文件级回退; 常规流程仍可走 config hint
+list(APPEND CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/../../cmake/third_party/modules)
 find_package(nlohmann_json REQUIRED)
 target_include_directories(cann_lm_engine
     PUBLIC

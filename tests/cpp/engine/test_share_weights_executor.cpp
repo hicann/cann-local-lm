@@ -16,7 +16,7 @@
 //     与 UT-TC-SW-003 默认契约呼应——老 ROM 缺符号不影响默认加载路径）。
 //   UT-TC-SW-007：Load 第 2 参 weight 原样透传 mm InitWeights（分离部署
 //     decode 自身 weightDir 到达 mm 的链路证据，
-//     docs/seperate_pd_weights.md §4.2——复用判定由底层自理，本层契约
+//     docs/separate_pd_weights.md §4.2——复用判定由底层自理，本层契约
 //     = 路径按实参原样到达）。
 // 局限：pipeline 接线（prefill ModelId → decode Load 第 5 参）与"绑定→executor
 //   构造"先序需真实 .so / 设备验证，host 由本层透传契约 + 实现评审覆盖。
@@ -225,7 +225,7 @@ TEST(ShareWeightsExecutorTest, LoadDefaultZeroNoBind_TC006)
 }
 
 // UT-TC-SW-007: weight 实参透传——Load 第 2 参原样到达 mm InitWeights。
-// 分离部署（docs/seperate_pd_weights.md §4.2）的 executor 级前提：decode
+// 分离部署（docs/separate_pd_weights.md §4.2）的 executor 级前提：decode
 // 绑定 share_weights_model_id 的同时按自身 weightDir 发起 InitWeights——
 // 路径按实参原样到达 mm 即本层契约完备（复用多少由底层同源规则决定）。
 TEST(ShareWeightsExecutorTest, LoadPassesWeightDirToInitWeights_TC007)

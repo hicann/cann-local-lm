@@ -65,8 +65,9 @@ struct SamplingParams {
     float repetition_penalty = 1.0f; ///< 1.0 = 关闭；>1 对已生成 token 降权（仅本请求生成部分）
 };
 
-/// 请求级终止参数（对外 API）。与采样旋钮分离；**长度未超限时，推理停止仅由
-/// 本结构的 stop_token_ids / stop_strings 控制**（与 tokenizer 配置的 eos 无关）。
+/// 请求级终止参数（对外 API）。与采样旋钮分离；**长度未超限时，推理停止由
+/// 本结构的 stop_token_ids / stop_strings 与 meta eos_token_id 共同控制**
+/// （eos 命中 → StopToken；token_ids 含 eos、text 不含、不入 PromptCache 台账）。
 /// 停止字面量依赖 detokenize 不剥离 special token（skip_special_tokens 已从推理链路移除）。
 struct RequestOptions {
     int max_tokens = 0;                    ///< 0/负 = 默认上限 1024
@@ -83,7 +84,7 @@ struct Status;
 /// 终止原因（Result 的完成语义）。对外 API。
 enum class FinishReason {
     MaxTokens,  ///< 达到 max_tokens（RequestOptions）
-    StopToken,  ///< 命中 RequestOptions.stop_token_ids
+    StopToken,  ///< 命中 RequestOptions.stop_token_ids 或 meta eos_token_id
     StopString, ///< 命中 RequestOptions.stop_strings
     Canceled,   ///< 用户主动取消（需求 #2 c）
     Error,      ///< 推理过程出错（配合返回 Status::FAILURE，Result 可能含部分 token）
@@ -111,7 +112,7 @@ struct ArtifactSource {
 
 /// 单一模型构件（对外 API；SR20260903001 合并原 ModelArtifact/ModelArtifactPath）
 /// prefill/decode 双图位收拢，D-10）。图与权重分离语义维持。
-/// 权重路径 prefill/decode 对称拆分（docs/seperate_pd_weights.md §4.1）：
+/// 权重路径 prefill/decode 对称拆分（docs/separate_pd_weights.md §4.1）：
 /// 共用 = 两字段填同一路径；空 = 图权重不分离（逐图独立判定，
 /// 一空一非空 = 混合形态）。
 struct ModelArtifact {
@@ -120,6 +121,10 @@ struct ModelArtifact {
     std::string prefill_weight; ///< prefill 权重目录（空 = 图权重不分离）
     std::string decode_weight;  ///< decode 权重目录（空 = 图权重不分离）
     ArtifactSource meta_json;   ///< 元信息+配置 json（构件级单份）
+    /// 是否使能 prefill/decode 权重共享绑定（C API isEnableSharedWeight 透传）。
+    /// false = 未配置：decode 侧 share_weights_model_id 保持 0（不绑定）；
+    /// true = prefill ModelId() 绑定给 decode（docs/separate_pd_weights.md §4.2）。
+    bool isEnableSharedWeight = false;
 };
 
 // ────────────────── 流式回调（对外 API）──────────────────

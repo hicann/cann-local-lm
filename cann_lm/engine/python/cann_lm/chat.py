@@ -220,6 +220,9 @@ def run(args):
     try:
         ctx = eng.create_context()
         try:
+            # ADR-0002: activate the session context once — every generate()
+            # below belongs to it (requests target the active context)
+            eng.set_context(ctx)
             while True:
                 if check_round_limit(rounds, max_rounds=MAX_ROUNDS):
                     print(f"cann_lm chat: round limit ({MAX_ROUNDS}) reached, exiting.")
@@ -259,7 +262,6 @@ def run(args):
                 try:
                     r = eng.generate(
                         prompt,
-                        ctx,
                         sampling_params=sp,
                         max_tokens=max_tokens,
                         stop_strings=stop,

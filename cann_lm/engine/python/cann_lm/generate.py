@@ -142,9 +142,9 @@ def run(args):
     try:
         ctx = eng.create_context()
         try:
+            eng.set_context(ctx)  # ADR-0002: activate the context before generate
             r = eng.generate(
                 prompt,
-                ctx,
                 sampling_params=sp,
                 max_tokens=max_tokens,
                 stop_strings=stop_strings,

@@ -26,11 +26,11 @@
 //     (fast-fail, TC_107 semantics — e.g. device-only vocab path on host)
 //   - If GenerateAsync succeeds, the full request lifecycle works
 //
-// Flow mode is config-driven (nlohmann/json, template: examples/test_engine/bbit/testcase.json):
+// Flow mode is config-driven (nlohmann/json, template: tests/bbit/testcase.json):
 //   - model_path_prefill / model_path_decode / model_meta_config /
 //     model_weight_dir_prefill / model_weight_dir_decode
 //     → CANN_LMEngine_ModelArtifact paths（权重路径 prefill/decode 拆分：
-//       docs/seperate_pd_weights.md §4.3；共用 = 两键同值）
+//       docs/separate_pd_weights.md §4.3；共用 = 两键同值）
 //   - tokenizer_type / tokenizer_path → CANN_LMEngine_EngineOptions
 //     (algorithm selection + vocab path; options wins over meta_json
 //      tokenizer_config.tokenizer_file)
@@ -40,7 +40,8 @@
 //     CANN_LMEngine_RequestOptions (request-level stop sets; independent of
 //      tokenizer eos; stop literals match because detokenize keeps specials)
 //   - one sync Generate per sentence; the first sentence also drives one
-//     GenerateAsync to cover the Request lifecycle
+//     GenerateAsync to cover the Request lifecycle (its stream callback
+//     prints each decoded token to the terminal as it arrives)
 //
 // Usage:
 //   bbit --check            — NULL defense tests (C ABI boundary, no config)
@@ -95,7 +96,7 @@ static void check_generate_status(CANN_LMEngine_Status actual, const char* msg)
     }
 }
 
-// ── Config (examples/test_engine/bbit/testcase.json) ────────────────────────────
+// ── Config (tests/bbit/testcase.json) ────────────────────────────────────────
 
 struct SentenceCase {
     std::string prompt;
@@ -327,9 +328,9 @@ static int run_check()
     // Executor-level: NULL inputs → INVALID_ARGUMENT
     check(CANN_LMEngine_ExecutorCreate(nullptr, nullptr, nullptr) == CANN_LM_ENGINE_INVALID_ARGUMENT,
           "ExecutorCreate NULL → INVALID_ARGUMENT");
-    check(CANN_LMEngine_ExecutorGenerate(nullptr, nullptr, 0, nullptr, nullptr, nullptr) ==
-              CANN_LM_ENGINE_INVALID_ARGUMENT,
-          "ExecutorGenerate NULL → INVALID_ARGUMENT");
+    check(
+        CANN_LMEngine_ExecutorGenerate(nullptr, nullptr, nullptr, nullptr, nullptr) == CANN_LM_ENGINE_INVALID_ARGUMENT,
+        "ExecutorGenerate NULL → INVALID_ARGUMENT");
     check(CANN_LMEngine_ContextCreate(nullptr, nullptr) == CANN_LM_ENGINE_INVALID_ARGUMENT,
           "ContextCreate NULL → INVALID_ARGUMENT");
     check(CANN_LMEngine_ContextDestroy(nullptr, 0) == CANN_LM_ENGINE_INVALID_ARGUMENT,
@@ -359,6 +360,21 @@ static int run_check()
 
     printf("bbit --check: %d/%d passed\n", g_pass, g_total);
     return (g_pass == g_total) ? 0 : 1;
+}
+
+// ── Stream callback (GenerateAsync) ──────────────────────────────────────────
+
+// 流式回调（c_api.h Stream Callback 契约）：pipeline 内部线程每解码出一个
+// token 调一次，|text|/|text_len| 仅在回调期间有效；契约禁止在回调内阻塞或
+// 调 Engine API —— 这里只做 fwrite + fflush，把增量文本实时打到终端。
+static void stream_print_callback(CANN_LMEngine_TokenId token, const char* text, size_t text_len, void* user_data)
+{
+    (void)token;
+    (void)user_data;
+    if (text != nullptr && text_len > 0) {
+        fwrite(text, 1, text_len, stdout);
+        fflush(stdout);
+    }
 }
 
 // ── Full flow: call every C ABI function in sequence ──────────────────────────
@@ -417,6 +433,18 @@ static int run_flow(const Config& cfg)
     check(CANN_LMEngine_ContextCreate(executor, &cid) == CANN_LM_ENGINE_SUCCESS, "ContextCreate");
     check(cid != 0, "context id non-zero");
 
+    // 2b. (ADR-0002) SetContext — activate the context before Generate.
+    //     Generate without active context must be rejected (S2):
+    //     empty stub check first, then activate.
+    {
+        CANN_LMEngine_Result pre = {};
+        check(CANN_LMEngine_ExecutorGenerate(executor, "hi", nullptr, nullptr, &pre) == CANN_LM_ENGINE_INVALID_STATE,
+              "Generate before SetContext → INVALID_STATE (S2)");
+    }
+    check(CANN_LMEngine_ExecutorSetContext(executor, 999) == CANN_LM_ENGINE_NOT_FOUND,
+          "SetContext unregistered id → NOT_FOUND");
+    check(CANN_LMEngine_ExecutorSetContext(executor, cid) == CANN_LM_ENGINE_SUCCESS, "SetContext on created context");
+
     // 3. Generate (sync) — one per sentence; SUCCESS (real backend), FAILURE
     //    (inference failed), or INVALID_STATE (tokenizer supplied but unloadable)
     for (size_t i = 0; i < cfg.sentences.size(); ++i) {
@@ -425,8 +453,7 @@ static int run_flow(const Config& cfg)
         const CANN_LMEngine_SamplingParams sp = make_params(s);
         const CANN_LMEngine_RequestOptions ro = make_request_options(s, &stop_cstrs);
         CANN_LMEngine_Result result = {};
-        const CANN_LMEngine_Status st = CANN_LMEngine_ExecutorGenerate(executor, s.prompt.c_str(), cid, &sp, &ro,
-                                                                       &result);
+        const CANN_LMEngine_Status st = CANN_LMEngine_ExecutorGenerate(executor, s.prompt.c_str(), &sp, &ro, &result);
         printf("bbit: sentence[%zu] prompt=\"%s\" -> status %d\n", i, s.prompt.c_str(), st);
         check_generate_status(st, "Generate sync (SUCCESS/FAILURE/INVALID_STATE)");
         if (st == CANN_LM_ENGINE_SUCCESS) {
@@ -439,54 +466,56 @@ static int run_flow(const Config& cfg)
         CANN_LMEngine_ResultDestroy(&result);
     }
 
-    // // 4. GenerateAsync — first sentence; exercises the Request lifecycle below
-    // const SentenceCase& s0 = cfg.sentences.front();
-    // std::vector<const char*> stop_cstrs0;
-    // const CANN_LMEngine_SamplingParams sp0 = make_params(s0);
-    // const CANN_LMEngine_RequestOptions ro0 = make_request_options(s0, &stop_cstrs0);
-    // CANN_LMEngine_Request* request = nullptr;
-    // CANN_LMEngine_Status st = CANN_LMEngine_ExecutorGenerateAsync(
-    //     executor, s0.prompt.c_str(), cid, &sp0, &ro0, &request, nullptr, nullptr);
-    // printf("bbit: async submit -> status %d\n", st);
-    // check_generate_status(st, "GenerateAsync (SUCCESS/FAILURE/INVALID_STATE)");
+    // 4. GenerateAsync — first sentence; 流式回调把每个解码出的 token 直接
+    //    打到终端（见 stream_print_callback），并走完下方 Request 生命周期。
+    const SentenceCase& s0 = cfg.sentences.front();
+    std::vector<const char*> stop_cstrs0;
+    const CANN_LMEngine_SamplingParams sp0 = make_params(s0);
+    const CANN_LMEngine_RequestOptions ro0 = make_request_options(s0, &stop_cstrs0);
+    CANN_LMEngine_Request* request = nullptr;
+    printf("bbit: sentence[0] async stream:\n");
+    CANN_LMEngine_Status st = CANN_LMEngine_ExecutorGenerateAsync(executor, s0.prompt.c_str(), &sp0, &ro0, &request,
+                                                                  stream_print_callback, nullptr);
+    printf("bbit: async submit -> status %d\n", st);
+    check_generate_status(st, "GenerateAsync (SUCCESS/FAILURE/INVALID_STATE)");
 
-    // // 5. Request lifecycle (only if async succeeded)
-    // if (st == CANN_LM_ENGINE_SUCCESS && request) {
-    //     // RequestWait (blocks until terminal)
-    //     CANN_LMEngine_Result result2 = {};
-    //     check(CANN_LMEngine_RequestWait(request, &result2)
-    //           == CANN_LM_ENGINE_SUCCESS, "RequestWait");
-    //     if (result2.token_ids_count > 0) {
-    //         check(result2.text != nullptr, "RequestWait produced text");
-    //     }
-    //     CANN_LMEngine_ResultDestroy(&result2);
+    // 5. Request lifecycle (only if async succeeded)
+    if (st == CANN_LM_ENGINE_SUCCESS && request) {
+        // RequestWait (blocks until terminal; the callback above has been
+        // streaming tokens to the terminal — close that line with a newline)
+        CANN_LMEngine_Result result2 = {};
+        check(CANN_LMEngine_RequestWait(request, &result2) == CANN_LM_ENGINE_SUCCESS, "RequestWait");
+        printf("\n");
+        if (result2.token_ids_count > 0) {
+            check(result2.text != nullptr, "RequestWait produced text");
+        }
+        CANN_LMEngine_ResultDestroy(&result2);
 
-    //     // RequestGetStatus / RequestIsDone (after completion)
-    //     check(CANN_LMEngine_RequestGetStatus(request)
-    //           == CANN_LM_ENGINE_REQUEST_COMPLETED, "RequestGetStatus → COMPLETED");
-    //     check(CANN_LMEngine_RequestIsDone(request) == 1, "RequestIsDone → 1");
+        // RequestGetStatus / RequestIsDone (after completion)
+        check(CANN_LMEngine_RequestGetStatus(request) == CANN_LM_ENGINE_REQUEST_COMPLETED,
+              "RequestGetStatus → COMPLETED");
+        check(CANN_LMEngine_RequestIsDone(request) == 1, "RequestIsDone → 1");
 
-    //     // RequestTryGetResult (on completed request)
-    //     CANN_LMEngine_Result result3 = {};
-    //     check(CANN_LMEngine_RequestTryGetResult(request, &result3)
-    //           == CANN_LM_ENGINE_SUCCESS, "RequestTryGetResult on completed");
-    //     CANN_LMEngine_ResultDestroy(&result3);
+        // RequestTryGetResult (on completed request)
+        CANN_LMEngine_Result result3 = {};
+        check(CANN_LMEngine_RequestTryGetResult(request, &result3) == CANN_LM_ENGINE_SUCCESS,
+              "RequestTryGetResult on completed");
+        CANN_LMEngine_ResultDestroy(&result3);
 
-    //     // RequestCancel (idempotent on completed request)
-    //     check(CANN_LMEngine_RequestCancel(request)
-    //           == CANN_LM_ENGINE_SUCCESS, "RequestCancel (idempotent)");
-    // } else {
-    //     // Stub era / submission failure: request is null and the Request
-    //     // lifecycle block above was NOT exercised this run (printed so a
-    //     // "N/N passed" line is never mistaken for async coverage).
-    //     printf("bbit: async submit failed — Request lifecycle NOT exercised this run\n");
-    //     check(request == nullptr, "GenerateAsync failure → null request");
-    // }
+        // RequestCancel (idempotent on completed request)
+        check(CANN_LMEngine_RequestCancel(request) == CANN_LM_ENGINE_SUCCESS, "RequestCancel (idempotent)");
+    } else {
+        // Stub era / submission failure: request is null and the Request
+        // lifecycle block above was NOT exercised this run (printed so a
+        // "N/N passed" line is never mistaken for async coverage).
+        printf("bbit: async submit failed — Request lifecycle NOT exercised this run\n");
+        check(request == nullptr, "GenerateAsync failure → null request");
+    }
 
-    // 6. RequestDestroy (async block above commented out — request is not in
-    //    scope; skipped in lockstep with that block)
-    // CANN_LMEngine_RequestDestroy(request);
-    // g_total++; g_pass++;
+    // 6. RequestDestroy (NULL-safe no-op when submit failed)
+    CANN_LMEngine_RequestDestroy(request);
+    g_total++;
+    g_pass++;
 
     // 7. ContextCancel (on context with no active generate)
     check(CANN_LMEngine_ContextCancel(executor, cid) == CANN_LM_ENGINE_SUCCESS, "ContextCancel (no active generate)");

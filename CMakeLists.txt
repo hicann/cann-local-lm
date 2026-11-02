@@ -46,8 +46,17 @@ option(BUILD_ENGINE "Build cann_lm C++ engine (cann_lm/engine)" ON)
 #   依赖 cmake/modules 的 DelegateCommonFlags/TorchDelegateCannCommon + torch + CANN
 option(BUILD_CONVERTER "Build cann_lm converter/export/csrc + tests (needs torch+CANN)" OFF)
 
+# engine UT: tests/cpp/engine (host 端 GTest + stub NDK)
+# build_test.sh 经 -DBUILD_TESTS=ON 开启; 须在 add_subdirectory(cann_lm/engine)
+# 之后——tests CMakeLists 要求 cann_lm_engine target 已定义
+option(BUILD_TESTS "Build engine C++ unit tests (tests/cpp/engine)" OFF)
+
 if(BUILD_ENGINE)
     add_subdirectory(cann_lm/engine)
+endif()
+
+if(BUILD_ENGINE AND BUILD_TESTS)
+    add_subdirectory(tests/cpp/engine)
 endif()
 
 if(BUILD_CONVERTER)

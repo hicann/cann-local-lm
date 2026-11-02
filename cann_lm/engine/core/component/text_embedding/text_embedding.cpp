@@ -2,7 +2,8 @@
 // TextEmbedding 实现（SR20260828001，DESIGN v0.3）。
 // 内部帮手（不出公开头）：
 //   detail::ConvertRows/ConvertScales/ConversionSupported —— M-03 纯函数转换
-//   detail::MemoryTableSource / detail::FlashTableSource —— M-02 表源二态
+//   detail::MmapTableSource / detail::FlashTableSource —— M-02 表源二态
+//   （InMemory=mmap 只读映射 L2 / InFlash=open+pread 直读）
 // host 只搬运与值展开，不反量化（D-01）。
 // 通用 dtype 工具（fp16 位级转换/dtype 字节数与简名/格式化打印）在
 // utils/data_type_utils.h，本模块不再自带。
@@ -13,6 +14,7 @@
 #include "utils/data_type_utils.h"
 
 #include <fcntl.h>
+#include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -156,34 +158,101 @@ constexpr size_t kDumpRows = 4; // 最多详印前 4 个 token
 constexpr size_t kDumpCols = 8; // 每 token 最多详印前 8 维
 
 // ── M-02：表源（统一 ReadRow 行读取契约，类型无关纯字节搬运）──────────────
-// InMemory 载体为堆内存（unique_ptr<char[]>，Load 期 new[] 读入、RAII 释放）——
-// TensorBuffer 仅用于模型输入/输出工位，不作 host 大容量存储
-// （2026-10-09 设备事故修正：TensorBuffer 内存 CPU 不可写致 read=0）。
+// InMemory 载体为 mmap 只读映射（L2：RAII munmap，RowPtr 直指映射页；段偏移
+// 即映射 offset，校验序 open→fstat 段尾→mmap→madvise(MADV_SEQUENTIAL)，
+// 短文件在 map 前拒绝，无 SIGBUS 窗口）——TensorBuffer 仅用于模型输入/输出
+// 工位，不作 host 大容量存储（TensorBuffer 内存对 CPU 可能不可写，作存储会
+// 静默读 0）。
 class TableSource {
 public:
     virtual ~TableSource() = default;
     /// 把第 id 行 row_bytes 字节写入 dst。InFlash 短读/I/O 错 → FAILURE。
     virtual Status ReadRow(TokenId id, void* dst) const = 0;
     virtual size_t RowBytes() const = 0;
-    /// InMemory：返回堆内存中该行只读指针（供 FillInputs 免 staging 直转）；
+    /// InMemory：返回映射页中该行只读指针（供 FillInputs 免 staging 直转）；
     /// InFlash：nullptr（须走 ReadRow + 栈上 staging）。
     virtual const void* RowPtr(TokenId id) const = 0;
 };
 
-class MemoryTableSource final : public TableSource {
+/// mmap 只读表源（L2）：生命周期持映射（RAII munmap），行 0 数据位于映射内
+/// map_head_ 处。主表段 file_offset=0、identity 段 = 主表段之后，两段各自
+/// 独立 mmap（L1 并行下两映射互不干扰；缺页即读盘，MADV_SEQUENTIAL 交内核
+/// 顺序预读）。mmap offset 须页对齐：映射自段起点的页对齐下界起，段头
+/// 页内残量由 map_head_ 吸收（RowPtr = map + map_head_ + id*row_bytes）。
+class MmapTableSource final : public TableSource {
 public:
-    MemoryTableSource(std::unique_ptr<char[]> data, size_t row_bytes) : data_(std::move(data)), row_bytes_(row_bytes) {}
+    /// 段几何校验 + 建映射：fstat size ≥ file_offset + 段长（require_exact
+    /// 时取 ==）→ mmap(PROT_READ|MAP_PRIVATE，页对齐下界)。
+    /// 截断拒绝在 map 前完成（无 SIGBUS 窗口；运行中截断部署期不存在，R-2）。
+    static Status Create(const std::string& path, uint64_t file_offset, size_t row_bytes, size_t rows,
+                         bool require_exact, std::unique_ptr<TableSource>* out)
+    {
+        if (out == nullptr || row_bytes == 0 || rows == 0) {
+            return Status(Status::INVALID_ARGUMENT);
+        }
+        // rows * row_bytes 溢出防护（调用方已防，双扣）
+        if (rows > std::numeric_limits<std::size_t>::max() / row_bytes) {
+            return Status(Status::INVALID_ARGUMENT);
+        }
+        const size_t len = rows * row_bytes;
+        const uint64_t seg_end = file_offset + len; // 调用方已防回绕（双扣）
+        int fd = ::open(path.c_str(), O_RDONLY);
+        if (fd < 0)
+            return Status(Status::INVALID_ARGUMENT);
+        struct stat sb {};
+        const uint64_t fsize = (::fstat(fd, &sb) == 0) ? static_cast<uint64_t>(sb.st_size) : 0;
+        const bool size_ok = require_exact ? (fsize == seg_end) : (fsize >= seg_end);
+        if (::fstat(fd, &sb) != 0 || !size_ok) {
+            ::close(fd);
+            return Status(Status::INVALID_ARGUMENT); // 截断/超长：map 前拒绝
+        }
+        // 页对齐下界映射：map_off ≤ file_offset < map_off + PAGE；段尾页内
+        // 越出由 mmap 向上取整页覆盖（访问仍限 [map_head_, map_head_+len)，
+        // 段后页脚越读不会发生——RowPtr 恒以行界为界）
+        const long page = ::sysconf(_SC_PAGESIZE);
+        const uint64_t map_off = (page > 0) ?
+                                     (file_offset / static_cast<uint64_t>(page)) * static_cast<uint64_t>(page) :
+                                     file_offset;
+        const size_t map_head = static_cast<size_t>(file_offset - map_off);
+        const size_t map_len = map_head + len;
+        void* map = ::mmap(nullptr, map_len, PROT_READ, MAP_PRIVATE, fd, static_cast<off_t>(map_off));
+        ::close(fd); // 映射建立后 fd 即可关（映射生命周期独立于 fd）
+        if (map == MAP_FAILED)
+            return Status(Status::FAILURE);
+#ifdef MADV_SEQUENTIAL
+        ::madvise(map, map_len, MADV_SEQUENTIAL); // 内核顺序预读替代 stream 两跳
+#endif
+        out->reset(new MmapTableSource(map, map_len, map_head, row_bytes));
+        return Status();
+    }
+    ~MmapTableSource() override
+    {
+        if (map_ != nullptr)
+            ::munmap(map_, len_);
+    }
+    MmapTableSource(const MmapTableSource&) = delete;
+    MmapTableSource& operator=(const MmapTableSource&) = delete;
 
     Status ReadRow(TokenId id, void* dst) const override
     {
-        std::memcpy(dst, data_.get() + static_cast<size_t>(id) * row_bytes_, row_bytes_);
+        std::memcpy(dst, RowPtr(id), row_bytes_);
         return Status();
     }
     size_t RowBytes() const override { return row_bytes_; }
-    const void* RowPtr(TokenId id) const override { return data_.get() + static_cast<size_t>(id) * row_bytes_; }
+    const void* RowPtr(TokenId id) const override
+    {
+        return static_cast<const char*>(map_) + map_head_ + static_cast<size_t>(id) * row_bytes_; // 直指映射页内段头
+    }
 
 private:
-    std::unique_ptr<char[]> data_; // 堆内存（Load 期读入；RAII 释放）
+    // 私有构造：建源唯经静态工厂 Create（校验序/madvise 集中于工厂）
+    MmapTableSource(void* map, size_t len, size_t map_head, size_t row_bytes)
+        : map_(map), len_(len), map_head_(map_head), row_bytes_(row_bytes)
+    {}
+
+    void* map_;       // RAII：Create 建立映射、析构 munmap
+    size_t len_;      // 映射长（map_head + 段长，向上页取整后）
+    size_t map_head_; // 段头在映射内的页内偏移（file_offset % PAGE）
     size_t row_bytes_;
 };
 
@@ -225,26 +294,6 @@ private:
     /// 文件内段偏移（主表恒 0；identity 源 = 主表段之后，合并文件布局——Q12）。
     uint64_t file_offset_;
 };
-
-/// 建源工厂（F-01 时序）：InMemory 取 table_data（已读入堆内存）；InFlash 取
-/// flash_fd（open+fstat 校验后，所有权移交 FlashTableSource），此时 table_data 传空。
-/// file_offset 仅 InFlash 有意义（行偏移基数；主表 0，identity 源 = 主表段大小）。
-Status CreateTableSource(const EmbeddingConfig& cfg, size_t row_bytes, std::unique_ptr<char[]> table_data, int flash_fd,
-                         std::unique_ptr<TableSource>* out, uint64_t file_offset = 0)
-{
-    if (out == nullptr)
-        return Status(Status::INVALID_ARGUMENT);
-    if (cfg.load_mode == EmbeddingLoadMode::InMemory) {
-        if (!table_data)
-            return Status(Status::INVALID_ARGUMENT);
-        *out = std::make_unique<MemoryTableSource>(std::move(table_data), row_bytes);
-    } else {
-        if (flash_fd < 0)
-            return Status(Status::INVALID_ARGUMENT);
-        *out = std::make_unique<FlashTableSource>(flash_fd, row_bytes, file_offset);
-    }
-    return Status();
-}
 
 } // namespace detail
 
@@ -358,7 +407,7 @@ Status EmbeddingConfig::FromSection(const std::string& weights, const std::strin
         out->group_size = 0; // schema 无组大小组段（per_group 恒在 Load 期拒绝，TC_209）
     }
 
-    // ── per_layer_token_identity 读取类型（2026-10-09 合并文件布局——Q12：
+    // ── per_layer_token_identity 读取类型（合并文件布局——Q12：
     //    identity 数据并入 embedding_weights 文件主表段之后、scale 段并入
     //    embedding_dequant_scale 文件主 scale 段之后；"是否读取"由 pipeline
     //    依图工位判定（以图为准，B-10），本节只解析读取类型；与主表启用与否
@@ -376,8 +425,7 @@ Status EmbeddingConfig::FromSection(const std::string& weights, const std::strin
         return Status(Status::INVALID_ARGUMENT);
     }
 
-    // identity_scale_type：scale 段读取类型（Q8 拼写仅 meta 键历史沿革，2026-10-19
-    // 起统一正拼）；缺省 fp16。
+    // identity_scale_type：scale 段读取类型（正拼键，meta 仅此一拼写）；缺省 fp16。
     // 仅图带 scale 工位时被消费（pipeline 依图回填 None = 不读——图缺工位
     // 属正常形态不数值化报错）；"none" 不再表达"不启用"（启用信号已随独立
     // 路径键一并删除）→ 非法值（段降级）
@@ -448,32 +496,18 @@ Status TextEmbedding::Load(const EmbeddingConfig& config)
     CANN_LLM_LOGI("embedding.load: expected_table=%lu bytes, expected_scale=%lu bytes",
                   static_cast<unsigned long>(expected_table), static_cast<unsigned long>(expected_scale));
 
-    // ── 表（InMemory 堆内存读入 / InFlash open+fstat 校验）──
-    std::unique_ptr<char[]> table_data; // InMemory 堆存储（建源时移交）
+    // ── 表（InMemory mmap 只读映射 / InFlash open+fstat 校验）──
     std::unique_ptr<detail::TableSource> source;
     if (config.load_mode == EmbeddingLoadMode::InMemory) {
-        std::ifstream f(config.table_path, std::ios::binary);
-        if (!f) {
-            CANN_LLM_LOGE("embedding.load: cannot open table file '%s'", config.table_path.c_str());
-            return Status(Status::INVALID_ARGUMENT); // TC_101
-        }
-        // 堆内存存储（非工位 tensor）：TensorBuffer 仅用于模型输入/输出，
-        // 禁作 host 大容量存储（2026-10-09 设备事故修正）
-        table_data.reset(new (std::nothrow) char[static_cast<size_t>(expected_table)]);
-        if (!table_data) {
-            CANN_LLM_LOGE("embedding.load: cannot alloc table buffer bytes=%lu",
-                          static_cast<unsigned long>(expected_table));
-            return Status(Status::FAILURE);
-        }
-        f.read(table_data.get(), static_cast<std::streamsize>(expected_table));
-        // 合并文件布局（Q12）：embedding_weights 主表段之后可跟随 per_layer_token_identity
-        // 段 —— 不再以 EOF 取整（超长放行）；仅校验主表段完整（短读拒绝）。
-        // identity 段的完整性与精确总长由 LoadTokenIdentity 期校验兜底。
-        if (static_cast<uint64_t>(f.gcount()) != expected_table) {
-            CANN_LLM_LOGE("embedding.load: table file size mismatch read=%lu, expected=%lu, path='%s'",
-                          static_cast<unsigned long>(f.gcount()), static_cast<unsigned long>(expected_table),
-                          config.table_path.c_str());
-            return Status(Status::INVALID_ARGUMENT); // TC_102（过短）
+        // mmap 段源（L2）：fstat "≥ 主表段" 放行（Q12 identity 段后随——超长
+        // 放行）/ 短文件 map 前拒绝；identity 段完整性与精确总长由
+        // LoadTokenIdentity 期校验兜底。RowPtr 直指映射页，FillInputs 免 staging。
+        Status st = detail::MmapTableSource::Create(config.table_path, /*file_offset=*/0, row_bytes, config.vocab_size,
+                                                    /*require_exact=*/false, &source);
+        if (!st.ok()) {
+            CANN_LLM_LOGE("embedding.load: mmap table source failed st=%d, expected=%lu, path='%s'", st.code,
+                          static_cast<unsigned long>(expected_table), config.table_path.c_str());
+            return st; // TC_101/TC_102
         }
     } else {
         int fd = ::open(config.table_path.c_str(), O_RDONLY);
@@ -492,11 +526,7 @@ Status TextEmbedding::Load(const EmbeddingConfig& config)
             return Status(Status::INVALID_ARGUMENT); // TC_102
         }
         // fd 所有权随即移交 FlashTableSource（后续任一失败路径 RAII 关闭）
-        Status st = detail::CreateTableSource(config, row_bytes, nullptr, fd, &source);
-        if (!st.ok()) {
-            CANN_LLM_LOGE("embedding.load: CreateTableSource(Flash) failed st=%d", st.code);
-            return st;
-        }
+        source = std::make_unique<detail::FlashTableSource>(fd, row_bytes);
     }
 
     // ── scale（恒内存态，D-09；堆内存非 TensorBuffer）──
@@ -521,15 +551,6 @@ Status TextEmbedding::Load(const EmbeddingConfig& config)
                           static_cast<unsigned long>(f.gcount()), static_cast<unsigned long>(expected_scale),
                           config.scale_path.c_str());
             return Status(Status::INVALID_ARGUMENT); // TC_102（过短）
-        }
-    }
-
-    // ── InMemory 建源（表数据已就绪）──
-    if (config.load_mode == EmbeddingLoadMode::InMemory) {
-        Status st = detail::CreateTableSource(config, row_bytes, std::move(table_data), -1, &source);
-        if (!st.ok()) {
-            CANN_LLM_LOGE("embedding.load: CreateTableSource(InMemory) failed st=%d", st.code);
-            return st;
         }
     }
 
@@ -621,37 +642,20 @@ Status TextEmbedding::LoadTokenIdentity(const EmbeddingConfig& config, size_t ro
                   static_cast<unsigned long>(identity_offset), static_cast<unsigned long>(identity_table),
                   static_cast<unsigned long>(expected_scale), static_cast<unsigned long>(expected_table));
 
-    // ── 表（InMemory 自偏移堆内存读入 / InFlash open+fstat 校验；同主表二态）──
-    std::unique_ptr<char[]> table_data; // InMemory 堆存储（建源时移交）
+    // ── 表（InMemory 自偏移 mmap 只读映射 / InFlash open+fstat 校验；同主表二态）──
     std::unique_ptr<detail::TableSource> source;
     if (config.load_mode == EmbeddingLoadMode::InMemory) {
-        std::ifstream f(config.table_path, std::ios::binary);
-        if (!f) {
-            CANN_LLM_LOGE("embedding.load_identity: cannot open table file '%s'", config.table_path.c_str());
-            return Status(Status::INVALID_ARGUMENT);
-        }
-        // 主表段之后即 identity 段；读毕须恰为文件尾（总长精确 = 主表段 + identity 段）
-        f.seekg(static_cast<std::streamoff>(identity_offset));
-        if (!f) {
-            CANN_LLM_LOGE("embedding.load_identity: cannot seek to identity segment "
-                          "(offset=%lu, path='%s')",
-                          static_cast<unsigned long>(identity_offset), config.table_path.c_str());
-            return Status(Status::INVALID_ARGUMENT);
-        }
-        // 堆内存存储（非工位 tensor；同主表口径，2026-10-09 设备事故修正）
-        table_data.reset(new (std::nothrow) char[static_cast<size_t>(identity_table)]);
-        if (!table_data) {
-            CANN_LLM_LOGE("embedding.load_identity: cannot alloc table buffer bytes=%lu",
-                          static_cast<unsigned long>(identity_table));
-            return Status(Status::FAILURE);
-        }
-        f.read(table_data.get(), static_cast<std::streamsize>(identity_table));
-        if (static_cast<uint64_t>(f.gcount()) != identity_table || f.peek() != std::char_traits<char>::eof()) {
-            CANN_LLM_LOGE("embedding.load_identity: identity segment size mismatch "
-                          "(read=%lu, expected=%lu, file_expected=%lu, path='%s')",
-                          static_cast<unsigned long>(f.gcount()), static_cast<unsigned long>(identity_table),
-                          static_cast<unsigned long>(expected_table), config.table_path.c_str());
-            return Status(Status::INVALID_ARGUMENT); // 短/超长均拒绝（B-10 致命）
+        // mmap 段源（L2）：总长精确校验前移到 map 前（require_exact——
+        // 原串行版"读毕须恰为文件尾"（短/超长均拒，B-10 致命）语义逐字保留）；
+        // require_exact=false ident 段不存在后段，超长即文件与图不匹配。
+        Status st = detail::MmapTableSource::Create(config.table_path, identity_offset, identity_row_bytes,
+                                                    config.vocab_size, /*require_exact=*/true, &source);
+        if (!st.ok()) {
+            CANN_LLM_LOGE("embedding.load_identity: mmap identity source failed st=%d "
+                          "(expected=%lu, main=%lu, identity=%lu, path='%s')",
+                          st.code, static_cast<unsigned long>(expected_table), static_cast<unsigned long>(main_table),
+                          static_cast<unsigned long>(identity_table), config.table_path.c_str());
+            return st; // 短/超长均拒绝（B-10 致命）
         }
     } else {
         int fd = ::open(config.table_path.c_str(), O_RDONLY);
@@ -672,11 +676,7 @@ Status TextEmbedding::LoadTokenIdentity(const EmbeddingConfig& config, size_t ro
             return Status(Status::INVALID_ARGUMENT);
         }
         // 行偏移基数 = 主表段大小（合并文件内 identity 段从主表段之后起）
-        Status st = detail::CreateTableSource(config, identity_row_bytes, nullptr, fd, &source, identity_offset);
-        if (!st.ok()) {
-            CANN_LLM_LOGE("embedding.load_identity: CreateTableSource(Flash) failed st=%d", st.code);
-            return st;
-        }
+        source = std::make_unique<detail::FlashTableSource>(fd, identity_row_bytes, identity_offset);
     }
 
     // ── scale 段（PerToken，恒内存态——D-09；堆内存非 TensorBuffer；主 scale 段之后偏移读取）──
@@ -708,15 +708,6 @@ Status TextEmbedding::LoadTokenIdentity(const EmbeddingConfig& config, size_t ro
                           static_cast<unsigned long>(f.gcount()), static_cast<unsigned long>(expected_scale),
                           static_cast<unsigned long>(scale_total), config.scale_path.c_str());
             return Status(Status::INVALID_ARGUMENT);
-        }
-    }
-
-    // ── InMemory 建源（表数据已就绪）──
-    if (config.load_mode == EmbeddingLoadMode::InMemory) {
-        Status st = detail::CreateTableSource(config, identity_row_bytes, std::move(table_data), -1, &source);
-        if (!st.ok()) {
-            CANN_LLM_LOGE("embedding.load_identity: CreateTableSource(InMemory) failed st=%d", st.code);
-            return st;
         }
     }
 
@@ -815,8 +806,8 @@ Status TextEmbedding::FillInputs(const std::vector<std::shared_ptr<ITensorBuffer
             for (size_t i = 0; i < count; ++i)
                 dst[i] = static_cast<int64_t>(ids[i]);
         }
-        // per_layer_token_identity：TokenId 部署形态不查表（2026-09-22 变更，
-        // docs/gemma4_token_identity.md §5.3——identity 由图内自理，host 零触碰）
+        // per_layer_token_identity：TokenId 部署形态不查表（identity 由图内
+        // 自理，host 零触碰——docs/gemma4_token_identity.md §5.3）
         return Status();
     }
 
@@ -825,9 +816,9 @@ Status TextEmbedding::FillInputs(const std::vector<std::shared_ptr<ITensorBuffer
         return Status(Status::INVALID_STATE); // TC_106
     // per_layer_token_identity 落位（§5.3 唯一调用点，Q11）：embed 填充前执行，失败早退
     {
-        Status ist = FillTokenIdentitySlot_(inputs, name_index, ids, count);
-        if (!ist.ok())
-            return ist;
+        Status identity_status = FillTokenIdentitySlot_(inputs, name_index, ids, count);
+        if (!identity_status.ok())
+            return identity_status;
     }
     if (!detail::ConversionSupported(cfg_.table_type, slot_type)) {
         return Status(Status::INVALID_ARGUMENT); // TC_108
@@ -974,7 +965,7 @@ Status TextEmbedding::FillTokenIdentitySlot_(const std::vector<std::shared_ptr<I
     DataType scale_slot_type = DataType::FLOAT32; // scale 未启用时未用
     const bool has_scale = ic.token_identity_scale_type != EmbeddingScaleType::None;
     if (has_scale) {
-        // 工位解析：per_layer_token_identity_scale（2026-10-19 契约迁移后唯一名）
+        // 工位解析：per_layer_token_identity_scale（唯一名）
         auto sit = FindIdentityScaleSlot(name_index);
         if (sit == name_index.end() || sit->second >= inputs.size()) {
             return Status(Status::NOT_FOUND);
@@ -1052,7 +1043,8 @@ Status TextEmbedding::FillTokenIdentitySlot_(const std::vector<std::shared_ptr<I
     return Status();
 }
 
-// Table()/Scale()（曾暴露存储 TensorBuffer）已随 2026-10-09 堆内存化修复删除。
+// （无 Table()/Scale() 存储暴露接口：TensorBuffer 仅用于模型输入/输出工位，
+//  表数据消费一律走 FillInputs / FillTokenIdentitySlot_。）
 
 EmbeddingType TextEmbedding::TableType() const
 {

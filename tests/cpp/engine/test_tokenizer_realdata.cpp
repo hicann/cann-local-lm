@@ -1,7 +1,7 @@
 // Tokenizer realdata UT（SR20260728001 v0.7，M-8 B 层）。
 // 真实产物（tmp/qwen、tmp/gemma 的 tokenizer.json，本地放置、gitignore）驱动的
 // 真实规模一致性测试：golden 由 Python oracle（tokenizers 库）预生成入库
-// （tests/cpp/engine/gen_fixture.py --real）。TC_205b：加载耗时与 RSS 实测
+// （scripts/gen_tokenizer_fixture.py --real）。TC_205b：加载耗时与 RSS 实测
 // 记录（U-3 内存系数依据，无硬断言——预算未定）。
 // 本目标由 CMake 检测 tmp/ 实物存在才注册（CI 不依赖网络/产物）。
 
@@ -24,7 +24,7 @@ namespace {
 #define TOKENIZER_REALDATA_DIR "tmp"
 #endif
 #ifndef TOKENIZER_FIXTURE_DIR
-#define TOKENIZER_FIXTURE_DIR "tests/cpp/engine"
+#define TOKENIZER_FIXTURE_DIR "tests/fixtures/tokenizer"
 #endif
 
 TokenizerConfig RealParams(const std::string& rel)
@@ -37,7 +37,7 @@ TokenizerConfig RealParams(const std::string& rel)
 nlohmann::json LoadGolden(const std::string& rel)
 {
     std::ifstream f(std::string(TOKENIZER_FIXTURE_DIR) + "/" + rel);
-    EXPECT_TRUE(f.good()) << "golden missing: " << rel << "（重跑 tests/cpp/engine/gen_fixture.py --real）";
+    EXPECT_TRUE(f.good()) << "golden missing: " << rel << "（重跑 scripts/gen_tokenizer_fixture.py --real）";
     nlohmann::json j;
     f >> j;
     return j;

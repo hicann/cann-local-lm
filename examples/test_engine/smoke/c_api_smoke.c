@@ -15,7 +15,7 @@ int main(void)
     s = CANN_LMEngine_ExecutorCreate(NULL, NULL, NULL);
     assert(s == CANN_LM_ENGINE_INVALID_ARGUMENT);
 
-    s = CANN_LMEngine_ExecutorGenerate(NULL, "hi", 0, NULL, NULL, NULL);
+    s = CANN_LMEngine_ExecutorGenerate(NULL, "hi", NULL, NULL, NULL);
     assert(s == CANN_LM_ENGINE_INVALID_ARGUMENT);
 
     // 2. Model paths configured but load fails (files absent) → create aborts:
@@ -47,10 +47,20 @@ int main(void)
     assert(s == CANN_LM_ENGINE_SUCCESS);
     assert(ctx_id != 0);
 
-    // 5. Generate on non-existent context -> NOT_FOUND
+    // 5. (ADR-0002) Generate with no active context -> INVALID_STATE (S2);
+    //    SetContext unregistered id -> NOT_FOUND (S3); activate created id -> SUCCESS
     CANN_LMEngine_Result result = {NULL, 0, NULL, CANN_LM_ENGINE_FINISH_MAX_TOKENS};
-    s = CANN_LMEngine_ExecutorGenerate(exec, "hello", 999, NULL, NULL, &result);
+    s = CANN_LMEngine_ExecutorGenerate(exec, "hello", NULL, NULL, &result);
+    assert(s == CANN_LM_ENGINE_INVALID_STATE);
+    s = CANN_LMEngine_ExecutorSetContext(exec, 999);
     assert(s == CANN_LM_ENGINE_NOT_FOUND);
+    s = CANN_LMEngine_ExecutorSetContext(exec, ctx_id);
+    assert(s == CANN_LM_ENGINE_SUCCESS);
+
+    // 5b. Generate with active context on no-model executor -> error (not SUCCESS)
+    s = CANN_LMEngine_ExecutorGenerate(exec, "hello", NULL, NULL, &result);
+    assert(s != CANN_LM_ENGINE_SUCCESS);
+    CANN_LMEngine_ResultDestroy(&result);
 
     // 6. ContextCancel on created context -> SUCCESS
     s = CANN_LMEngine_ContextCancel(exec, ctx_id);

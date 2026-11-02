@@ -62,6 +62,7 @@ class CANN_LMEngine_ModelArtifact(ct.Structure):
         ("decode_weight", ct.c_void_p),
         ("meta_json_path", ct.c_void_p),
         ("meta_json_buf", CANN_LMEngine_Buffer),
+        ("isEnableSharedWeight", ct.c_bool),  # tail-appended, offset 88 (c_api.h)
     ]
 
 
@@ -190,7 +191,9 @@ def _candidate_paths(explicit, *, strict_explicit=False):
 
 
 def _configure_prototypes(lib):
-    """Set argtypes/restype on all 14 C functions — 1:1 with c_api.h."""
+    """Set argtypes/restype on all 15 C functions — 1:1 with c_api.h
+    (incl. the 2026-10-21 ADR-0002 changelog: ExecutorSetContext added,
+    context_id removed from ExecutorGenerate/GenerateAsync)."""
     P = ct.POINTER
     MA = CANN_LMEngine_ModelArtifact
     EO = CANN_LMEngine_EngineOptions
@@ -209,14 +212,19 @@ def _configure_prototypes(lib):
     lib.CANN_LMEngine_ContextCreate.restype = ct.c_int
     lib.CANN_LMEngine_ContextDestroy.argtypes = [ct.c_void_p, ct.c_uint64]
     lib.CANN_LMEngine_ContextDestroy.restype = ct.c_int
+    # ADR-0002: explicit active-context switch (unregistered id -> NOT_FOUND;
+    # target == active -> idempotent success)
+    lib.CANN_LMEngine_ExecutorSetContext.argtypes = [ct.c_void_p, ct.c_uint64]
+    lib.CANN_LMEngine_ExecutorSetContext.restype = ct.c_int
     lib.CANN_LMEngine_ContextCancel.argtypes = [ct.c_void_p, ct.c_uint64]
     lib.CANN_LMEngine_ContextCancel.restype = ct.c_int
 
-    # Inference (prompt is c_char_p: caller passes UTF-8 bytes)
+    # Inference (prompt is c_char_p: caller passes UTF-8 bytes).
+    # ADR-0002: context_id param REMOVED — requests belong to the Executor's
+    # active context (set via ExecutorSetContext; no active -> INVALID_STATE).
     lib.CANN_LMEngine_ExecutorGenerate.argtypes = [
         ct.c_void_p,
         ct.c_char_p,
-        ct.c_uint64,
         P(SP),
         P(RO),
         P(RS),
@@ -225,7 +233,6 @@ def _configure_prototypes(lib):
     lib.CANN_LMEngine_ExecutorGenerateAsync.argtypes = [
         ct.c_void_p,
         ct.c_char_p,
-        ct.c_uint64,
         P(SP),
         P(RO),
         P(ct.c_void_p),

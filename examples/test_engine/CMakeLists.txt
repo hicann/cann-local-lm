@@ -42,7 +42,12 @@ else()
     set(ENGINE_BACKEND_INCLUDES "")
 endif()
 
-set(THIRD_PARTY_INCLUDE ${CMAKE_CURRENT_SOURCE_DIR}/../../cmake/third_party)
+# nlohmann/json: find_package (Findnlohmann_json.cmake → output/third_party/json)
+# bbit/golden_verify 解析 testcase/meta_json 需要; 独立模式自寻,
+# 子目录模式复用父级 (ohos/CMakeLists.txt) 已建的 nlohmann_json target
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/../../cmake/third_party/modules")
+set(CANN_3RD_LIB_PATH "${CMAKE_CURRENT_SOURCE_DIR}/../../output/third_party" CACHE PATH "Third-party libraries directory")
+find_package(nlohmann_json REQUIRED)
 
 # ── smoke ──
 add_executable(api_smoke smoke/api_smoke.cpp)
@@ -56,12 +61,12 @@ target_include_directories(c_api_smoke PRIVATE ${ENGINE_INCLUDE_DIR} ${ENGINE_BA
 target_compile_options(c_api_smoke PRIVATE -Wall -Wextra -Wpedantic)
 
 add_executable(golden_verify smoke/golden_verify.cpp)
-target_link_libraries(golden_verify PRIVATE cann_lm_engine)
-target_include_directories(golden_verify PRIVATE ${ENGINE_INCLUDE_DIR} ${ENGINE_BACKEND_INCLUDES} ${THIRD_PARTY_INCLUDE})
+target_link_libraries(golden_verify PRIVATE cann_lm_engine nlohmann_json::nlohmann_json)
+target_include_directories(golden_verify PRIVATE ${ENGINE_INCLUDE_DIR} ${ENGINE_BACKEND_INCLUDES})
 target_compile_options(golden_verify PRIVATE -Wall -Wextra -Wpedantic)
 
 # ── bbit: 黑盒集成测试 ──
 add_executable(bbit bbit/bbit.cpp)
-target_link_libraries(bbit PRIVATE cann_lm_engine)
-target_include_directories(bbit PRIVATE ${ENGINE_INCLUDE_DIR} ${ENGINE_BACKEND_INCLUDES} ${THIRD_PARTY_INCLUDE})
+target_link_libraries(bbit PRIVATE cann_lm_engine nlohmann_json::nlohmann_json)
+target_include_directories(bbit PRIVATE ${ENGINE_INCLUDE_DIR} ${ENGINE_BACKEND_INCLUDES})
 target_compile_options(bbit PRIVATE -Wall -Wextra -Wpedantic)

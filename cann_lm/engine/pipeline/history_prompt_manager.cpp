@@ -6,7 +6,7 @@
 
 namespace cann_lm::engine {
 
-std::size_t HistoryPromptManager::MatchCachedTokens(const std::vector<TokenId>& input, std::size_t kv_max,
+std::size_t HistoryPromptManager::MatchCachedTokens(const std::vector<TokenId>& input, std::size_t keep_cap,
                                                     MatchStats* stats)
 {
     std::lock_guard<std::mutex> lk(mtx_);
@@ -37,8 +37,13 @@ std::size_t HistoryPromptManager::MatchCachedTokens(const std::vector<TokenId>& 
         ++lcp;
     const std::size_t ledger_len = tokens_.size();
 
-    // 2. 绕回判定（R6）：wrapped = 台账长 > kv_max（绕回已发生）。
-    const bool wrapped = ledger_len > kv_max;
+    // 2. 绕回判定（R6 + sliding_kv_seq_dim_rebind D6）：wrapped = 台账长 >
+    //    keep_cap。keep_cap = 各层环容量最小值（复用保真容量，调用方传入；
+    //    新契 = min(kv_max, C=W+P)，旧契/无滑窗层 = kv_max）。先绕回的
+    //    窄环层只保留最近环容量个 token 的新主，台账超门后部分命中复用的
+    //    该层窗尾已落被覆写圈——门按 kv_max 判会放走"静默读旧代"复用，
+    //    故取各层环最小值。
+    const bool wrapped = ledger_len > keep_cap;
     fill_stats(lcp, wrapped);
     if (wrapped && lcp < ledger_len) {
         // 绕回 + 输入未完全覆盖台账（窗口内发散同样判 miss）⇒ 清账重建。
@@ -51,11 +56,18 @@ std::size_t HistoryPromptManager::MatchCachedTokens(const std::vector<TokenId>& 
         return 0;
     }
 
-    // 3. R7：全命中（LCP == 台账长，含绕回全覆盖）强制重算最后 1 个 token——
-    //    末 token 的 logits 只存在于 prefill 输出中，不重推无采样输入；
-    //    输入比台账长（普通命中）则直接复用 [0, LCP)。
-    //    台账长 1 全命中 ⇒ 复用长 0 = 等价全量重算（REQ-5 特例）。
-    const std::size_t reusable = (lcp == ledger_len) ? (lcp > 0 ? lcp - 1 : 0) : lcp;
+    // 3. 末 token 强制重算（R7 一般化，DTS202610220945 Fix A）：末 token 的
+    //    logits 只存在于 prefill 输出中，不重推无采样输入。触发判据一般化为
+    //    "本轮增量段为空"，含两种形态，皆复用长 = 边界 − 1（保证至少 1 个
+    //    真实 prefill 块，封闭全部空块链来源）：
+    //      a. 全命中：LCP == 台账长（含绕回全覆盖）——本规则原有形态；
+    //      b. 前缀重合：LCP == 输入长 < 台账长——输入恰为台账真前缀（两轮
+    //         重发完全一致输入即此列，原规则落空致下游空块链越界）。
+    //    台账长 1 全命中 ⇒ 复用长 0 = 等价全量重算（REQ-5 特例）；输入长 1
+    //    前缀重合同退化为 0（台账 resize(0)，池侧由 GenerateAsync miss 收口
+    //    分支 ResetLedgerOnSlot 清账，语义与 miss 一致）。
+    const bool increments_empty = (lcp == ledger_len) || (lcp == input.size());
+    const std::size_t reusable = increments_empty ? (lcp > 0 ? lcp - 1 : 0) : lcp;
 
     // 4. 台账截断到复用边界（REQ-2.3：每轮比对后 resize）。
     tokens_.resize(reusable);
@@ -102,6 +114,18 @@ std::size_t HistoryPromptManager::InitTokenLen() const noexcept
 {
     std::lock_guard<std::mutex> lk(mtx_);
     return init_token_len_;
+}
+
+void HistoryPromptManager::SetKvSlotId(int slot) noexcept
+{
+    std::lock_guard<std::mutex> lk(mtx_);
+    kv_slot_id_ = slot;
+}
+
+int HistoryPromptManager::KvSlotId() const noexcept
+{
+    std::lock_guard<std::mutex> lk(mtx_);
+    return kv_slot_id_;
 }
 
 void HistoryPromptManager::SetEnabled(bool enabled) noexcept

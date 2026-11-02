@@ -1,11 +1,13 @@
 // Tokenizer 模块 UT（SR20260728001 v0.7）。
-// A 层：小型 fixture（tests/cpp/engine/，tests/cpp/engine/gen_fixture.py
+// A 层：小型 fixture（tests/fixtures/tokenizer/，scripts/gen_tokenizer_fixture.py
 // 生成，golden 由 Python oracle 预生成）驱动；运行时零 Python 依赖。
 // 覆盖：工厂/自注册/SPM 占位（TC_001/001b/004/103/103b/105 语义）、基类
 // batch_encode（TC_201x）、Qwen/BPE 全流水线 golden 逐 id 一致（TC_203 A 层）、
 // zero 注入/显式注入/截断预算/padding（TC_002/204）、剥离集（M-5）、非法 UTF-8
-// （TC_104）、空串（TC_201）、not-ready 桩行为、词表异常（TC_101/102）。
-// B 层真实产物测试见 test_tokenizer_realdata.cpp（CMake 检测 tmp/ 存在才注册）。
+// （TC_104）、空串（TC_201）、not-ready 桩行为、词表异常（TC_101/102）、
+// meta special_tokens 映射/解映射（2026-10-29 起：encode 命中→目标 id、
+// decode id→字面量、冲突 meta 优先、剥离集并入、负 id 惰性）。
+// B 层真实产物测试见 ut_tokenizer_realdata.cpp（CMake 检测 tmp/ 存在才注册）。
 
 #include "core/component/tokenizer/tokenizer.h"
 
@@ -17,13 +19,14 @@
 #include <sstream>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 namespace cann_lm::engine {
 namespace {
 
 #ifndef TOKENIZER_FIXTURE_DIR
-#define TOKENIZER_FIXTURE_DIR "tests/cpp/engine"
+#define TOKENIZER_FIXTURE_DIR "tests/fixtures/tokenizer"
 #endif
 
 const std::string kFixtureDir = TOKENIZER_FIXTURE_DIR;
@@ -604,6 +607,135 @@ TEST(QwenTokenizerTest, ConcurrentEncodeMatchesSerial)
             EXPECT_EQ(parallel[t][i], serial[i]) << "thread=" << t << " text=" << texts[i];
         }
     }
+}
+
+// ── meta special_tokens 映射/解映射消费（2026-10-29 起被消费；D-3 meta 优先）──
+// 口径：encode 字面量命中映射 → 目标特殊 id（与 added token 同窗，先于 BPE
+// 切分）；decode id 命中 → meta 字面量原样输出（词表外 id 出字面量的唯一
+// 通道）；meta id 视为 special（skip_special_tokens 时一并剥离）。
+
+// BPE fixture：vocab 4='a' 5='b'；added <pad>=0/<eos>=1/<bos>=2/<unk>=3/
+// <start_of_image>=349（special）
+TokenizerConfig WithMetaMapping(const std::string& fixture, std::vector<std::pair<std::string, int>> mapping)
+{
+    TokenizerConfig cfg = PathParams(fixture);
+    for (const auto& [lit, tid] : mapping)
+        cfg.special_tokens.emplace(lit, tid);
+    return cfg;
+}
+
+TEST(BPETokenizerTest, MetaSpecialTokensEncodeMapsLiteralToId)
+{
+    // 词表外 id（900）：字面量 → id 映射；与普通词表 token 交错时逐段提取
+    auto tok = CreateOrThrow(Algorithm::BPE, WithMetaMapping("bpe_fixture_tokenizer.json", {{"<extra_meta>", 900}}));
+    EncodeOptions opts;
+    opts.add_special_tokens = false;
+    std::vector<int> ids;
+    ASSERT_TRUE(tok->encode("<extra_meta>", opts, &ids).ok());
+    EXPECT_EQ(ids, std::vector<int>({900}));
+    ASSERT_TRUE(tok->encode("a<extra_meta>b", opts, &ids).ok());
+    EXPECT_EQ(ids, std::vector<int>({4, 900, 5})); // a=4, b=5
+}
+
+TEST(BPETokenizerTest, MetaSpecialTokensDecodeDemapsOutOfVocabId)
+{
+    auto tok = CreateOrThrow(Algorithm::BPE, WithMetaMapping("bpe_fixture_tokenizer.json", {{"<extra_meta>", 900}}));
+    DecodeOptions keep;
+    keep.skip_special_tokens = false;
+    std::string text;
+    ASSERT_TRUE(tok->decode({900}, keep, &text).ok());
+    EXPECT_EQ(text, "<extra_meta>"); // 词表外 id 出字面量的唯一通道
+    ASSERT_TRUE(tok->decode({4}, keep, &text).ok());
+    EXPECT_EQ(text, "a"); // 词表内 id 走词表字面量，不受影响
+}
+
+TEST(BPETokenizerTest, MetaSpecialTokensLiteralConflictMetaWins)
+{
+    // meta {"<eos>": 777} 与词表 added <eos>=1 同字面量冲突 → meta 覆盖 + WARN
+    auto tok = CreateOrThrow(Algorithm::BPE, WithMetaMapping("bpe_fixture_tokenizer.json", {{"<eos>", 777}}));
+    EncodeOptions opts;
+    opts.add_special_tokens = false;
+    std::vector<int> ids;
+    ASSERT_TRUE(tok->encode("<eos>", opts, &ids).ok());
+    EXPECT_EQ(ids, std::vector<int>({777})); // 不再映射到词表 id 1
+    DecodeOptions keep;
+    keep.skip_special_tokens = false;
+    std::string text;
+    ASSERT_TRUE(tok->decode({777}, keep, &text).ok());
+    EXPECT_EQ(text, "<eos>");
+    ASSERT_TRUE(tok->decode({1}, keep, &text).ok());
+    EXPECT_EQ(text, "<eos>"); // 原 id 1 走词表字面量，不受影响
+}
+
+TEST(BPETokenizerTest, MetaSpecialTokensIdConflictDecodePrefersMeta)
+{
+    // meta {"<meta_b>": 5} 撞词表字面量 id 5（'b'）→ decode 查序 meta 在前
+    auto tok = CreateOrThrow(Algorithm::BPE, WithMetaMapping("bpe_fixture_tokenizer.json", {{"<meta_b>", 5}}));
+    DecodeOptions keep;
+    keep.skip_special_tokens = false;
+    std::string text;
+    ASSERT_TRUE(tok->decode({5}, keep, &text).ok());
+    EXPECT_EQ(text, "<meta_b>"); // meta 字面量赢（id→literal 映射天然单值）
+    // encode 侧不受 id 冲突影响：字面量 'b' 仍走词表
+    EncodeOptions opts;
+    opts.add_special_tokens = false;
+    std::vector<int> ids;
+    ASSERT_TRUE(tok->encode("b", opts, &ids).ok());
+    EXPECT_EQ(ids, std::vector<int>({5}));
+}
+
+TEST(BPETokenizerTest, MetaSpecialTokensSkippedWhenSkipSpecial)
+{
+    // meta id 并入剥离集：skip_special_tokens=true（默认）一并剥离
+    auto tok = CreateOrThrow(Algorithm::BPE, WithMetaMapping("bpe_fixture_tokenizer.json", {{"<extra_meta>", 900}}));
+    std::string text;
+    ASSERT_TRUE(tok->decode({4, 900, 5}, DecodeOptions{}, &text).ok());
+    EXPECT_EQ(text, "ab"); // 900 剥离；词表内 a/b 保留
+}
+
+TEST(BPETokenizerTest, MetaSpecialTokensNegativeIdInert)
+{
+    // id < 0 条目 WARN 跳过：行为与无 meta 的 tokenizer 完全一致（零扰动）
+    const std::string text = "a<neg>b";
+    auto plain = CreateOrThrow(Algorithm::BPE, PathParams("bpe_fixture_tokenizer.json"));
+    auto with_neg = CreateOrThrow(Algorithm::BPE, WithMetaMapping("bpe_fixture_tokenizer.json", {{"<neg>", -5}}));
+    EncodeOptions opts;
+    opts.add_special_tokens = false;
+    std::vector<int> ids_plain, ids_meta;
+    ASSERT_TRUE(plain->encode(text, opts, &ids_plain).ok());
+    ASSERT_TRUE(with_neg->encode(text, opts, &ids_meta).ok());
+    EXPECT_EQ(ids_meta, ids_plain);
+    DecodeOptions keep;
+    keep.skip_special_tokens = false;
+    std::string t_plain, t_meta;
+    ASSERT_TRUE(plain->decode(ids_plain, keep, &t_plain).ok());
+    ASSERT_TRUE(with_neg->decode(ids_meta, keep, &t_meta).ok());
+    EXPECT_EQ(t_meta, t_plain);
+}
+
+TEST(QwenTokenizerTest, MetaSpecialTokensSymmetricRoundTrip)
+{
+    // Qwen 对称：encode 字面量 → id（先于预切分）；decode id → 字面量；
+    // 尾段与无 meta 的普通文本编码逐 id 一致（meta 零扰动）
+    auto tok = CreateOrThrow(Algorithm::Qwen, WithMetaMapping("qwen_fixture_tokenizer.json", {{"<extra_q>", 900}}));
+    EncodeOptions opts;
+    opts.add_special_tokens = false;
+    std::vector<int> ids;
+    ASSERT_TRUE(tok->encode("<extra_q>hello", opts, &ids).ok());
+    ASSERT_GT(ids.size(), 1u);
+    EXPECT_EQ(ids.front(), 900);
+    auto plain = CreateOrThrow(Algorithm::Qwen, PathParams("qwen_fixture_tokenizer.json"));
+    std::vector<int> plain_ids;
+    ASSERT_TRUE(plain->encode("hello", opts, &plain_ids).ok());
+    EXPECT_EQ(std::vector<int>(ids.begin() + 1, ids.end()), plain_ids);
+    DecodeOptions keep;
+    keep.skip_special_tokens = false;
+    std::string text;
+    ASSERT_TRUE(tok->decode(ids, keep, &text).ok());
+    EXPECT_EQ(text, "<extra_q>hello");
+    std::string stripped; // 默认 skip：900 剥离
+    ASSERT_TRUE(tok->decode(ids, DecodeOptions{}, &stripped).ok());
+    EXPECT_EQ(stripped, "hello");
 }
 
 } // namespace

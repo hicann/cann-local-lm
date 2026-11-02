@@ -128,6 +128,12 @@ public:
     // 解析 tokenizer.json 建双向映射（含 added_tokens overlay）；加载后只读
     // 错误: FAILURE(缺失/不可读/JSON 非法/vocab 空/merges-vocab 不对齐)
     Status load(const VocabSource& src);
+    // L4 .bincache sidecar（perf_optimize.md §3.4；env CANN_LM_TOKENIZER_
+    // BINCACHE 显式开启、默认关）：load 成功后把九成员定长序列化落盘（失败
+    // 静默）；缓存装载仅 load(path 态) 内部消费——键校验失败/中途任何读取
+    // 失败整包丢弃回退 JSON，不发布半加载实例（F-02 同源）。
+    Status Serialize(const std::filesystem::path& cache_path) const;
+    Status TryLoadFromCache(const std::filesystem::path& json_path, const std::filesystem::path& cache_path);
     // O(1)（unordered_map）；只读可并发；含 added_tokens 字面量
     std::optional<int> token_to_id(std::string_view tok) const;
     std::optional<std::string_view> id_to_token(int id) const;
@@ -147,6 +153,10 @@ public:
     const std::pair<std::string, std::string>& replace_normalizer() const { return replace_normalizer_; }
 
 private:
+    // L4：JSON 全量解析（原 load 本体；vocab_store.cpp 实现）——load 分流后
+    // path 态走缓存未命中/bytes 态的直通路径
+    Status load_from_json_(const VocabSource& src);
+
     std::unordered_map<std::string, int> tok2id_;
     std::vector<std::string> id2tok_; // id→token 字面量（含 added overlay）
     std::vector<std::pair<std::string, std::string>> merges_;
@@ -163,7 +173,9 @@ private:
 class SpecialTokenHandler {
 public:
     // 构造/加载期调用；strip_ids = 产物 special 全集（M-05::special_strip_ids）
-    // cfg 为 TokenizerConfig（SR20260903001 D-13：单一配置直通，-1 哨兵 = 未配置）
+    // cfg 为 TokenizerConfig（SR20260903001 D-13：单一配置直通，-1 哨兵 = 未配置）；
+    // meta special_tokens 的 id 并入剥离集（meta special 视为 special，
+    // skip_special_tokens 时一并剥离）并建 id→literal 查找表（decode 解映射）
     void configure(const TokenizerConfig& cfg, std::vector<int> strip_ids);
     // encode 尾段：①截断（预算 = max_length − 注入数）②注入 bos/eos ③padding
     // 错误: INVALID_ARGUMENT(空 padding 或 pad 需求无 pad id)
@@ -171,11 +183,22 @@ public:
     // decode 前段：剥离集内的 id 被剔除
     Status strip(const std::vector<int>& ids, std::vector<int>* kept) const;
     std::optional<int> id(std::string_view name) const; // bos/eos/pad/unk
+    // meta special_tokens 映射消费（D-3：meta 优先 + WARN）——encode 提取表：
+    // 词表 added_tokens ∪ meta 映射，同字面量冲突 → meta 覆盖 + WARN。
+    // 构造期一次性调用，产物由调用方持有；meta 映射不进 VocabStore（.bincache
+    // 缓存键只覆盖 tokenizer.json，meta 变更不会失效缓存——配置层归宿）
+    std::vector<std::pair<std::string, int>> merged_added_tokens(
+        const std::vector<std::pair<std::string, int>>& vocab_added) const;
+    // meta 解映射：id 命中 meta special_tokens → 字面量（词表外 id 出字面量
+    // 的唯一通道）；未命中返回 nullopt
+    std::optional<std::string_view> literal(int id) const;
     const TokenizerConfig& config() const { return cfg_; }
 
 private:
     TokenizerConfig cfg_;
-    std::vector<int> strip_ids_; // sorted
+    std::vector<int> strip_ids_; // sorted（产物 special ∪ meta special id）
+    // meta special_tokens id→literal（configure 期构建；decode 解映射查表）
+    std::unordered_map<int, std::string> id2lit_;
 };
 
 // ── M-03 BPETokenizer（手写 BPE，gemma4）───────────────────────────────────
@@ -185,10 +208,10 @@ public:
     // + special 配置（cfg 直通，零转换——D-13/D-14）
     // 错误: FAILURE(缺失/JSON 非法/model.type 非 BPE/不对齐)
     explicit BPETokenizer(const TokenizerConfig& cfg, Status* status);
-    // AddedToken 提取 → UTF-8 校验 → Replace 归一(▁) → Split 预切分 → BPE 合并
-    // → id 查表(byte_fallback/unk) → special 注入（M-06）
+    // AddedToken/meta 映射提取 → UTF-8 校验 → Replace 归一(▁) → Split 预切分
+    // → BPE 合并 → id 查表(byte_fallback/unk) → special 注入（M-06）
     Status encode(std::string_view text, const EncodeOptions& opts, std::vector<int>* out_ids) override;
-    // id→字面量→▁→空格 还原 + ByteFallback 展开
+    // meta 解映射优先 → id→字面量→▁→空格 还原 + ByteFallback 展开
     Status decode(const std::vector<int>& ids, const DecodeOptions& opts, std::string* out_text) override;
     size_t vocab_size() const override;
     std::optional<int> special_token_id(std::string_view name) const override;
@@ -196,6 +219,8 @@ public:
 private:
     VocabStore vocab_;
     SpecialTokenHandler specials_;
+    // 词表 added ∪ meta special_tokens 合并提取表（D-3：meta 优先；构造期一次性）
+    std::vector<std::pair<std::string, int>> added_lookup_;
     // merges → 字符串域 rank 表（构造期构建；BPE 合并按优先级查）
     std::map<std::pair<std::string, std::string>, int> merge_ranks_;
 };
@@ -206,10 +231,10 @@ public:
     // 经 cfg.tokenizer_file 加载 tokenizer.json + AddedToken Trie + special 配置
     // 错误: FAILURE(缺失/JSON 非法/不对齐)
     explicit QwenTokenizer(const TokenizerConfig& cfg, Status* status);
-    // AddedToken 提取 → UTF-8 校验 → D-10 正则预切分（字节级）→ 字节转 Unicode 映射
-    // (wchar_t) → BPE 合并 → subword 转 UTF-8 查表 → special 注入（M-06）
+    // AddedToken/meta 映射提取 → UTF-8 校验 → D-10 正则预切分（字节级）→ 字节转
+    // Unicode 映射(wchar_t) → BPE 合并 → subword 转 UTF-8 查表 → special 注入（M-06）
     Status encode(std::string_view text, const EncodeOptions& opts, std::vector<int>* out_ids) override;
-    // id→字面量→ByteLevel 字节还原
+    // meta 解映射优先 → id→字面量→ByteLevel 字节还原
     Status decode(const std::vector<int>& ids, const DecodeOptions& opts, std::string* out_text) override;
     size_t vocab_size() const override;
     std::optional<int> special_token_id(std::string_view name) const override;
@@ -217,6 +242,8 @@ public:
 private:
     VocabStore vocab_;
     SpecialTokenHandler specials_;
+    // 词表 added ∪ meta special_tokens 合并提取表（D-3：meta 优先；构造期一次性）
+    std::vector<std::pair<std::string, int>> added_lookup_;
     // merges → wstring 域 rank 表（用户拍板口径：字节映射后 wchar_t 域合并）
     std::map<std::pair<std::wstring, std::wstring>, int> merge_ranks_;
 };

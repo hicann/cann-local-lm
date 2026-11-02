@@ -1,5 +1,8 @@
 // TEST-WRITE(RED)：KV Cache 池单元测试（审计修订版）。
 // 关联 SPEC §4.1.2 / DESIGN M-02 / D-13。修 M2/M3（去误挂 TC 号）。
+// T1 改造（Cache_pool_simplify.md）：构造期不再建 tensor——槽位/光标用例
+// 零影响；原「构造即申请」两用例改按「EnsureKvTensor 惰性创建」语义断言
+// （本目标属预存损坏 model_executor_ut，host 基线外，断言以新语义为准）。
 #include "core/component/kv_cache_pool/kv_cache_pool.h"
 
 #include <gtest/gtest.h>
@@ -67,20 +70,20 @@ TEST(KvCachePoolTest, NextPositionIdempotentAfterAdvance)
 
 // ── 异常 / 边界 ──
 
-// R5/ADR-0001 环形化：Advance 越 kv_max 绕回不报错（原"越界即 FAILURE"质量
-// 红线作废，容量硬约束前移到 Submit 前置校验）。total_written 保逻辑绝对值，
-// write_pos 物理绕回 kv_max。
-TEST(KvCachePoolTest, AdvanceWrapsAroundOnOverrun)
+// 光标越 kv_max → R5 环形化：绕回不报错（池侧恒 SUCCESS；单请求超缓冲由
+// Submit 前置校验拦截，spec REQ-9）。total_written 单调记逻辑长度，
+// write_pos = Map(total_written) 环形物理位——本用例锁分离记账两视角。
+// （旧契约"越界 → FAILURE"随 ADR-0001 环形化废除——DESIGN 🔴 红线移至
+// Submit 前置校验；本目标迁移时同步改写，断言以现行语义为准。）
+TEST(KvCachePoolTest, AdvanceOverrunWrapsInsteadOfRejecting)
 {
-    auto pool = MakePool(/*max_batch_size=*/2, /*kv_cache_max_len=*/4);
+    auto pool = MakePool(/*max_batch_size=*/2, /*max_seq_len=*/4);
     SlotId id = -1;
     ASSERT_TRUE(pool.AllocKvSlot(&id).ok());
-    EXPECT_TRUE(pool.Advance(id, 3).ok()); // total_written=3 (< kv_max=4)
-    EXPECT_EQ(pool.TotalWritten(id), 3u);
-    EXPECT_EQ(pool.NextPosition(id), 3u);  // write_pos=3
-    EXPECT_TRUE(pool.Advance(id, 2).ok()); // total_written=5 (>4) → 绕回不报错
-    EXPECT_EQ(pool.TotalWritten(id), 5u);  // 逻辑绝对值累加
-    EXPECT_EQ(pool.NextPosition(id), 1u);  // write_pos=MapSlot(5)=1 (5%4=1)
+    EXPECT_TRUE(pool.Advance(id, 3).ok()); // total_written=3 < 4
+    EXPECT_TRUE(pool.Advance(id, 2).ok()); // 3+2=5 > 4 → 绕回（不再拒绝）
+    EXPECT_EQ(pool.TotalWritten(id), 5u);  // 逻辑长度单调不减
+    EXPECT_EQ(pool.NextPosition(id), 1u);  // 物理位 = 5 % 4（无锚定段）
 }
 
 // 池满驱逐最早 active 槽（TC_202）：驱逐-复用语义，c 复用被驱逐槽、cursor 重置
@@ -97,7 +100,7 @@ TEST(KvCachePoolTest, PoolFullEvictsOldest_TC202)
     std::vector<SlotInfo> snap;
     ASSERT_TRUE(pool.Snapshot(&snap).ok());
     EXPECT_TRUE(snap[c].active);          // c 现活跃
-    EXPECT_EQ(snap[c].total_written, 0u); // 被驱逐槽 cursor 重置（a 的 3 已清）
+    EXPECT_EQ(snap[c].total_written, 0u); // 被驱逐槽台账重置（a 的 3 已清）
     EXPECT_TRUE(snap[b].active);          // b 未受影响
     EXPECT_EQ(snap[b].total_written, 0u);
 }
@@ -153,7 +156,7 @@ TEST(KvCachePoolTest, SnapshotContentMatchesAllocState)
     ASSERT_EQ(snap.size(), 4u);
     EXPECT_TRUE(snap[a].active);
     EXPECT_TRUE(snap[b].active);
-    EXPECT_EQ(snap[a].total_written, 5u);
+    EXPECT_EQ(snap[a].total_written, 5u); // R4：逻辑写入长度（原 cursor 位）
     EXPECT_EQ(snap[b].total_written, 0u);
     // 未分配槽非 active
     for (int i = 0; i < 4; ++i) {
@@ -163,49 +166,21 @@ TEST(KvCachePoolTest, SnapshotContentMatchesAllocState)
     }
 }
 
-// ── EnsureKvTensor 惰性创建全部 KV tensor（R1/T1：ctor 仅记账，tensor 由首次
-//    executor Load 期 EnsureKvTensor 按 om 图 desc 直建）──
+// ── tensor 惰性创建（T1：构造期不建，EnsureKvTensor 逐层按图 desc 落位）──
 
-// EnsureKvTensor 建 2×num_hidden_layers 个 tensor：计数/层序/dims/dtype/size/命名
-// （batch=2 ≠ kv_heads=4：dims 各维取可区分值，钉死图 desc→tensor dims 转发——
-//  池 expect_dims_ HF 序 [batch, kv_len, kv_heads, dim] 与图 desc dims 逐位比对，
-//  R3 失配致命；本例图 desc 全对齐 → 直建，tensor dims = 图 desc dims）
+// 构造后 0 tensor（T1）；tensor 实体经 EnsureKvTensor 逐层落位——完整语义组
+// （创建/复验/分档校验）在 ut_engine_executor KvPoolEnsureTest 锁定，此处
+// 只保留构造期形态断言（KTensor/VTensor 未 Ensure 层 = 空）
 TEST(KvCachePoolTest, ConstructorAllocatesAllKvTensors)
 {
     auto pool = MakePool(/*max_batch_size=*/2, /*kv_cache_max_len=*/16,
                          /*num_layers=*/2, /*num_kv_heads=*/4, /*head_dim=*/8);
-    // ctor 仅武装（记账），未建 tensor（lazy-create R1/T1）
-    EXPECT_EQ(pool.TensorCount(), 0u);
-    // 模拟 executor Load：按 om 图工位 desc（HF 序 = 池 expect_dims_）EnsureKvTensor
-    TensorDesc desc;
-    desc.dims = {2, 4, 16, 8}; // HF 序 [batch, heads, kv_len, dim]
-    desc.dataType = DataType::FLOAT16;
-    for (int layer = 0; layer < 2; ++layer) {
-        ASSERT_TRUE(pool.EnsureKvTensor(layer, /*is_value=*/false, desc).ok());
-        ASSERT_TRUE(pool.EnsureKvTensor(layer, /*is_value=*/true, desc).ok());
-    }
-    EXPECT_EQ(pool.TensorCount(), 4u); // 2 层 × (K+V)
-    const std::vector<int32_t> expect_dims = {2, 4, 16, 8};
-    const size_t expect_size = 2u * 4u * 16u * 8u * 2u; // × fp16 字节
-    for (int layer = 0; layer < 2; ++layer) {
-        auto k = pool.KTensor(layer);
-        auto v = pool.VTensor(layer);
-        ASSERT_TRUE(k);
-        ASSERT_TRUE(v);
-        EXPECT_EQ(k->GetTensorDesc().dims, expect_dims);
-        EXPECT_EQ(v->GetTensorDesc().dims, expect_dims);
-        EXPECT_EQ(k->GetTensorDesc().dataType, DataType::FLOAT16);
-        EXPECT_EQ(k->GetSize(), expect_size);
-        EXPECT_EQ(v->GetSize(), expect_size);
-        EXPECT_EQ(k->GetTensorDesc().tensorName, "kv_cache_k_" + std::to_string(layer));
-        EXPECT_EQ(v->GetTensorDesc().tensorName, "kv_cache_v_" + std::to_string(layer));
-    }
-    // K/V tensor 各自独立（非共享句柄）
-    EXPECT_NE(pool.KTensor(0).get(), pool.VTensor(0).get());
-    EXPECT_NE(pool.KTensor(0).get(), pool.KTensor(1).get());
+    EXPECT_EQ(pool.TensorCount(), 0u); // T1：构造期不建 tensor
+    EXPECT_FALSE(pool.KTensor(0));
+    EXPECT_FALSE(pool.VTensor(1));
 }
 
-// 维度非法（kv_heads=0）→ tensor 无产出，但槽位记账不受影响
+// 全空池形态（kv_heads=0 → 期望值非法）：槽位记账不受影响
 TEST(KvCachePoolTest, InvalidDimsYieldNoTensorsButBookkeepingWorks)
 {
     KvCachePool pool(4, 16, 2, /*num_kv_heads=*/0, 8);

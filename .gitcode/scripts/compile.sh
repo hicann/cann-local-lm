@@ -83,4 +83,28 @@ set +e
 echo "exec cmd: [bash build.sh --pkg --cann_3rd_lib_path="/home/jenkins/opensource"]"
 bash build.sh --pkg --cann_3rd_lib_path="/home/jenkins/opensource"
 ret=$?
+
+# 编译打包成功后，将build_out/ 内产物压缩为cann_local_lm_<arch>.tar.gz 放回build_out/
+# arch 取值: 使用 uname -m 原值
+if [[ $ret -eq 0 ]]; then
+    _arch="$(uname -m)"
+    case "$_arch" in
+        aarch64) pkg_arch="aarch64";;
+        x86_64)  pkg_arch="x86_64";;
+        *)       pkg_arch="$_arch";;
+    esac
+    pkg_name="cann_local_lm_${pkg_arch}.tar.gz"
+    if [[ -d build_out ]]; then
+        echo "compress build_out/ -> build_out/${pkg_name}"
+        tar -czf "build_out/${pkg_name}" -C build_out --exclude="${pkg_name}" .
+        if [[ -f "build_out/${pkg_name}" ]]; then
+            echo "compressed: build_out/${pkg_name} ($(du -h "build_out/${pkg_name}" | cut -f1))"
+        else
+            echo "WARN: compress build_out/ failed, ${pkg_name} not generated" >&2
+        fi
+    else
+        echo "WARN: build_out/ not found, skip compress" >&2
+    fi
+fi
+
 exit $ret

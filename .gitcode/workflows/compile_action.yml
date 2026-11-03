@@ -61,18 +61,18 @@ jobs:
             export target_branch=${{ env.TARGET_BRANCH }}
             BuildAccelerate bash compile.sh
           AC_SERVER_IP: ${{ vars.AC_SERVER_IP }}
-      -
-        name: rename_package
-        if: ${{ inputs.package_name != '' }}
-        run: |
-          cd ${{ steps.process_checkout.outputs.path }}/build_out
-          for f in *.run; do
-            [ -f "$f" ] || continue
-            [ "$f" = "${{ inputs.package_name }}" ] && continue
-            mv "$f" "${{ inputs.package_name }}"
-            echo "Renamed: $f -> ${{ inputs.package_name }}"
-            break
-          done
+      # -
+      #   name: rename_package
+      #   if: ${{ inputs.package_name != '' }}
+      #   run: |
+      #     cd ${{ steps.process_checkout.outputs.path }}/build_out
+      #     for f in *.run; do
+      #       [ -f "$f" ] || continue
+      #       [ "$f" = "${{ inputs.package_name }}" ] && continue
+      #       mv "$f" "${{ inputs.package_name }}"
+      #       echo "Renamed: $f -> ${{ inputs.package_name }}"
+      #       break
+      #     done
       # -
       #   name: api-check
       #   identifier: api-check
@@ -85,10 +85,10 @@ jobs:
       #     workspace: ${{ steps.process_checkout.outputs.path }}
       #     source_branch: ${{ env.SOURCE_BRANCH }}
       #     target_branch: ${{ env.TARGET_BRANCH }}
-      - name: verify_package
-        uses: cann/.gitcode/actions/verify-package@master
-        with:
-          workspace: ${{ steps.process_checkout.outputs.path }}
+      # - name: verify_package
+      #   uses: cann/.gitcode/actions/verify-package@master
+      #   with:
+      #     workspace: ${{ steps.process_checkout.outputs.path }}
       - name: upload
         uses: obs-upload
         with:
@@ -96,7 +96,7 @@ jobs:
           bucket: "ascend-ci"
           access-key: ${{ secrets.AK }}
           secret-key: ${{ secrets.SK }}
-          artifact-path: "${{ steps.process_checkout.outputs.path }}/build_out/*.run"
+          artifact-path: "${{ steps.process_checkout.outputs.path }}/build_out/*.tar.gz"
           object-prefix: ${{ env.obs_path }}/
     if: "${{ default() }}"
     runs-on: ['self-hosted', 'arch=${{ inputs.arch }}', 'spec=xlarge']

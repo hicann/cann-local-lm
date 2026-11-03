@@ -322,7 +322,7 @@ if ple_enabled:
 
 ### embed_tokens_per_layer lookup (→ per_layer_token_identity)
 
-The lightweight tool does not specifically quantize `embed_tokens_per_layer` lookup (only used as `get_per_layer_inputs` input, float) → cann_lm's `per_layer_token_identity` is also float (no scale).
+The lightweight tool does not specifically quantize `embed_tokens_per_layer` lookup (only used as `get_per_layer_inputs` input, float) → cann_local_lm's `per_layer_token_identity` is also float (no scale).
 
 ### Lightweight tool gemma4 quantization summary
 
@@ -331,9 +331,9 @@ The lightweight tool does not specifically quantize `embed_tokens_per_layer` loo
 | `embed_tokens` (Gemma4TextScaledWordEmbedding) | QGemma4ScaledEmbedding (int8 + embed_scale) | ✅ (weight scale + embed_scale) |
 | `per_layer_model_projection` (PLE projection Linear) | GPTQ int4 | ✅ (group_size/scale) |
 | `embed_tokens_per_layer` (PLE lookup) | Not specifically quantized (only as `get_per_layer_inputs` input, float) | ❌ (float lookup) |
-| **per_layer_token_identity** (cann_lm) | `embed_tokens_per_layer(input_ids)` float lookup | ❌ (no scale) |
+| **per_layer_token_identity** (cann_local_lm) | `embed_tokens_per_layer(input_ids)` float lookup | ❌ (no scale) |
 
-**The lightweight tool quantizes `per_layer_model_projection` (projection Linear, int4), not `embed_tokens_per_layer` (lookup Embedding)**. `embed_tokens_per_layer` in the lightweight tool is only used as `get_per_layer_inputs` lookup input (float), not quantized → cann_lm's `per_layer_token_identity` (= embed_tokens_per_layer lookup) also has no scale (float).
+**The lightweight tool quantizes `per_layer_model_projection` (projection Linear, int4), not `embed_tokens_per_layer` (lookup Embedding)**. `embed_tokens_per_layer` in the lightweight tool is only used as `get_per_layer_inputs` lookup input (float), not quantized → cann_local_lm's `per_layer_token_identity` (= embed_tokens_per_layer lookup) also has no scale (float).
 
 ---
 
@@ -414,5 +414,5 @@ output_dir/
 ## Related
 
 - Design document: [export_design.md](./export/export_design.md) "Pure Embeddings Mode" / "saver" / "host_weights mechanism"
-- Code: `cann_lm/converter/saver.py`, `cann_lm/models/export_wrapper.py`, `cann_lm/converter/swap.py` (`swap_embeddings_from_dopt`), `cann_lm/models/gemma4/export_wrapper.py`
-- Lightweight tool: `cann_lm/converter/quant/dopt_lm/do_opt.py`, `modules/qembed.py`, `opt_funcs/weight_quant_ptq/ptq_algo_hessian/ptq_loop.py`
+- Code: `cann_local_lm/converter/saver.py`, `cann_local_lm/models/export_wrapper.py`, `cann_local_lm/converter/swap.py` (`swap_embeddings_from_dopt`), `cann_local_lm/models/gemma4/export_wrapper.py`
+- Lightweight tool: `cann_local_lm/converter/quant/dopt_lm/do_opt.py`, `modules/qembed.py`, `opt_funcs/weight_quant_ptq/ptq_algo_hessian/ptq_loop.py`

@@ -133,20 +133,20 @@ python .../gen_golden_with_dump.py \
 
 1. **加载模型** → `load_model` → `wrapper`（同 fp16 路径）
 2. **swap QLinear** → `_swap_linear_from_sd`（`nn.Linear` → `QLinear`，附 `quant_op`）
-3. **re-materialize unpacked** → `materialize_int4_per_group_symmetric(packed=False)` 产出 `[K,N]` int8（非 nibble-packed `[K//2,N]`），因为 CPU `DumpInterpreter` 跑 `cann_lm::quant_matmul` 的 CPU impl 要 unpacked
+3. **re-materialize unpacked** → `materialize_int4_per_group_symmetric(packed=False)` 产出 `[K,N]` int8（非 nibble-packed `[K//2,N]`），因为 CPU `DumpInterpreter` 跑 `cann_local_lm::quant_matmul` 的 CPU impl 要 unpacked
 4. **load 权重** → `load_state_dict(trained_quant_weight.pth)`
 5. **set_quant_state** → `weight_state=True, input_state=True`（W4A8: 权重 int4 + 激活 int8 量化）
 6. **跳过 embedding 量化** → `embed_tokens_per_layer [262144,10752]` 的 fakequant 中间张量 ~11GB，CPU 内存压力大；embedding 是 lookup 不是 matmul，精度影响小（`--no-skip-embed-quant` 可关闭跳过）
-7. **torch.export** → `DumpInterpreter` → 逐 FX node dump（含 `cann_lm::quant_matmul` + `cann_lm::dynamic_quant` 的输入输出）
+7. **torch.export** → `DumpInterpreter` → 逐 FX node dump（含 `cann_local_lm::quant_matmul` + `cann_local_lm::dynamic_quant` 的输入输出）
 
 ### dump 的量化算子
 
-FX 图里 matmul 被拆成两个 `cann_lm::` 自定义算子（W4A8）：
+FX 图里 matmul 被拆成两个 `cann_local_lm::` 自定义算子（W4A8）：
 
 | FX node target | 算子 | 作用 | dump 的张量 |
 |---|---|---|---|
-| `cann_lm.dynamic_quant.default` | 激活 int8 量化 | `x → (x_q int8, x_scale fp32 per-token)` | 输入 x + 输出 (x_q, x_scale) |
-| `cann_lm.quant_matmul.default` | int4×int8 matmul | `(x_q, weight_q, weight_scale) → out` | 输入 (x_q, weight_q, weight_scale) + 输出 out |
+| `cann_local_lm.dynamic_quant.default` | 激活 int8 量化 | `x → (x_q int8, x_scale fp32 per-token)` | 输入 x + 输出 (x_q, x_scale) |
+| `cann_local_lm.quant_matmul.default` | int4×int8 matmul | `(x_q, weight_q, weight_scale) → out` | 输入 (x_q, weight_q, weight_scale) + 输出 out |
 
 每个 `quant_matmul_N` FX node 对应一个 QLinear（`q_proj` / `k_proj` / `mlp.gate_proj` 等）。
 dump 的 `node_quant_matmul_N.bin` 是该算子输出，可与 fp16 golden 的对应 node 比对，定位量化损失。
@@ -168,8 +168,8 @@ dump 的 `node_quant_matmul_N.bin` 是该算子输出，可与 fp16 golden 的�
 
 ### 关键实现细节（量化 dump 特有）
 
-- **unpacked int8 vs nibble-packed**：`swap_from_dopt` 默认产出 nibble-packed int8 `[K//2,N]`（给 export/NPU 用）；但 CPU `DumpInterpreter` 跑 `cann_lm::quant_matmul` 的 CPU impl 要 unpacked `[K,N]`（注释 `quant_matmul.py:104` "int4 stored unpacked as int8 (signed)"）。工具内手动 re-materialize 每个 QLinear 的 `weight_q` 为 unpacked（`materialize_int4_per_group_symmetric(packed=False)`）。
-- **CPU impl 注册**：`_HAS_TORCH_NPU=False`（`_library.py:30`，不 import torch_npu）→ `register_cpu_impl` 注册 CPU impl（非 no-op）→ `cann_lm::quant_matmul` / `cann_lm::dynamic_quant` 在 CPU 上可跑。
+- **unpacked int8 vs nibble-packed**：`swap_from_dopt` 默认产出 nibble-packed int8 `[K//2,N]`（给 export/NPU 用）；但 CPU `DumpInterpreter` 跑 `cann_local_lm::quant_matmul` 的 CPU impl 要 unpacked `[K,N]`（注释 `quant_matmul.py:104` "int4 stored unpacked as int8 (signed)"）。工具内手动 re-materialize 每个 QLinear 的 `weight_q` 为 unpacked（`materialize_int4_per_group_symmetric(packed=False)`）。
+- **CPU impl 注册**：`_HAS_TORCH_NPU=False`（`_library.py:30`，不 import torch_npu）→ `register_cpu_impl` 注册 CPU impl（非 no-op）→ `cann_local_lm::quant_matmul` / `cann_local_lm::dynamic_quant` 在 CPU 上可跑。
 - **系统 python + shim**：gemma4 多模态 → transformers `import torchaudio`（系统 python 的 torchaudio 版本错配）→ 用 `dopt_op_benchmark/shims/torchaudio` stub（`run.sh` 自动检测启用）。系统 python 不 import torch_npu → `_HAS_TORCH_NPU=False` → CPU impl 生效。
 - **embedding 量化跳过**：`set_quant_state(weight_state=True, input_state=True)` 后，遍历 modules 把 `embed` / `per_layer_model_projection` 的 `quant_op.set_quant_state(False, False)` —— 这些模块保留 fp16（不做 fakequant），避免 `embed_tokens_per_layer [262144,10752]` 的 11GB 中间张量。
 
@@ -267,7 +267,7 @@ for (auto* node : graph->GetAllNodes()) {
 }
 ```
 
-改后重编 `bash scripts/build.sh cpp` + 重跑。**改 `cann_lm/` 前先找确认**（AGENTS.md 约定）。
+改后重编 `bash scripts/build.sh cpp` + 重跑。**改 `cann_local_lm/` 前先找确认**（AGENTS.md 约定）。
 
 ### 排障场景
 

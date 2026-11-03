@@ -2,7 +2,7 @@
 #
 # run.sh — epair 导出 + OM 编译 (cann_lm_compile) 一键式验证
 #
-# 前置: .run 包已安装到 /opt/cann-local-lm/, cann_lm whl 已装进 P1 venv
+# 前置: .run 包已安装到 /opt/cann-local-lm/, cann_local_lm whl 已装进 P1 venv
 #
 # 流程: [1] 环境检查 → [2] 导出 epair → [3] cann_lm_compile 编译 OM
 #
@@ -59,7 +59,7 @@ ok "python: ${PYTHON}"
 "${PYTHON}" - <<'PY' 2>&1 | while IFS= read -r line; do echo "  ${line}"; done
 import torch, importlib.util as u
 print(f"[✓] torch {torch.__version__}")
-for m in ("torchair", "torch_delegate", "cann_lm"):
+for m in ("torchair", "torch_delegate", "cann_local_lm"):
     print(f"[{'✓' if u.find_spec(m) else '✗'}] {m} {'importable' if u.find_spec(m) else 'MISSING'}")
 PY
 [[ -x "${COMPILE_BIN}" ]] || die "cann_lm_compile 不存在: ${COMPILE_BIN} (先装 .run 包)"

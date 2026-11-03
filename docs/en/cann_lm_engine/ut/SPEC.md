@@ -21,7 +21,7 @@ English | [简体中文](../../../zh/cann_lm_engine/ut/SPEC.md)
 
 ## Chapter 1 Overview
 
-This spec covers the external interface surface of `cann_lm/engine/` and Stub Era independently verifiable internal behaviors. The reader should understand within 30 seconds: UT cases described with `Given/When/Then`, each case aligned with a tested behavior contract, naming conventions (including Stub Era suffix) prevent "test name claims X but actually tests Y" drift.
+This spec covers the external interface surface of `cann_local_lm/engine/` and Stub Era independently verifiable internal behaviors. The reader should understand within 30 seconds: UT cases described with `Given/When/Then`, each case aligned with a tested behavior contract, naming conventions (including Stub Era suffix) prevent "test name claims X but actually tests Y" drift.
 
 Requirement ID: **SR20260825001**. Software layer: **test**.
 
@@ -398,7 +398,7 @@ Static pure function direct tests (not through ITensorBuffer): `ApplyTemperature
 (highest probability item must keep), `ApplyRepetitionPenalty` (score<0 ×p, score≥0 ÷p, not generated untouched),
 `Normalize` (non-negative, sum≈1, probability order follows logit order), `Pick` (greedy argmax / seeded reproducible),
 full pipeline (default greedy / seeded sampling reproducible). Expected behavior also anchored by
-`cann_lm/engine/core/sample/test/sampler_ut.cc` (100 assertions, scripts/build_sample.sh)
+`cann_local_lm/engine/core/sample/test/sampler_ut.cc` (100 assertions, scripts/build_sample.sh)
 on reference implementation side, two implementations must not drift unilaterally.
 
 ### 4.6 ut_request_handle (UT-TC-RH-*) ——**new file**
@@ -466,10 +466,10 @@ on reference implementation side, two implementations must not drift unilaterall
 
 ## Chapter 6 Constraints and Dependencies
 
-- **Code under test**: `cann_lm/engine/*` (44 cpp/h files)
+- **Code under test**: `cann_local_lm/engine/*` (44 cpp/h files)
 - **Test framework**: GoogleTest 1.14 (`/usr/src/googletest/`, CMake `find_package(GTest REQUIRED)`)
 - **Compiler**: g++ 13 / clang-18 / C++17 (consistent with production code)
-- **Build system**: CMake ≥ 3.10 (consistent with `cann_lm/engine/CMakeLists.txt`)
+- **Build system**: CMake ≥ 3.10 (consistent with `cann_local_lm/engine/CMakeLists.txt`)
 - **Dependent module SPEC**: tokenizer / c_api / pipeline+engine_executor / model_executor (each module §8 TC numbering aligned)
 
 ## Chapter 7 Verification Standards

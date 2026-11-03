@@ -18,7 +18,7 @@ import pytest
 import torch
 import torch.nn as nn
 
-from cann_lm.converter.swap import (
+from cann_local_lm.converter.swap import (
     _infer_group_size,
     _read_dopt_quant_meta,
     _read_quant_param_map,
@@ -28,7 +28,7 @@ from cann_lm.converter.swap import (
     swap_from_dopt,
     _swap_linear_from_sd,
 )
-from cann_lm.converter.export.quant_swap.quant_linear import QuantLinear
+from cann_local_lm.converter.export.quant_swap.quant_linear import QuantLinear
 
 
 # ── _resolve_parent ──

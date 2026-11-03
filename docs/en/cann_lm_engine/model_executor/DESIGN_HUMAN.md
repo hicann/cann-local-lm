@@ -75,7 +75,7 @@ Add a KV pool memory layout rule: pool underlying tensor is organized **layer-ma
 
 v0.7 splits "model loading" into two same-level L3 roles, and changes config source:
 
-- **Added `IBuiltModel`** (same level as `IModelManager`, declared in `cann_lm/engine/core/tensor_manager.h`): responsible for "artifact → built model" — `BuildModelFromFile/FromBuffer()` loads om path/buffer into built model (including compilation), `GetInputDescs/GetOutputDescs` exposes om graph I/O tensor descriptions (`TensorDesc` defined in `core/tensor_manager.h`). Created via link-time `BuildModelFromFile/FromBuffer()` (same pattern as CreateModelManager, backend determined at compile time).
+- **Added `IBuiltModel`** (same level as `IModelManager`, declared in `cann_local_lm/engine/core/tensor_manager.h`): responsible for "artifact → built model" — `BuildModelFromFile/FromBuffer()` loads om path/buffer into built model (including compilation), `GetInputDescs/GetOutputDescs` exposes om graph I/O tensor descriptions (`TensorDesc` defined in `core/tensor_manager.h`). Created via link-time `BuildModelFromFile/FromBuffer()` (same pattern as CreateModelManager, backend determined at compile time).
 - **`ModelHandle` removed** — replaced by `IBuiltModel`. Model reference is owned `IBuiltModel`, transferred to ModelManager via `Init`, ModelExecutor no longer holds handle.
 - **`ModelMetaInfo` → `ModelConfig`**: config **is no longer the output parsed from artifact meta_json at load time**, but **a user JSON passed to pipeline, passed in as parameter when pipeline calls `model_executor::Load`**. Load signature becomes `Load(artifact, ModelConfig)`.
 - **`IModelManager::Load` removed, changed to `Init(ModelConfig, shared_ptr<IBuiltModel>)`**: ModelManager **does not directly load via artifact** — artifact loading belongs to IBuiltModel, MM only receives built BuiltModel for runtime initialization (weights to NPU, graph ready). `Forward`/`Release` no longer receive handle (MM binds unique built via Init). `GetMeta`→`GetConfig`.
@@ -618,7 +618,7 @@ Implementation order (by dependency topology):
 
 Parallelizable: KV pool and diagnostics are independent, can work simultaneously.
 
-Source code lands in `cann_lm/engine/core/model_executor/`, UT lands in `tests/cpp/engine/model_executor/`. Backend library selected by build config for linking, provides `CreateModelManager()` definition; UT links stub (returns mock MM).
+Source code lands in `cann_local_lm/engine/core/model_executor/`, UT lands in `tests/cpp/engine/model_executor/`. Backend library selected by build config for linking, provides `CreateModelManager()` definition; UT links stub (returns mock MM).
 
 ---
 

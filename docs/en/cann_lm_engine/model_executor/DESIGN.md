@@ -83,7 +83,7 @@ status: draft
 <a id="1-scope-and-goals"></a>
 ## §1 Scope and Goals
 
-- **in scope**: C++ forward shell under `cann_lm/engine/core/model_executor` — single-step Forward (embedding/tokenId two paths → logits) + KV ringBuffer cursor management (memory owned by TensorManager) + input filling (attentionMask + decode batch padding) + load/unload/LoRA control interface (directly exposed; **ModelManager is created and held by this instance at Load time**, specific implementation still delegated to ModelManager) + DFX. prefill/decode are two instances of this class (each bound to one om), sharing the KV pool with zero-copy. Internal module, not exposed to Python.
+- **in scope**: C++ forward shell under `cann_local_lm/engine/core/model_executor` — single-step Forward (embedding/tokenId two paths → logits) + KV ringBuffer cursor management (memory owned by TensorManager) + input filling (attentionMask + decode batch padding) + load/unload/LoRA control interface (directly exposed; **ModelManager is created and held by this instance at Load time**, specific implementation still delegated to ModelManager) + DFX. prefill/decode are two instances of this class (each bound to one om), sharing the KV pool with zero-copy. Internal module, not exposed to Python.
 - **out of scope** (with reasons):
   - KV tensor memory allocation/release — spec §4.1.2 belongs to `TensorManager`, this module only manages pos/offset/cursor.
   - load-unload/forward/LoRA **specific implementation** — spec §4.1.4/4.1.5 belongs to `ModelManager`; this module **creates and holds** the ModelManager instance at Load time, but specific operator/graph execution remains within it.
@@ -243,7 +243,7 @@ Dependency graph acyclic check: C-03/C-04 (external) ← {M-02, M-01}; M-02 ← 
   - M-03 → this section + M-02 + F-02/F-03
   - M-04 → this section + M-02
 - Integration milestones: ①M-02+mock C-04 runs through alloc/free/evict/snapshot; ②M-03+mock M-02 runs through pos derivation + padding + mask; ③M-04+mock file sink runs through dump switch + landing failure degradation; ④M-01+stub `CreateModelManager()` returns mock IModelManager runs through Load self-creating MM + Forward two paths returning fake logits + single-flight + Load/Unload/LoadLora/UnloadLora control; ⑤prefill+decode two instances + shared pool runs through zero-copy (decode first Load→size pool→prefill Load).
-- Source code lands in `cann_lm/engine/core/model_executor/`, UT lands in `tests/cpp/engine/model_executor/`, CMake target in root CMakeLists (to be created).
+- Source code lands in `cann_local_lm/engine/core/model_executor/`, UT lands in `tests/cpp/engine/model_executor/`, CMake target in root CMakeLists (to be created).
 - Backend binding: the definition of `CreateModelManager()` is provided by the backend library selected at compile time for linking (build config `CANN_LM_BACKEND` or similar selects backend lib); UT links with stub definition (returns mock MM). M-01 code does not reference any specific backend class name.
 
 <a id="9-risks-and-open-issues"></a>

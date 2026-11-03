@@ -9,7 +9,10 @@ import json
 
 import pytest
 
-from cann_lm.converter.gen_model_json import _extract_from_hf_config, gen_model_json
+from cann_local_lm.converter.gen_model_json import (
+    _extract_from_hf_config,
+    gen_model_json,
+)
 
 
 # ── 测试用 hf_config 构造 ──

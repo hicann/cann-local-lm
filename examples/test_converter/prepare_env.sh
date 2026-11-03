@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # prepare_env.sh — 一次性: 装 converter PyPI 依赖进 P1 venv (deps --no-deps 漏的)
 #
-# cann_lm whl 用 --no-deps 装 (torchair/torch_delegate 不在 PyPI), 但 converter 加载权重/config
+# cann_local_lm whl 用 --no-deps 装 (torchair/torch_delegate 不在 PyPI), 但 converter 加载权重/config
 # 需 safetensors/pyyaml/packaging (PyPI 依赖). 本脚本一次性补装进 P1 venv.
 #
 # 用法: bash examples/test_converter/prepare_env.sh

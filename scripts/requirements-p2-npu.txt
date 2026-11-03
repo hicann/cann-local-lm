@@ -10,4 +10,4 @@ torch_npu==2.7.1.post4   # 版本号须与 torch 主版本一致 (2.7.1); 配套
 #
 # 非 pip 包 (NPU 环境额外需要):
 #   acl:      CANN site-packages (PYTHONPATH 由 set_env.sh 引入)
-#   dopt_lm: 仓内 cann_lm/converter/quant/ (PYTHONPATH 引入)
+#   dopt_lm: 仓内 cann_local_lm/converter/quant/ (PYTHONPATH 引入)

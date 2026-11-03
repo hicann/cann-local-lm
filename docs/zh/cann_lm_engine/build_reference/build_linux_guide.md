@@ -131,7 +131,7 @@ GTest tarball（OHOS 交叉编译用）：
 curl -L -o /mnt/workspace/gtest-1.14.0.tar.gz \
   https://github.com/google/googletest/releases/download/v1.14.0/googletest-1.14.0.tar.gz
 ```
-> `cann_lm/engine/ohos/CMakeLists.txt` 用 FetchContent 引此 tarball（CMake 变量 `GTEST_TAR`，默认 `/mnt/workspace/gtest-1.14.0.tar.gz`）。缺失会 `FATAL_ERROR` 并提示下载地址。无需 `find_package(GTest)`（交叉编译下主机 GTest 不可用）。
+> `cann_local_lm/engine/ohos/CMakeLists.txt` 用 FetchContent 引此 tarball（CMake 变量 `GTEST_TAR`，默认 `/mnt/workspace/gtest-1.14.0.tar.gz`）。缺失会 `FATAL_ERROR` 并提示下载地址。无需 `find_package(GTest)`（交叉编译下主机 GTest 不可用）。
 
 ## 4. 编译
 
@@ -151,7 +151,7 @@ bash scripts/cann_lm_engine/build_package_ohos.sh
 
 1. **SDK 定位**：`OHOS_SDK_NATIVE` 环境变量；空则自动探测（`cli_native` 完整SDK > `ohos_native/native` 精简SDK），校验 `sysroot` 存在。
 2. **编译器校验**：SDK 自带 `${OHOS_SDK_NATIVE}/llvm/bin/clang` 优先（路线A）；无则查本机 `clang-18`（路线B）。两皆无才报错。
-3. **CMake configure**：`cmake -G "Unix Makefiles" -DCMAKE_TOOLCHAIN_FILE=cann_lm/engine/ohos/ohos.toolchain.cmake -DOHOS_SDK_NATIVE=... -DOHOS_PLATFORM=OHOS -DCMAKE_BUILD_TYPE=Release -B build_ohos -S cann_lm/engine/ohos`。
+3. **CMake configure**：`cmake -G "Unix Makefiles" -DCMAKE_TOOLCHAIN_FILE=cann_local_lm/engine/ohos/ohos.toolchain.cmake -DOHOS_SDK_NATIVE=... -DOHOS_PLATFORM=OHOS -DCMAKE_BUILD_TYPE=Release -B build_ohos -S cann_local_lm/engine/ohos`。
 4. **Make 编译**：`cmake --build build_ohos -j$(nproc)`（本机 make，非 ninja）。
 5. **产物校验**：11 个产物逐一 `[ok]`/`[缺]`（见 §5）；`libc++_shared.so` 缺失则从 SDK find 兜底拷贝。
 6. **签名**：自动调 `scripts/cann_lm_engine/sign_ohos.sh`。
@@ -193,7 +193,7 @@ readelf -h libcann_lm_engine.so | grep Machine
 
 ### 产签名 wheel（`build_package_ohos.sh`）
 
-`build_package_ohos.sh` 在编译+签名后自动将签名 `.so` 拷入 `cann_lm/lib/` 并 `pip wheel` 产出 `build_out/cann_lm_engine-*+signed*.whl`（内嵌 `.so` + `libc++_shared.so`）。
+`build_package_ohos.sh` 在编译+签名后自动将签名 `.so` 拷入 `cann_local_lm/lib/` 并 `pip wheel` 产出 `build_out/cann_lm_engine-*+signed*.whl`（内嵌 `.so` + `libc++_shared.so`）。
 
 设备端：`pip install cann_lm_engine-*+signed*.whl` 后 `cllm generate --config testcase.json`（详见 [快速入门](../../QUICKSTART.md)）。C++ 测试（bbit/smoke）需单独 `bash build.sh --smoke` 构建，推到设备后 `./bbit --config testcase.json`。
 

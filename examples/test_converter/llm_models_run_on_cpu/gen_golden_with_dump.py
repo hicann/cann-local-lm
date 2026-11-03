@@ -132,7 +132,7 @@ def gen_golden_with_dump(
     output_dir = Path(output_dir).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    from cann_lm.converter.loader import load_model
+    from cann_local_lm.converter.loader import load_model
 
     artifact = load_model(hf_path, dtype=dtype, device="cpu")
 
@@ -149,7 +149,10 @@ def gen_golden_with_dump(
     # ── 量化接入: dopt fakequant (W4A8: 权重 int4 反量化 + 激活 int8 量化) ──
     quant_info: dict[str, Any] | None = None
     if quant_path:
-        from cann_lm.converter.swap import load_dopt_state_dict, _read_quant_param_map
+        from cann_local_lm.converter.swap import (
+            load_dopt_state_dict,
+            _read_quant_param_map,
+        )
 
         quant_path = Path(quant_path).resolve()
         weight_pth = quant_path / "trained_quant_weight.pth"
@@ -157,31 +160,31 @@ def gen_golden_with_dump(
         print(f"[quant] loading dopt weights: {weight_pth}")
         # 手动调 swap 组件 (swap_from_dopt 内部 load_dopt_state_dict + _read_quant_param_map 用同一 path
         # 但 load_dopt_state_dict 要 .pth 文件, _read_quant_param_map 要 dopt_config.json 目录)
-        import cann_lm.converter.quant.dopt_lm.quantizer.qmin_max  # noqa: F401  # 注册量化器
-        import cann_lm.converter.quant.dopt_lm.quantizer.qeval  # noqa: F401
-        from cann_lm.converter.swap import (
+        import cann_local_lm.converter.quant.dopt_lm.quantizer.qmin_max  # noqa: F401  # 注册量化器
+        import cann_local_lm.converter.quant.dopt_lm.quantizer.qeval  # noqa: F401
+        from cann_local_lm.converter.swap import (
             _swap_linear_from_sd,
             swap_embeddings_from_dopt,
             DEFAULT_SKIP,
         )
-        from cann_lm.converter.quant.dopt_lm.do_opt import (
+        from cann_local_lm.converter.quant.dopt_lm.do_opt import (
             set_quant_state,
             set_calibrate_state,
         )
 
         sd = load_dopt_state_dict(str(weight_pth))
         param_map = _read_quant_param_map(str(quant_path))
-        # gen_golden_with_dump 在 CPU 跑 DumpInterpreter → cann_lm::quant_matmul CPU impl 要 unpacked [K,N] int8
+        # gen_golden_with_dump 在 CPU 跑 DumpInterpreter → cann_local_lm::quant_matmul CPU impl 要 unpacked [K,N] int8
         # 所以 swap 用 packed=False (不走 nibble-packed), 产出 unpacked int8 weight_q [K,N]
         swap_info = _swap_linear_from_sd(
             artifact.model, sd, skip=DEFAULT_SKIP, param_map=param_map
         )
         # swap 默认 packed=True (int8 nibble [K//2,N]); CPU DumpInterpreter 要 unpacked
         # 手动 re-materialize 每个 QLinear 的 weight 为 unpacked
-        from cann_lm.converter.export.quant_swap.materialize import (
+        from cann_local_lm.converter.export.quant_swap.materialize import (
             materialize_int4_per_group_symmetric,
         )
-        from cann_lm.converter.export.quant_swap.quant_linear import QuantLinear
+        from cann_local_lm.converter.export.quant_swap.quant_linear import QuantLinear
 
         for name, m in artifact.model.named_modules():
             if isinstance(m, QuantLinear):

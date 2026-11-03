@@ -217,7 +217,7 @@ graph TD
   - M-02 → 本节 + C-04 + F-01/F-02
   - M-03 → 本节 + spec §4.1.4（转换矩阵唯一权威）
 - 集成里程碑：①M-03 + 全矩阵单测（含不支持组合拒绝）；②M-02 InMemory + ReadRow 正确性；③M-02 InFlash + pread + 损坏路径；④M-01 Load（两模式）+ Gather（PerToken/PerGroup）；⑤M-01 FillInputs 两路径 + mock bundle（6 名 desc）；⑥C-02 accessor + **Scheduler 接线（§2.2 接线点 1/2/3：构造签名 + 两调用点让位 + 路径透传）** + pipeline init Load 接线 + 现有 UT 全绿（LoadAndBind 桩删除后的调用面清零；接线后 `grep SetInputData` 仓内调用面应为零）。
-- 源码落 `cann_lm/engine/core/component/text_embedding.{h,cpp}`（原地重写桩）；UT 落 `tests/cpp/engine/`（target `ut_text_embedding`，GoogleTest）；CMake 挂 engine 现有测试注册链，**并同步在 `cann_lm/engine/ohos/CMakeLists.txt` 注册**（OHOS 侧为显式逐 target 复制、与主链无共享机制，不补则鸿蒙部署跑不到；注意 `ut_sampler`/`ut_request_handle` 已有 OHOS 漂移先例，勿新增）。
+- 源码落 `cann_local_lm/engine/core/component/text_embedding.{h,cpp}`（原地重写桩）；UT 落 `tests/cpp/engine/`（target `ut_text_embedding`，GoogleTest）；CMake 挂 engine 现有测试注册链，**并同步在 `cann_local_lm/engine/ohos/CMakeLists.txt` 注册**（OHOS 侧为显式逐 target 复制、与主链无共享机制，不补则鸿蒙部署跑不到；注意 `ut_sampler`/`ut_request_handle` 已有 OHOS 漂移先例，勿新增）。
 - 后端绑定：无。M-01/M-02/M-03 均不引用具体后端类名（grep 断言）；buffer 经 TensorManager 单例。
 - 删除清单：`LoadAndBind()` 桩（全仓 grep 确认零调用后删）；头注释 v1.1/v1.2 历史说明更新为指向本 DESIGN。
 

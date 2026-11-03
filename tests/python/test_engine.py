@@ -14,10 +14,10 @@ are skipped (wrong arch). Lifecycle is asserted to succeed per c_api.h:155
 
 import pytest
 
-from cann_lm._enums import FinishReason, Status
-from cann_lm._ffi import is_library_available
-from cann_lm.engine import Engine, Request, Result, build_model_artifact
-from cann_lm.exceptions import CannLmError, CannLmStatusError
+from cann_local_lm._enums import FinishReason, Status
+from cann_local_lm._ffi import is_library_available
+from cann_local_lm.engine import Engine, Request, Result, build_model_artifact
+from cann_local_lm.exceptions import CannLmError, CannLmStatusError
 
 HAS_LIB = is_library_available()
 needs_lib = pytest.mark.skipif(not HAS_LIB, reason="no loadable libcann_lm_engine.so")
@@ -90,13 +90,15 @@ class TestExecutorCreateInvalidArgHint:
 
     def test_invalid_argument_message_points_to_hilog(self, monkeypatch):
         import types
-        from cann_lm.engine import Engine
+        from cann_local_lm.engine import Engine
 
         # fake lib: ExecutorCreate returns INVALID_ARGUMENT(2), *out stays NULL
         fake_lib = types.SimpleNamespace(
             CANN_LMEngine_ExecutorCreate=lambda *a: int(Status.INVALID_ARGUMENT)
         )
-        monkeypatch.setattr("cann_lm.engine.get_library", lambda path=None: fake_lib)
+        monkeypatch.setattr(
+            "cann_local_lm.engine.get_library", lambda path=None: fake_lib
+        )
         with pytest.raises(CannLmStatusError) as ei:
             Engine()
         assert ei.value.status == Status.INVALID_ARGUMENT

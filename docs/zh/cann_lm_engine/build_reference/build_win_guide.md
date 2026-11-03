@@ -117,7 +117,7 @@ bash scripts/cann_lm_engine/build_package_ohos.sh --clean
 
 ### 编译流程说明（build_ohos.sh 内部 5 步）
 1. **SDK 校验**：取 `OHOS_SDK_NATIVE`（默认 `/mnt/workspace/ohos_sdk/ohos_native/native`），校验 `sysroot` 子目录存在；检查本机 `clang-18`/`clang++-18`（`command -v`，缺失提示 `apt install clang-18 llvm-18`）。
-2. **CMake configure**：`cmake -G "Unix Makefiles" -DCMAKE_TOOLCHAIN_FILE=<repo>/cann_lm/engine/ohos/ohos.toolchain.cmake -DOHOS_SDK_NATIVE=... -DOHOS_PLATFORM=OHOS -DCMAKE_BUILD_TYPE=Release -B build_ohos -S cann_lm/engine/ohos`（工具链内 `find_program(clang-18)`，**不**用 SDK 自带 clang）。
+2. **CMake configure**：`cmake -G "Unix Makefiles" -DCMAKE_TOOLCHAIN_FILE=<repo>/cann_local_lm/engine/ohos/ohos.toolchain.cmake -DOHOS_SDK_NATIVE=... -DOHOS_PLATFORM=OHOS -DCMAKE_BUILD_TYPE=Release -B build_ohos -S cann_local_lm/engine/ohos`（工具链内 `find_program(clang-18)`，**不**用 SDK 自带 clang）。
 3. **make 编译**：`cmake --build build_ohos -j$(nproc)`（Unix Makefiles，**非 ninja**）。
 4. **产物校验**：校验 11 个产物（见下表）齐备；`libc++_shared.so` 缺失则从 SDK 兜底拷贝。
 5. **签名**：自动调 `sign_ohos.sh`，对 2 .so + 9 可执行逐个 `java -jar binary-sign-tool.jar sign ... -selfSign 1`。
@@ -134,7 +134,7 @@ bash scripts/cann_lm_engine/build_package_ohos.sh --clean
 | `api_smoke` / `c_api_smoke`（各 +`_signed`） | C++/C API 冒烟程序 |
 
 ### 打包（方式二自动执行）
-`build_package_ohos.sh` 在编译+签名后将签名 `.so` 拷入 `cann_lm/lib/` 并 `pip wheel` 产出 `build_out/cann_lm_engine-*+signed*.whl`（内嵌 `.so` + `libc++_shared.so`）。鸿蒙设备上 `pip install` 后 `cllm generate --config testcase.json` 运行推理。
+`build_package_ohos.sh` 在编译+签名后将签名 `.so` 拷入 `cann_local_lm/lib/` 并 `pip wheel` 产出 `build_out/cann_lm_engine-*+signed*.whl`（内嵌 `.so` + `libc++_shared.so`）。鸿蒙设备上 `pip install` 后 `cllm generate --config testcase.json` 运行推理。
 
 ---
 

@@ -117,7 +117,7 @@ Output ends with `=== build_ohos.sh 完成 ===` (Option 1) or `=== build_package
 
 ### Build Flow Description (5 steps inside build_ohos.sh)
 1. **SDK validation**: Takes `OHOS_SDK_NATIVE` (default `/mnt/workspace/ohos_sdk/ohos_native/native`), validates `sysroot` subdirectory exists; checks host `clang-18`/`clang++-18` (`command -v`, prompts `apt install clang-18 llvm-18` if missing).
-2. **CMake configure**: `cmake -G "Unix Makefiles" -DCMAKE_TOOLCHAIN_FILE=<repo>/cann_lm/engine/ohos/ohos.toolchain.cmake -DOHOS_SDK_NATIVE=... -DOHOS_PLATFORM=OHOS -DCMAKE_BUILD_TYPE=Release -B build_ohos -S cann_lm/engine/ohos` (toolchain uses `find_program(clang-18)`, **does not** use SDK-bundled clang).
+2. **CMake configure**: `cmake -G "Unix Makefiles" -DCMAKE_TOOLCHAIN_FILE=<repo>/cann_local_lm/engine/ohos/ohos.toolchain.cmake -DOHOS_SDK_NATIVE=... -DOHOS_PLATFORM=OHOS -DCMAKE_BUILD_TYPE=Release -B build_ohos -S cann_local_lm/engine/ohos` (toolchain uses `find_program(clang-18)`, **does not** use SDK-bundled clang).
 3. **make build**: `cmake --build build_ohos -j$(nproc)` (Unix Makefiles, **not ninja**).
 4. **Artifact validation**: Validates 11 artifacts (see table below) are present; if `libc++_shared.so` is missing, fallback-copy from SDK.
 5. **Signing**: Auto-calls `sign_ohos.sh`, for each of 2 .so + 9 executables runs `java -jar binary-sign-tool.jar sign ... -selfSign 1`.
@@ -135,7 +135,7 @@ Output ends with `=== build_ohos.sh 完成 ===` (Option 1) or `=== build_package
 
 ### Packaging (auto-run by Option 2, or run standalone)
 ### Packaging (auto-executed by Option 2)
-`build_package_ohos.sh` copies the signed `.so` into `cann_lm/lib/` and runs `pip wheel` to produce `build_out/cann_lm_engine-*+signed*.whl` (embeds `.so` + `libc++_shared.so`) after compile+sign. On the HarmonyOS device, `pip install` then `cllm generate --config testcase.json` to run inference.
+`build_package_ohos.sh` copies the signed `.so` into `cann_local_lm/lib/` and runs `pip wheel` to produce `build_out/cann_lm_engine-*+signed*.whl` (embeds `.so` + `libc++_shared.so`) after compile+sign. On the HarmonyOS device, `pip install` then `cllm generate --config testcase.json` to run inference.
 
 ---
 

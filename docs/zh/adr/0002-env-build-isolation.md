@@ -59,7 +59,7 @@
 
 ### 替代方案 B: 顶层 CMakeLists 完全取代 build_csrc.sh（删除 build_csrc.sh）
 
-**采纳**（原"薄封装留 csrc/"为过渡，最终删除）：`build_csrc.sh` 已删除，6 处调用方（2 example CMakeLists + tests CMakeLists + `export_epair_and_compile/run.sh` + `export_quant_matmul_single_op/run.sh` + `om_npu_verify/check_env.sh`）的 fallback 全切到 `build/libtorch_delegate_backend.so` + `bash scripts/cann_lm_compile/build_cpp.sh --target torch_delegate_backend`。单一 C++ 构建逻辑（build_cpp.sh），cann_lm/ 源码树内不再留构建脚本。
+**采纳**（原"薄封装留 csrc/"为过渡，最终删除）：`build_csrc.sh` 已删除，6 处调用方（2 example CMakeLists + tests CMakeLists + `export_epair_and_compile/run.sh` + `export_quant_matmul_single_op/run.sh` + `om_npu_verify/check_env.sh`）的 fallback 全切到 `build/libtorch_delegate_backend.so` + `bash scripts/cann_lm_compile/build_cpp.sh --target torch_delegate_backend`。单一 C++ 构建逻辑（build_cpp.sh），cann_local_lm/ 源码树内不再留构建脚本。
 
 ### 替代方案 C: npu 折叠进 converter
 

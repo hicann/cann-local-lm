@@ -4,8 +4,8 @@ import os
 from pathlib import Path
 
 import torch
-from cann_lm.converter.export.epair_utils import consolidated_weights_save
-from cann_lm.converter.export.ge_converters import register_ge_converters
+from cann_local_lm.converter.export.epair_utils import consolidated_weights_save
+from cann_local_lm.converter.export.ge_converters import register_ge_converters
 import torch_delegate
 from torch_delegate import LiteConfig, lite_export_context
 

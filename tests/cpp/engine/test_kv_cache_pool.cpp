@@ -10,7 +10,7 @@
 #include <thread>
 #include <vector>
 
-namespace cann_lm::engine {
+namespace cann_local_lm::engine {
 namespace {
 
 KvCachePool MakePool(int max_batch_size = 4, int kv_cache_max_len = 16, int num_layers = 2, int num_kv_heads = 4,
@@ -225,4 +225,4 @@ TEST(KvCachePoolTest, ConcurrentAllocFreeNoCorruption_TC302)
 }
 
 } // namespace
-} // namespace cann_lm::engine
+} // namespace cann_local_lm::engine

@@ -248,7 +248,7 @@ target_link_libraries(ascendcl_ut PUBLIC hiai_ascendcl neural_network_core hiai_
 
 ## 8. 对 CANN-LM engine 的可借鉴点(预告 PLAN)
 
-对照本项目 `cann_lm/engine/CMakeLists.txt`(现状:单一 Linux/GCC、STATIC 库、`find_package(GTest REQUIRED)` 主机装、无平台分支):
+对照本项目 `cann_local_lm/engine/CMakeLists.txt`(现状:单一 Linux/GCC、STATIC 库、`find_package(GTest REQUIRED)` 主机装、无平台分支):
 
 | harmony_acl 做法 | CANN-LM 现状 | 借鉴方向 |
 |------------------|-------------|---------|

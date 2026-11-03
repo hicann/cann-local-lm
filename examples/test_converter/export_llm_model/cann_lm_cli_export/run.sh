@@ -12,7 +12,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${ROOT_DIR}/../../../.." && pwd)"
-CONVERTER="${PROJECT_ROOT}/cann_lm/converter/cann_lm_converter.py"
+CONVERTER="${PROJECT_ROOT}/cann_local_lm/converter/cann_lm_converter.py"
 
 source "$PROJECT_ROOT/scripts/cann_lm_compile/set_env_export.sh"
 

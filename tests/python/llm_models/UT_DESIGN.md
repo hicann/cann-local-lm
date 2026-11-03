@@ -1,8 +1,8 @@
-# cann_lm/models 单元测试设计报告
+# cann_local_lm/models 单元测试设计报告
 
 ## 1. 文档信息
 
-- 被测对象：`cann_lm/models/`（gemma4 / qwen3_5 modeling + fused_ops + model_registry + ExportWrapper 基类）
+- 被测对象：`cann_local_lm/models/`（gemma4 / qwen3_5 modeling + fused_ops + model_registry + ExportWrapper 基类）
 - 测试归档目录：`tests/python/llm_models`
 - 测试框架：`pytest`
 - 基准环境：converter venv（`$TORCH_DELEGATE_HOME/.venv`，Python 3.11.4、torch 2.9.0+cpu、torchair 源码编译、torch-delegate），**不装 torch_npu**；`TORCH_DEVICE_BACKEND_AUTOLOAD=0`
@@ -10,12 +10,12 @@
 
 ## 2. 测试目标与范围
 
-本轮 UT 验证 `cann_lm/models/` 的三模型 modeling 组件、融合算子 CPU impl、注册表与 ExportWrapper 基类的数值正确性与形状/状态语义。测试必须满足以下原则：
+本轮 UT 验证 `cann_local_lm/models/` 的三模型 modeling 组件、融合算子 CPU impl、注册表与 ExportWrapper 基类的数值正确性与形状/状态语义。测试必须满足以下原则：
 
 1. 默认在 CPU 离线运行，不下载 Hugging Face 模型或权重。
 2. 全部使用 small config + `torch.randn` 随机权重，验证 shape/dtype/数值/有限值与 KV cache 状态。
 3. 不依赖 torchair GE 转换、`torch.export`、真实 NPU/CUDA 算子。
-4. 不碰 `cann_lm/`：遇 API 漂移只改 test 代码（如 `apply_rotary_pos_emb` 新签名、`delta_states` 参数、conv1d 3D weight、多值返回解包）。
+4. 不碰 `cann_local_lm/`：遇 API 漂移只改 test 代码（如 `apply_rotary_pos_emb` 新签名、`delta_states` 参数、conv1d 3D weight、多值返回解包）。
 5. `check(name, cond)` 失败即 `assert cond`，杜绝假 PASS；`config` fixture 复用 small config。
 
 范围内模块：
@@ -37,9 +37,9 @@
 
 ### 3.1 架构与调用关系
 
-`conftest.py` 把 `REPO_ROOT` 加 `sys.path`（仿 `tests/python/dopt_lm/conftest.py`），所有 `from cann_lm.* import ...` 无需手动 source 基底脚本。`config` fixture 由 `make_small_config()` + `@pytest.fixture` 提供，零参 test 自建 config。`check(name, condition)` 失败即 `assert condition`，pytest 捕获并报位置。
+`conftest.py` 把 `REPO_ROOT` 加 `sys.path`（仿 `tests/python/dopt_lm/conftest.py`），所有 `from cann_local_lm.* import ...` 无需手动 source 基底脚本。`config` fixture 由 `make_small_config()` + `@pytest.fixture` 提供，零参 test 自建 config。`check(name, condition)` 失败即 `assert condition`，pytest 捕获并报位置。
 
-三模型 modeling 按 `configuration → RMSNorm/RoPE/apply_rotary_pos_emb/repeat_kv/rotate_half → Attention → MLP → DecoderLayer → TextModel → ForCausalLM(generate)` 分层组织；`fused_ops/_library.py` 把 `npu::` 和 `cann_lm::` 算子注册到 `torch.library`（schema + `register_fake` meta + `register_cpu_impl`），converter venv 无 torch_npu 时 CPU impl 直接由 `_library.py` 提供；`model_registry.py` 维护模型名→entry 映射表 + alias 解析；`export_wrapper.py` 基类提供 `__init__`/`set_quant_embeddings`/`_num_layers`，`forward` 调子类 `_drive_layers`（抽象）。
+三模型 modeling 按 `configuration → RMSNorm/RoPE/apply_rotary_pos_emb/repeat_kv/rotate_half → Attention → MLP → DecoderLayer → TextModel → ForCausalLM(generate)` 分层组织；`fused_ops/_library.py` 把 `npu::` 和 `cann_local_lm::` 算子注册到 `torch.library`（schema + `register_fake` meta + `register_cpu_impl`），converter venv 无 torch_npu 时 CPU impl 直接由 `_library.py` 提供；`model_registry.py` 维护模型名→entry 映射表 + alias 解析；`export_wrapper.py` 基类提供 `__init__`/`set_quant_embeddings`/`_num_layers`，`forward` 调子类 `_drive_layers`（抽象）。
 
 ### 3.2 主要风险
 
@@ -148,7 +148,7 @@
 | FOP-002 | `npu::npu_rms_norm` 默认 eps | 默认 epsilon=1e-6 数值对齐 | P0 |
 | FOP-003 | `npu::npu_rotary_mul` half（×2 d） | shape + vs 手算 `self*r1+cat(-x2,x1)*r2` | P0 |
 | FOP-004 | `npu::npu_rotary_mul` default mode | 默认 "half" 数值对齐 | P0 |
-| FOP-005 | `cann_lm::l2norm`（×3 dim） | unit norm + vs 手算 `x*rsqrt(sum+eps)` | P0 |
+| FOP-005 | `cann_local_lm::l2norm`（×3 dim） | unit norm + vs 手算 `x*rsqrt(sum+eps)` | P0 |
 | FOP-006 | `npu::npu_dynamic_quant` | y(int8)/scale(fp32,>0) + vs `amax/127`+clamp(round) + round-trip allclose | P0 |
 | FOP-007 | `npu::npu_scatter_nd_update` 1d indices | out shape + vs index_copy + 原 cache 不污染 + 未触位保留 | P0 |
 | FOP-008 | `npu::npu_scatter_nd_update` 2d indices | out shape + 逐坐标赋值对齐 | P0 |
@@ -219,7 +219,7 @@ TORCH_DEVICE_BACKEND_AUTOLOAD=0 $TORCH_DELEGATE_HOME/.venv/bin/python -m pytest 
 TORCH_DEVICE_BACKEND_AUTOLOAD=0 $TORCH_DELEGATE_HOME/.venv/bin/python -m pytest tests/python/llm_models/ --co -q
 
 # 覆盖率:
-TORCH_DEVICE_BACKEND_AUTOLOAD=0 $TORCH_DELEGATE_HOME/.venv/bin/python -m pytest tests/python/llm_models/ --cov=cann_lm/models --cov-report=term-missing -q
+TORCH_DEVICE_BACKEND_AUTOLOAD=0 $TORCH_DELEGATE_HOME/.venv/bin/python -m pytest tests/python/llm_models/ --cov=cann_local_lm/models --cov-report=term-missing -q
 ```
 
 ## 8. 准入与遗留风险
@@ -228,7 +228,7 @@ TORCH_DEVICE_BACKEND_AUTOLOAD=0 $TORCH_DELEGATE_HOME/.venv/bin/python -m pytest 
 
 遗留风险与已知限制：
 
-1. **fused_attn causal CPU impl 限制**：`_build_sparse_mask` 解包 `b,n,s_q,s_k=q.shape`，BNSD 下 `q=[b,n,s,d]` 使 `s_k=d`、`s_q≠s_k` 命中 early-return `None` → causal mask 被跳过。这是 cann_lm CPU impl 限制（不碰 cann_lm），causal 用例放宽为 shape+finite；数值精确对齐改由 `extern_mask`（传 bool atten_mask）和 `s_q==s_k`（square）测试覆盖。
+1. **fused_attn causal CPU impl 限制**：`_build_sparse_mask` 解包 `b,n,s_q,s_k=q.shape`，BNSD 下 `q=[b,n,s,d]` 使 `s_k=d`、`s_q≠s_k` 命中 early-return `None` → causal mask 被跳过。这是 cann_local_lm CPU impl 限制（不碰 cann_local_lm），causal 用例放宽为 shape+finite；数值精确对齐改由 `extern_mask`（传 bool atten_mask）和 `s_q==s_k`（square）测试覆盖。
 2. **chunk_gated_delta_rule**：融合算子数值精确校验难（BHSD↔BSHD 转换 + delta rule 递归），仅测 out/final_state shape + finite；数值由 qwen3.5 modeling（test_modeling_qwen3_5）间接覆盖。
 3. **ExportWrapper 基类 forward**：基类 `forward` 调 `self._drive_layers`（子类实现，基类未定义），故 base 测试不测 forward，只测 `__init__`/`set_quant_embeddings`/`_num_layers`；forward 由各模型 wrapper（GEMMA4-010 / QWEN3-013 / Q35-036）端到端覆盖。
 4. **export_wrapper forward 归 e2e**：各模型 `export_wrapper.py` 的 `forward` 经 `torch.export` + torchair GE 转换的完整导出路径归 `examples/test_converter/export_llm_model/run_e2e_pipeline.sh` e2e 验证，UT 只测其纯逻辑 helper（mask builder / sample inputs / names）和单步 forward 数值一致性。**例外**：纯 `torch.export` + FX 图 `masked_fill` 节点计数（静态性质，不需 GE 转换/NPU/真实权重，CPU 小模型即可）已纳入 UT（GEMMA4-024），因 NPU 不支持 `ge.MaskedFill`，该断言是 bypass 重写的核心交付物，须在 UT 锁定。
@@ -257,7 +257,7 @@ pytest exit code: 0
 ```bash
 TORCH_DEVICE_BACKEND_AUTOLOAD=0 \
   $TORCH_DELEGATE_HOME/.venv/bin/python \
-  -m pytest tests/python/llm_models/ --cov=cann_lm/models --cov-report=term-missing -q
+  -m pytest tests/python/llm_models/ --cov=cann_local_lm/models --cov-report=term-missing -q
 ```
 
 整体行覆盖率为 **84%（2422 statements，304 missed，602 branch，93 partial）**，达到不低于 80% 的准入目标。核心模块覆盖情况：

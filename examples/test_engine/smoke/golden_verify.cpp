@@ -61,17 +61,17 @@
 
 namespace fs = std::filesystem;
 
-using cann_lm::engine::DataType;
-using cann_lm::engine::DfxCollector;
-using cann_lm::engine::DfxConfig;
-using cann_lm::engine::InputAssembler;
-using cann_lm::engine::ITensorBuffer;
-using cann_lm::engine::KvCachePool;
-using cann_lm::engine::ModelConfig;
-using cann_lm::engine::ModelExecutor;
-using cann_lm::engine::Status;
-using cann_lm::engine::TensorDesc;
-using cann_lm::engine::TensorManager;
+using cann_local_lm::engine::DataType;
+using cann_local_lm::engine::DfxCollector;
+using cann_local_lm::engine::DfxConfig;
+using cann_local_lm::engine::InputAssembler;
+using cann_local_lm::engine::ITensorBuffer;
+using cann_local_lm::engine::KvCachePool;
+using cann_local_lm::engine::ModelConfig;
+using cann_local_lm::engine::ModelExecutor;
+using cann_local_lm::engine::Status;
+using cann_local_lm::engine::TensorDesc;
+using cann_local_lm::engine::TensorManager;
 
 // ── 辅助函数 ─────────────────────────────────────────────────────────────────
 
@@ -578,7 +578,7 @@ int main(int argc, char** argv)
         fprintf(stderr, "  prefill seq_len: %d (REQ-03: prefill_len[0] || 1024)\n", prefill_bind_seq_len);
 
         share_src = std::make_unique<ModelExecutor>(kv_pool, assembler, dfx);
-        cann_lm::engine::ArtifactSource prefill_src;
+        cann_local_lm::engine::ArtifactSource prefill_src;
         prefill_src.path = args.prefill_omc;
         const Status prefill_st = share_src->Load(prefill_src, args.weight_dir_prefill, config, prefill_bind_seq_len);
         if (!prefill_st.ok()) {
@@ -597,7 +597,7 @@ int main(int argc, char** argv)
     fprintf(stderr, "  seq_len: %d%s\n", seq_len,
             args.bind_prefill ? " (decode side; prefill source uses own seq_len)" : "");
 
-    cann_lm::engine::ArtifactSource omc_src;
+    cann_local_lm::engine::ArtifactSource omc_src;
     omc_src.path = omc_path;
 
     Status st = executor.Load(omc_src, weight_dir, config, seq_len, share_weights_model_id);

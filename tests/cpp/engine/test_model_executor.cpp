@@ -34,7 +34,7 @@
 #include <thread>
 #include <vector>
 
-namespace cann_lm::engine {
+namespace cann_local_lm::engine {
 
 // ════════════════════════════════════════════════════════════════════════
 // Mock hiai::IBuiltModel — 实现接口全部纯虚方法
@@ -253,7 +253,7 @@ void ResetMocks()
     MockModelManager::last_run_inputs.clear();
     MockModelManager::last_run_outputs.clear();
 }
-} // namespace cann_lm::engine
+} // namespace cann_local_lm::engine
 
 // ── hiai 命名空间：覆盖工厂函数（CreateNDTensorBuffer/CreateLocalBuffer 不
 //    覆盖——tensor 申请走真实 stub NDK so，TensorManager/池链路测真路径）──
@@ -261,19 +261,19 @@ namespace hiai {
 
 std::shared_ptr<IBuiltModel> CreateBuiltModel()
 {
-    auto sp = std::make_shared<cann_lm::engine::MockBuiltModel>();
-    cann_lm::engine::g_built_refs.push_back(sp); // 保活（见 g_built_refs 注释）
-    cann_lm::engine::g_built_mocks.push_back(sp.get());
-    cann_lm::engine::g_last_built = sp.get();
+    auto sp = std::make_shared<cann_local_lm::engine::MockBuiltModel>();
+    cann_local_lm::engine::g_built_refs.push_back(sp); // 保活（见 g_built_refs 注释）
+    cann_local_lm::engine::g_built_mocks.push_back(sp.get());
+    cann_local_lm::engine::g_last_built = sp.get();
     return sp;
 }
 
 std::shared_ptr<IModelManager> CreateModelManager()
 {
-    auto sp = std::make_shared<cann_lm::engine::MockModelManager>();
-    cann_lm::engine::g_mock_refs.push_back(sp); // 保活（Release 后裸指针仍有效）
-    cann_lm::engine::g_mocks.push_back(sp.get());
-    cann_lm::engine::g_last_mock = sp.get();
+    auto sp = std::make_shared<cann_local_lm::engine::MockModelManager>();
+    cann_local_lm::engine::g_mock_refs.push_back(sp); // 保活（Release 后裸指针仍有效）
+    cann_local_lm::engine::g_mocks.push_back(sp.get());
+    cann_local_lm::engine::g_last_mock = sp.get();
     return sp;
 }
 
@@ -282,7 +282,7 @@ std::shared_ptr<IModelManager> CreateModelManager()
 // ════════════════════════════════════════════════════════════════════════
 // 测试用例
 // ════════════════════════════════════════════════════════════════════════
-namespace cann_lm::engine {
+namespace cann_local_lm::engine {
 namespace {
 
 // SR20260903001：单图位双态源（D-15）+ 合法配置 helper（kv_cache_max_len/num_hidden_layers）
@@ -983,4 +983,4 @@ TEST(ModelExecutorTest, LogitsSurvivesMoveAndReload)
 }
 
 } // namespace
-} // namespace cann_lm::engine
+} // namespace cann_local_lm::engine

@@ -1,4 +1,4 @@
-"""Tests for cann_lm._token_count — lightweight stdlib BPE token counter.
+"""Tests for cann_local_lm._token_count — lightweight stdlib BPE token counter.
 
 Exact encode vs the bpe_fixture golden (SentencePiece-style byte-fallback BPE);
 conservative len(text) fallback for unsupported layouts (Qwen/ByteLevel/SPM/
@@ -10,7 +10,7 @@ import os
 
 import pytest
 
-from cann_lm._token_count import count_tokens, encode, TokenizeUnsupported
+from cann_local_lm._token_count import count_tokens, encode, TokenizeUnsupported
 
 FIX_DIR = os.path.normpath(
     os.path.join(os.path.dirname(__file__), "..", "cpp", "engine")

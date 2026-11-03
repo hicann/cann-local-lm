@@ -19,7 +19,7 @@ The repository-root `build.sh` is the **single entry point for full build / pack
                    → build/cann_lm_compile (epair→OM compilation tool, ~308K)
                    → build/libtorch_delegate_backend.so (C++ backend, ~845K)
 [2/5] converter    pure-source pip wheel (--no-deps)
-                   → build_out/cann_lm-<ver>-py3-none-any.whl (converter export whl)
+                   → build_out/cann_local_lm-<ver>-py3-none-any.whl (converter export whl)
 [3/5] engine whl   engine python ctypes binding whl (pure python, no OHOS dependency)
                    → build_out/cann_local_lm_engine-<ver>-py3-none-any.whl
 [4/5] engine OHOS  OHOS cross-compile + sign (build_package_ohos.sh, requires OHOS SDK)
@@ -62,7 +62,7 @@ Listed under three tiers: "Required / engine cross-compile / Optional". **Every 
 |---|------|-------------|----------------|
 | 1 | **Compiler** | `$OHOS_SDK_NATIVE/llvm/bin/clang` exists and is executable | Use the full SDK (the native subtree of Huawei's official command-line-tools component ships it; you need to use the matching component in your environment) |
 | 2 | **OHOS SDK** | `OHOS_SDK_NATIVE` is set and contains a `sysroot/` subdirectory | `export OHOS_SDK_NATIVE=<sdk>/linux/<ver>/native` |
-| 3 | **java + signing jar** | `java` on PATH; `tools/binary-sign-tool.jar` or `cann_lm/engine/ohos/binary-sign-tool.jar` exists | `apt install default-jre`; copy from SDK `.../26.0.0/toolchains/lib/binary-sign-tool.jar` into `tools/` |
+| 3 | **java + signing jar** | `java` on PATH; `tools/binary-sign-tool.jar` or `cann_local_lm/engine/ohos/binary-sign-tool.jar` exists | `apt install default-jre`; copy from SDK `.../26.0.0/toolchains/lib/binary-sign-tool.jar` into `tools/` |
 | 4 | **GTest source tarball** | `GTEST_TAR` (the third-party gtest `gtest-1.14.0.tar.gz`) file exists | Set with `export GTEST_TAR=<path>/googletest-1.14.0.tar.gz` |
 | 5 | **cmake / make** | Same as Required-3 | — |
 
@@ -101,9 +101,9 @@ bash build.sh --pkg
   845K .../build/libtorch_delegate_backend.so
   ✓ compile artifacts ready: build/cann_lm_compile + build/libtorch_delegate_backend.so   ← stage-1 success marker
 
-▶ [2/4] converter: build cann_lm wheel (--no-deps pure-source packaging)
-  Created wheel for cann-lm: filename=cann_lm-0.1.0-py3-none-any.whl size=163313   ← stage-2 key line
-  ✓ converter whl: .../build_out/cann_lm-0.1.0-py3-none-any.whl (160K)                  ← stage-2 success marker
+▶ [2/4] converter: build cann_local_lm wheel (--no-deps pure-source packaging)
+  Created wheel for cann-lm: filename=cann_local_lm-0.1.0-py3-none-any.whl size=163313   ← stage-2 key line
+  ✓ converter whl: .../build_out/cann_local_lm-0.1.0-py3-none-any.whl (160K)                  ← stage-2 success marker
 
 ▶ [3/4] engine: OHOS cross-compile (build_package_ohos.sh, hard env check)
   ✓ Compiler: SDK clang (.../23/native/llvm/bin/clang)                               ← 5 prerequisite checks all ✓
@@ -125,8 +125,8 @@ bash build.sh --pkg
   ✓ libcann_lm_engine.so -> libcann_lm_engine_signed.so
   ✓ ... (remaining 10)                                                            ← all signed ✓
 === [2/2] package signed wheel (build_package_ohos.sh → cann_local_lm_engine-*+signed*.whl) ===
-  ✓ copy signed .so → cann_lm/lib/libcann_lm_engine.so
-  ✓ copy libc++_shared.so → cann_lm/lib/
+  ✓ copy signed .so → cann_local_lm/lib/libcann_lm_engine.so
+  ✓ copy libc++_shared.so → cann_local_lm/lib/
   ✓ pip wheel → build_out/cann_local_lm_engine-0.1.0+signed-py3-none-any.whl   ← stage-3 success marker
 
 ▶ [4/4] package .run (compile_converter)

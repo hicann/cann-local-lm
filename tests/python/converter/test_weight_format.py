@@ -9,8 +9,12 @@ load_rules 读 shipped json; _pack_weights_to_dir 空 rules (全 ND) + shipped r
 import pytest
 import torch
 
-from cann_lm.converter.export.epair_utils import _pack_weights_to_dir
-from cann_lm.converter.export.weight_format import load_rules, nd2nz, resolve_format
+from cann_local_lm.converter.export.epair_utils import _pack_weights_to_dir
+from cann_local_lm.converter.export.weight_format import (
+    load_rules,
+    nd2nz,
+    resolve_format,
+)
 
 
 # ── nd2nz ──
@@ -228,7 +232,7 @@ def _proj_sd():
 
 def test_pack_empty_rules_all_nd(tmp_path):
     """Empty rules json → all weights ND (escape hatch = clear rules)."""
-    import cann_lm.converter.export.weight_format as wf_pkg
+    import cann_local_lm.converter.export.weight_format as wf_pkg
 
     original = wf_pkg.load_rules
     wf_pkg.load_rules = lambda path=None: {"default": {"format": "ND"}, "rules": []}
@@ -245,7 +249,7 @@ def test_pack_empty_rules_all_nd(tmp_path):
 
 def test_pack_empty_rules_bytes_match_no_transform(tmp_path):
     """Empty rules → bytes identical to raw state_dict (no layout transform)."""
-    import cann_lm.converter.export.weight_format as wf_pkg
+    import cann_local_lm.converter.export.weight_format as wf_pkg
 
     original = wf_pkg.load_rules
     wf_pkg.load_rules = lambda path=None: {"default": {"format": "ND"}, "rules": []}
@@ -284,7 +288,7 @@ def test_pack_shipped_rules_matmul_disabled_all_nd(tmp_path):
 @pytest.mark.skip(reason="pack_int4_nz not yet implemented")
 def test_pack_shipped_rules_weight_q_z_pack(tmp_path):
     """Shipped rules: QuantBatchMatmulV4 *.weight_q enable:true → Z format + Z bytes."""
-    from cann_lm.converter.export.weight_format import pack_int4_nz
+    from cann_local_lm.converter.export.weight_format import pack_int4_nz
 
     sd = {
         "model.layers.0.self_attn.q_proj.weight_q": torch.arange(
@@ -321,7 +325,7 @@ def test_pack_shipped_rules_rotary_not_packed(tmp_path):
 
 def test_pack_matmul_enabled_nz(tmp_path):
     """When MatMul rule is enabled (override), *_proj.weight → NZ bytes."""
-    import cann_lm.converter.export.weight_format as wf_pkg
+    import cann_local_lm.converter.export.weight_format as wf_pkg
 
     original = wf_pkg.load_rules
     wf_pkg.load_rules = lambda path=None: {
@@ -358,7 +362,7 @@ def test_pack_matmul_enabled_nz(tmp_path):
 
 def test_pack_non_aligned_falls_back_to_nd(tmp_path):
     """Non-16-aligned shapes fall back to ND (GE CheckTensorIsValid limitation)."""
-    import cann_lm.converter.export.weight_format as wf_pkg
+    import cann_local_lm.converter.export.weight_format as wf_pkg
 
     original = wf_pkg.load_rules
     wf_pkg.load_rules = lambda path=None: {

@@ -1,5 +1,5 @@
 """Minimal operator-level benchmark: capture reference-operator (QLinear fakequant)
-I/O as golden data. Candidate operators (cann_lm::quant_matmul / OM int4) align
+I/O as golden data. Candidate operators (cann_local_lm::quant_matmul / OM int4) align
 against this golden on the SAME quantized weights, isolating operator correctness
 from quantization-accuracy (no fp16 baseline involved).
 
@@ -196,7 +196,7 @@ def main():
         "e2e_logits": "e2e_logits.pt  # [n_prompts, vocab] last-token logits",
         "op_io_dir": "op_io/<op_name>.pt  # {inputs:[act...], outputs:[act...]} per prompt",
         "comparison_contract": (
-            "Candidate operator (e.g. cann_lm::quant_matmul / OM int4): load the SAME weight "
+            "Candidate operator (e.g. cann_local_lm::quant_matmul / OM int4): load the SAME weight "
             "from quant_weight for <op_name>, feed saved op_io/<op>.inputs[i], compute output, "
             f"compare to op_io/<op>.outputs[i] within atol={ATOL} rtol={RTOL}. "
             "No fp16 baseline -> isolates operator correctness from quantization accuracy."

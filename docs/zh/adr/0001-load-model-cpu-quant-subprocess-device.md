@@ -12,13 +12,13 @@ converter 全流程三阶段，各阶段计算域需求不同：
 
 | 阶段 | 做什么 | 计算域需求 |
 |------|--------|-----------|
-| 加载 `load_model` + swap | 加载 cann_lm 模型、物化 int4、setattr 替换 nn.Linear | 只需 tensor 操作（CPU 可行） |
+| 加载 `load_model` + swap | 加载 cann_local_lm 模型、物化 int4、setattr 替换 nn.Linear | 只需 tensor 操作（CPU 可行） |
 | 量化 GPTQ（`--quant-method gptq`） | CANN 轻量化工具跑 Hessian 矩阵累积 `X^T X` + Cholesky 求逆 + 逐列更新 | 需真 forward + backward，必须计算设备（NPU/GPU） |
 | 导出 epair（`torch.export` + torchair GE 转换） | trace 模型 → FX 图 → GE IR | 只需 fake-meta（trace 用）+ torchair stubs（C 符号） |
 
 关键约束：
 
-1. **cann_lm 融合算子只在 CPU 实现**：`cann_lm/models/fused_ops/` 的算子（`npu_quant_matmul` / `npu_dynamic_quant` / `fused_infer_attention_score` 等）由 `_library.py` 提供 schema + fake-meta + CPU PoC impl，**不支持真 NPU 执行**（只支持 torch.export trace）。故 `load_model` 加载的 cann_lm 模型无法在 NPU 上 forward。
+1. **cann_local_lm 融合算子只在 CPU 实现**：`cann_local_lm/models/fused_ops/` 的算子（`npu_quant_matmul` / `npu_dynamic_quant` / `fused_infer_attention_score` 等）由 `_library.py` 提供 schema + fake-meta + CPU PoC impl，**不支持真 NPU 执行**（只支持 torch.export trace）。故 `load_model` 加载的 cann_local_lm 模型无法在 NPU 上 forward。
 2. **converter venv 是 CPU-only**：`torch 2.9.0+cpu` + `torchair`（源码编译 `NO_ASCEND_SDK=1`）+ lib stubs（`libtorch_npu.so` 等打桩，给 torchair GE 引擎提供 C 符号，避免真 NPU `aclrtSetDevice→107001`）。**不装 torch_npu python 包**。
 3. **GPTQ 需真算子 eager**：dopt_lm 用 `transformers.AutoModelForCausalLM` + 真 torch_npu/torch.cuda 算子 eager 跑 GPTQ（Hessian 需 batch forward 累积，Cholesky 需算力）。dopt_lm `SUPPORTED_DEVICE_TYPES = {"cpu","cuda","npu"}` **含 CPU**（CPU 走 `dispatch_dtype=float32`），但 7B+ 模型 Hessian 数 GB，CPU 极慢（仅小模型/调试适用）。
 4. **环境冲突无解**：若 converter 主进程装真 torch_npu，会撞 `_LazyTorchair` 代理覆盖源码 torchair（`torch_npu/dynamo/__init__.py` 无条件装 `sys.modules['torchair']=_LazyTorchair()`，劫持到 bundled wrapper，wrapper 的 `fx2ge_converter.parse_input` 有 AssertionError 在 `input_ids` placeholder 上失败）+ torch_npu 版本依赖（`npu_chunk_gated_delta_rule` schema 仅 ≥2.7.1.post8）+ `_get_deterministic_level` API 缺失。详见 cli_design.md "converter 与 torch_npu 的关系"。
@@ -44,12 +44,12 @@ converter 全流程三阶段，各阶段计算域需求不同：
 - **负面/代价**：
   - subprocess 有磁盘桥接 IO（临时盘 `tempfile.mkdtemp`，swap 成功后 `shutil.rmtree` 清理，失败保留供调试）
   - ~~`auto_quant.py` 与 `dopt_wrapper.py` 各有一份 `_build_layer_strategy`（重复，计划合并到单文件消除，尚未落地）~~ **已落地（2026-08-31）**：`auto_quant._build_layer_strategy` 删除，`dopt_wrapper._build_layer_strategy` 改名 `build_layer_strategy`，单一实现
-  - 场景 2 内存峰值 2×（subprocess 内轻量化工具 2 份 HF 模型 + 主进程 cann_lm，分进程；非真一步化）
+  - 场景 2 内存峰值 2×（subprocess 内轻量化工具 2 份 HF 模型 + 主进程 cann_local_lm，分进程；非真一步化）
 - **引入的约束**：
-  - `load_model` 永远 CPU（cann_lm 融合算子只在 CPU 实现，不计划移植到 NPU）
+  - `load_model` 永远 CPU（cann_local_lm 融合算子只在 CPU 实现，不计划移植到 NPU）
   - `--quant-device` 只影响 subprocess，不影响主进程
   - 纯 CPU 环境（无 NPU/GPU）`--quant-method gptq` 回落 `cpu`（dopt_lm 支持，7B+ 极慢）；或用 `--quant-path` 消费离线产物
-  - cann_lm 模型层名必须与 transformers 层名一致（轻量化工具量化的 HF 模型层名要能 port 到 cann_lm 模型，靠命名一致）
+  - cann_local_lm 模型层名必须与 transformers 层名一致（轻量化工具量化的 HF 模型层名要能 port 到 cann_local_lm 模型，靠命名一致）
 
 ## 替代方案 (Alternatives)
 
@@ -82,10 +82,10 @@ converter 主进程内 import dopt_lm 跑 GPTQ，省 subprocess。
 否决理由：
 1. 环境冲突无解（converter venv CPU stubs 与轻量化工具需真 NPU 矛盾，同进程无法同时满足）
 2. dopt_lm 的 `args` 全局单例 + `ptq_loop` 重入风险（进程内重入会出错）
-3. 内存峰值 3-4×（cann_lm + 轻量化工具 2 份 HF + state_dict）
+3. 内存峰值 3-4×（cann_local_lm + 轻量化工具 2 份 HF + state_dict）
 
 ## 关联
 
 - 详见 cli_design.md "运行环境支持（NPU / GPU / 纯 CPU）" 三环境矩阵 + "converter 与 torch_npu 的关系" 三个耦合问题
 - quant_design.md "一键式量化方案选型" 三方案对比（A 改轻量化工具 / B 内存 / C subprocess，选 C 即本 ADR）
-- 若未来 cann_lm 融合算子移植到 NPU（支持真执行）：本 ADR 的"load_model 写死 CPU"约束可松动，但 subprocess 隔离仍可能保留（规避环境冲突）
+- 若未来 cann_local_lm 融合算子移植到 NPU（支持真执行）：本 ADR 的"load_model 写死 CPU"约束可松动，但 subprocess 隔离仍可能保留（规避环境冲突）

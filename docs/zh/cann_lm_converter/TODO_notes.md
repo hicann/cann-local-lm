@@ -2,7 +2,7 @@
 
 简体中文 | [English](../../en/cann_lm_converter/TODO_notes.md)
 
-> 记录 `cann_lm/converter/` 代码与 `AGENTS.md` 约定 / 设计文档的偏离点,按发现顺序累积。
+> 记录 `cann_local_lm/converter/` 代码与 `AGENTS.md` 约定 / 设计文档的偏离点,按发现顺序累积。
 > 每条含:位置、现状、约定、根因、影响、状态、清理动作。清理完成后状态置「已清理」并保留记录。
 >
 > 状态:累积中 | 最后更新: 2026-09-01
@@ -37,7 +37,7 @@
 | 字段 | 值 |
 |------|-----|
 | 编号 | CLI-001 |
-| 位置 | `cann_lm/converter/` 下共 **6 处**:`cann_lm_converter.py:17`、`loader.py:3`、`saver.py:3`、`export/epair_utils.py:3`、`export/ge_converters/ge_converter.py:17`、`quant/download_dataset.py:15` |
+| 位置 | `cann_local_lm/converter/` 下共 **6 处**:`cann_lm_converter.py:17`、`loader.py:3`、`saver.py:3`、`export/epair_utils.py:3`、`export/ge_converters/ge_converter.py:17`、`quant/download_dataset.py:15` |
 | 现状 | 文件顶部存在 `from __future__ import annotations` |
 | 违反约定 | `AGENTS.md`「通用 / Python 版本:`>= 3.10`(使用 `dict[str, Any]` 等内置泛型语法,**不引入** `from __future__ import annotations`)」 |
 | 发现日期 | 2026-08-31(首轮核对 `cann_lm_converter.py`;二轮比对 cli_design.md ↔ converter 各文件时经 grep 扩展到全部 6 处) |
@@ -80,14 +80,14 @@
 
 ### 执行结果(2026-08-31)
 
-6 文件顶部 `from __future__ import annotations` 已全部删除(`cann_lm_converter.py`、`loader.py`、`saver.py`、`export/epair_utils.py`、`export/ge_converters/ge_converter.py`、`quant/download_dataset.py`)。`python3 -m py_compile` 6 文件全部通过(3.11 原生求值 `int | None` / 泛型注解,无语法错误);grep 确认 `cann_lm/converter/` 目录 0 残留。
+6 文件顶部 `from __future__ import annotations` 已全部删除(`cann_lm_converter.py`、`loader.py`、`saver.py`、`export/epair_utils.py`、`export/ge_converters/ge_converter.py`、`quant/download_dataset.py`)。`python3 -m py_compile` 6 文件全部通过(3.11 原生求值 `int | None` / 泛型注解,无语法错误);grep 确认 `cann_local_lm/converter/` 目录 0 残留。
 
 > 端到端冒烟(实际跑一次 converter 导出)未执行——需 source `scripts/set_env_export.sh` 全套 env(torchair stubs),属可选验证;语法层已确认无回归。
 
 ### 关联
 
 - 约定来源:`AGENTS.md`「通用 / Python 版本」
-- 源码文件:`cann_lm/converter/` 下 6 个文件(见上表)
+- 源码文件:`cann_local_lm/converter/` 下 6 个文件(见上表)
 - 设计文档:[cli_design.md](./cli/cli_design.md)
 
 ---
@@ -98,7 +98,7 @@
 | 字段 | 值 |
 |------|-----|
 | 编号 | CLI-002 |
-| 位置 | 文档:[cli_design.md:272](./cli/cli_design.md);代码:`cann_lm/converter/saver.py:58`、`saver.py:139` |
+| 位置 | 文档:[cli_design.md:272](./cli/cli_design.md);代码:`cann_local_lm/converter/saver.py:58`、`saver.py:139` |
 | 现状(清理前) | 文档签名块写 `use_embeddings=True`,代码 `save_epair` / `save_epair_prefill_decode` 默认 `False`;文档注释「saver 默认 False」与签名块 True 自相矛盾,且与代码不符 |
 | 违反约定 | 设计文档应与代码一致(AGENTS「修改了代码后,要更新 docs/」) |
 | 发现日期 | 2026-08-31(二轮比对 cli_design.md ↔ saver.py) |
@@ -114,8 +114,8 @@ saver 作为底层 API 原默认 `use_embeddings=False`(图内查表,自包含),
 
 ### 清理动作(已执行)
 
-1. `cann_lm/converter/saver.py:58` `save_epair` 默认 `use_embeddings: bool = False` → `True`
-2. `cann_lm/converter/saver.py:139` `save_epair_prefill_decode` 默认 `use_embeddings: bool = False` → `True`
+1. `cann_local_lm/converter/saver.py:58` `save_epair` 默认 `use_embeddings: bool = False` → `True`
+2. `cann_local_lm/converter/saver.py:139` `save_epair_prefill_decode` 默认 `use_embeddings: bool = False` → `True`
 3. [cli_design.md:272](./cli/cli_design.md) 注释「saver 默认 False」→「saver 默认 True」(签名块本就写 True,现在代码 / 签名块 / 注释三方一致)
 
 ### 影响
@@ -129,7 +129,7 @@ saver 作为底层 API 原默认 `use_embeddings=False`(图内查表,自包含),
 
 ### 关联
 
-- 源码文件:`cann_lm/converter/saver.py`
+- 源码文件:`cann_local_lm/converter/saver.py`
 - 设计文档:[cli_design.md](./cli/cli_design.md)「prefill/decode 分离模式 CLI / 接口(saver 侧)」
 
 ---
@@ -152,7 +152,7 @@ saver 作为底层 API 原默认 `use_embeddings=False`(图内查表,自包含),
 
 ### 关联
 
-- 源码佐证:`cann_lm/converter/quant/auto_quant.py:16,24`、`dopt_wrapper.py:23`
+- 源码佐证:`cann_local_lm/converter/quant/auto_quant.py:16,24`、`dopt_wrapper.py:23`
 - 设计文档:[cli_design.md](./cli/cli_design.md)「完整调用链 / 场景2」
 
 ---
@@ -163,7 +163,7 @@ saver 作为底层 API 原默认 `use_embeddings=False`(图内查表,自包含),
 | 字段 | 值 |
 |------|-----|
 | 编号 | CLI-004 |
-| 位置 | 代码:`cann_lm/converter/quant/auto_quant.py:65`(cmd,HEAD 版)、`dopt_wrapper.py:47-53`(parse_args) |
+| 位置 | 代码:`cann_local_lm/converter/quant/auto_quant.py:65`(cmd,HEAD 版)、`dopt_wrapper.py:47-53`(parse_args) |
 | 现状(初次核对) | HEAD 版 `auto_quant._run_dopt_subprocess` 的 cmd 传 `--quant-bits`,但 `dopt_wrapper.parse_args` 未定义该参数 → 实测报 `unrecognized arguments: --quant-bits w4a8`,exit=2,场景2 subprocess 启动即失败 |
 | 违反约定 | 代码内部不一致(auto_quant ↔ dopt_wrapper) |
 | 发现日期 | 2026-08-31 |
@@ -186,7 +186,7 @@ saver 作为底层 API 原默认 `use_embeddings=False`(图内查表,自包含),
 - **代码**:`auto_quant.py`(`generate_dopt_config` / `_run_dopt_subprocess` / `run_auto_quant` 三函数签名 + `_run_dopt_subprocess` 调用)、`cann_lm_converter.py`(convert `quant_bits` 参数 + print + `run_auto_quant` 调用 + parse_args `--quant-bits` add_argument + main `quant_bits=args.quant_bits`)、`examples/.../run_pd6_cases.sh:119`(`generate_dopt_config(art, "w4a8")` → `generate_dopt_config(art)`)
 - **文档(已同步)**:`quant_design.md`(L343 调用链 + L492/493/495 签名表)、`cli_design.md`(L32 概述 + L49 convert 代码块 + L67 调用 + L151-152 parse_args 代码块 + L172 参数表 + L197 调用链 + L456 关联表)、`quant/INDEX.md` L53
 
-验证:`grep quant_bits`/`quant-bits` 在 `cann_lm/converter` 0 残留;`py_compile` auto_quant/cann_lm_converter/dopt_wrapper 通过。
+验证:`grep quant_bits`/`quant-bits` 在 `cann_local_lm/converter` 0 残留;`py_compile` auto_quant/cann_lm_converter/dopt_wrapper 通过。
 
 ### 文档残留(已清,2026-08-31)
 
@@ -200,7 +200,7 @@ saver 作为底层 API 原默认 `use_embeddings=False`(图内查表,自包含),
 
 ### 关联
 
-- 源码文件:`cann_lm/converter/quant/auto_quant.py`、`dopt_wrapper.py`
+- 源码文件:`cann_local_lm/converter/quant/auto_quant.py`、`dopt_wrapper.py`
 - 设计文档:[cli_design.md](./cli/cli_design.md)「完整调用链 / 场景2」「converter 与 torch_npu 的关系」
 
 ---
@@ -233,11 +233,11 @@ saver 作为底层 API 原默认 `use_embeddings=False`(图内查表,自包含),
 
 ### 验证
 
-`grep quant.device` 在 `cann_lm/converter` 0 残留;`py_compile cann_lm_converter.py` 通过;文档仅余 `TODO_notes.md` 记录 + `adr/0001` 历史原文(已加状态变更标注)。
+`grep quant.device` 在 `cann_local_lm/converter` 0 残留;`py_compile cann_lm_converter.py` 通过;文档仅余 `TODO_notes.md` 记录 + `adr/0001` 历史原文(已加状态变更标注)。
 
 ### 关联
 
-- 源码文件:`cann_lm/converter/cann_lm_converter.py`、`cann_lm/converter/quant/auto_quant.py`(`_detect_device_type` 保留)
+- 源码文件:`cann_local_lm/converter/cann_lm_converter.py`、`cann_local_lm/converter/quant/auto_quant.py`(`_detect_device_type` 保留)
 - 设计文档:[cli_design.md](./cli/cli_design.md)「命令行参数 / 完整调用链 / 运行环境支持」
 - 历史决策:[adr/0001](../adr/0001-load-model-cpu-quant-subprocess-device.md)(状态变更 2026-08-31)
 
@@ -274,7 +274,7 @@ saver 作为底层 API 原默认 `use_embeddings=False`(图内查表,自包含),
 
 ### 关联
 
-- 源码文件:`cann_lm/converter/quant/auto_quant.py`、`dopt_wrapper.py`、`examples/.../run_pd6_cases.sh`、`tests/python/dopt_lm/test_strategy_generation.py`
+- 源码文件:`cann_local_lm/converter/quant/auto_quant.py`、`dopt_wrapper.py`、`examples/.../run_pd6_cases.sh`、`tests/python/dopt_lm/test_strategy_generation.py`
 - 设计文档:[cli_design.md](./cli/cli_design.md)「完整调用链」、[quant_design.md](./quant/quant_design.md)「`auto_quant.py`/`dopt_wrapper.py` 签名表」
 - 历史决策:[adr/0001](../adr/0001-load-model-cpu-quant-subprocess-device.md) L44(状态变更 2026-08-31)
 
@@ -344,7 +344,7 @@ converter venv 装 `torch 2.9.0+cpu` + `torchair`(源码+stubs)+ `torch-delegate
 
 - 设计文档:[cli_design.md](./cli/cli_design.md)「运行环境支持(NPU/GPU/纯 CPU)」「converter 与 torch_npu 的关系」
 - 历史决策:[adr/0001](../adr/0001-load-model-cpu-quant-subprocess-device.md)(subprocess 隔离决策)
-- 相关代码:`cann_lm/converter/quant/auto_quant.py`(`_detect_device_type` / `run_auto_quant` / `_run_dopt_subprocess`)
+- 相关代码:`cann_local_lm/converter/quant/auto_quant.py`(`_detect_device_type` / `run_auto_quant` / `_run_dopt_subprocess`)
 
 ---
 
@@ -354,7 +354,7 @@ converter venv 装 `torch 2.9.0+cpu` + `torchair`(源码+stubs)+ `torch-delegate
 | 字段 | 值 |
 |------|-----|
 | 编号 | CLI-008 |
-| 位置 | `cann_lm/converter/swap.py` L334-351(定义)+ `swap_from_dopt` docstring(对比提及);文档:`quant/INDEX.md` L50、`export_design.md` L1269、`quant_design.md` L136/138/345/450/451、`quant_swap/__init__.py` L29、`adr/README.md` L39 |
+| 位置 | `cann_local_lm/converter/swap.py` L334-351(定义)+ `swap_from_dopt` docstring(对比提及);文档:`quant/INDEX.md` L50、`export_design.md` L1269、`quant_design.md` L136/138/345/450/451、`quant_swap/__init__.py` L29、`adr/README.md` L39 |
 | 背景 | `swap_to_quant_linear_from_dopt` 是向后兼容薄 wrapper(只 Linear swap,自己 load sd),与 `swap_from_dopt`(Linear + embed 一次 load sd)重复。grep 确认**无代码调用**(死代码),只在文档/签名表提。`_swap_linear_from_sd`(私有,接受 sd)已是抽取的 Linear swap 主体,`swap_from_dopt` 复用它,无需 `swap_to_quant_linear_from_dopt` |
 | 违反约定 | 无(清理死代码) |
 | 发现日期 | 2026-08-31 |
@@ -375,7 +375,7 @@ converter venv 装 `torch 2.9.0+cpu` + `torchair`(源码+stubs)+ `torch-delegate
 
 ### 关联
 
-- 源码文件:`cann_lm/converter/swap.py`
+- 源码文件:`cann_local_lm/converter/swap.py`
 - 设计文档:[quant_design.md](./quant/quant_design.md)「`swap.py` 签名表」「swap 模块符号」、[export_design.md](./export/export_design.md)「文件树」
 - 历史决策:[adr/README.md](../adr/README.md) L39(重构项 ❌→✅ 已落地)
 
@@ -387,7 +387,7 @@ converter venv 装 `torch 2.9.0+cpu` + `torchair`(源码+stubs)+ `torch-delegate
 | 字段 | 值 |
 |------|-----|
 | 编号 | CLI-009 |
-| 位置 | `cann_lm/converter/swap.py` L334-355(swap_from_dopt 签名 + 内部调用);文档:`quant_design.md` L448、`quant/INDEX.md` L49、`README.md` L47 |
+| 位置 | `cann_local_lm/converter/swap.py` L334-355(swap_from_dopt 签名 + 内部调用);文档:`quant_design.md` L448、`quant/INDEX.md` L49、`README.md` L47 |
 | 背景 | `swap_from_dopt(model, dopt_path, skip=DEFAULT_SKIP, act_quant=True)` 的 `skip`/`act_quant` 参数:无代码调用方传(唯一调用方 `cann_lm_converter.py:100` 只传 `model+dopt_path`,用默认)。`skip=DEFAULT_SKIP`(固定跳 embed_tokens)、`act_quant=True`(W4A8,当前不支持 W4A16)均为固定值,无外部覆盖需求 |
 | 违反约定 | 无(参数精简) |
 | 发现日期 | 2026-08-31 |
@@ -408,8 +408,8 @@ converter venv 装 `torch 2.9.0+cpu` + `torchair`(源码+stubs)+ `torch-delegate
 
 ### 关联
 
-- 源码文件:`cann_lm/converter/swap.py`
-- 调用方:`cann_lm/converter/cann_lm_converter.py:100`
+- 源码文件:`cann_local_lm/converter/swap.py`
+- 调用方:`cann_local_lm/converter/cann_lm_converter.py:100`
 - 设计文档:[quant_design.md](./quant/quant_design.md)「`swap.py` 签名表」
 
 ---
@@ -421,7 +421,7 @@ converter venv 装 `torch 2.9.0+cpu` + `torchair`(源码+stubs)+ `torch-delegate
 |------|-----|
 | 编号 | CLI-010 |
 | 类型 | TODO(待优化,非偏离) |
-| 背景 | `load_model(hf_path)` 加载 HF 原始(含 Linear fp16 权重)→ cann_lm 模型;`swap_from_dopt` 的 `_swap_linear_from_sd` 从轻量化工具产物 sd 读 int4+scale,`setattr` 替换 Linear→QuantLinear,**不读 model Linear 的 weight**。故 load_model 加载的 Linear HF fp 被替换丢弃,浪费 IO+内存(场景2 内存峰值:subprocess transformers + 主进程 cann_lm 含被丢弃的 Linear fp) |
+| 背景 | `load_model(hf_path)` 加载 HF 原始(含 Linear fp16 权重)→ cann_local_lm 模型;`swap_from_dopt` 的 `_swap_linear_from_sd` 从轻量化工具产物 sd 读 int4+scale,`setattr` 替换 Linear→QuantLinear,**不读 model Linear 的 weight**。故 load_model 加载的 Linear HF fp 被替换丢弃,浪费 IO+内存(场景2 内存峰值:subprocess transformers + 主进程 cann_local_lm 含被丢弃的 Linear fp) |
 | 状态 | **TODO(待评估)** |
 | 发现日期 | 2026-08-31 |
 
@@ -437,7 +437,7 @@ converter venv 装 `torch 2.9.0+cpu` + `torchair`(源码+stubs)+ `torch-delegate
 
 ### 为什么当前 load HF 原始(设计权衡)
 
-1. cann_lm 模型结构需 HF 原始构建(`model_registry` + cann_lm 模型类 + key 重映射)
+1. cann_local_lm 模型结构需 HF 原始构建(`model_registry` + cann_local_lm 模型类 + key 重映射)
 2. 非 Linear(LayerNorm)需 HF 原始 fp(轻量化工具不动,但轻量化工具产物层名可能带 `model.language_model.` 等 VLM 前缀,load_model key 重映射面向 HF 原始)
 3. 简单:load_model 通用加载(不区分 Linear/非 Linear),swap 替换
 
@@ -454,7 +454,7 @@ converter venv 装 `torch 2.9.0+cpu` + `torchair`(源码+stubs)+ `torch-delegate
 
 ### 关联
 
-- 源码:`cann_lm/converter/cann_lm_converter.py:77`(load_model)+ `cann_lm/converter/swap.py:221`(_swap_linear_from_sd,不读 model Linear weight)
+- 源码:`cann_local_lm/converter/cann_lm_converter.py:77`(load_model)+ `cann_local_lm/converter/swap.py:221`(_swap_linear_from_sd,不读 model Linear weight)
 - 设计文档:[cli_design.md](./cli/cli_design.md)「完整调用链」(load_model → swap)、[quant_design.md](./quant/quant_design.md)「swap.py 签名表」
 - 相关:CLI-007(场景2 内存峰值,subprocess + 主进程)
 
@@ -524,7 +524,7 @@ converter venv 装 `torch 2.9.0+cpu` + `torchair`(源码+stubs)+ `torch-delegate
 
 ### 关联
 
-- 源码:`cann_lm/converter/quant/dopt_wrapper.py:31`(build_layer_strategy)、`cann_lm/converter/swap.py:138`(_STRATEGY_DEFAULT_PARAMS)、`cann_lm/converter/quant/dopt_lm/quantizer/strategy.py`(策略定义)
+- 源码:`cann_local_lm/converter/quant/dopt_wrapper.py:31`(build_layer_strategy)、`cann_local_lm/converter/swap.py:138`(_STRATEGY_DEFAULT_PARAMS)、`cann_local_lm/converter/quant/dopt_lm/quantizer/strategy.py`(策略定义)
 - 相关:CLI-009(swap_from_dopt 删 act_quant,硬编码 W4A8)
 
 ---
@@ -561,7 +561,7 @@ model.embed_tokens_per_layer.quant_op.weight_quantizer.bit/unsigned_quant/offset
 ```python
 token_identity = m.embed_tokens_per_layer(input_ids).reshape(...).detach()   # HF 原始 float
 ```
-`m.embed_tokens_per_layer` 是 cann_lm 模型的 Embedding(load_model 加载 HF 原始 fp,swap 不替换)。
+`m.embed_tokens_per_layer` 是 cann_local_lm 模型的 Embedding(load_model 加载 HF 原始 fp,swap 不替换)。
 
 ### 问题
 
@@ -595,10 +595,10 @@ token_identity = m.embed_tokens_per_layer(input_ids).reshape(...).detach()   # H
 
 **PLE quant 适配 epair 路径**(3 处代码 + 1 验证脚本):
 
-1. **`cann_lm/models/gemma4/export_wrapper.py`**:
+1. **`cann_local_lm/models/gemma4/export_wrapper.py`**:
    - `forward`(:49-72)加 `per_layer_token_identity_scale` 参数 + PLE dequant(`per_layer_token_identity(int8) * per_layer_token_identity_scale → float`,仿 `embeddings/embeddings_scale`)
    - `get_sample_inputs(quant)`(:246-269)从 `_quant_embeddings` 取 PLE int8+scale,gather `input_ids`→`ple_q`+`ple_scale`;非 quant/图内分支加 `None` ple_scale 保持 11 元素返回顺序
- 2. **`cann_lm/models/fused_ops/fused_infer_attention_score.py` `_fa_cpu`**(:92-100):兼容 gemma4 mask 方阵 `[b,1,kv_max,kv_max]` bool(截前 seq_len 行匹配 `attn_weights [b,heads,seq_len,kv_max]` + bool→float `True→-inf`);非方阵 float mask(qwen3.5 等)不受影响
+ 2. **`cann_local_lm/models/fused_ops/fused_infer_attention_score.py` `_fa_cpu`**(:92-100):兼容 gemma4 mask 方阵 `[b,1,kv_max,kv_max]` bool(截前 seq_len 行匹配 `attn_weights [b,heads,seq_len,kv_max]` + bool→float `True→-inf`);非方阵 float mask(qwen3.5 等)不受影响
 3. **`examples/.../debug_gemma4/verify_gemma4_epair_quant.py`**(新,97 行):epair 回环验证(load+轻量化工具+set_quant_embeddings+export+ep.module vs wrapper logits 一致+PLE dequant sanity)
 
 **验证结果**(`verify_gemma4_epair_quant.py --hf-path gemma-4-E2B-it --quant-path /tmp/opencode/gemma4_quant_output`):
@@ -612,7 +612,7 @@ token_identity = m.embed_tokens_per_layer(input_ids).reshape(...).detach()   # H
 
 ### 关联
 
-- 源码:`cann_lm/models/gemma4/export_wrapper.py:273-283`(_build_external_extras)、`cann_lm/models/export_wrapper.py:44-60`(forward per_layer_token_identity/embeddings_scale)、`cann_lm/converter/swap.py:35-56`(swap_embeddings_from_dopt,不替换 Embedding)
+- 源码:`cann_local_lm/models/gemma4/export_wrapper.py:273-283`(_build_external_extras)、`cann_local_lm/models/export_wrapper.py:44-60`(forward per_layer_token_identity/embeddings_scale)、`cann_local_lm/converter/swap.py:35-56`(swap_embeddings_from_dopt,不替换 Embedding)
 - 产物:`host_weights_info.json`(PLE `_q`/`_scale`)、轻量化工具 `model.safetensors`(PLE fakequant+scale)
 - 相关文档:[feature_embedding_design.md](./feature_embedding_design.md)「gemma4 PLE 特殊」「轻量化工具对 gemma4 的实现」
 - 相关:CLI-011(build_layer_strategy 与 strategy.py 一致性)
@@ -678,14 +678,14 @@ token_identity = m.embed_tokens_per_layer(input_ids).reshape(...).detach()   # H
 ### 行动项
 
 - [x] 评估 cann-lm-converter 是否需子命令化 → **保持单命令**(converter 单一职责导出 epair,无 serve/verify 动作;子命令化待职责扩展再议)
-- [x] 评估 console_scripts 注册 `cann-lm-converter` 命令 → **已完成**:`scripts/cann_lm_converter/pyproject.toml:20-21` `cann-lm-converter = "cann_lm.converter.cann_lm_converter:main"`,pip install 后直调
+- [x] 评估 console_scripts 注册 `cann-lm-converter` 命令 → **已完成**:`scripts/cann_lm_converter/pyproject.toml:20-21` `cann-lm-converter = "cann_local_lm.converter.cann_lm_converter:main"`,pip install 后直调
 - [x] 补「命令参考」独立文档页 → **已完成**:cli/INDEX.md 加「命令参考」节(console_scripts 入口 `cann-lm-converter` + 用法示例 5 类)
 - [ ] examples/ 用例补 README(参考 llama.cpp `tools/`&lt;t&gt;`/README.md`)
 
 ### 关联
 
 - 调研来源:mlx-lm(github.com/ml-explore/mlx-lm)、llama.cpp(github.com/ggml-org/llama.cpp)、mlc-llm(github.com/mlc-ai/mlc-llm)、ollama(github.com/ollama/ollama)
-- 相关代码:`cann_lm/converter/cann_lm_converter.py`(CLI)、`pyproject.toml`(entry point,torch_delegate 已有)
+- 相关代码:`cann_local_lm/converter/cann_lm_converter.py`(CLI)、`pyproject.toml`(entry point,torch_delegate 已有)
 - 设计文档:[cli_design.md](./cli/cli_design.md)(CLI 参数/调用链)、[README.md](./README.md)
 
 ---
@@ -697,7 +697,7 @@ token_identity = m.embed_tokens_per_layer(input_ids).reshape(...).detach()   # H
 |------|-----|
 | 编号 | CLI-014 |
 | 类型 | TODO(遗留设计假设限制,非偏离) |
-| 位置 | `cann_lm/converter/saver.py:220-238`(prefill `save_weights=True` / decode `save_weights=False`)+ docstring:142-148「shared weights (packed once)」;设计:[export_design.md:936](./export/export_design.md)「权重共享:两张图 state_dict 相同」 |
+| 位置 | `cann_local_lm/converter/saver.py:220-238`(prefill `save_weights=True` / decode `save_weights=False`)+ docstring:142-148「shared weights (packed once)」;设计:[export_design.md:936](./export/export_design.md)「权重共享:两张图 state_dict 相同」 |
 | 现状 | `save_epair_prefill_decode` 假设 prefill/decode 两图 state_dict 相同(同一模型),只 prefill 存权重(`consolidated_weights_save(prefill_epair, save_weights=True)` 写 `weights_*.bin` + `weight_info.json`),decode `save_weights=False`(只写 `decode_ep_json_with_ascend_ir.json`,权重丢弃) |
 | 违反约定 | 无(设计假设,非偏离) |
 | 发现日期 | 2026-09-01 |
@@ -759,7 +759,7 @@ token_identity = m.embed_tokens_per_layer(input_ids).reshape(...).detach()   # H
 
 ### 关联
 
-- 源码:`cann_lm/converter/saver.py:220-238`(save_epair_prefill_decode 权重保存)、`cann_lm/converter/export/epair_utils.py:131`(consolidated_weights_save save_weights 语义)、C++ `GeWeightLoader`(权重加载)
+- 源码:`cann_local_lm/converter/saver.py:220-238`(save_epair_prefill_decode 权重保存)、`cann_local_lm/converter/export/epair_utils.py:131`(consolidated_weights_save save_weights 语义)、C++ `GeWeightLoader`(权重加载)
 - 设计文档:[export_design.md](./export/export_design.md)「prefill/decode 分离导出 / 权重共享」(L928-962)
 - 相关:CLI-010(load_model 加载浪费,swap 丢弃 Linear fp)
 
@@ -772,7 +772,7 @@ token_identity = m.embed_tokens_per_layer(input_ids).reshape(...).detach()   # H
 |------|-----|
 | 编号 | CLI-015 |
 | 类型 | TODO(遗留问题/待实现,非偏离) |
-| 位置 | 设计:[weight_format_design.md](./export/weight_format_design.md);代码待实现:`cann_lm/converter/export/weight_format/`(`layout.py` `nd2nz` + `rules.py` `resolve_format`)+ `weight_format_rules.json` + `epair_utils._pack_weights_to_dir` 集成 + `inline_weight_layout` + C++ `aten_tensor_desc_mapper.cc:112` `MapGeLayoutString` / `ge_weight_loader.cc:115` `Pt2LayoutFromGeString` |
+| 位置 | 设计:[weight_format_design.md](./export/weight_format_design.md);代码待实现:`cann_local_lm/converter/export/weight_format/`(`layout.py` `nd2nz` + `rules.py` `resolve_format`)+ `weight_format_rules.json` + `epair_utils._pack_weights_to_dir` 集成 + `inline_weight_layout` + C++ `aten_tensor_desc_mapper.cc:112` `MapGeLayoutString` / `ge_weight_loader.cc:115` `Pt2LayoutFromGeString` |
 | 背景 | `weight_format_design.md` 设计了权重落盘从 ND(行主序)转 NZ(FractNZ 16×16 块主序),让 Ascend cube 计算权重 Const 直接以 `FORMAT_FRACTAL_NZ` 进 GE 图,避免 OM 编译/运行期 transdata。Stage 1(fp16 `MatMul` Linear 权重 `*_proj`)已设计,但 `weight_format/` 包 + `weight_format_rules.json` **0 实现**(`ls` 确认 NOT implemented) |
 | 违反约定 | 无(待实现) |
 | 发现日期 | 2026-09-01 |
@@ -811,7 +811,7 @@ token_identity = m.embed_tokens_per_layer(input_ids).reshape(...).detach()   # H
 ### 关联
 
 - 设计文档:[weight_format_design.md](./export/weight_format_design.md)(Stage 1 设计 + Stage 2 研究门)
-- 相关代码:`cann_lm/converter/export/epair_utils.py`(`_pack_weights_to_dir` 集成点 + `inline_weight_scale_dtype` 先例)、C++ `aten_tensor_desc_mapper.cc`/`ge_weight_loader.cc`/`ge_graph_builder.cc`
+- 相关代码:`cann_local_lm/converter/export/epair_utils.py`(`_pack_weights_to_dir` 集成点 + `inline_weight_scale_dtype` 先例)、C++ `aten_tensor_desc_mapper.cc`/`ge_weight_loader.cc`/`ge_graph_builder.cc`
 - 相关:CLI-014(PD 权重产物布局)、CLI-016(epair 权重与 const 分离)
 
 ---
@@ -823,7 +823,7 @@ token_identity = m.embed_tokens_per_layer(input_ids).reshape(...).detach()   # H
 |------|-----|
 | 编号 | CLI-016 |
 | 类型 | TODO(遗留问题/待澄清+待实现) |
-| 位置 | `cann_lm/converter/export/epair_utils.py`(`_pack_weights_to_dir`/`ConsolidatedWeights`,权重与 const 混合落盘)+ `weight_info.json`(索引)+ C++ `GeWeightLoader`(加载) |
+| 位置 | `cann_local_lm/converter/export/epair_utils.py`(`_pack_weights_to_dir`/`ConsolidatedWeights`,权重与 const 混合落盘)+ `weight_info.json`(索引)+ C++ `GeWeightLoader`(加载) |
 | 背景 | epair 当前 `weights_*.bin` 把模型权重(Linear `*.weight`、Embedding、norm、bias 等)与图常量(const tensor,如 fused_attn_seq 常量、shape/dtype 常量等)混合落盘到一个 bin,`weight_info.json` 统一索引。需将「权重」与「const」分离(分文件/分类索引),便于 C++ 加载侧区分权重 Const 节点与图常量,支持差异化处理(如 NZ 格式只作用于权重 const 保持 ND;或 const 外置/共享) |
 | 违反约定 | 无(待澄清+待实现) |
 | 发现日期 | 2026-09-01 |
@@ -852,7 +852,7 @@ token_identity = m.embed_tokens_per_layer(input_ids).reshape(...).detach()   # H
 
 ### 关联
 
-- 源码:`cann_lm/converter/export/epair_utils.py`(`_pack_weights_to_dir`/`ConsolidatedWeights`/`weight_info.json`)、C++ `GeWeightLoader`
+- 源码:`cann_local_lm/converter/export/epair_utils.py`(`_pack_weights_to_dir`/`ConsolidatedWeights`/`weight_info.json`)、C++ `GeWeightLoader`
 - 设计文档:[export_design.md](./export/export_design.md)(产物布局/权重加载)、[weight_format_design.md](./export/weight_format_design.md)
 - 相关:CLI-015(weight_format NZ,只作用于权重)、CLI-014(PD 权重产物布局)
 
@@ -936,7 +936,7 @@ converter env = torch-delegate venv + torchair stubs,搭建分散:
 ### 简化方向(待评估,受多组件耦合限制)
 
 1. **单一依赖收敛**:torch-delegate build.sh 集成 torchair stubs(CLI-017)后,`pip install torch-delegate` 或 build.sh 一键产 whl+stubs,接近 mlx-lm `pip install mlx-lm`
-2. **设备抽象层**:cann-lm 无 mlx 库对应的统一设备抽象(CANN/torchair/torch_npu 各管各的);长期可封装 device 抽象层(如 `cann_lm.device.is_available()` 对标 `mx.default_device()`),但受多组件限制
+2. **设备抽象层**:cann-lm 无 mlx 库对应的统一设备抽象(CANN/torchair/torch_npu 各管各的);长期可封装 device 抽象层(如 `cann_local_lm.device.is_available()` 对标 `mx.default_device()`),但受多组件限制
 3. **env 内设**:mlx-lm env 变量代码内设(`os.environ[...]=...`),无需 source;cann-lm 部分可内设(如 `TRANSFORMERS_NO_ADVISORY_WARNINGS` 已仿),但 LD_LIBRARY_PATH/ASCEND_HOME_PATH 需 source(因 CANN lib 路径)
 4. **env 脚本简化**:CLI-017 后 set_env_export.sh 简化(stubs 路径由 torch-delegate 安装默认);4 套 env 收敛(若 converter/compile/generate/npu 能合并)
 5. **打桩透明化**:mlx-lm 无 stubs(mlx 直接跑);cann-lm stubs 是 torchair GE 引擎避真 NPU 的权宜,长期若 torchair 支持纯 CPU 转换(无 GE 引擎调 aclrt)可去 stubs
@@ -965,7 +965,7 @@ converter env = torch-delegate venv + torchair stubs,搭建分散:
 |------|-----|
 | 编号 | CLI-019 |
 | 类型 | TODO(待决策+待实现) |
-| 位置 | `cann_lm/converter/export/epair_utils.py`(`_pack_weights_to_dir`:三类混合落盘,虽已遍历 `graph_signature` 的 `inputs_to_parameters`/`inputs_to_buffers`/`inputs_to_lifted_tensor_constants` 但未记录类别)+ `weight_info.json`(条目无类别字段)+ C++ `ge_weight_loader.cc`/`ge_graph_builder.cc:CreateConstNode`(三类统一建 Const) |
+| 位置 | `cann_local_lm/converter/export/epair_utils.py`(`_pack_weights_to_dir`:三类混合落盘,虽已遍历 `graph_signature` 的 `inputs_to_parameters`/`inputs_to_buffers`/`inputs_to_lifted_tensor_constants` 但未记录类别)+ `weight_info.json`(条目无类别字段)+ C++ `ge_weight_loader.cc`/`ge_graph_builder.cc:CreateConstNode`(三类统一建 Const) |
 | 背景 | epair 导出时 `_pack_weights_to_dir` 把 parameter/const/buffer 三类数据混合写进同一 `weights_*.bin` + `weight_info.json`(条目仅 `{name,offset,size,format}`,**无类别标识**)。三类在 ep_json `tensor_values` 按前缀区分:`p_*`(parameter,模型权重)、`c_*`(const,lifted tensor 常量)、`b_*`(buffer,非持久状态);权威源是 `graph_signature`(pack 时已遍历但未持久化类别)。需在导出时区分,因为:(1) NZ 格式转换(CLI-015)只应作用于 `p_*` 的 `*_proj.weight`,不应碰 `c_*`/`b_*`;(2) C++ 加载侧对三类语义不同(parameter 可 NZ/外置,const 保持 ND/可共享,buffer 非持久);(3) 与 CLI-016 粒度直接相关 |
 | 违反约定 | 无(待决策) |
 | 发现日期 | 2026-09-05 |
@@ -994,7 +994,7 @@ converter env = torch-delegate venv + torchair stubs,搭建分散:
 
 ### 关联
 
-- 源码:`cann_lm/converter/export/epair_utils.py`(`_pack_weights_to_dir`)+ C++ `ge_weight_loader.cc`/`ge_graph_builder.cc:CreateConstNode`
+- 源码:`cann_local_lm/converter/export/epair_utils.py`(`_pack_weights_to_dir`)+ C++ `ge_weight_loader.cc`/`ge_graph_builder.cc:CreateConstNode`
 - 相关:**CLI-015**(NZ 格式,只作用于 parameter)、**CLI-016**(权重与 const 分离,本条细化其粒度)
 
 ---
@@ -1005,7 +1005,7 @@ converter env = torch-delegate venv + torchair stubs,搭建分散:
 |------|-----|
 | 编号 | CLI-020 |
 | 类型 | TODO(待实现) |
-| 位置 | `cann_lm/converter/saver.py`(`save_epair`/`save_epair_prefill_decode`:`torch.export.export` 后未设 output name)+ `cann_lm/models/export_wrapper.py`(`make_input_output_names` 只用于 ONNX,未覆盖 delta_out) |
+| 位置 | `cann_local_lm/converter/saver.py`(`save_epair`/`save_epair_prefill_decode`:`torch.export.export` 后未设 output name)+ `cann_local_lm/models/export_wrapper.py`(`make_input_output_names` 只用于 ONNX,未覆盖 delta_out) |
 | 背景 | `torch.export.export(model, args, strict=False)` **无直接参数**设 output name。输出名从产生该输出的 FX 算子节点名派生(如 `matmul`/`sin`/`cos`/`index_select`),非语义名(如 `logits`/`past_key_0_out`)。返回 dict 时 key 会丢失(torch.export flatten 成 tuple,name 仍从算子名派生)。实测 torch 2.9.0+cpu:`OutputSpec.arg = TensorArgument(name='matmul')` — `name` 字段可后处理改写,改后 `ep.module()` 正常跑 |
 | 违反约定 | 无(待实现) |
 | 发现日期 | 2026-09-16 |
@@ -1071,6 +1071,6 @@ with lite_export_context(lite_config):
 
 ### 关联
 
-- 源码:`cann_lm/converter/saver.py`(`save_epair`/`save_epair_prefill_decode`)+ `cann_lm/models/export_wrapper.py`(`make_input_output_names`/`forward` 返回 logits+past_kv_flat+delta_out_flat)
+- 源码:`cann_local_lm/converter/saver.py`(`save_epair`/`save_epair_prefill_decode`)+ `cann_local_lm/models/export_wrapper.py`(`make_input_output_names`/`forward` 返回 logits+past_kv_flat+delta_out_flat)
 - 相关:**CLI-014**(PD 权重共享,本条的 output name 不影响共享)、**CLI-016/CLI-019**(权重/const 分离,已部分实现 `_is_weight` 字段——见下注)
 - 注:CLI-016/CLI-019 描述的「weight_info.json 加类别字段」已实现为 `_is_weight`(bool,二态:parameter+buffer=true / const=false),`epair_utils.py:_pack_weights_to_dir` 落盘该字段 + C++ `ge_weight_loader.cc:LoadConsolidated` 读取填 `TensorRecordInfo.is_parameter` + `ge_graph_builder.cc:CreateConstNode` 注入 GE Const 节点私有 attr `_is_weight`(dump 图可见,OM 被 GE OptimizeStage1 清理)。CLI-016/CLI-019 的 NZ 按 kind 分流(NZ 只对 parameter)尚未实现,仍为 TODO

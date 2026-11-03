@@ -10,7 +10,7 @@
 
 ## 0. 一句话
 
-engine 是纯标准 C++17、零 POSIX 依赖,可在 Linux 本机直接构建跑 UT,也可交叉编译为鸿蒙 musl 目标的 `.so` + 9 个可执行(UT/bbit/smoke)并自签名。**两套构建相互独立**——鸿蒙构建是独立旁路(`cann_lm/engine/ohos/` + `scripts/cann_lm_engine/` 下的 `build_ohos.sh`/`sign_ohos.sh`/`build_package_ohos.sh`),不改动现有 Linux 构建文件,Linux 构建零风险。鸿蒙一条命令到位:`./scripts/cann_lm_engine/build_ohos.sh`(编译→自动签名),或一键 `./scripts/cann_lm_engine/build_package_ohos.sh`(编译→签名→产签名 wheel)。
+engine 是纯标准 C++17、零 POSIX 依赖,可在 Linux 本机直接构建跑 UT,也可交叉编译为鸿蒙 musl 目标的 `.so` + 9 个可执行(UT/bbit/smoke)并自签名。**两套构建相互独立**——鸿蒙构建是独立旁路(`cann_local_lm/engine/ohos/` + `scripts/cann_lm_engine/` 下的 `build_ohos.sh`/`sign_ohos.sh`/`build_package_ohos.sh`),不改动现有 Linux 构建文件,Linux 构建零风险。鸿蒙一条命令到位:`./scripts/cann_lm_engine/build_ohos.sh`(编译→自动签名),或一键 `./scripts/cann_lm_engine/build_package_ohos.sh`(编译→签名→产签名 wheel)。
 
 ---
 
@@ -18,11 +18,11 @@ engine 是纯标准 C++17、零 POSIX 依赖,可在 Linux 本机直接构建跑 
 
 | 文件 | 作用 | 所属环境 |
 |------|------|---------|
-| `CMakeLists.txt`(仓库根) | 顶层 CMake,设 C++17,`add_subdirectory(cann_lm/engine)` | 两者 |
-| `cann_lm/engine/CMakeLists.txt` | **Linux 构建真身**:定义 `cann_lm_engine`(STATIC)+ `cann_backend`(子项目)、**13 个 UT + bbit + 2 smoke(+1 临时 golden_verify)** target、GTest(`find_package`)、`gtest_discover_tests` | Linux |
-| `cann_lm/engine/**/*.cpp/.h` | engine 源码(18 个 .cpp),两套构建共用 | 两者 |
-| `cann_lm/engine/ohos/ohos.toolchain.cmake` | **鸿蒙交叉编译工具链**(自包含):本机 clang-18 + OHOS sysroot,flag 照搬官方 toolchain;ar/ranlib 用本机 llvm-18 | 鸿蒙 |
-| `cann_lm/engine/ohos/CMakeLists.txt` | **鸿蒙构建**:同一批源码编 SHARED `libcann_lm_engine.so` + **9 个可执行**(UT/bbit/smoke);GTest FetchContent 本地源码;静态 `add_test` | 鸿蒙 |
+| `CMakeLists.txt`(仓库根) | 顶层 CMake,设 C++17,`add_subdirectory(cann_local_lm/engine)` | 两者 |
+| `cann_local_lm/engine/CMakeLists.txt` | **Linux 构建真身**:定义 `cann_lm_engine`(STATIC)+ `cann_backend`(子项目)、**13 个 UT + bbit + 2 smoke(+1 临时 golden_verify)** target、GTest(`find_package`)、`gtest_discover_tests` | Linux |
+| `cann_local_lm/engine/**/*.cpp/.h` | engine 源码(18 个 .cpp),两套构建共用 | 两者 |
+| `cann_local_lm/engine/ohos/ohos.toolchain.cmake` | **鸿蒙交叉编译工具链**(自包含):本机 clang-18 + OHOS sysroot,flag 照搬官方 toolchain;ar/ranlib 用本机 llvm-18 | 鸿蒙 |
+| `cann_local_lm/engine/ohos/CMakeLists.txt` | **鸿蒙构建**:同一批源码编 SHARED `libcann_lm_engine.so` + **9 个可执行**(UT/bbit/smoke);GTest FetchContent 本地源码;静态 `add_test` | 鸿蒙 |
 | `tools/binary-sign-tool.jar` | **鸿蒙二进制签名工具**(jar,架构无关);自签名 `-selfSign 1`,注入 `.codesign` 段;放 `tools/`,**gitignore 不入库**(见 tools/README.md) | 鸿蒙 |
 | `scripts/cann_lm_engine/build_ohos.sh` | **鸿蒙构建+签名入口**:校验 `OHOS_SDK_NATIVE`(精简 SDK)+ 本机 `clang-18` → `cmake -G Unix Makefiles` build → 11 产物校验 + libc++ 兜底 → 自动调 `sign_ohos.sh` | 鸿蒙 |
 | `scripts/cann_lm_engine/sign_ohos.sh` | **签名脚本**:对 build_ohos/ 下 .so ×2 + **9 可执行**各产 `*_signed` | 鸿蒙 |
@@ -35,7 +35,7 @@ engine 是纯标准 C++17、零 POSIX 依赖,可在 Linux 本机直接构建跑 
 
 ### 为什么鸿蒙用独立 CMake 而不改现有那个?
 
-现有 `cann_lm/engine/CMakeLists.txt` 是单一 Linux 分支 + STATIC 库 + 主机 `find_package(GTest)`。要加鸿蒙需引入 `OHOS_PLATFORM` 分支、SHARED 库、签名、GTest 本地源码等,改动面大且鸿蒙分支在本机无法编译验证。**首版用独立 `ohos/CMakeLists.txt` 旁路**,源码清单目前是过渡期复制(后续稳定后可抽 `engine_src.cmake` 供两者共享,消除复制)。这样 Linux 构建文件一字未动,回归零风险。
+现有 `cann_local_lm/engine/CMakeLists.txt` 是单一 Linux 分支 + STATIC 库 + 主机 `find_package(GTest)`。要加鸿蒙需引入 `OHOS_PLATFORM` 分支、SHARED 库、签名、GTest 本地源码等,改动面大且鸿蒙分支在本机无法编译验证。**首版用独立 `ohos/CMakeLists.txt` 旁路**,源码清单目前是过渡期复制(后续稳定后可抽 `engine_src.cmake` 供两者共享,消除复制)。这样 Linux 构建文件一字未动,回归零风险。
 
 ---
 
@@ -55,10 +55,10 @@ rm -rf "$BUILD" && mkdir -p "$BUILD" && cd "$BUILD"
 cmake /mnt/workspace/CANN-LM -DCMAKE_BUILD_TYPE=Debug
 cmake --build . -j"$(nproc)"
 ```
-产物全部在 `$BUILD/cann_lm/engine/` 下(因为 engine 的 CMakeLists 定义 target 在该子目录)。
+产物全部在 `$BUILD/cann_local_lm/engine/` 下(因为 engine 的 CMakeLists 定义 target 在该子目录)。
 
 ### 2.3 产物
-全部落在 `$BUILD/cann_lm/engine/` 下。target 清单(对齐 `cann_lm/engine/CMakeLists.txt`):
+全部落在 `$BUILD/cann_local_lm/engine/` 下。target 清单(对齐 `cann_local_lm/engine/CMakeLists.txt`):
 
 | 文件 | 作用 |
 |------|------|
@@ -88,7 +88,7 @@ cmake --build . -j"$(nproc)"
 
 ### 2.4 验证
 ```bash
-cd "$BUILD/cann_lm/engine"
+cd "$BUILD/cann_local_lm/engine"
 
 # 全部单元测试
 ctest --output-on-failure
@@ -102,14 +102,14 @@ ctest --output-on-failure
 ./bbit --check
 ./bbit
 ```
-> **注意**:`ctest` 必须在 `cann_lm/engine/` 子目录下执行。顶层 `CMakeLists.txt` 未调 `enable_testing()`,故顶层目录 `ctest` 会报 "No tests found"——这是项目现状,非 bug。
+> **注意**:`ctest` 必须在 `cann_local_lm/engine/` 子目录下执行。顶层 `CMakeLists.txt` 未调 `enable_testing()`,故顶层目录 `ctest` 会报 "No tests found"——这是项目现状,非 bug。
 
 ### 2.5 当前基线(2026-08-24 实测,pull 后)
 - 67 tests passed / 0 failed / 1 disabled(原 63;新 `test_tensor_manager` 加 4 个)
 - 编译器:本机 gcc/g++(aarch64-linux-gnu)
 - GTest:主机 `libgtest-dev` 包
 > ⚠ 该 67 项基线测于 2026-08-24,此后 §2.3 的若干 UT 目标(`ut_text_embedding`/`ut_data_type_utils`/`ut_sampler`/`ut_request_handle`/`ut_backend_shareweights`/`ut_share_weights_executor`/`ut_linear_state_pool`)陆续加入,实际用例数已高于 67——以本机 `ctest` 实跑为准。
-> 同步要点:Linux `CMakeLists.txt` 是源码清单真源;OHOS `cann_lm/engine/ohos/CMakeLists.txt` 是手抄镜像,pull 后若 Linux 新增 `.cpp`/UT 文件,需同步补进 OHOS 清单(已对 `stub_built_model.cpp`/`tensor_manager.cpp`/`test_tensor_manager.cpp` 做过)。
+> 同步要点:Linux `CMakeLists.txt` 是源码清单真源;OHOS `cann_local_lm/engine/ohos/CMakeLists.txt` 是手抄镜像,pull 后若 Linux 新增 `.cpp`/UT 文件,需同步补进 OHOS 清单(已对 `stub_built_model.cpp`/`tensor_manager.cpp`/`test_tensor_manager.cpp` 做过)。
 
 ---
 
@@ -134,7 +134,7 @@ ctest --output-on-failure
 | `api_smoke` / `c_api_smoke` | C++/C API 冒烟 |
 | 上述每个的 `*_signed` / `*_signed.so` | 签名版(`build_ohos.sh` 自动产) |
 
-> 产物验证(readelf 确认 musl 目标)、单独重签、产签名 wheel(`.so` 内嵌 `cann_lm/lib/`)、设备运行流程,均见分平台手册。本机 glibc **无法直接运行**这些产物(链接 musl 的 `libc.so`),运行验证须在鸿蒙设备(开发者模式,允许自签名二进制)。
+> 产物验证(readelf 确认 musl 目标)、单独重签、产签名 wheel(`.so` 内嵌 `cann_local_lm/lib/`)、设备运行流程,均见分平台手册。本机 glibc **无法直接运行**这些产物(链接 musl 的 `libc.so`),运行验证须在鸿蒙设备(开发者模式,允许自签名二进制)。
 
 ### 3.2 当前状态(2026-10-15 实测)
 - ✅ `.so` + `libc++_shared.so` 交叉编译通过(ELF AArch64,musl)
@@ -151,12 +151,12 @@ ctest --output-on-failure
 | 维度 | Linux 本机 | 鸿蒙 OHOS 交叉 |
 |------|-----------|---------------|
 | 入口 | `cmake <repo> && cmake --build` | `./scripts/cann_lm_engine/build_ohos.sh` |
-| CMake 真身 | `cann_lm/engine/CMakeLists.txt` | `cann_lm/engine/ohos/CMakeLists.txt` |
-| 工具链 | 系统 gcc/g++ | `cann_lm/engine/ohos/ohos.toolchain.cmake`(clang-18 + sysroot) |
+| CMake 真身 | `cann_local_lm/engine/CMakeLists.txt` | `cann_local_lm/engine/ohos/CMakeLists.txt` |
+| 工具链 | 系统 gcc/g++ | `cann_local_lm/engine/ohos/ohos.toolchain.cmake`(clang-18 + sysroot) |
 | 目标 triple | aarch64-linux-gnu(本机) | aarch64-linux-ohos(musl) |
 | 库类型 | STATIC(`.a`) | SHARED(`.so`) |
 | GTest | 主机 `find_package(GTest)` | 本地源码 FetchContent(github v1.14.0);静态 `add_test`(交叉编译禁用 `gtest_discover_tests`) |
-| 产物目录 | `$BUILD/cann_lm/engine/` | `build_ohos/` |
+| 产物目录 | `$BUILD/cann_local_lm/engine/` | `build_ohos/` |
 | 可运行环境 | 本机 | 仅鸿蒙设备(签名后) |
 | 是否改动现有 CMake | — | **否**(旁路,零风险) |
 

@@ -248,7 +248,7 @@ This 117-line spec records pitfalls encountered when adapting UT to Windows, equ
 
 ## 8. Borrowable Points for CANN-LM Engine (PLAN preview)
 
-Comparing with this project's `cann_lm/engine/CMakeLists.txt` (current state: single Linux/GCC, STATIC library, `find_package(GTest REQUIRED)` host-installed, no platform branches):
+Comparing with this project's `cann_local_lm/engine/CMakeLists.txt` (current state: single Linux/GCC, STATIC library, `find_package(GTest REQUIRED)` host-installed, no platform branches):
 
 | harmony_acl practice | CANN-LM current state | Borrowing direction |
 |------------------|-------------|---------|

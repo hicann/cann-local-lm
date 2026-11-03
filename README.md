@@ -31,7 +31,7 @@ git clone -b 2026_09_22 https://gitcode.com/cann/cann-local-lm.git
 
 ```
 cann-local-lm/
-├── cann_lm/                  # 核心源码
+├── cann_local_lm/                  # 核心源码
 │   ├── converter/            # 导出工具链 (HF 模型 → epair → omc 编译)
 │   ├── engine/               # 推理引擎 (omc 加载 + 推理执行)
 │   └── models/               # 模型定义 (gemma4 + fused_ops 算子)
@@ -55,9 +55,9 @@ cann-local-lm/
 
 | 目录　　　　　　　　　　　　 | 职责　　　　　　　　　　　 | 关键文件　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　 |
 | ------------------------------| ----------------------------| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| **cann_lm/converter/**　　　 | HF模型 → epair → omc导出工具链 | `cann_lm_converter.py`(CLI入口) / `loader.py`(加载) / `saver.py`(保存) / `quant/`(量化:swap/materialize/auto_quant/dopt_wrapper) / `export/`(ge_converter + C++ csrc) |
-| **cann_lm/engine/**　　　　　| omc推理引擎　　　　　　　| `api/`(Python接口) / `core/`(核心逻辑) / `backend/`(C++ 后端) / `pipeline/`(推理流水线)　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　 |
-| **cann_lm/models/**　　　　　|模型定义 + 自定义算子　| `gemma4/`(Gemma4ForCausalLM + export_wrapper)  / `fused_ops/`(cann_lm:: + npu:: 算子schema+fake-meta)　　　　　　　　　　　　　　　　　　　　　|
+| **cann_local_lm/converter/**　　　 | HF模型 → epair → omc导出工具链 | `cann_lm_converter.py`(CLI入口) / `loader.py`(加载) / `saver.py`(保存) / `quant/`(量化:swap/materialize/auto_quant/dopt_wrapper) / `export/`(ge_converter + C++ csrc) |
+| **cann_local_lm/engine/**　　　　　| omc推理引擎　　　　　　　| `api/`(Python接口) / `core/`(核心逻辑) / `backend/`(C++ 后端) / `pipeline/`(推理流水线)　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　 |
+| **cann_local_lm/models/**　　　　　|模型定义 + 自定义算子　| `gemma4/`(Gemma4ForCausalLM + export_wrapper)  / `fused_ops/`(cann_local_lm:: + npu:: 算子schema+fake-meta)　　　　　　　　　　　　　　　　　　　　　|
 | **torch_delegate/**　　　　　| epair序列化/加载 + C++ 后端 | `csrc/backend/`(EpairModelLoader → GE Graph → OM) / `torch_delegate/`(api.py + converter + epair + core) / `build.sh`(一键构建) / `examples/`(示例) |
 | **docs/cann_lm_converter/**　| converter设计文档　　　　 | `cli/cli_design.md` / `export/export_design.md` / `quant/quant_design.md` / `README.md`(总览) / `version_evolution.md`(版本演进)　　　　　　　　　　　　　　　　　　　　　　　　　　　|
 | **examples/test_converter/** | 端到端测试用例　　　　　　 | `export_llm_model/`(C++ omc编译 + om_npu_verify出字验证) / `cann_lm_cli_export/run_pd6_cases.sh`(6用例)　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　|

@@ -2,7 +2,7 @@
 
 English | [简体中文](../../zh/cann_lm_converter/TODO_notes.md)
 
-> Records deviations between `cann_lm/converter/` code and `AGENTS.md` conventions / design documents, accumulated in discovery order.
+> Records deviations between `cann_local_lm/converter/` code and `AGENTS.md` conventions / design documents, accumulated in discovery order.
 > Each entry contains: location, current state, convention, root cause, impact, status, cleanup action. After cleanup, status is set to "Cleaned" and the record is retained.
 >
 > Status: Accumulating | Last updated: 2026-09-01
@@ -37,7 +37,7 @@ English | [简体中文](../../zh/cann_lm_converter/TODO_notes.md)
 | Field | Value |
 |------|-----|
 | ID | CLI-001 |
-| Location | `cann_lm/converter/` **6 places total**: `cann_lm_converter.py:17`, `loader.py:3`, `saver.py:3`, `export/epair_utils.py:3`, `export/ge_converters/ge_converter.py:17`, `quant/download_dataset.py:15` |
+| Location | `cann_local_lm/converter/` **6 places total**: `cann_lm_converter.py:17`, `loader.py:3`, `saver.py:3`, `export/epair_utils.py:3`, `export/ge_converters/ge_converter.py:17`, `quant/download_dataset.py:15` |
 | Current state | File top has `from __future__ import annotations` |
 | Violates convention | `AGENTS.md` "General / Python version: `>= 3.10` (use `dict[str, Any]` etc. builtin generic syntax, **do not introduce** `from __future__ import annotations`)" |
 | Discovery date | 2026-08-31 (first round checked `cann_lm_converter.py`; second round comparing cli_design.md ↔ converter files extended to all 6 places via grep) |
@@ -80,14 +80,14 @@ After removing this line, 3.11 natively evaluates these types, **no behavior cha
 
 ### Execution Result (2026-08-31)
 
-Top-of-file `from __future__ import annotations` removed from all 6 files (`cann_lm_converter.py`, `loader.py`, `saver.py`, `export/epair_utils.py`, `export/ge_converters/ge_converter.py`, `quant/download_dataset.py`). `python3 -m py_compile` all 6 files pass (3.11 natively evaluates `int | None` / generic annotations, no syntax errors); grep confirms `cann_lm/converter/` directory 0 residual.
+Top-of-file `from __future__ import annotations` removed from all 6 files (`cann_lm_converter.py`, `loader.py`, `saver.py`, `export/epair_utils.py`, `export/ge_converters/ge_converter.py`, `quant/download_dataset.py`). `python3 -m py_compile` all 6 files pass (3.11 natively evaluates `int | None` / generic annotations, no syntax errors); grep confirms `cann_local_lm/converter/` directory 0 residual.
 
 > End-to-end smoke (actually running a converter export) not executed — requires sourcing `scripts/set_env_export.sh` full env (torchair stubs), is optional verification; syntax layer confirmed no regression.
 
 ### Related
 
 - Convention source: `AGENTS.md` "General / Python version"
-- Source files: 6 files under `cann_lm/converter/` (see table above)
+- Source files: 6 files under `cann_local_lm/converter/` (see table above)
 - Design doc: [cli_design.md](./cli/cli_design.md)
 
 ---
@@ -98,7 +98,7 @@ Top-of-file `from __future__ import annotations` removed from all 6 files (`cann
 | Field | Value |
 |------|-----|
 | ID | CLI-002 |
-| Location | Doc: [cli_design.md:272](./cli/cli_design.md); Code: `cann_lm/converter/saver.py:58`, `saver.py:139` |
+| Location | Doc: [cli_design.md:272](./cli/cli_design.md); Code: `cann_local_lm/converter/saver.py:58`, `saver.py:139` |
 | Current state (before cleanup) | Doc signature block writes `use_embeddings=True`, code `save_epair` / `save_epair_prefill_decode` default `False`; doc note "saver default False" contradicts signature block True, and contradicts code |
 | Violates convention | Design doc should match code (AGENTS "after modifying code, update docs/") |
 | Discovery date | 2026-08-31 (second round comparing cli_design.md ↔ saver.py) |
@@ -114,8 +114,8 @@ User confirmed True as authoritative: saver default aligned to "pure embeddings"
 
 ### Cleanup Action (executed)
 
-1. `cann_lm/converter/saver.py:58` `save_epair` default `use_embeddings: bool = False` → `True`
-2. `cann_lm/converter/saver.py:139` `save_epair_prefill_decode` default `use_embeddings: bool = False` → `True`
+1. `cann_local_lm/converter/saver.py:58` `save_epair` default `use_embeddings: bool = False` → `True`
+2. `cann_local_lm/converter/saver.py:139` `save_epair_prefill_decode` default `use_embeddings: bool = False` → `True`
 3. [cli_design.md:272](./cli/cli_design.md) note "saver default False" → "saver default True" (signature block already wrote True, now code / signature block / note three-way consistent)
 
 ### Impact
@@ -129,7 +129,7 @@ User confirmed True as authoritative: saver default aligned to "pure embeddings"
 
 ### Related
 
-- Source file: `cann_lm/converter/saver.py`
+- Source file: `cann_local_lm/converter/saver.py`
 - Design doc: [cli_design.md](./cli/cli_design.md) "prefill/decode separation mode CLI / interface (saver side)"
 
 ---
@@ -152,7 +152,7 @@ User confirmed True as authoritative: saver default aligned to "pure embeddings"
 
 ### Related
 
-- Source evidence: `cann_lm/converter/quant/auto_quant.py:16,24`, `dopt_wrapper.py:23`
+- Source evidence: `cann_local_lm/converter/quant/auto_quant.py:16,24`, `dopt_wrapper.py:23`
 - Design doc: [cli_design.md](./cli/cli_design.md) "Complete call chain / Scenario 2"
 
 ---
@@ -163,7 +163,7 @@ User confirmed True as authoritative: saver default aligned to "pure embeddings"
 | Field | Value |
 |------|-----|
 | ID | CLI-004 |
-| Location | Code: `cann_lm/converter/quant/auto_quant.py:65` (cmd, HEAD version), `dopt_wrapper.py:47-53` (parse_args) |
+| Location | Code: `cann_local_lm/converter/quant/auto_quant.py:65` (cmd, HEAD version), `dopt_wrapper.py:47-53` (parse_args) |
 | Current state (initial check) | HEAD version `auto_quant._run_dopt_subprocess`'s cmd passes `--quant-bits`, but `dopt_wrapper.parse_args` doesn't define this parameter →实测 reports `unrecognized arguments: --quant-bits w4a8`, exit=2, scenario 2 subprocess fails to start |
 | Violates convention | Internal code inconsistency (auto_quant ↔ dopt_wrapper) |
 | Discovery date | 2026-08-31 |
@@ -186,7 +186,7 @@ User instructed "clean unused quant_bits", full chain removal:
 - **Code**: `auto_quant.py` (`generate_dopt_config` / `_run_dopt_subprocess` / `run_auto_quant` three function signatures + `_run_dopt_subprocess` call), `cann_lm_converter.py` (convert `quant_bits` param + print + `run_auto_quant` call + parse_args `--quant-bits` add_argument + main `quant_bits=args.quant_bits`), `examples/.../run_pd6_cases.sh:119` (`generate_dopt_config(art, "w4a8")` → `generate_dopt_config(art)`)
 - **Docs (synced)**: `quant_design.md` (L343 call chain + L492/493/495 signature table), `cli_design.md` (L32 overview + L49 convert code block + L67 call + L151-152 parse_args code block + L172 param table + L197 call chain + L456 related table), `quant/INDEX.md` L53
 
-Verification: `grep quant_bits`/`quant-bits` in `cann_lm/converter` 0 residual; `py_compile` auto_quant/cann_lm_converter/dopt_wrapper pass.
+Verification: `grep quant_bits`/`quant-bits` in `cann_local_lm/converter` 0 residual; `py_compile` auto_quant/cann_lm_converter/dopt_wrapper pass.
 
 ### Doc Residual (cleaned, 2026-08-31)
 
@@ -200,7 +200,7 @@ Verification: `grep quant.bits` in `docs/cann_lm_converter/` only `TODO_notes.md
 
 ### Related
 
-- Source files: `cann_lm/converter/quant/auto_quant.py`, `dopt_wrapper.py`
+- Source files: `cann_local_lm/converter/quant/auto_quant.py`, `dopt_wrapper.py`
 - Design doc: [cli_design.md](./cli/cli_design.md) "Complete call chain / Scenario 2" / "converter and torch_npu relationship"
 
 ---
@@ -233,11 +233,11 @@ User instructed: "`--quant-device` currently cannot pass to lightweight tool eit
 
 ### Verification
 
-`grep quant.device` in `cann_lm/converter` 0 residual; `py_compile cann_lm_converter.py` passes; docs only have `TODO_notes.md` record + `adr/0001` historical original (with status change annotation).
+`grep quant.device` in `cann_local_lm/converter` 0 residual; `py_compile cann_lm_converter.py` passes; docs only have `TODO_notes.md` record + `adr/0001` historical original (with status change annotation).
 
 ### Related
 
-- Source files: `cann_lm/converter/cann_lm_converter.py`, `cann_lm/converter/quant/auto_quant.py` (`_detect_device_type` retained)
+- Source files: `cann_local_lm/converter/cann_lm_converter.py`, `cann_local_lm/converter/quant/auto_quant.py` (`_detect_device_type` retained)
 - Design doc: [cli_design.md](./cli/cli_design.md) "Command-line parameters / Complete call chain / Runtime environment support"
 - Historical decision: [adr/0001](../adr/0001-load-model-cpu-quant-subprocess-device.md) (status change 2026-08-31)
 
@@ -274,7 +274,7 @@ User chose path 2: `generate_dopt_config` removed (auto_quant.py), case `run_pd6
 
 ### Related
 
-- Source files: `cann_lm/converter/quant/auto_quant.py`, `dopt_wrapper.py`, `examples/.../run_pd6_cases.sh`, `tests/python/dopt_lm/test_strategy_generation.py`
+- Source files: `cann_local_lm/converter/quant/auto_quant.py`, `dopt_wrapper.py`, `examples/.../run_pd6_cases.sh`, `tests/python/dopt_lm/test_strategy_generation.py`
 - Design docs: [cli_design.md](./cli/cli_design.md) "Complete call chain", [quant_design.md](./quant/quant_design.md) "`auto_quant.py`/`dopt_wrapper.py` signature table"
 - Historical decision: [adr/0001](../adr/0001-load-model-cpu-quant-subprocess-device.md) L44 (status change 2026-08-31)
 
@@ -344,7 +344,7 @@ converter venv installs `torch 2.9.0+cpu` + `torchair` (source+stubs) + `torch-d
 
 - Design docs: [cli_design.md](./cli/cli_design.md) "Runtime environment support (NPU/GPU/pure CPU)" / "converter and torch_npu relationship"
 - Historical decision: [adr/0001](../adr/0001-load-model-cpu-quant-subprocess-device.md) (subprocess isolation decision)
-- Related code: `cann_lm/converter/quant/auto_quant.py` (`_detect_device_type` / `run_auto_quant` / `_run_dopt_subprocess`)
+- Related code: `cann_local_lm/converter/quant/auto_quant.py` (`_detect_device_type` / `run_auto_quant` / `_run_dopt_subprocess`)
 
 ---
 
@@ -354,7 +354,7 @@ converter venv installs `torch 2.9.0+cpu` + `torchair` (source+stubs) + `torch-d
 | Field | Value |
 |------|-----|
 | ID | CLI-008 |
-| Location | `cann_lm/converter/swap.py` L334-351 (definition) + `swap_from_dopt` docstring (comparison mention); Docs: `quant/INDEX.md` L50, `export_design.md` L1269, `quant_design.md` L136/138/345/450/451, `quant_swap/__init__.py` L29, `adr/README.md` L39 |
+| Location | `cann_local_lm/converter/swap.py` L334-351 (definition) + `swap_from_dopt` docstring (comparison mention); Docs: `quant/INDEX.md` L50, `export_design.md` L1269, `quant_design.md` L136/138/345/450/451, `quant_swap/__init__.py` L29, `adr/README.md` L39 |
 | Background | `swap_to_quant_linear_from_dopt` is a backward-compat thin wrapper (only Linear swap, loads sd itself), duplicates `swap_from_dopt` (Linear + embed one sd load). grep confirms **no code callers** (dead code), only in docs/signature tables. `_swap_linear_from_sd` (private, accepts sd) is already the extracted Linear swap body, `swap_from_dopt` reuses it, no need for `swap_to_quant_linear_from_dopt` |
 | Violates convention | None (dead code cleanup) |
 | Discovery date | 2026-08-31 |
@@ -375,7 +375,7 @@ Remove `swap_to_quant_linear_from_dopt` (dead code), `swap_from_dopt` retained (
 
 ### Related
 
-- Source file: `cann_lm/converter/swap.py`
+- Source file: `cann_local_lm/converter/swap.py`
 - Design docs: [quant_design.md](./quant/quant_design.md) "`swap.py` signature table" / "swap module symbols", [export_design.md](./export/export_design.md) "file tree"
 - Historical decision: [adr/README.md](../adr/README.md) L39 (refactoring item ❌→✅ landed)
 
@@ -387,7 +387,7 @@ Remove `swap_to_quant_linear_from_dopt` (dead code), `swap_from_dopt` retained (
 | Field | Value |
 |------|-----|
 | ID | CLI-009 |
-| Location | `cann_lm/converter/swap.py` L334-355 (swap_from_dopt signature + internal call); Docs: `quant_design.md` L448, `quant/INDEX.md` L49, `README.md` L47 |
+| Location | `cann_local_lm/converter/swap.py` L334-355 (swap_from_dopt signature + internal call); Docs: `quant_design.md` L448, `quant/INDEX.md` L49, `README.md` L47 |
 | Background | `swap_from_dopt(model, dopt_path, skip=DEFAULT_SKIP, act_quant=True)`'s `skip`/`act_quant` params: no code caller passes them (sole caller `cann_lm_converter.py:100` only passes `model+dopt_path`, uses defaults). `skip=DEFAULT_SKIP` (fixed skip embed_tokens), `act_quant=True` (W4A8, currently doesn't support W4A16) are both fixed values, no external override need |
 | Violates convention | None (parameter simplification) |
 | Discovery date | 2026-08-31 |
@@ -408,8 +408,8 @@ Remove `swap_from_dopt`'s `skip`/`act_quant` params, internally hardcodes `skip=
 
 ### Related
 
-- Source file: `cann_lm/converter/swap.py`
-- Caller: `cann_lm/converter/cann_lm_converter.py:100`
+- Source file: `cann_local_lm/converter/swap.py`
+- Caller: `cann_local_lm/converter/cann_lm_converter.py:100`
 - Design doc: [quant_design.md](./quant/quant_design.md) "`swap.py` signature table"
 
 ---
@@ -421,7 +421,7 @@ Remove `swap_from_dopt`'s `skip`/`act_quant` params, internally hardcodes `skip=
 |------|-----|
 | ID | CLI-010 |
 | Type | TODO (pending optimization, not a deviation) |
-| Background | `load_model(hf_path)` loads HF original (incl. Linear fp16 weights) → cann_lm model; `swap_from_dopt`'s `_swap_linear_from_sd` reads int4+scale from lightweight tool output sd, `setattr` replaces Linear→QuantLinear, **does not read model Linear's weight**. So load_model's loaded Linear HF fp is replaced and discarded, wasting IO+memory (scenario 2 memory peak: subprocess transformers + main process cann_lm with discarded Linear fp) |
+| Background | `load_model(hf_path)` loads HF original (incl. Linear fp16 weights) → cann_local_lm model; `swap_from_dopt`'s `_swap_linear_from_sd` reads int4+scale from lightweight tool output sd, `setattr` replaces Linear→QuantLinear, **does not read model Linear's weight**. So load_model's loaded Linear HF fp is replaced and discarded, wasting IO+memory (scenario 2 memory peak: subprocess transformers + main process cann_local_lm with discarded Linear fp) |
 | Status | **TODO (pending evaluation)** |
 | Discovery date | 2026-08-31 |
 
@@ -437,7 +437,7 @@ Remove `swap_from_dopt`'s `skip`/`act_quant` params, internally hardcodes `skip=
 
 ### Why Currently Load HF Original (Design Trade-off)
 
-1. cann_lm model structure needs HF original construction (`model_registry` + cann_lm model class + key remapping)
+1. cann_local_lm model structure needs HF original construction (`model_registry` + cann_local_lm model class + key remapping)
 2. Non-Linear (LayerNorm) needs HF original fp (lightweight tool doesn't touch, but lightweight tool output layer names may carry `model.language_model.` etc. VLM prefix, load_model key remapping targets HF original)
 3. Simple: load_model general loading (doesn't distinguish Linear/non-Linear), swap replaces
 
@@ -454,7 +454,7 @@ Remove `swap_from_dopt`'s `skip`/`act_quant` params, internally hardcodes `skip=
 
 ### Related
 
-- Source: `cann_lm/converter/cann_lm_converter.py:77` (load_model) + `cann_lm/converter/swap.py:221` (`_swap_linear_from_sd`, doesn't read model Linear weight)
+- Source: `cann_local_lm/converter/cann_lm_converter.py:77` (load_model) + `cann_local_lm/converter/swap.py:221` (`_swap_linear_from_sd`, doesn't read model Linear weight)
 - Design docs: [cli_design.md](./cli/cli_design.md) "Complete call chain" (load_model → swap), [quant_design.md](./quant/quant_design.md) "swap.py signature table"
 - Related: CLI-007 (scenario 2 memory peak, subprocess + main process)
 
@@ -524,7 +524,7 @@ All three consistent, no code change needed:
 
 ### Related
 
-- Source: `cann_lm/converter/quant/dopt_wrapper.py:31` (build_layer_strategy), `cann_lm/converter/swap.py:138` (`_STRATEGY_DEFAULT_PARAMS`), `cann_lm/converter/quant/dopt_lm/quantizer/strategy.py` (strategy definitions)
+- Source: `cann_local_lm/converter/quant/dopt_wrapper.py:31` (build_layer_strategy), `cann_local_lm/converter/swap.py:138` (`_STRATEGY_DEFAULT_PARAMS`), `cann_local_lm/converter/quant/dopt_lm/quantizer/strategy.py` (strategy definitions)
 - Related: CLI-009 (swap_from_dopt removed act_quant, hardcoded W4A8)
 
 ---
@@ -561,7 +561,7 @@ Lightweight tool uses QEmbedding to quantize PLE (int8 + scale + meta).
 ```python
 token_identity = m.embed_tokens_per_layer(input_ids).reshape(...).detach()   # HF original float
 ```
-`m.embed_tokens_per_layer` is cann_lm model's Embedding (load_model loads HF original fp, swap doesn't replace).
+`m.embed_tokens_per_layer` is cann_local_lm model's Embedding (load_model loads HF original fp, swap doesn't replace).
 
 ### Problem
 
@@ -595,10 +595,10 @@ token_identity = m.embed_tokens_per_layer(input_ids).reshape(...).detach()   # H
 
 **PLE quant adapt epair path** (3 code places + 1 verification script):
 
-1. **`cann_lm/models/gemma4/export_wrapper.py`**:
+1. **`cann_local_lm/models/gemma4/export_wrapper.py`**:
    - `forward` (:49-72) adds `per_layer_token_identity_scale` param + PLE dequant (`per_layer_token_identity(int8) * per_layer_token_identity_scale → float`, mimics `embeddings/embeddings_scale`)
    - `get_sample_inputs(quant)` (:246-269) extracts PLE int8+scale from `_quant_embeddings`, gathers `input_ids`→`ple_q`+`ple_scale`; non-quant/in-graph branch adds `None` ple_scale to preserve 11-element return order
-2. **`cann_lm/models/fused_ops/fused_infer_attention_score.py` `_fa_cpu`** (:92-100): compat gemma4 mask square `[b,1,kv_max,kv_max]` bool (truncate first seq_len rows to match `attn_weights [b,heads,seq_len,kv_max]` + bool→float `True→-inf`); non-square float mask (qwen3.5 etc.) unaffected
+2. **`cann_local_lm/models/fused_ops/fused_infer_attention_score.py` `_fa_cpu`** (:92-100): compat gemma4 mask square `[b,1,kv_max,kv_max]` bool (truncate first seq_len rows to match `attn_weights [b,heads,seq_len,kv_max]` + bool→float `True→-inf`); non-square float mask (qwen3.5 etc.) unaffected
 3. **`examples/.../debug_gemma4/verify_gemma4_epair_quant.py`** (new, 97 lines): epair loop verification (load+lightweight tool+set_quant_embeddings+export+ep.module vs wrapper logits consistent+PLE dequant sanity)
 
 **Verification result** (`verify_gemma4_epair_quant.py --hf-path gemma-4-E2B-it --quant-path /tmp/opencode/gemma4_quant_output`):
@@ -612,7 +612,7 @@ token_identity = m.embed_tokens_per_layer(input_ids).reshape(...).detach()   # H
 
 ### Related
 
-- Source: `cann_lm/models/gemma4/export_wrapper.py:273-283` (`_build_external_extras`), `cann_lm/models/export_wrapper.py:44-60` (forward per_layer_token_identity/embeddings_scale), `cann_lm/converter/swap.py:35-56` (swap_embeddings_from_dopt, doesn't replace Embedding)
+- Source: `cann_local_lm/models/gemma4/export_wrapper.py:273-283` (`_build_external_extras`), `cann_local_lm/models/export_wrapper.py:44-60` (forward per_layer_token_identity/embeddings_scale), `cann_local_lm/converter/swap.py:35-56` (swap_embeddings_from_dopt, doesn't replace Embedding)
 - Artifacts: `host_weights_info.json` (PLE `_q`/`_scale`), lightweight tool `model.safetensors` (PLE fakequant+scale)
 - Related docs: [feature_embedding_design.md](./feature_embedding_design.md) "gemma4 PLE special" / "Lightweight tool's implementation for gemma4"
 - Related: CLI-011 (build_layer_strategy vs strategy.py consistency)
@@ -678,14 +678,14 @@ Side (local/device-side) LLM inference or conversion tools, comparable positioni
 ### Action Items
 
 - [x] Evaluate whether cann-lm-converter needs subcommand-ization → **Keep single command** (converter single responsibility export epair, no serve/verify actions; subcommand-ization pending responsibility expansion)
-- [x] Evaluate console_scripts registering `cann-lm-converter` command → **Done**: `scripts/cann_lm_converter/pyproject.toml:20-21` `cann-lm-converter = "cann_lm.converter.cann_lm_converter:main"`, direct call after pip install
+- [x] Evaluate console_scripts registering `cann-lm-converter` command → **Done**: `scripts/cann_lm_converter/pyproject.toml:20-21` `cann-lm-converter = "cann_local_lm.converter.cann_lm_converter:main"`, direct call after pip install
 - [x] Add "command reference" independent doc page → **Done**: cli/INDEX.md adds "Command Reference" section (console_scripts entry `cann-lm-converter` + usage examples 5 types)
 - [ ] examples/ cases add README (reference llama.cpp `tools/`&lt;t&gt;`/README.md`)
 
 ### Related
 
 - Survey sources: mlx-lm (github.com/ml-explore/mlx-lm), llama.cpp (github.com/ggml-org/llama.cpp), mlc-llm (github.com/mlc-ai/mlc-llm), ollama (github.com/ollama/ollama)
-- Related code: `cann_lm/converter/cann_lm_converter.py` (CLI), `pyproject.toml` (entry point, torch_delegate already has)
+- Related code: `cann_local_lm/converter/cann_lm_converter.py` (CLI), `pyproject.toml` (entry point, torch_delegate already has)
 - Design docs: [cli_design.md](./cli/cli_design.md) (CLI params/call chain), [README.md](./README.md)
 
 ---
@@ -697,7 +697,7 @@ Side (local/device-side) LLM inference or conversion tools, comparable positioni
 |------|-----|
 | ID | CLI-014 |
 | Type | TODO (legacy design assumption limitation, not a deviation) |
-| Location | `cann_lm/converter/saver.py:220-238` (prefill `save_weights=True` / decode `save_weights=False`) + docstring:142-148 "shared weights (packed once)"; design: [export_design.md:936](./export/export_design.md) "weight sharing: two graphs' state_dict same" |
+| Location | `cann_local_lm/converter/saver.py:220-238` (prefill `save_weights=True` / decode `save_weights=False`) + docstring:142-148 "shared weights (packed once)"; design: [export_design.md:936](./export/export_design.md) "weight sharing: two graphs' state_dict same" |
 | Current state | `save_epair_prefill_decode` assumes prefill/decode two graphs' state_dict same (same model), only prefill stores weights (`consolidated_weights_save(prefill_epair, save_weights=True)` writes `weights_*.bin` + `weight_info.json`), decode `save_weights=False` (only writes `decode_ep_json_with_ascend_ir.json`, weights discarded) |
 | Violates convention | None (design assumption, not deviation) |
 | Discovery date | 2026-09-01 |
@@ -759,7 +759,7 @@ And **single artifact API means PD weights necessarily identical** (same model, 
 
 ### Related
 
-- Source: `cann_lm/converter/saver.py:220-238` (save_epair_prefill_decode weight saving), `cann_lm/converter/export/epair_utils.py:131` (consolidated_weights_save save_weights semantics), C++ `GeWeightLoader` (weight loading)
+- Source: `cann_local_lm/converter/saver.py:220-238` (save_epair_prefill_decode weight saving), `cann_local_lm/converter/export/epair_utils.py:131` (consolidated_weights_save save_weights semantics), C++ `GeWeightLoader` (weight loading)
 - Design doc: [export_design.md](./export/export_design.md) "prefill/decode separated export / weight sharing" (L928-962)
 - Related: CLI-010 (load_model load waste, swap discards Linear fp)
 
@@ -772,7 +772,7 @@ And **single artifact API means PD weights necessarily identical** (same model, 
 |------|-----|
 | ID | CLI-015 |
 | Type | TODO (legacy/pending implementation, not deviation) |
-| Location | Design: [weight_format_design.md](./export/weight_format_design.md); Code TBD: `cann_lm/converter/export/weight_format/` (`layout.py` `nd2nz` + `rules.py` `resolve_format`) + `weight_format_rules.json` + `epair_utils._pack_weights_to_dir` integration + `inline_weight_layout` + C++ `aten_tensor_desc_mapper.cc:112` `MapGeLayoutString` / `ge_weight_loader.cc:115` `Pt2LayoutFromGeString` |
+| Location | Design: [weight_format_design.md](./export/weight_format_design.md); Code TBD: `cann_local_lm/converter/export/weight_format/` (`layout.py` `nd2nz` + `rules.py` `resolve_format`) + `weight_format_rules.json` + `epair_utils._pack_weights_to_dir` integration + `inline_weight_layout` + C++ `aten_tensor_desc_mapper.cc:112` `MapGeLayoutString` / `ge_weight_loader.cc:115` `Pt2LayoutFromGeString` |
 | Background | `weight_format_design.md` designed weight on-disk from ND (row-major) to NZ (FractNZ 16×16 block-major), letting Ascend cube compute weight Const enter GE graph directly as `FORMAT_FRACTAL_NZ`, avoiding OM compile/runtime transdata. Stage 1 (fp16 `MatMul` Linear weights `*_proj`) designed, but `weight_format/` package + `weight_format_rules.json` **0 implementation** (`ls` confirms NOT implemented) |
 | Violates convention | None (pending implementation) |
 | Discovery date | 2026-09-01 |
@@ -811,7 +811,7 @@ Quantized `QuantBatchMatmulV4` int4 nibble-packed weights NZ — standard `nd2nz
 ### Related
 
 - Design doc: [weight_format_design.md](./export/weight_format_design.md) (Stage 1 design + Stage 2 research gate)
-- Related code: `cann_lm/converter/export/epair_utils.py` (`_pack_weights_to_dir` integration point + `inline_weight_scale_dtype` precedent), C++ `aten_tensor_desc_mapper.cc`/`ge_weight_loader.cc`/`ge_graph_builder.cc`
+- Related code: `cann_local_lm/converter/export/epair_utils.py` (`_pack_weights_to_dir` integration point + `inline_weight_scale_dtype` precedent), C++ `aten_tensor_desc_mapper.cc`/`ge_weight_loader.cc`/`ge_graph_builder.cc`
 - Related: CLI-014 (PD weight artifact layout), CLI-016 (epair weight and const separation)
 
 ---
@@ -823,7 +823,7 @@ Quantized `QuantBatchMatmulV4` int4 nibble-packed weights NZ — standard `nd2nz
 |------|-----|
 | ID | CLI-016 |
 | Type | TODO (legacy/pending clarification + pending implementation) |
-| Location | `cann_lm/converter/export/epair_utils.py` (`_pack_weights_to_dir`/`ConsolidatedWeights`, weights and const mixed on disk) + `weight_info.json` (index) + C++ `GeWeightLoader` (loading) |
+| Location | `cann_local_lm/converter/export/epair_utils.py` (`_pack_weights_to_dir`/`ConsolidatedWeights`, weights and const mixed on disk) + `weight_info.json` (index) + C++ `GeWeightLoader` (loading) |
 | Background | epair's current `weights_*.bin` mixes model weights (Linear `*.weight`, Embedding, norm, bias etc.) with graph constants (const tensor, like fused_attn_seq constants, shape/dtype constants) into one bin; `weight_info.json` unified index. Need to separate "weights" from "const" (separate files / classified index), for C++ loading side to distinguish weight Const nodes from graph constants, supporting differentiated handling (e.g. NZ format only applies to weight const keeping ND; or const externalized/shared) |
 | Violates convention | None (pending clarification + pending implementation) |
 | Discovery date | 2026-09-01 |
@@ -852,7 +852,7 @@ Quantized `QuantBatchMatmulV4` int4 nibble-packed weights NZ — standard `nd2nz
 
 ### Related
 
-- Source: `cann_lm/converter/export/epair_utils.py` (`_pack_weights_to_dir`/`ConsolidatedWeights`/`weight_info.json`), C++ `GeWeightLoader`
+- Source: `cann_local_lm/converter/export/epair_utils.py` (`_pack_weights_to_dir`/`ConsolidatedWeights`/`weight_info.json`), C++ `GeWeightLoader`
 - Design docs: [export_design.md](./export/export_design.md) (artifact layout/weight loading), [weight_format_design.md](./export/weight_format_design.md)
 - Related: CLI-015 (weight_format NZ, only applies to weights), CLI-014 (PD weight artifact layout)
 
@@ -936,7 +936,7 @@ Problem: torchair stubs are converter env required (no stubs → torchair GE eng
 ### Simplification Direction (pending evaluation, limited by multi-component coupling)
 
 1. **Single dependency convergence**: after torch-delegate build.sh integrates torchair stubs (CLI-017), `pip install torch-delegate` or build.sh one-click produces whl+stubs, close to mlx-lm `pip install mlx-lm`
-2. **Device abstraction layer**: cann-lm has no mlx-library-equivalent unified device abstraction (CANN/torchair/torch_npu each manages own); long-term can wrap device abstraction layer (e.g. `cann_lm.device.is_available()` targeting `mx.default_device()`), but limited by multi-component
+2. **Device abstraction layer**: cann-lm has no mlx-library-equivalent unified device abstraction (CANN/torchair/torch_npu each manages own); long-term can wrap device abstraction layer (e.g. `cann_local_lm.device.is_available()` targeting `mx.default_device()`), but limited by multi-component
 3. **env in-code**: mlx-lm env vars set in-code (`os.environ[...]=...`), no source; cann-lm some can be in-code (e.g. `TRANSFORMERS_NO_ADVISORY_WARNINGS` already mimicked), but LD_LIBRARY_PATH/ASCEND_HOME_PATH need source (CANN lib paths)
 4. **env script simplification**: after CLI-017 set_env_export.sh simplifies (stubs path from torch-delegate install default); 4 envs converge (if converter/compile/generate/npu can merge)
 5. **Stubbing transparency**: mlx-lm no stubs (mlx runs directly); cann-lm stubs are torchair GE engine's workaround to avoid real NPU, long-term if torchair supports pure CPU conversion (no GE engine calling aclrt) can remove stubs
@@ -965,7 +965,7 @@ Problem: torchair stubs are converter env required (no stubs → torchair GE eng
 |------|-----|
 | ID | CLI-019 |
 | Type | TODO (pending decision + pending implementation) |
-| Location | `cann_lm/converter/export/epair_utils.py` (`_pack_weights_to_dir`: three types mixed on disk, though already iterates `graph_signature`'s `inputs_to_parameters`/`inputs_to_buffers`/`inputs_to_lifted_tensor_constants` but doesn't record category) + `weight_info.json` (entries have no category field) + C++ `ge_weight_loader.cc`/`ge_graph_builder.cc:CreateConstNode` (three types uniformly build Const) |
+| Location | `cann_local_lm/converter/export/epair_utils.py` (`_pack_weights_to_dir`: three types mixed on disk, though already iterates `graph_signature`'s `inputs_to_parameters`/`inputs_to_buffers`/`inputs_to_lifted_tensor_constants` but doesn't record category) + `weight_info.json` (entries have no category field) + C++ `ge_weight_loader.cc`/`ge_graph_builder.cc:CreateConstNode` (three types uniformly build Const) |
 | Background | epair export's `_pack_weights_to_dir` mixes parameter/const/buffer three types into same `weights_*.bin` + `weight_info.json` (entries only `{name,offset,size,format}`, **no category identifier**). Three types in ep_json `tensor_values` distinguished by prefix: `p_*` (parameter, model weights), `c_*` (const, lifted tensor constants), `b_*` (buffer, non-persistent state); authoritative source is `graph_signature` (pack already iterates but doesn't persist category). Need to distinguish at export because: (1) NZ format conversion (CLI-015) should only apply to `p_*`'s `*_proj.weight`, not touch `c_*`/`b_*`; (2) C++ loading side has different semantics for three types (parameter can NZ/externalized, const stays ND/shareable, buffer non-persistent); (3) directly related to CLI-016 granularity |
 | Violates convention | None (pending decision) |
 | Discovery date | 2026-09-05 |
@@ -994,7 +994,7 @@ Problem: torchair stubs are converter env required (no stubs → torchair GE eng
 
 ### Related
 
-- Source: `cann_lm/converter/export/epair_utils.py` (`_pack_weights_to_dir`) + C++ `ge_weight_loader.cc`/`ge_graph_builder.cc:CreateConstNode`
+- Source: `cann_local_lm/converter/export/epair_utils.py` (`_pack_weights_to_dir`) + C++ `ge_weight_loader.cc`/`ge_graph_builder.cc:CreateConstNode`
 - Related: **CLI-015** (NZ format, only applies to parameter), **CLI-016** (weight and const separation, this item refines its granularity)
 
 ---
@@ -1005,7 +1005,7 @@ Problem: torchair stubs are converter env required (no stubs → torchair GE eng
 |------|-----|
 | ID | CLI-020 |
 | Type | TODO (pending implementation) |
-| Location | `cann_lm/converter/saver.py` (`save_epair`/`save_epair_prefill_decode`: `torch.export.export` after no output name set) + `cann_lm/models/export_wrapper.py` (`make_input_output_names` only for ONNX, doesn't cover delta_out) |
+| Location | `cann_local_lm/converter/saver.py` (`save_epair`/`save_epair_prefill_decode`: `torch.export.export` after no output name set) + `cann_local_lm/models/export_wrapper.py` (`make_input_output_names` only for ONNX, doesn't cover delta_out) |
 | Background | `torch.export.export(model, args, strict=False)` **has no direct parameter** to set output name. Output name derived from the FX op node producing that output (e.g. `matmul`/`sin`/`cos`/`index_select`), not semantic name (e.g. `logits`/`past_key_0_out`). When returning dict, keys are lost (torch.export flattens to tuple, name still derived from op name). Tested torch 2.9.0+cpu: `OutputSpec.arg = TensorArgument(name='matmul')` — `name` field can be post-processed and rewritten, after change `ep.module()` runs fine |
 | Violates convention | None (pending implementation) |
 | Discovery date | 2026-09-16 |
@@ -1071,6 +1071,6 @@ with lite_export_context(lite_config):
 
 ### Related
 
-- Source: `cann_lm/converter/saver.py` (`save_epair`/`save_epair_prefill_decode`) + `cann_lm/models/export_wrapper.py` (`make_input_output_names`/`forward` returns logits+past_kv_flat+delta_out_flat)
+- Source: `cann_local_lm/converter/saver.py` (`save_epair`/`save_epair_prefill_decode`) + `cann_local_lm/models/export_wrapper.py` (`make_input_output_names`/`forward` returns logits+past_kv_flat+delta_out_flat)
 - Related: **CLI-014** (PD weight sharing, this output name doesn't affect sharing), **CLI-016/CLI-019** (weight/const separation, partially implemented `_is_weight` field — see note below)
 - Note: CLI-016/CLI-019's "weight_info.json add category field" already implemented as `_is_weight` (bool, binary: parameter+buffer=true / const=false), `epair_utils.py:_pack_weights_to_dir` writes this field + C++ `ge_weight_loader.cc:LoadConsolidated` reads to fill `TensorRecordInfo.is_parameter` + `ge_graph_builder.cc:CreateConstNode` injects GE Const node private attr `_is_weight` (visible in dump graph, OM cleaned by GE OptimizeStage1). CLI-016/CLI-019's NZ by kind dispatch (NZ only for parameter) not yet implemented, still TODO

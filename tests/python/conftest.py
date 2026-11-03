@@ -1,9 +1,9 @@
 """Pytest path bootstrap + host .so/stub env for Tier B tests.
 
-(1) Make `import cann_lm` resolve to the bindings package without requiring
+(1) Make `import cann_local_lm` resolve to the bindings package without requiring
     `pip install -e .` (keeps the test run dependency-free). 绑定源在
-    cann_lm/engine/python/cann_lm/ (engine 目录重构后移入, conftest 旧路径
-    cann_lm/python 已废)。
+    cann_local_lm/engine/python/cann_local_lm/ (engine 目录重构后移入, conftest 旧路径
+    cann_local_lm/python 已废)。
 (2) On host, auto-point CANN_LM_LIB at the host-built libcann_lm_engine.so and
     CANN_LM_NDK_LIB_DIR at the build dir (stub .so for OH_NN*) so Tier B tests
     needing a loadable .so + NDK backend run without manual env. 只在未设且 .so
@@ -15,7 +15,7 @@ import sys
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _REPO = os.path.normpath(os.path.join(_HERE, "..", ".."))
-_PKG_ROOT = os.path.normpath(os.path.join(_REPO, "cann_lm", "engine", "python"))
+_PKG_ROOT = os.path.normpath(os.path.join(_REPO, "cann_local_lm", "engine", "python"))
 if _PKG_ROOT not in sys.path:
     sys.path.insert(0, _PKG_ROOT)
 

@@ -24,17 +24,17 @@ English | [简体中文](../../../zh/cann_lm_engine/ut/DESIGN.md)
 |------|-----|
 | Code path | `tests/cpp/engine/`, `tests/cpp/engine/model_executor/`, `examples/test_engine/bbit/` |
 | Framework | GoogleTest 1.14 (`find_package(GTest REQUIRED)`) |
-| CMake entry | `cann_lm/engine/CMakeLists.txt:66-127` |
+| CMake entry | `cann_local_lm/engine/CMakeLists.txt:66-127` |
 | Build artifacts | 10 executables: `model_executor_ut` / `ut_engine_executor` / `ut_tokenizer` / `ut_c_api` / `ut_scheduler` / `ut_sampler` / `ut_request_handle` / `ut_logger` / `ut_text_embedding` / `bbit` |
 | Test discovery | `gtest_discover_tests()` registered into CTest (bbit manually via `add_test`) |
-| Namespace | `cann_lm::engine` (consistent with code under test; anonymous namespace for fixtures and TESTs) |
+| Namespace | `cann_local_lm::engine` (consistent with code under test; anonymous namespace for fixtures and TESTs) |
 | Upstream | each module's DESIGN/SPEC (see depends_on) |
 
 ## §2 Architecture Overview
 
 ```mermaid
 graph TD
-    subgraph "Implementation under test cann_lm/engine/"
+    subgraph "Implementation under test cann_local_lm/engine/"
         APIc["api/c/c_api.cpp"]
         APIcpp["api/cpp/engine_executor.cpp + request_handle.cpp"]
         PIPE["pipeline/*"]
@@ -63,7 +63,7 @@ graph TD
 ```
 
 **Key boundaries**:
-- UT and code under test in same compilation unit, include paths point to `cann_lm/engine/` (`target_include_directories(... PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})`)
+- UT and code under test in same compilation unit, include paths point to `cann_local_lm/engine/` (`target_include_directories(... PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})`)
 - Each UT binary statically links `libcann_lm_engine.a` + `GTest::gtest` + `GTest::gtest_main` (main provided by gtest_main, no need to write own)
 - bbit does not link gtest, is pure C++ black-box consumer, simulates real user calling C API
 
@@ -201,7 +201,7 @@ EXPECT_EQ(s.code, Status::INVALID_ARGUMENT);
 
 ## §7 GoogleTest Configuration and CMake Wiring
 
-`cann_lm/engine/CMakeLists.txt:66-127` already defines 5 UT binaries + bbit. This phase adds:
+`cann_local_lm/engine/CMakeLists.txt:66-127` already defines 5 UT binaries + bbit. This phase adds:
 
 ```cmake
 # ut_sampler

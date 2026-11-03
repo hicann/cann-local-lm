@@ -4,7 +4,7 @@ English | [简体中文](../../../zh/cann_lm_engine/embedding/SPEC.md)
 
 ## Chapter 1 Overview
 
-This specification defines the business behavior of the C++ embedding module under `cann_lm/engine/core/component/text_embedding`. This module provides the CANN-LM inference engine with embedding table loading, host-side table lookup (gather), and model input slot filling capabilities: loading low-precision embedding tables and dequantization scale parameters from the file system into memory, or (InFlash mode) leaving the table in the file system and reading on demand; gathering low-precision rows by index on the host side, and filling the results into model input slots (`input_embed` / `embed_scales`) in the type declared by the om graph `TensorDesc`. Dequantization (dequant) is **always done on the NPU side**; this module does not perform any dequantization math on the host side. This module is an engine-internal C++ component, consumed only by the pipeline / model_executor layer, and **does not expose** any cross-language or external interfaces.
+This specification defines the business behavior of the C++ embedding module under `cann_local_lm/engine/core/component/text_embedding`. This module provides the CANN-LM inference engine with embedding table loading, host-side table lookup (gather), and model input slot filling capabilities: loading low-precision embedding tables and dequantization scale parameters from the file system into memory, or (InFlash mode) leaving the table in the file system and reading on demand; gathering low-precision rows by index on the host side, and filling the results into model input slots (`input_embed` / `embed_scales`) in the type declared by the om graph `TensorDesc`. Dequantization (dequant) is **always done on the NPU side**; this module does not perform any dequantization math on the host side. This module is an engine-internal C++ component, consumed only by the pipeline / model_executor layer, and **does not expose** any cross-language or external interfaces.
 
 Requirement ID: **SR20260828001**. Software layer: **framework** (engine core reusable library, includes backward compatibility chapter).
 
@@ -38,7 +38,7 @@ The reader should understand within 30 seconds: this spec defines a C++ embeddin
 
 ### 3.1 Current State
 
-`cann_lm/engine/core/component/text_embedding/text_embedding.h/.cpp` is currently a stub era stub implementation: `TextEmbedding::LoadAndBind()` directly returns `FAILURE`, header comment notes "polymorphism pending docs/embedding DESIGN". Same file also holds `ModalityEntry` (multimodal placeholder positioning entry, another responsibility consumed by Preprocessor). `INPUT_INFO.md` records `embed_scales` slot filler as embedding module (currently pending). User requirement original input see `docs/embedding/proposal.md`.
+`cann_local_lm/engine/core/component/text_embedding/text_embedding.h/.cpp` is currently a stub era stub implementation: `TextEmbedding::LoadAndBind()` directly returns `FAILURE`, header comment notes "polymorphism pending docs/embedding DESIGN". Same file also holds `ModalityEntry` (multimodal placeholder positioning entry, another responsibility consumed by Preprocessor). `INPUT_INFO.md` records `embed_scales` slot filler as embedding module (currently pending). User requirement original input see `docs/embedding/proposal.md`.
 
 ### 3.2 Problem
 

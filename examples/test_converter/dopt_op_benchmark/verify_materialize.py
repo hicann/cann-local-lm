@@ -1,6 +1,6 @@
 """验证 converter materialize (quant_swap/materialize.py) 对齐 Tier 0 (ref_w4a8.py)。
 
-被测对象 (under test): cann_lm.converter.export.quant_swap.materialize 的
+被测对象 (under test): cann_local_lm.converter.export.quant_swap.materialize 的
   materialize_int4_per_group_symmetric / pack_int4 / transdata_scale / restore_scale
 标准: Tier 0 ref_w4a8 (手算夹具钉死, 独立于 converter 代码)
 
@@ -17,7 +17,7 @@ import torch
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, SCRIPT_DIR)
 
-from cann_lm.converter.export.quant_swap.materialize import (
+from cann_local_lm.converter.export.quant_swap.materialize import (
     materialize_int4_per_group_symmetric,
     pack_int4,
     pack_int4_int32,

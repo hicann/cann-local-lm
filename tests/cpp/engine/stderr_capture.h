@@ -8,7 +8,7 @@
 #include <string>
 #include <unistd.h>
 
-namespace cann_lm::engine::test_util {
+namespace cann_local_lm::engine::test_util {
 
 class StderrCapture {
 public:
@@ -62,4 +62,4 @@ private:
     std::string captured_;
 };
 
-} // namespace cann_lm::engine::test_util
+} // namespace cann_local_lm::engine::test_util

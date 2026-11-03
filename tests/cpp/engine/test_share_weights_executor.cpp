@@ -157,19 +157,19 @@ void ResetMocks()
 constexpr const char* kWeight = "/mock/weights";
 
 // 合法 omc buffer 源（buffer 态优先，D-15）
-cann_lm::engine::ArtifactSource MakeOmc()
+cann_local_lm::engine::ArtifactSource MakeOmc()
 {
     static char omc_buf[8];
-    cann_lm::engine::ArtifactSource s;
-    s.data = cann_lm::engine::Buffer{omc_buf, sizeof(omc_buf)};
+    cann_local_lm::engine::ArtifactSource s;
+    s.data = cann_local_lm::engine::Buffer{omc_buf, sizeof(omc_buf)};
     return s;
 }
 
 // 容量域合法配置（TC_106 前置）；hidden_size/vocab_align_size 留 0：
 // desc 修正跳过（无已知名称命中），dims 保持 mock 原值
-cann_lm::engine::ModelConfig MakeConfig()
+cann_local_lm::engine::ModelConfig MakeConfig()
 {
-    cann_lm::engine::ModelConfig c;
+    cann_local_lm::engine::ModelConfig c;
     c.kv_cache_max_len = 16;
     c.num_hidden_layers = 2;
     return c;
@@ -194,7 +194,7 @@ TEST(ShareWeightsExecutorTest, LoadPassesShareWeightsIdToInit_TC004)
 {
     sw_exec_mock::ResetMocks();
     sw_exec_mock::MockModelManager::model_id = 0xC0FFEE; // 区分值（与透传值互异，防串扰误判）
-    cann_lm::engine::ModelExecutor exec(nullptr, nullptr, nullptr);
+    cann_local_lm::engine::ModelExecutor exec(nullptr, nullptr, nullptr);
     ASSERT_TRUE(exec.Load(sw_exec_mock::MakeOmc(), sw_exec_mock::kWeight, sw_exec_mock::MakeConfig(), /*seq_len=*/1,
                           /*share_weights_model_id=*/77u)
                     .ok());
@@ -207,7 +207,7 @@ TEST(ShareWeightsExecutorTest, ModelIdReflectsGetModelID_TC005)
 {
     sw_exec_mock::ResetMocks();
     sw_exec_mock::MockModelManager::model_id = 0xC0FFEE;
-    cann_lm::engine::ModelExecutor exec(nullptr, nullptr, nullptr);
+    cann_local_lm::engine::ModelExecutor exec(nullptr, nullptr, nullptr);
     EXPECT_EQ(exec.ModelId(), 0u); // 未加载 = 0 = 不绑定语义
     ASSERT_TRUE(exec.Load(sw_exec_mock::MakeOmc(), sw_exec_mock::kWeight, sw_exec_mock::MakeConfig(), 1).ok());
     EXPECT_EQ(exec.ModelId(), 0xC0FFEEu);
@@ -219,7 +219,7 @@ TEST(ShareWeightsExecutorTest, ModelIdReflectsGetModelID_TC005)
 TEST(ShareWeightsExecutorTest, LoadDefaultZeroNoBind_TC006)
 {
     sw_exec_mock::ResetMocks();
-    cann_lm::engine::ModelExecutor exec(nullptr, nullptr, nullptr);
+    cann_local_lm::engine::ModelExecutor exec(nullptr, nullptr, nullptr);
     ASSERT_TRUE(exec.Load(sw_exec_mock::MakeOmc(), sw_exec_mock::kWeight, sw_exec_mock::MakeConfig(), 1).ok());
     EXPECT_EQ(sw_exec_mock::MockModelManager::last_init_opts.shareWeightsModelId, 0u);
 }
@@ -232,7 +232,7 @@ TEST(ShareWeightsExecutorTest, LoadPassesWeightDirToInitWeights_TC007)
 {
     sw_exec_mock::ResetMocks();
     constexpr const char* kDecodeWeight = "/mock/weights_decode"; // 与 kWeight 互异
-    cann_lm::engine::ModelExecutor exec(nullptr, nullptr, nullptr);
+    cann_local_lm::engine::ModelExecutor exec(nullptr, nullptr, nullptr);
     ASSERT_TRUE(exec.Load(sw_exec_mock::MakeOmc(), kDecodeWeight, sw_exec_mock::MakeConfig(), /*seq_len=*/1,
                           /*share_weights_model_id=*/0xC0FFEEu)
                     .ok());

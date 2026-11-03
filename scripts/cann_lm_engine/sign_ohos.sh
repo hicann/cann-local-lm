@@ -14,7 +14,7 @@ BUILD_DIR="${1:-${REPO_ROOT}/build_ohos}"
 #      —— jar 是 command-line-tools SDK 自带物, 与 native/ 平级 (toolchains/
 #      是 openharmony/ 的兄弟目录); 交叉编译机必装 SDK, 零拷贝。
 #   ③ 仓内 tools/binary-sign-tool.jar (旧约定, 见 tools/README.md)
-#   ④ 仓内 cann_lm/engine/ohos/binary-sign-tool.jar (最老回退)
+#   ④ 仓内 cann_local_lm/engine/ohos/binary-sign-tool.jar (最老回退)
 # 闭源二进制不入库, 探测链保证: 只要装了 SDK 就能签, 无需任何手工拷贝。
 JAR="${2:-${BINARY_SIGN_TOOL:-}}"
 if [ -z "$JAR" ] && [ -n "${OHOS_SDK_NATIVE:-}" ]; then
@@ -27,7 +27,7 @@ if [ -z "$JAR" ]; then
   if [ -f "${REPO_ROOT}/tools/binary-sign-tool.jar" ]; then
     JAR="${REPO_ROOT}/tools/binary-sign-tool.jar"
   else
-    JAR="${REPO_ROOT}/cann_lm/engine/ohos/binary-sign-tool.jar"
+    JAR="${REPO_ROOT}/cann_local_lm/engine/ohos/binary-sign-tool.jar"
   fi
 fi
 

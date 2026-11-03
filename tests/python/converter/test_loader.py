@@ -11,12 +11,12 @@ from pathlib import Path
 
 import torch.nn as nn
 
-from cann_lm.converter.loader import (
+from cann_local_lm.converter.loader import (
     ModelArtifact,
     build_config,
     collect_tokenizer_files,
 )
-from cann_lm.models.model_registry import REGISTRY
+from cann_local_lm.models.model_registry import REGISTRY
 
 
 # ── ModelArtifact dataclass ──

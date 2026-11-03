@@ -8,7 +8,7 @@ Thank you for your interest in the CANN-LM project! You are welcome to contribut
 
 ### Submitting an Issue
 
-- Use GitCode [Issues](https://gitcode.com/cann/cann-lm/issues) to report problems
+- Use GitCode [Issues](https://gitcode.com/cann/cann-local-lm/issues) to report problems
 - Clearly describe the problem symptoms, reproduction steps, and environment information (CANN version / torch version / chip model)
 - Bug reports should include error logs and a minimal reproduction case
 
@@ -33,10 +33,10 @@ Thank you for your interest in the CANN-LM project! You are welcome to contribut
 
 ## Development Conventions
 
-### cann_lm/ Code Modifications
+### cann_local_lm/ Code Modifications
 
 - **Bug fixes must provide reasoning and modification logic**: provide a root cause evidence chain (code line numbers / spec docs / test output / NPU actual measurement), guessing from impression is prohibited
-- **Do not modify cann_lm/ during testing**: do not modify any code under `cann_lm/` when running test cases; prioritize modifying test code, and only confirm modifying the main repository if tests cannot pass
+- **Do not modify cann_local_lm/ during testing**: do not modify any code under `cann_local_lm/` when running test cases; prioritize modifying test code, and only confirm modifying the main repository if tests cannot pass
 - **Environment prerequisites**: before running any torchair-dependent script, you must first `source scripts/set_env.sh`; C++ compilation requires `source scripts/set_env_cann.sh`
 
 ### Test Code Generality
@@ -55,10 +55,10 @@ After modifying code, you must synchronously update the corresponding documentat
 
 | Modification Scope | Documentation to Update |
 |----------|-----------|
-| `cann_lm/converter/` | Corresponding design docs under `docs/cann_lm_converter/` |
-| `cann_lm/models/fused_ops/` | `docs/zh/cann_lm_converter/models/fused_ops/fused_ops.md` |
-| `cann_lm/converter/export/` | `docs/zh/cann_lm_converter/export/export_design.md` |
-| `cann_lm/converter/quant/` | `docs/zh/cann_lm_converter/quant/quant_design.md` |
+| `cann_local_lm/converter/` | Corresponding design docs under `docs/cann_lm_converter/` |
+| `cann_local_lm/models/fused_ops/` | `docs/zh/cann_lm_converter/models/fused_ops/fused_ops.md` |
+| `cann_local_lm/converter/export/` | `docs/zh/cann_lm_converter/export/export_design.md` |
+| `cann_local_lm/converter/quant/` | `docs/zh/cann_lm_converter/quant/quant_design.md` |
 | CLI command-line parameters | `docs/zh/cann_lm_converter/cli/cli_design.md` |
 
 ## Version Compatibility

@@ -14,12 +14,12 @@
 
 int main()
 {
-    cann_lm::engine::ModelExecutor exec(nullptr, nullptr, nullptr);
-    cann_lm::engine::ForwardOptions opts; // default(空 slots)— not-ready 分支先于 slots 检查
-    cann_lm::engine::Status st = exec.Forward(opts);
+    cann_local_lm::engine::ModelExecutor exec(nullptr, nullptr, nullptr);
+    cann_local_lm::engine::ForwardOptions opts; // default(空 slots)— not-ready 分支先于 slots 检查
+    cann_local_lm::engine::Status st = exec.Forward(opts);
     fprintf(stderr, "[probe_forward] Forward on not-loaded -> code=%d\n", st.code);
     // A2:未加载应返 FAILURE(1);原 bug 返 INVALID_STATE(3)
-    if (st.code == cann_lm::engine::Status::FAILURE) {
+    if (st.code == cann_local_lm::engine::Status::FAILURE) {
         printf("probe_forward: PASS (FAILURE, not INVALID_STATE)\n");
         return 0;
     }

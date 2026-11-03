@@ -14,7 +14,7 @@
 
 | 文件 | 职责 |
 |------|------|
-| `cann_lm/converter/cann_lm_converter.py` | CLI 入口（`parse_args` + `convert`）+ 程序化 `convert()` 函数 |
+| `cann_local_lm/converter/cann_lm_converter.py` | CLI 入口（`parse_args` + `convert`）+ 程序化 `convert()` 函数 |
 
 ## 关键函数
 
@@ -51,26 +51,26 @@ parse_args → convert → loader.load_model (export_index) → [可选 quant sw
 
 | 方式 | 命令 |
 |------|------|
-| console_scripts(pip install 后直调) | `cann-lm-converter --hf-path ... --output-dir ...` |
-| 脚本直调 | `python cann_lm/converter/cann_lm_converter.py --hf-path ... --output-dir ...` |
-| 模块入口 | `python -m cann_lm.converter.cann_lm_converter --hf-path ... --output-dir ...` |
+| console_scripts(pip install 后直调) | `cllm-converter --hf-path ... --output-dir ...` |
+| 脚本直调 | `python cann_local_lm/converter/cann_lm_converter.py --hf-path ... --output-dir ...` |
+| 模块入口 | `python -m cann_local_lm.converter.cann_lm_converter --hf-path ... --output-dir ...` |
 
-> console_scripts 注册:`scripts/cann_lm_converter/pyproject.toml:20-21` `cann-lm-converter = "cann_lm.converter.cann_lm_converter:main"`
+> console_scripts 注册:`scripts/cann_lm_converter/pyproject.toml:20-21` `cllm-converter = "cann_local_lm.converter.cann_lm_converter:main"`
 
 ### 用法示例
 
 ```bash
 # 默认: prefill-decode + 纯 embeddings (dtype 从 --target-soc 派生)
-cann-lm-converter --hf-path /path/to/qwen3.5-0.8B --output-dir /path/to/out
+cllm-converter --hf-path /path/to/qwen3.5-0.8B --output-dir /path/to/out
 
 # 量化场景1: 消费轻量化工具 GPTQ 产物 (--quant-path)
-cann-lm-converter --hf-path /path/to/model --output-dir /path/to/out --quant-path /path/to/dopt_output
+cllm-converter --hf-path /path/to/model --output-dir /path/to/out --quant-path /path/to/dopt_output
 
 # 量化场景2: 一键式 auto_quant (--quant-method gptq, NPU/GPU/CPU subprocess)
-cann-lm-converter --hf-path /path/to/model --output-dir /path/to/out --quant-method gptq
+cllm-converter --hf-path /path/to/model --output-dir /path/to/out --quant-method gptq
 
 # 截层调试 (--num-layers N)
-cann-lm-converter --hf-path /path/to/model --output-dir /path/to/out --num-layers 4
+cllm-converter --hf-path /path/to/model --output-dir /path/to/out --num-layers 4
 ```
 
 > 完整使用示例见 [cli_design.md](./cli_design.md) "使用示例";参数说明见上方「命令行参数速查」或 [cli_design.md](./cli_design.md) "命令行参数"。

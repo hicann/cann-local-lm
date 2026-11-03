@@ -4,7 +4,7 @@ English | [简体中文](../../../zh/cann_lm_converter/export/export_design.md)
 
 > Complete design for exporting HuggingFace models to epair format: registry → loading → ExportWrapper → torch.export → epair on-disk → C++ loading.
 >
-> Covers `cann_lm/models/`'s `model_registry.py` / `export_wrapper.py` + `cann_lm/converter/`'s `loader.py` / `saver.py` / `swap.py` / `quant_entry.py` / `export/` (incl. C++ `csrc/`).
+> Covers `cann_local_lm/models/`'s `model_registry.py` / `export_wrapper.py` + `cann_local_lm/converter/`'s `loader.py` / `saver.py` / `swap.py` / `quant_entry.py` / `export/` (incl. C++ `csrc/`).
 >
 > CLI entry see [cli_design.md](../cli/cli_design.md), quantization integration see [quant_design.md](../quant/quant_design.md).
 >
@@ -31,7 +31,7 @@ English | [简体中文](../../../zh/cann_lm_converter/export/export_design.md)
 <a id="overview"></a>
 ## Overview
 
-`cann_lm/converter/` is the toolchain for exporting HF models to epair format. Capability boundary:
+`cann_local_lm/converter/` is the toolchain for exporting HF models to epair format. Capability boundary:
 
 - **Input**: HuggingFace model directory (`config.json` + safetensors weights + tokenizer files)
 - **Output**: epair model directory (`ep_json_with_ascend_ir.json` + weight bins + tokenizer + `model_config.json`), for C++ backend loading
@@ -63,11 +63,11 @@ ge::Graph
 ### Directory Structure
 
 ```
-cann_lm/
+cann_local_lm/
 ├── models/
 │   ├── model_registry.py          # Model registry (ModelEntry + REGISTRY + detect_model_type + available_models)
 │   ├── export_wrapper.py           # ExportWrapper base class (forward + get_sample_inputs + _drive_layers)
-│   ├── fused_ops/                  # Custom op library (cann_lm:: + npu::, see fused_ops.md)
+│   ├── fused_ops/                  # Custom op library (cann_local_lm:: + npu::, see fused_ops.md)
 │   └── {gemma4,qwen3_5}/     # Per-model definition + subclass export_wrapper.py
 └── converter/
     ├── __init__.py
@@ -79,12 +79,12 @@ cann_lm/
     ├── quant/                      # Quantization subpackage (CANN lightweight tool GPTQ / auto_quant, see quant_design.md)
     └── export/
         ├── epair_utils.py          # pack_weights + consolidated_weights_save
-        ├── ge_converters/          # register_ge_converters (cann_lm/npu custom ops + some aten ops GE mapping)
+        ├── ge_converters/          # register_ge_converters (cann_local_lm/npu custom ops + some aten ops GE mapping)
         ├── quant_swap/             # Quantization materialization internal package (materialize.py + quant_linear.py, see quant_design.md)
         └── csrc/                   # C++ backend (epair_model_loader / ge_graph_builder / ge_weight_loader, see C++ loading side below)
 ```
 
-Custom op library at `cann_lm/models/fused_ops/`, hits two namespaces: most go through `torch.ops.npu.*` (`npu::`, converter env self-defined schema + `register_fake` by `_library.py`, doesn't depend on torch_npu), only `l2_norm` goes through `torch.ops.cann_lm.*` (`cann_lm::`, no torchair correspondence). Op list: `chunk_gated_delta_rule` / `dynamic_quant` / `fused_infer_attention_score` / `l2_norm` / `quant_matmul` / `rms_norm` / `rotary_mul` / `scatter_nd_update`. Each op registers corresponding GE converter in `export/ge_converters/ge_converter.py` (mapping implementation see [`fused_ops.md`](../models/fused_ops/fused_ops.md) §3). CPU eager impl registered on-demand by `_library.py`'s `register_cpu_impl` decorator (stub/export env skips only keeping `register_fake`; non-stub env registers then can eager), real computation via GE converter mapping to NPU ops.
+Custom op library at `cann_local_lm/models/fused_ops/`, hits two namespaces: most go through `torch.ops.npu.*` (`npu::`, converter env self-defined schema + `register_fake` by `_library.py`, doesn't depend on torch_npu), only `l2_norm` goes through `torch.ops.cann_local_lm.*` (`cann_local_lm::`, no torchair correspondence). Op list: `chunk_gated_delta_rule` / `dynamic_quant` / `fused_infer_attention_score` / `l2_norm` / `quant_matmul` / `rms_norm` / `rotary_mul` / `scatter_nd_update`. Each op registers corresponding GE converter in `export/ge_converters/ge_converter.py` (mapping implementation see [`fused_ops.md`](../models/fused_ops/fused_ops.md) §3). CPU eager impl registered on-demand by `_library.py`'s `register_cpu_impl` decorator (stub/export env skips only keeping `register_fake`; non-stub env registers then can eager), real computation via GE converter mapping to NPU ops.
 
 <a id="model-registry-model_registrypy"></a>
 ## Model Registry model_registry.py
@@ -292,7 +292,7 @@ Supports **two embedding modes**:
 
 > Note: When `use_embeddings=True`, `saver` calls `wrapper.detach_externalized_lookups()` after `get_sample_inputs` (uses it to compute sample) + host weight extraction, **before** `torch.export`, to `del` externalized lookup submodules (`embed_tokens`, gemma4 adds `embed_tokens_per_layer`) from model → torch.export doesn't lift them → `weights_*.bin` **doesn't contain** redundant lookup weights (≈ OM, GE compile already prunes them), lookup weights separately packed to `host_weights_info.json` + `host_weights_*.bin` for host (with dtype/shape). Depends on pure embeddings forward not accessing these submodules (`embed_tokens` skipped by `inputs_embeds`, gemma4 `embed_tokens_per_layer` skipped by instance method replacement); `saver` asserts after export they're not in `inputs_to_parameters` as fallback. Tied models (qwen3.5): after del `embed_tokens`, `lm_head.weight` (same data) still present → baked by OM; host gets `embed_tokens.weight` from `host_weights` for lookup (lm_head/embed_tokens dual role, non-redundant).
 
-Base class at `cann_lm/models/export_wrapper.py`, subclasses in each model's directory (e.g. `cann_lm/models/qwen3_5/export_wrapper.py`).
+Base class at `cann_local_lm/models/export_wrapper.py`, subclasses in each model's directory (e.g. `cann_local_lm/models/qwen3_5/export_wrapper.py`).
 
 ```python
 class ExportWrapper(nn.Module):
@@ -448,7 +448,7 @@ def save_epair(
     """
     import torch_delegate
     from torch_delegate import EpairConfig
-    from cann_lm.converter.export.ge_converters import register_ge_converters
+    from cann_local_lm.converter.export.ge_converters import register_ge_converters
 
     output_dir = Path(output_dir).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -460,7 +460,7 @@ def save_epair(
     if artifact.wrapper_cls is None:
         raise ValueError(
             f"Model '{artifact.model_type}' has no ExportWrapper subclass registered. "
-            "Please implement one in cann_lm/models/export_wrapper.py."
+            "Please implement one in cann_local_lm/models/export_wrapper.py."
         )
     wrapper = artifact.wrapper_cls(
         artifact.model,
@@ -723,7 +723,7 @@ Internal flow:
 <a id="c-loading-side"></a>
 ## C++ Loading Side
 
-Export artifacts are loaded by C++ `EpairModelLoader`. **Loader library source** at `cann_lm/converter/export/csrc/` (`backend/epair_model_loader.cc` / `ge_graph_builder.cc` / `ge_weight_loader.cc` / `epair_model_parser.cc`, build artifact `libtorch_delegate_backend.so`); **example main + op registration** at `examples/test_converter/export_llm_model/` (`main.cpp` + `reg_register.h`).
+Export artifacts are loaded by C++ `EpairModelLoader`. **Loader library source** at `cann_local_lm/converter/export/csrc/` (`backend/epair_model_loader.cc` / `ge_graph_builder.cc` / `ge_weight_loader.cc` / `epair_model_parser.cc`, build artifact `libtorch_delegate_backend.so`); **example main + op registration** at `examples/test_converter/export_llm_model/` (`main.cpp` + `reg_register.h`).
 
 ### EpairModelLoader API (2 paths)
 
@@ -848,8 +848,8 @@ for (const auto &node : parser.Nodes()) {
 GE op registration two layers, complementary:
 
 1. **Python side `converter/export/ge_converters/ge_converter.py`** — `register_ge_converters()` maps `torch.ops` nodes to GE ops, called before `export_to_epair` (save_epair step 1). Covers:
-   - `npu.*` custom ops: `npu_quant_matmul`(→`QuantBatchMatmulV4`)/`npu_chunk_gated_delta_rule`/`npu_scatter_nd_update`(+`_`variant)/`npu_fused_infer_attention_score_v2` (op definitions in `cann_lm/models/fused_ops/`, GE mapping implementation see [`fused_ops.md`](../models/fused_ops/fused_ops.md) §3)
-   - `cann_lm.*`: `l2norm`(→`L2Normalize`)
+   - `npu.*` custom ops: `npu_quant_matmul`(→`QuantBatchMatmulV4`)/`npu_chunk_gated_delta_rule`/`npu_scatter_nd_update`(+`_`variant)/`npu_fused_infer_attention_score_v2` (op definitions in `cann_local_lm/models/fused_ops/`, GE mapping implementation see [`fused_ops.md`](../models/fused_ops/fused_ops.md) §3)
+   - `cann_local_lm.*`: `l2norm`(→`L2Normalize`)
    - Some `aten.*` ops: `softplus`(→`SoftplusV2`)/`conv1d`/`index_copy`/`index_put` (aten nodes residual from torch.export, supplemented when torchair has no built-in mapping)
    - Also `aten.eye`/`aten.type_as` via `_EXTRA_DECOMPOSITION_OPS` whitelist goes decomposition (not GE converter mapping)
 
@@ -906,7 +906,7 @@ Real LLM inference needs prefill (process prompt, seq_len variable) + decode (pe
 ### Interface
 
 ```python
-from cann_lm.converter.saver import save_epair_prefill_decode
+from cann_local_lm.converter.saver import save_epair_prefill_decode
 
 save_epair_prefill_decode(
     artifact, output_dir,
@@ -956,7 +956,7 @@ Formal artifacts don't include `.pt2` (Python loop verification) and `input_N.bi
 
 prefill-decode sharing `weights_0.bin` brings a hazard: modeling's `torch.tensor([q_len])` created `actual_seq_qlen`/`actual_seq_kvlen` (FusedInferAttentionScore's per-graph small constants, prefill=128, decode=1) are lifted by `torch.export` into GE graph's **`Data` reference node** (points to same-name constant in shared weights). prefill `save_weights=True` writes its 128 to `weights_0.bin`, decode `save_weights=False` doesn't write but reuses by same name → decode's fused attention op gets prefill's 128 not its own 1; and `Data` reference input marked tilingDepend by GE → `FusedInferAttentionScore` enters `PartitionedCall` dynamic subgraph (950 compile also triggers `actualSeqLengthsQ(128) > Q_S(1)` validation failure).
 
-**Fix** (`cann_lm/converter/export/epair_utils.py: inline_fused_attn_seq_constants()` + `saver.py:save_epair_prefill_decode` call): post-process after prefill/decode ep_json written — replace each `FusedInferAttentionScore` op's `actual_seq_qlen`(input[5]) / `actual_seq_kvlen`(input[6]) input reference with inlined `ge.Const`. Function signature `inline_fused_attn_seq_constants(ep_json_path, qlen_value, kvlen_value=None)`: `qlen_value` = query length (prefill=seq_len, decode=1); `kvlen_value` default None→uses qlen_value (**prefill compat**, no past when kvlen=qlen=seq_len correct), **decode explicitly passes `kv_cache_max_len`** (see below). `Const` op strictly aligns ascend_ir existing format (`attr.value.t.data` base64 raw bytes + `_readable_value.s`).
+**Fix** (`cann_local_lm/converter/export/epair_utils.py: inline_fused_attn_seq_constants()` + `saver.py:save_epair_prefill_decode` call): post-process after prefill/decode ep_json written — replace each `FusedInferAttentionScore` op's `actual_seq_qlen`(input[5]) / `actual_seq_kvlen`(input[6]) input reference with inlined `ge.Const`. Function signature `inline_fused_attn_seq_constants(ep_json_path, qlen_value, kvlen_value=None)`: `qlen_value` = query length (prefill=seq_len, decode=1); `kvlen_value` default None→uses qlen_value (**prefill compat**, no past when kvlen=qlen=seq_len correct), **decode explicitly passes `kv_cache_max_len`** (see below). `Const` op strictly aligns ascend_ir existing format (`attr.value.t.data` base64 raw bytes + `_readable_value.s`).
 
 **Effect**:
 - Per-graph value correct (decode qlen gets 1 not prefill's 128) → 950 tiling validation `1 ≤ Q_S=1` passes, decode OM compile success.
@@ -1091,17 +1091,17 @@ Adding a new model to converter CLI requires these steps:
 
 ### Step 1: Implement Model Code
 
-Under `cann_lm/models/{model_name}/`:
+Under `cann_local_lm/models/{model_name}/`:
 - `configuration_{model_name}.py` — config dataclass (recommend implementing `from_pretrained` / `to_dict`)
 - `modeling_{model_name}.py` — model class + `load_{model_name}_weights` function
 - `__init__.py` — export config class, model class, load_weights function
 
 ### Step 2: Implement ExportWrapper Subclass
 
-Create subclass under `cann_lm/models/{model_name}/export_wrapper.py`, inherit `ExportWrapper`, implement `_drive_layers`:
+Create subclass under `cann_local_lm/models/{model_name}/export_wrapper.py`, inherit `ExportWrapper`, implement `_drive_layers`:
 
 ```python
-from cann_lm.models.export_wrapper import ExportWrapper
+from cann_local_lm.models.export_wrapper import ExportWrapper
 
 class {ModelName}ExportWrapper(ExportWrapper):
     def _drive_layers(self, input_ids, attention_mask, position_ids,
@@ -1150,7 +1150,7 @@ Register model-needed GE ops in `examples/test_converter/export_llm_model/reg_re
 
 ```bash
 # Python export
-python cann_lm/converter/cann_lm_converter.py \
+python cann_local_lm/converter/cann_lm_converter.py \
     --hf-path /path/to/model --output-dir /path/to/output
 
 # C++ load
@@ -1299,7 +1299,7 @@ Under bfloat16 precision, some prompts' top-N logits may be completely identical
 **Real case** (prompt="Hello, my name is", bfloat16, with BOS token):
 
 ```
-HF (Gemma4ClippableLinear):           cann_lm (nn.Linear):
+HF (Gemma4ClippableLinear):           cann_local_lm (nn.Linear):
   #1: token 236743 " "  (18.500)       #1: token 532 " and" (18.500)
   #2: token 532 " and" (18.250)       #2: token 236761 "." (18.500)
   #3: token 236761 "." (18.250)       #3: token 236743 " " (18.500)
@@ -1308,9 +1308,9 @@ HF (Gemma4ClippableLinear):           cann_lm (nn.Linear):
 ```
 
 **Reason**:
-1. cann_lm's top-3 tokens' logits completely identical (18.500) — model "uncertain" at this position
+1. cann_local_lm's top-3 tokens' logits completely identical (18.500) — model "uncertain" at this position
 2. HF's `Gemma4ClippableLinear`'s clamp creates 0.25 gap between top-1 and top-2 → clear choice " "
-3. cann_lm no clamp → tie-breaking depends on argmax implementation detail → chose " and" not " "
+3. cann_local_lm no clamp → tie-breaking depends on argmax implementation detail → chose " and" not " "
 4. **First token different → KV cache different → subsequent decode all diverge**
 
 **Impact scope**:
@@ -1342,20 +1342,20 @@ HF (Gemma4ClippableLinear):           cann_lm (nn.Linear):
 
 | File | Responsibility |
 |------|------|
-| `cann_lm/models/model_registry.py` | Model registry (ModelEntry + REGISTRY + detect_model_type) |
-| `cann_lm/converter/loader.py` | `load_model` + `build_config` + `collect_tokenizer_files` |
-| `cann_lm/converter/saver.py` | `save_epair` / `save_epair_prefill_decode` / `save_model_config` / `copy_tokenizer_files` |
-| `cann_lm/converter/swap.py` | Quantization orchestration (converter root, peer of loader/saver): `swap_from_dopt` (main path) / `swap_embeddings_from_dopt` / `load_dopt_state_dict`; absolute imports from `export/quant_swap/` |
-| `cann_lm/converter/quant_entry.py` | Quantization entry facade: re-export `run_auto_quant` (`quant/auto_quant.py`) + `swap_from_dopt` (`swap.py`), for `cann_lm_converter` single import |
-| `cann_lm/models/export_wrapper.py` | `ExportWrapper` base class |
-| `cann_lm/models/{model}/export_wrapper.py` | Per-model `ExportWrapper` subclasses |
-| `cann_lm/converter/export/epair_utils.py` | Weight packaging (`pack_weights`), disk write (`consolidated_weights_save`) |
-| `cann_lm/converter/export/ge_converters/ge_converter.py` | `register_ge_converters` (cann_lm.* + aten.* → GE op mapping) |
-| `cann_lm/converter/export/csrc/inc/external/torch_delegate/epair_model_loader.h` | C++ public API: `EpairModelLoader` |
-| `cann_lm/converter/export/csrc/backend/epair_model_loader.cc` | `EpairModelLoader::Impl` implementation |
-| `cann_lm/converter/export/csrc/backend/ge_graph_builder.h/.cc` | `GeGraphBuilder`: parse model JSON + build GE Graph |
-| `cann_lm/converter/export/csrc/backend/ge_weight_loader.h/.cc` | `GeWeightLoader`: parse `weight_info.json`, lazy-load bin |
-| `cann_lm/converter/export/csrc/backend/epair_model_parser.h/.cc` | `EpairModelParser`: parse `ep_json_with_ascend_ir.json` |
+| `cann_local_lm/models/model_registry.py` | Model registry (ModelEntry + REGISTRY + detect_model_type) |
+| `cann_local_lm/converter/loader.py` | `load_model` + `build_config` + `collect_tokenizer_files` |
+| `cann_local_lm/converter/saver.py` | `save_epair` / `save_epair_prefill_decode` / `save_model_config` / `copy_tokenizer_files` |
+| `cann_local_lm/converter/swap.py` | Quantization orchestration (converter root, peer of loader/saver): `swap_from_dopt` (main path) / `swap_embeddings_from_dopt` / `load_dopt_state_dict`; absolute imports from `export/quant_swap/` |
+| `cann_local_lm/converter/quant_entry.py` | Quantization entry facade: re-export `run_auto_quant` (`quant/auto_quant.py`) + `swap_from_dopt` (`swap.py`), for `cann_lm_converter` single import |
+| `cann_local_lm/models/export_wrapper.py` | `ExportWrapper` base class |
+| `cann_local_lm/models/{model}/export_wrapper.py` | Per-model `ExportWrapper` subclasses |
+| `cann_local_lm/converter/export/epair_utils.py` | Weight packaging (`pack_weights`), disk write (`consolidated_weights_save`) |
+| `cann_local_lm/converter/export/ge_converters/ge_converter.py` | `register_ge_converters` (cann_local_lm.* + aten.* → GE op mapping) |
+| `cann_local_lm/converter/export/csrc/inc/external/torch_delegate/epair_model_loader.h` | C++ public API: `EpairModelLoader` |
+| `cann_local_lm/converter/export/csrc/backend/epair_model_loader.cc` | `EpairModelLoader::Impl` implementation |
+| `cann_local_lm/converter/export/csrc/backend/ge_graph_builder.h/.cc` | `GeGraphBuilder`: parse model JSON + build GE Graph |
+| `cann_local_lm/converter/export/csrc/backend/ge_weight_loader.h/.cc` | `GeWeightLoader`: parse `weight_info.json`, lazy-load bin |
+| `cann_local_lm/converter/export/csrc/backend/epair_model_parser.h/.cc` | `EpairModelParser`: parse `ep_json_with_ascend_ir.json` |
 
 ## Document References
 

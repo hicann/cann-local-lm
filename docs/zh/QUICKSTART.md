@@ -14,14 +14,14 @@
 # 1. 解压 .run 包（自动运行 set_env.sh 打印环境提示）
 bash /path/to/cann_local_lm_converter-0.1.0-aarch64.run --extract=/opt/cann-local-lm
 
-# 2. 装 cann_lm whl 进 P1 venv（converter 用，提供 cllm-converter CLI）
+# 2. 装 cann_local_lm whl 进 P1 venv（converter 用，提供 cllm-converter CLI）
 export CONVERTER_PYTHON=/path/to/venv/bin/python
 $CONVERTER_PYTHON -m pip install /opt/cann-local-lm/wheels/cann_local_lm-*.whl
 
 # 3.（仅量化需要）设 DOPT_PYTHON 指向装了 torch_npu 的系统 python
 export DOPT_PYTHON=/path/to/python3
 # 或自动探测（需先 source CANN）：source $HOME/Ascend/cann/set_env.sh && source /opt/cann-local-lm/set_env.sh --npu
-# 首次部署若系统 python 缺 cann_lm/dopt_lm：$DOPT_PYTHON -m pip install /opt/cann-local-lm/wheels/cann_local_lm-*.whl --no-deps --user
+# 首次部署若系统 python 缺 cann_local_lm/dopt_lm：$DOPT_PYTHON -m pip install /opt/cann-local-lm/wheels/cann_local_lm-*.whl --no-deps --user
 ```
 
 ---
@@ -59,7 +59,7 @@ cllm-converter \
     --mode prefill-decode --target-soc KirinX90
 ```
 
-> converter后台运行会在GE finalize处挂起（已知），产物此前已落盘。可后台运行 + 轮询产物文件 + kill绕过。
+> 导出正常结束时进程会自动退出（日志末行 `Done. Output: <dir>`）。若在部分环境下进程未退出，产物此时已全部落盘，可直接 kill。
 
 **量化导出（可选）：**
 
@@ -82,8 +82,8 @@ cllm-converter \
     --quant-method gptq
 
 # 方式二：手动跑 dopt + converter 消费（两步，dopt 需 NPU，converter 不需）
-# 准备：从 cann_lm 包目录拷校准数据和配置到工作目录
-PKG_QUANT=$($DOPT_PYTHON -c "import cann_lm.converter.quant as q; print(q.__path__[0])")
+# 准备：从 cann_local_lm 包目录拷校准数据和配置到工作目录
+PKG_QUANT=$($DOPT_PYTHON -c "import cann_local_lm.converter.quant as q; print(q.__path__[0])")
 mkdir -p ./output/dopt_quant
 cp -r "$PKG_QUANT/calibrate_sets" ./output/dopt_quant/
 cp "$PKG_QUANT/config.yaml" ./output/dopt_quant/
@@ -141,11 +141,12 @@ done
 | `weights_0.bin` | ①导出 | 权重数据（②编译加载） |
 | `host_weights_info.json` | ①导出 | host侧权重索引（embedding等不在图中的权重，②编译加载） |
 | `host_weights_0.bin` | ①导出 | host侧权重数据（embedding等，②编译加载） |
-| `model_config.json` | ①导出 | 模型配置（推理用） |
+| `model.json` | ①导出 | **推理用 meta 配置**（含 `model_config` / `embedding_config` / `tokenizer_config` 三段），部署时填 `model_meta_config` |
+| `model_config.json` | ①导出 | HF 侧模型配置快照（供查阅，**不是** engine 的 `model_meta_config`） |
 | `tokenizer.json` / `tokenizer_config.json` | ①导出 | tokenizer（推理用） |
 | `prefill/prefill.omc` | ②编译 | prefill段omc（部署到设备跑） |
 | `decode/decode.omc` | ②编译 | decode段omc |
-| `prefill\|decode/weight/*.bin` | ②编译 | 权值分离时外置权值 |
+| `prefill\|decode/weight/` | ②编译 | 权值分离时外置权值目录（含 `delegate_graph_weight_combined` / `meta.json` / `SubGraph_*.weight` / `weight_0.weight`） |
 
 ---
 
@@ -154,7 +155,7 @@ done
 ### 1. 推送 engine + 模型产物
 
 ```bash
-# engine 签名 wheel（.so 内嵌在 cann_lm/lib/，--pkg 或 build_package_ohos.sh 产出）
+# engine 签名 wheel（.so 内嵌在 cann_local_lm/lib/，--pkg 或 build_package_ohos.sh 产出）
 hdc file send build_out/cann_local_lm_engine-0.1.0+signed-py3-none-any.whl /data/local/tmp/cann_lm_engine/
 
 # 模型产物（omc + 权值 + tokenizer + model_config）
@@ -167,7 +168,7 @@ hdc file send ./output/e2e /data/local/tmp/cann_lm_engine/
 hdc shell
 cd /data/local/tmp/cann_lm_engine
 
-# 装 engine wheel（.so 自动从 cann_lm/lib/ 发现）
+# 装 engine wheel（.so 自动从 cann_local_lm/lib/ 发现）
 pip3 install cann_local_lm_engine-0.1.0+signed-py3-none-any.whl
 
 # 编写 testcase.json（模型路径 + tokenizer + 采样参数）
@@ -177,7 +178,7 @@ cat > testcase.json <<'EOF'
     "tokenizer_path": "/data/local/tmp/cann_lm_engine/output/e2e/tokenizer.json",
     "model_path_prefill": "/data/local/tmp/cann_lm_engine/output/e2e/prefill/prefill.omc",
     "model_path_decode": "/data/local/tmp/cann_lm_engine/output/e2e/decode/decode.omc",
-    "model_meta_config": "/data/local/tmp/cann_lm_engine/output/e2e/model_config.json",
+    "model_meta_config": "/data/local/tmp/cann_lm_engine/output/e2e/model.json",
     "model_weight_dir_prefill": "/data/local/tmp/cann_lm_engine/output/e2e/prefill/weight",
     "model_weight_dir_decode": "/data/local/tmp/cann_lm_engine/output/e2e/decode/weight",
     "sentences": [{
@@ -189,7 +190,7 @@ cat > testcase.json <<'EOF'
 EOF
 ```
 
-> **无 pip 时**：`unzip cann_local_lm_engine-*.whl -d . && export PYTHONPATH=.:$PYTHONPATH && export CANN_LM_LIB=./cann_lm/lib/libcann_lm_engine.so`
+> **无 pip 时**：`unzip cann_local_lm_engine-*.whl -d . && export PYTHONPATH=.:$PYTHONPATH && export CANN_LM_LIB=./cann_local_lm/lib/libcann_lm_engine.so`
 >
 > **权值目录**：编译时若未设 `GE_EXTERNAL_WEIGHT=2`（内嵌权值），`model_weight_dir_*` 可指向 omc 同目录。
 
@@ -206,6 +207,6 @@ cllm chat --config testcase.json
 cllm generate --config testcase.json --show-paths
 ```
 
-> `.so` 发现顺序：`--lib PATH` > `$CANN_LM_LIB` > wheel 内 `cann_lm/lib/`。加载失败时将 `.so` 所在目录加入 `LD_LIBRARY_PATH`（`libc++_shared.so` 需同目录）。
+> `.so` 发现顺序：`--lib PATH` > `$CANN_LM_LIB` > wheel 内 `cann_local_lm/lib/`。加载失败时将 `.so` 所在目录加入 `LD_LIBRARY_PATH`（`libc++_shared.so` 需同目录）。
 >
-> C++ 黑盒测试（bbit/smoke）可通过 `bash build.sh --smoke` 单独构建，推送后 `./bbit --config testcase.json` 运行。详见 [engine Python README](../../cann_lm/engine/python/README.md)。
+> C++ 黑盒测试（bbit/smoke）可通过 `bash build.sh --smoke` 单独构建，推送后 `./bbit --config testcase.json` 运行。详见 [engine Python README](../../cann_local_lm/engine/python/README.md)。

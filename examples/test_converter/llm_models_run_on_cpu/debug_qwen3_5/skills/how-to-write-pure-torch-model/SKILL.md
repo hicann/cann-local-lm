@@ -2,7 +2,7 @@
 
 > qwen3.5 的特殊之处：混合架构 (full + linear attention)、SimpleKVCache (list-based)、delta_cache
 >
-> 参考实现：`cann_lm/models/qwen3_5/`
+> 参考实现：`cann_local_lm/models/qwen3_5/`
 
 ## 触发条件
 
@@ -11,7 +11,7 @@
 ## 目录结构
 
 ```
-cann_lm/models/qwen3_5/
+cann_local_lm/models/qwen3_5/
 ├── __init__.py
 ├── configuration_qwen3_5.py    # config (含 layer_types)
 ├── modeling_qwen3_5.py         # model + SimpleKVCache + SimpleDeltaNetCache

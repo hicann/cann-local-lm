@@ -14,7 +14,7 @@ import json
 import torch
 import torch.nn as nn
 
-from cann_lm.converter.export.epair_utils import (
+from cann_local_lm.converter.export.epair_utils import (
     ConsolidatedWeights,
     _blob_hash,
     _pack_weights_pd_dedup,

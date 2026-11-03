@@ -24,17 +24,17 @@ depends_on:
 |------|-----|
 | 代码路径 | `tests/cpp/engine/`、`tests/cpp/engine/model_executor/`、`examples/test_engine/bbit/` |
 | 框架 | GoogleTest 1.14（`find_package(GTest REQUIRED)`） |
-| CMake 入口 | `cann_lm/engine/CMakeLists.txt:66-127` |
+| CMake 入口 | `cann_local_lm/engine/CMakeLists.txt:66-127` |
 | 编译产物 | 10 个可执行：`model_executor_ut` / `ut_engine_executor` / `ut_tokenizer` / `ut_c_api` / `ut_scheduler` / `ut_sampler` / `ut_request_handle` / `ut_logger` / `ut_text_embedding` / `bbit` |
 | 测试发现 | `gtest_discover_tests()` 注册进 CTest（bbit 经 `add_test` 手工注册） |
-| 命名空间 | `cann_lm::engine`（与被测代码一致；匿名 namespace 内放 fixture 与 TEST） |
+| 命名空间 | `cann_local_lm::engine`（与被测代码一致；匿名 namespace 内放 fixture 与 TEST） |
 | 上游 | 各模块 DESIGN/SPEC（见 depends_on） |
 
 ## §2 架构总览
 
 ```mermaid
 graph TD
-    subgraph "被测实现 cann_lm/engine/"
+    subgraph "被测实现 cann_local_lm/engine/"
         APIc["api/c/c_api.cpp"]
         APIcpp["api/cpp/engine_executor.cpp + request_handle.cpp"]
         PIPE["pipeline/*"]
@@ -63,7 +63,7 @@ graph TD
 ```
 
 **关键边界**：
-- UT 与被测代码同编译单元，include 路径指向 `cann_lm/engine/`（`target_include_directories(... PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})`）
+- UT 与被测代码同编译单元，include 路径指向 `cann_local_lm/engine/`（`target_include_directories(... PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})`）
 - 每个 UT 二进制静态链接 `libcann_lm_engine.a` + `GTest::gtest` + `GTest::gtest_main`（main 由 gtest_main 提供，无需自写）
 - bbit 不链接 gtest，是纯 C++ 黑盒消费者，模拟真实用户调用 C API
 
@@ -201,7 +201,7 @@ EXPECT_EQ(s.code, Status::INVALID_ARGUMENT);
 
 ## §7 GoogleTest 配置与 CMake 接线
 
-`cann_lm/engine/CMakeLists.txt:66-127` 已定义 5 个 UT 二进制 + bbit。本期新增需追加：
+`cann_local_lm/engine/CMakeLists.txt:66-127` 已定义 5 个 UT 二进制 + bbit。本期新增需追加：
 
 ```cmake
 # ut_sampler

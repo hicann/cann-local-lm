@@ -17,7 +17,7 @@
 #include <string>
 #include <vector>
 
-namespace cann_lm::engine {
+namespace cann_local_lm::engine {
 namespace {
 
 #ifndef TOKENIZER_REALDATA_DIR
@@ -140,4 +140,4 @@ TEST(GemmaRealDataTest, GoldenIdsMatchOracleRealArtifact)
 }
 
 } // namespace
-} // namespace cann_lm::engine
+} // namespace cann_local_lm::engine

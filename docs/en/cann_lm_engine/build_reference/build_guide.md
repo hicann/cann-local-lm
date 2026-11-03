@@ -10,7 +10,7 @@ English | [简体中文](../../../zh/cann_lm_engine/build_reference/build_guide.
 
 ## 0. In One Sentence
 
-The engine is pure standard C++17 with zero POSIX dependencies. It can be built natively on Linux to run UT, or cross-compiled into a HarmonyOS musl-targeted `.so` + 9 executables (UT/bbit/smoke) and self-signed. **The two build systems are independent** — the HarmonyOS build is a separate bypass (`cann_lm/engine/ohos/` + `build_ohos.sh`/`sign_ohos.sh`/`build_package_ohos.sh` under `scripts/cann_lm_engine/`), which does not modify existing Linux build files and poses zero risk to Linux builds. A single HarmonyOS command does it all: `./scripts/cann_lm_engine/build_ohos.sh` (compile → auto-sign), or one-click `./scripts/cann_lm_engine/build_package_ohos.sh` (compile → sign → produce signed wheel).
+The engine is pure standard C++17 with zero POSIX dependencies. It can be built natively on Linux to run UT, or cross-compiled into a HarmonyOS musl-targeted `.so` + 9 executables (UT/bbit/smoke) and self-signed. **The two build systems are independent** — the HarmonyOS build is a separate bypass (`cann_local_lm/engine/ohos/` + `build_ohos.sh`/`sign_ohos.sh`/`build_package_ohos.sh` under `scripts/cann_lm_engine/`), which does not modify existing Linux build files and poses zero risk to Linux builds. A single HarmonyOS command does it all: `./scripts/cann_lm_engine/build_ohos.sh` (compile → auto-sign), or one-click `./scripts/cann_lm_engine/build_package_ohos.sh` (compile → sign → produce signed wheel).
 
 ---
 
@@ -18,11 +18,11 @@ The engine is pure standard C++17 with zero POSIX dependencies. It can be built 
 
 | File | Role | Environment |
 |------|------|---------|
-| `CMakeLists.txt` (repo root) | Top-level CMake, sets C++17, `add_subdirectory(cann_lm/engine)` | Both |
-| `cann_lm/engine/CMakeLists.txt` | **Linux build core**: defines `cann_lm_engine` (STATIC) + `cann_backend` (subproject), **13 UT + bbit + 2 smoke (+1 temporary golden_verify)** targets, GTest (`find_package`), `gtest_discover_tests` | Linux |
-| `cann_lm/engine/**/*.cpp/.h` | Engine source (18 .cpp files), shared by both builds | Both |
-| `cann_lm/engine/ohos/ohos.toolchain.cmake` | **HarmonyOS cross-compilation toolchain** (self-contained): host clang-18 + OHOS sysroot, flags copied from official toolchain; ar/ranlib use host llvm-18 | HarmonyOS |
-| `cann_lm/engine/ohos/CMakeLists.txt` | **HarmonyOS build**: compiles the same sources into SHARED `libcann_lm_engine.so` + **9 executables** (UT/bbit/smoke); GTest FetchContent from local source; static `add_test` | HarmonyOS |
+| `CMakeLists.txt` (repo root) | Top-level CMake, sets C++17, `add_subdirectory(cann_local_lm/engine)` | Both |
+| `cann_local_lm/engine/CMakeLists.txt` | **Linux build core**: defines `cann_lm_engine` (STATIC) + `cann_backend` (subproject), **13 UT + bbit + 2 smoke (+1 temporary golden_verify)** targets, GTest (`find_package`), `gtest_discover_tests` | Linux |
+| `cann_local_lm/engine/**/*.cpp/.h` | Engine source (18 .cpp files), shared by both builds | Both |
+| `cann_local_lm/engine/ohos/ohos.toolchain.cmake` | **HarmonyOS cross-compilation toolchain** (self-contained): host clang-18 + OHOS sysroot, flags copied from official toolchain; ar/ranlib use host llvm-18 | HarmonyOS |
+| `cann_local_lm/engine/ohos/CMakeLists.txt` | **HarmonyOS build**: compiles the same sources into SHARED `libcann_lm_engine.so` + **9 executables** (UT/bbit/smoke); GTest FetchContent from local source; static `add_test` | HarmonyOS |
 | `tools/binary-sign-tool.jar` | **HarmonyOS binary signing tool** (jar, architecture-independent); self-signing via `-selfSign 1`, injects `.codesign` segment; placed in `tools/`, **gitignored, not in repo** (see tools/README.md) | HarmonyOS |
 | `scripts/cann_lm_engine/build_ohos.sh` | **HarmonyOS build + sign entry**: validates `OHOS_SDK_NATIVE` (minimal SDK) + host `clang-18` → `cmake -G Unix Makefiles` build → 11-artifact validation + libc++ fallback → auto-calls `sign_ohos.sh` | HarmonyOS |
 | `scripts/cann_lm_engine/sign_ohos.sh` | **Signing script**: for each .so ×2 + **9 executables** under build_ohos/, produces `*_signed` | HarmonyOS |
@@ -35,7 +35,7 @@ The engine is pure standard C++17 with zero POSIX dependencies. It can be built 
 
 ### Why Does HarmonyOS Use an Independent CMake Instead of Modifying the Existing One?
 
-The existing `cann_lm/engine/CMakeLists.txt` is a single Linux branch + STATIC library + host `find_package(GTest)`. Adding HarmonyOS would require introducing an `OHOS_PLATFORM` branch, SHARED library, signing, GTest local source, etc. — a large change surface, and the HarmonyOS branch cannot be compile-verified on the host. **The first version uses an independent `ohos/CMakeLists.txt` bypass**. The source list is currently a transitional copy (later, once stable, an `engine_src.cmake` can be extracted for both to share, eliminating the copy). This way, the Linux build files remain untouched — zero regression risk.
+The existing `cann_local_lm/engine/CMakeLists.txt` is a single Linux branch + STATIC library + host `find_package(GTest)`. Adding HarmonyOS would require introducing an `OHOS_PLATFORM` branch, SHARED library, signing, GTest local source, etc. — a large change surface, and the HarmonyOS branch cannot be compile-verified on the host. **The first version uses an independent `ohos/CMakeLists.txt` bypass**. The source list is currently a transitional copy (later, once stable, an `engine_src.cmake` can be extracted for both to share, eliminating the copy). This way, the Linux build files remain untouched — zero regression risk.
 
 ---
 
@@ -55,10 +55,10 @@ rm -rf "$BUILD" && mkdir -p "$BUILD" && cd "$BUILD"
 cmake /mnt/workspace/CANN-LM -DCMAKE_BUILD_TYPE=Debug
 cmake --build . -j"$(nproc)"
 ```
-All artifacts are under `$BUILD/cann_lm/engine/` (because the engine's CMakeLists defines targets in that subdirectory).
+All artifacts are under `$BUILD/cann_local_lm/engine/` (because the engine's CMakeLists defines targets in that subdirectory).
 
 ### 2.3 Artifacts
-All located under `$BUILD/cann_lm/engine/`. Target list (aligned with `cann_lm/engine/CMakeLists.txt`):
+All located under `$BUILD/cann_local_lm/engine/`. Target list (aligned with `cann_local_lm/engine/CMakeLists.txt`):
 
 | File | Role |
 |------|------|
@@ -88,7 +88,7 @@ All located under `$BUILD/cann_lm/engine/`. Target list (aligned with `cann_lm/e
 
 ### 2.4 Verification
 ```bash
-cd "$BUILD/cann_lm/engine"
+cd "$BUILD/cann_local_lm/engine"
 
 # All unit tests
 ctest --output-on-failure
@@ -102,14 +102,14 @@ ctest --output-on-failure
 ./bbit --check
 ./bbit
 ```
-> **Note**: `ctest` must be run in the `cann_lm/engine/` subdirectory. The top-level `CMakeLists.txt` does not call `enable_testing()`, so running `ctest` at the top-level directory reports "No tests found" — this is the project's current state, not a bug.
+> **Note**: `ctest` must be run in the `cann_local_lm/engine/` subdirectory. The top-level `CMakeLists.txt` does not call `enable_testing()`, so running `ctest` at the top-level directory reports "No tests found" — this is the project's current state, not a bug.
 
 ### 2.5 Current Baseline (measured 2026-08-24, after pull)
 - 67 tests passed / 0 failed / 1 disabled (originally 63; new `test_tensor_manager` added 4)
 - Compiler: host gcc/g++ (aarch64-linux-gnu)
 - GTest: host `libgtest-dev` package
 > ⚠ This 67-item baseline was measured on 2026-08-24. Since then, several UT targets in §2.3 (`ut_text_embedding`/`ut_data_type_utils`/`ut_sampler`/`ut_request_handle`/`ut_backend_shareweights`/`ut_share_weights_executor`/`ut_linear_state_pool`) have been added, so the actual test count is higher than 67 — refer to the actual `ctest` run on your host.
-> Sync note: Linux `CMakeLists.txt` is the source-of-truth for the source list; OHOS `cann_lm/engine/ohos/CMakeLists.txt` is a manually-copied mirror. After pulling, if Linux adds new `.cpp`/UT files, they must be synced into the OHOS list (already done for `stub_built_model.cpp`/`tensor_manager.cpp`/`test_tensor_manager.cpp`).
+> Sync note: Linux `CMakeLists.txt` is the source-of-truth for the source list; OHOS `cann_local_lm/engine/ohos/CMakeLists.txt` is a manually-copied mirror. After pulling, if Linux adds new `.cpp`/UT files, they must be synced into the OHOS list (already done for `stub_built_model.cpp`/`tensor_manager.cpp`/`test_tensor_manager.cpp`).
 
 ---
 
@@ -134,7 +134,7 @@ Produces **`libcann_lm_engine.so`** (aarch64-linux-ohos / musl) + `libc++_shared
 | `api_smoke` / `c_api_smoke` | C++/C API smoke |
 | `*_signed` / `*_signed.so` for each of the above | Signed version (auto-produced by `build_ohos.sh`) |
 
-> Artifact verification (readelf to confirm musl target), standalone re-signing, producing the signed wheel (`.so` embedded in `cann_lm/lib/`), and device runtime flow are all in the platform-specific manuals. Host glibc **cannot directly run** these artifacts (they link against musl's `libc.so`); runtime verification must be on a HarmonyOS device (developer mode, allowing self-signed binaries).
+> Artifact verification (readelf to confirm musl target), standalone re-signing, producing the signed wheel (`.so` embedded in `cann_local_lm/lib/`), and device runtime flow are all in the platform-specific manuals. Host glibc **cannot directly run** these artifacts (they link against musl's `libc.so`); runtime verification must be on a HarmonyOS device (developer mode, allowing self-signed binaries).
 
 ### 3.2 Current Status (measured 2026-10-15)
 - ✅ `.so` + `libc++_shared.so` cross-compile passed (ELF AArch64, musl)
@@ -151,12 +151,12 @@ Produces **`libcann_lm_engine.so`** (aarch64-linux-ohos / musl) + `libc++_shared
 | Dimension | Linux Native | HarmonyOS OHOS Cross |
 |------|-----------|---------------|
 | Entry | `cmake <repo> && cmake --build` | `./scripts/cann_lm_engine/build_ohos.sh` |
-| CMake core | `cann_lm/engine/CMakeLists.txt` | `cann_lm/engine/ohos/CMakeLists.txt` |
-| Toolchain | System gcc/g++ | `cann_lm/engine/ohos/ohos.toolchain.cmake` (clang-18 + sysroot) |
+| CMake core | `cann_local_lm/engine/CMakeLists.txt` | `cann_local_lm/engine/ohos/CMakeLists.txt` |
+| Toolchain | System gcc/g++ | `cann_local_lm/engine/ohos/ohos.toolchain.cmake` (clang-18 + sysroot) |
 | Target triple | aarch64-linux-gnu (host) | aarch64-linux-ohos (musl) |
 | Library type | STATIC (`.a`) | SHARED (`.so`) |
 | GTest | Host `find_package(GTest)` | Local source FetchContent (github v1.14.0); static `add_test` (`gtest_discover_tests` disabled for cross-compilation) |
-| Artifact directory | `$BUILD/cann_lm/engine/` | `build_ohos/` |
+| Artifact directory | `$BUILD/cann_local_lm/engine/` | `build_ohos/` |
 | Runnable environment | Host | HarmonyOS device only (after signing) |
 | Modifies existing CMake | — | **No** (bypass, zero risk) |
 

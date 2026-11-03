@@ -23,20 +23,23 @@ MODEL_PATH = os.environ.get(
 )
 QUANT_DIR = os.environ.get("DOPT_QUANT_DIR", "/tmp/opencode/dopt_gemma4_full")
 
-from cann_lm.converter.loader import load_model
-from cann_lm.converter.swap import (
+from cann_local_lm.converter.loader import load_model
+from cann_local_lm.converter.swap import (
     load_dopt_state_dict,
     _read_quant_param_map,
     _swap_linear_from_sd,
     DEFAULT_SKIP,
 )
-from cann_lm.converter.export.quant_swap.materialize import (
+from cann_local_lm.converter.export.quant_swap.materialize import (
     materialize_int4_per_group_symmetric,
 )
-from cann_lm.converter.export.quant_swap.quant_linear import QuantLinear
-import cann_lm.converter.quant.dopt_lm.quantizer.qmin_max
-import cann_lm.converter.quant.dopt_lm.quantizer.qeval  # noqa: F401  # 注册量化器
-from cann_lm.converter.quant.dopt_lm.do_opt import set_quant_state, set_calibrate_state
+from cann_local_lm.converter.export.quant_swap.quant_linear import QuantLinear
+import cann_local_lm.converter.quant.dopt_lm.quantizer.qmin_max
+import cann_local_lm.converter.quant.dopt_lm.quantizer.qeval  # noqa: F401  # 注册量化器
+from cann_local_lm.converter.quant.dopt_lm.do_opt import (
+    set_quant_state,
+    set_calibrate_state,
+)
 
 
 def build_quant_model(hf_path, quant_dir, num_layers=3, seq_len=8):

@@ -2,7 +2,7 @@
 
 ## 1. 文档信息
 
-- 被测对象：`cann_lm/converter/quant/dopt_lm`
+- 被测对象：`cann_local_lm/converter/quant/dopt_lm`
 - 测试归档目录：`tests/python/dopt_lm`
 - 测试框架：`pytest`
 - 基准环境：Python 3.11、PyTorch CPU
@@ -16,7 +16,7 @@
 2. 数值算法使用小尺寸确定性 Tensor，验证数值、形状、dtype、状态和梯度。
 3. Transformers、Datasets、Accelerate、NPU/CUDA 和文件模型通过 mock 隔离。
 4. 不把真实大模型 GPTQ、长时 KD 训练和硬件算子验证混入 UT。
-5. 生产代码导入路径按工具实际运行方式设置：`PYTHONPATH=cann_lm/converter/quant`，`DEVICE=cpu`。
+5. 生产代码导入路径按工具实际运行方式设置：`PYTHONPATH=cann_local_lm/converter/quant`，`DEVICE=cpu`。
 
 范围内模块：
 
@@ -196,7 +196,7 @@ pytest -q tests/python/dopt_lm
 如环境安装了 coverage，可附加执行：
 
 ```bash
-coverage run --source=cann_lm/converter/quant/dopt_lm -m pytest tests/python/dopt_lm
+coverage run --source=cann_local_lm/converter/quant/dopt_lm -m pytest tests/python/dopt_lm
 coverage report -m
 ```
 
@@ -229,7 +229,7 @@ pytest exit code: 0
 
 ```bash
 COVERAGE_FILE=/tmp/dopt_lm_ut_80.coverage DEVICE=cpu PYTHONDONTWRITEBYTECODE=1 \
-  python -m coverage run --source=cann_lm/converter/quant/dopt_lm \
+  python -m coverage run --source=cann_local_lm/converter/quant/dopt_lm \
   -m pytest -q tests/python/dopt_lm
 COVERAGE_FILE=/tmp/dopt_lm_ut_80.coverage python -m coverage report -m
 ```

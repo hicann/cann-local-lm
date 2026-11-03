@@ -9,7 +9,7 @@
 #include <memory>
 #include <vector>
 
-namespace cann_lm::engine {
+namespace cann_local_lm::engine {
 namespace {
 
 std::shared_ptr<ITensorBuffer> MakeTensor()
@@ -97,4 +97,4 @@ TEST(DfxCollectorTest, DumpFailureDoesNotBlockInference)
 }
 
 } // namespace
-} // namespace cann_lm::engine
+} // namespace cann_local_lm::engine

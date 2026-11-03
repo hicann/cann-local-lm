@@ -23,7 +23,7 @@
 #include <memory>
 #include <vector>
 
-namespace cann_lm::engine {
+namespace cann_local_lm::engine {
 namespace {
 
 // ── UT 内 host mock（当前 backend API：INDTensorBuffer 五虚函数）─────────────
@@ -594,4 +594,4 @@ TEST(SamplerTest, GreedyShortpathFp16RowEquivToExpand_R1_4)
 }
 
 } // namespace
-} // namespace cann_lm::engine
+} // namespace cann_local_lm::engine

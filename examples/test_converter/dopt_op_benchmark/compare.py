@@ -4,7 +4,7 @@ Self-consistency mode (default): reload the reference QLinear for <op-name>, fee
 saved input_act, recompute output_act, compare to the saved golden output. Must match
 within manifest atol/rtol -> golden is valid & reproducible from (weight + input) alone.
 
-Candidate mode: swap the operator with a candidate impl (e.g. real cann_lm::quant_matmul)
+Candidate mode: swap the operator with a candidate impl (e.g. real cann_local_lm::quant_matmul)
 and compare its output to the golden. Same weight + same input -> difference = operator
 implementation divergence (isolated from quantization accuracy).
 

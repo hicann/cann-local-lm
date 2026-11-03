@@ -23,7 +23,7 @@
 
 CANN 轻量化工具（以下简称"轻量化工具"）的核心 `dopt_lm/` 是华为 vendored 的 **GPTQ 风格权重 PTQ 框架**（命名 `dopt_lm` = "do optimize"，Quantization Optimization）。它本身是自洽的、可独立运行的 Python 包（入口 `opt_main.py`，CLI 模式），在 **NPU / GPU / CPU** 上对 HuggingFace 模型做 **GPTQ 权重量化**，产出 per-layer `group_scale`（per-channel × per-group 对称，offset=0）+ GPTQ 修正后的权重，最终序列化成 `trained_quant_weight.pth`（或 `--hf_type_save` 的 HF 目录）。
 
-**调用关系**：dopt_lm 在主仓代码中**不被 `import`**，而是作为独立 CLI 工具运行，其产物（.pth/safetensors）由 converter 的 `--quant-path` 在导出时加载。dopt_lm 内部通过相对导入 `from dopt_lm.xxx import yyy` 自引用（需将 `cann_lm/converter/quant` 放进 `PYTHONPATH`）。
+**调用关系**：dopt_lm 在主仓代码中**不被 `import`**，而是作为独立 CLI 工具运行，其产物（.pth/safetensors）由 converter 的 `--quant-path` 在导出时加载。dopt_lm 内部通过相对导入 `from dopt_lm.xxx import yyy` 自引用（需将 `cann_local_lm/converter/quant` 放进 `PYTHONPATH`）。
 
 > **说明**：算法本质是 GPTQ（Frantar et al. ICLR 2023，基于 Hessian 矩阵的 PTQ）。
 
@@ -35,8 +35,8 @@ CANN 轻量化工具（以下简称"轻量化工具"）的核心 `dopt_lm/` 是�
 ```bash
 # NPU 环境
 source /home/developer/Ascend/cann/set_env.sh
-# dopt_lm 内部相对 import `from dopt_lm.xxx` → 需 cann_lm/converter/quant 在 PYTHONPATH
-export PYTHONPATH=$PROJECT_ROOT/cann_lm/converter/quant:${PYTHONPATH:-}
+# dopt_lm 内部相对 import `from dopt_lm.xxx` → 需 cann_local_lm/converter/quant 在 PYTHONPATH
+export PYTHONPATH=$PROJECT_ROOT/cann_local_lm/converter/quant:${PYTHONPATH:-}
 
 # CPU 示例（若配置中 fp16=true，运行时会自动回退到 FP32）
 DEVICE=cpu python -m dopt_lm.opt_main --help
@@ -52,7 +52,7 @@ DEVICE=cpu python -m dopt_lm.opt_main --help
 首次运行时 `--dopt-config` 指向的文件不存在，轻量化工具会生成脚手架 JSON（所有层 `quant_strategy="float"`）并 `exit()`，需手动编辑策略后重跑。
 
 ```bash
-cd cann_lm/converter/quant
+cd cann_local_lm/converter/quant
 python -m dopt_lm.opt_main \
     --model-path /path/to/hf-model \
     --dopt-config dopt_config.json
@@ -88,7 +88,7 @@ python -m dopt_lm.opt_main \
 推荐用 `dopt_wrapper.py`（自动生成 `dopt_config.json` 到 `--output-dir`，免手动 Step 1/2）：
 
 ```bash
-python cann_lm/converter/quant/dopt_wrapper.py \
+python cann_local_lm/converter/quant/dopt_wrapper.py \
     --model-path /path/to/hf-model \
     --optimize-config config.yaml \
     --output-dir /path/to/quant_out \
@@ -107,7 +107,7 @@ python -m dopt_lm.opt_main \
 ```
 
 - `--optimize-config config.yaml`：校准配置（详见 [可设置参数](#可设置参数) ③）
-- `calibrate_sets/*.jsonl`：校准语料（由 `download_dataset.py` 下载生成，相对 CWD 解析，需在 `cann_lm/converter/quant/` 目录下运行）
+- `calibrate_sets/*.jsonl`：校准语料（由 `download_dataset.py` 下载生成，相对 CWD 解析，需在 `cann_local_lm/converter/quant/` 目录下运行）
 - `--hf_type_save`：以 HF 格式保存（`save_pretrained`，产出 `model.safetensors`）；不带则存 `trained_quant_weight.pth`
 - 设备：`DEVICE=npu|cuda|cpu` 环境变量
 
@@ -130,7 +130,7 @@ model.embed_tokens.weight                                 (fakequant fp)
 model.embed_tokens.quant_op.weight_quantizer.s            (per-channel scale)
 ```
 
-> 产物由 converter `--quant-path` 消费（物化 int4 + swap `QuantLinear`），详见 [quant_design.md](./quant_design.md)。PPL 对比评估可用 [ppl_compare.py](../../../../cann_lm/converter/quant/ppl_compare.py)（用法见 [ppl_compare_usage.md](./ppl_compare_usage.md)）。
+> 产物由 converter `--quant-path` 消费（物化 int4 + swap `QuantLinear`），详见 [quant_design.md](./quant_design.md)。PPL 对比评估可用 [ppl_compare.py](../../../../cann_local_lm/converter/quant/ppl_compare.py)（用法见 [ppl_compare_usage.md](./ppl_compare_usage.md)）。
 
 <a id="可设置参数"></a>
 ## 可设置参数
@@ -178,7 +178,7 @@ model.embed_tokens.quant_op.weight_quantizer.s            (per-channel scale)
 
 1. **多模态 `ForConditionalGeneration` 检查点可直接跑**：`train.py` 的 `model_define` 检测 `model.model.language_model` 后自动抽取 `text_config` 重挂为文本-only ForCausalLM（lm_head/tie_word_embeddings 一并处理）；`ptq_loop` 带 gemma4/PLE 结构支持（`unique_layer_types` / `get_per_layer_inputs` / `per_layer_projection` / `embed_tokens_per_layer`）。已实测：`gemma-4-E4B-it` 多模态原始权重（`Gemma4ForConditionalGeneration`）在 CPU 上全量 GPTQ 跑通（2026-10-12，42 层 + PLE + lm_head）。前提是 transformers 版本支持该模型（gemma4 需新版如 5.x；Qwen3 4.51.3 即可）。
 2. **CPU 模式为功能验证用途**：fp32 慢且吃主机内存，大模型建议 NPU/GPU。
-3. **校准语料相对路径**基于 CWD 解析，需在 `cann_lm/converter/quant/` 目录下运行。
+3. **校准语料相对路径**基于 CWD 解析，需在 `cann_local_lm/converter/quant/` 目录下运行。
 4. **产物不含 tokenizer**：converter/PPL 评估等下游消费时用原始 HF 模型目录的 tokenizer。
 
 <a id="相关文档"></a>

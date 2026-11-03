@@ -21,7 +21,7 @@
 #include <unordered_map>
 #include <vector>
 
-namespace cann_lm::engine {
+namespace cann_local_lm::engine {
 namespace {
 
 // ── 辅助：创建 ITensorBuffer + 读写 ──────────────────────────────────────
@@ -2000,4 +2000,4 @@ TEST(SlidingPosTest, SecondChunkOverwritesStaleRows)
 }
 
 } // namespace
-} // namespace cann_lm::engine
+} // namespace cann_local_lm::engine

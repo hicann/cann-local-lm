@@ -39,8 +39,8 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/../../../.." && pwd)"
 CLI_DIR="$SCRIPT_DIR"
-CONV="$PROJECT_ROOT/cann_lm/converter/cann_lm_converter.py"
-QD="$PROJECT_ROOT/cann_lm/converter/quant"
+CONV="$PROJECT_ROOT/cann_local_lm/converter/cann_lm_converter.py"
+QD="$PROJECT_ROOT/cann_local_lm/converter/quant"
 WORK_DIR="${WORK_DIR:-/tmp/opencode}"
 export DOPT_TMP_DIR="$CLI_DIR"   # dopt GPTQ 临时盘(auto_quant tempfile dir,swap 后清理);未设→系统 /tmp
 
@@ -117,8 +117,8 @@ gen_dopt_config() {
   echo "### generate dopt_config for $(basename "$HF")"
   "$CONVERTER_PYTHON" - "$HF" "$OUT" <<'PYEOF'
 import json, sys, shutil, os, tempfile, torch
-from cann_lm.converter.loader import load_model
-from cann_lm.converter.quant.dopt_wrapper import build_layer_strategy
+from cann_local_lm.converter.loader import load_model
+from cann_local_lm.converter.quant.dopt_wrapper import build_layer_strategy
 art = load_model(sys.argv[1], dtype=torch.bfloat16, device="cpu")
 layer_strategy = build_layer_strategy(art.model, art.model_type)
 fd, cfg = tempfile.mkstemp(prefix="dopt_config_", suffix=".json")
@@ -225,7 +225,7 @@ source $PROJECT_ROOT/scripts/cann_lm_compile/set_env_export.sh
 
 === dopt env (Step A GPTQ, 量化前置; 系统 python + 真 torch_npu + NPU) ===
 source $PROJECT_ROOT/scripts/cann_lm_compile/set_env_cann.sh --npu
-export PYTHONPATH=$PROJECT_ROOT/cann_lm/converter/quant:${PYTHONPATH:-}
+export PYTHONPATH=$PROJECT_ROOT/cann_local_lm/converter/quant:${PYTHONPATH:-}
 # 设好: DOPT_PYTHON(=系统 python), DEVICE=npu, 真 CANN lib64; 本脚本 setup_dopt_env() 已 source
 
 === OM 编译 env (②, 真 CANN, CPU 侧不需 NPU) ===

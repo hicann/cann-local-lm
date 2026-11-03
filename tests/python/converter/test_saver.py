@@ -12,8 +12,8 @@ import json
 
 import torch.nn as nn
 
-from cann_lm.converter.loader import ModelArtifact
-from cann_lm.converter.saver import copy_tokenizer_files, save_model_config
+from cann_local_lm.converter.loader import ModelArtifact
+from cann_local_lm.converter.saver import copy_tokenizer_files, save_model_config
 
 
 @dataclasses.dataclass

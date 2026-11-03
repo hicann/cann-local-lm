@@ -121,20 +121,20 @@ python .../gen_golden_with_dump.py \
 
 1. **Load model** → `load_model` → `wrapper` (same as fp16 path)
 2. **Swap QLinear** → `_swap_linear_from_sd` (`nn.Linear` → `QLinear`, attaches `quant_op`)
-3. **Re-materialize unpacked** → `materialize_int4_per_group_symmetric(packed=False)` produces `[K,N]` int8 (not nibble-packed `[K//2,N]`), because the CPU `DumpInterpreter` running `cann_lm::quant_matmul`'s CPU impl requires unpacked
+3. **Re-materialize unpacked** → `materialize_int4_per_group_symmetric(packed=False)` produces `[K,N]` int8 (not nibble-packed `[K//2,N]`), because the CPU `DumpInterpreter` running `cann_local_lm::quant_matmul`'s CPU impl requires unpacked
 4. **Load weights** → `load_state_dict(trained_quant_weight.pth)`
 5. **set_quant_state** → `weight_state=True, input_state=True` (W4A8: weight int4 + activation int8 quantization)
 6. **Skip embedding quantization** → `embed_tokens_per_layer [262144,10752]` fakequant intermediate tensor ~11GB, high CPU memory pressure; embedding is a lookup not a matmul, accuracy impact is small (`--no-skip-embed-quant` can disable the skip)
-7. **torch.export** → `DumpInterpreter` → per FX node dump (including input/output of `cann_lm::quant_matmul` + `cann_lm::dynamic_quant`)
+7. **torch.export** → `DumpInterpreter` → per FX node dump (including input/output of `cann_local_lm::quant_matmul` + `cann_local_lm::dynamic_quant`)
 
 ### Dumped Quantization Ops
 
-In the FX graph, matmul is split into two `cann_lm::` custom ops (W4A8):
+In the FX graph, matmul is split into two `cann_local_lm::` custom ops (W4A8):
 
 | FX node target | Op | Effect | Dumped tensors |
 |---|---|---|---|
-| `cann_lm.dynamic_quant.default` | Activation int8 quantization | `x → (x_q int8, x_scale fp32 per-token)` | Input x + output (x_q, x_scale) |
-| `cann_lm.quant_matmul.default` | int4×int8 matmul | `(x_q, weight_q, weight_scale) → out` | Input (x_q, weight_q, weight_scale) + output out |
+| `cann_local_lm.dynamic_quant.default` | Activation int8 quantization | `x → (x_q int8, x_scale fp32 per-token)` | Input x + output (x_q, x_scale) |
+| `cann_local_lm.quant_matmul.default` | int4×int8 matmul | `(x_q, weight_q, weight_scale) → out` | Input (x_q, weight_q, weight_scale) + output out |
 
 Each `quant_matmul_N` FX node corresponds to a QLinear (`q_proj` / `k_proj` / `mlp.gate_proj` etc.). The dumped `node_quant_matmul_N.bin` is that op's output, which can be compared with the corresponding node in the fp16 golden to locate quantization loss.
 
@@ -155,8 +155,8 @@ Each `quant_matmul_N` FX node corresponds to a QLinear (`q_proj` / `k_proj` / `m
 
 ### Key Implementation Details (Quantization Dump Specific)
 
-- **unpacked int8 vs nibble-packed**: `swap_from_dopt` by default produces nibble-packed int8 `[K//2,N]` (for export/NPU); but the CPU `DumpInterpreter` running `cann_lm::quant_matmul`'s CPU impl requires unpacked `[K,N]` (comment `quant_matmul.py:104` "int4 stored unpacked as int8 (signed)"). The tool manually re-materializes each QLinear's `weight_q` as unpacked (`materialize_int4_per_group_symmetric(packed=False)`).
-- **CPU impl registration**: `_HAS_TORCH_NPU=False` (`_library.py:30`, does not import torch_npu) → `register_cpu_impl` registers the CPU impl (not no-op) → `cann_lm::quant_matmul` / `cann_lm::dynamic_quant` can run on CPU.
+- **unpacked int8 vs nibble-packed**: `swap_from_dopt` by default produces nibble-packed int8 `[K//2,N]` (for export/NPU); but the CPU `DumpInterpreter` running `cann_local_lm::quant_matmul`'s CPU impl requires unpacked `[K,N]` (comment `quant_matmul.py:104` "int4 stored unpacked as int8 (signed)"). The tool manually re-materializes each QLinear's `weight_q` as unpacked (`materialize_int4_per_group_symmetric(packed=False)`).
+- **CPU impl registration**: `_HAS_TORCH_NPU=False` (`_library.py:30`, does not import torch_npu) → `register_cpu_impl` registers the CPU impl (not no-op) → `cann_local_lm::quant_matmul` / `cann_local_lm::dynamic_quant` can run on CPU.
 - **System python + shim**: gemma4 multimodal → transformers `import torchaudio` (system python's torchaudio version mismatch) → use `dopt_op_benchmark/shims/torchaudio` stub (auto-detected and enabled by `run.sh`). System python does not import torch_npu → `_HAS_TORCH_NPU=False` → CPU impl takes effect.
 - **Embedding quantization skip**: After `set_quant_state(weight_state=True, input_state=True)`, iterate modules to set `embed` / `per_layer_model_projection`'s `quant_op.set_quant_state(False, False)` — these modules keep fp16 (no fakequant), avoiding the 11GB intermediate tensor of `embed_tokens_per_layer [262144,10752]`.
 
@@ -252,7 +252,7 @@ for (auto* node : graph->GetAllNodes()) {
 }
 ```
 
-Rebuild with `bash scripts/build.sh cpp` + re-run after changes. **Confirm before modifying `cann_lm/`** (AGENTS.md convention).
+Rebuild with `bash scripts/build.sh cpp` + re-run after changes. **Confirm before modifying `cann_local_lm/`** (AGENTS.md convention).
 
 ### Debugging Scenarios
 

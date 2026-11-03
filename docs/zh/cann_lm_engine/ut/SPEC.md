@@ -21,7 +21,7 @@ depends_on:
 
 ## 第 1 章 概述
 
-本规格覆盖 `cann_lm/engine/` 下对外接口表面与 Stub Era 可独立验证的内部行为。读者应在 30 秒内理解：UT 用例以 `Given/When/Then` 描述，每条用例对齐一个被测行为契约，命名规范（含 Stub Era 后缀）防止"测试名宣称 X 但实际测 Y"的漂移。
+本规格覆盖 `cann_local_lm/engine/` 下对外接口表面与 Stub Era 可独立验证的内部行为。读者应在 30 秒内理解：UT 用例以 `Given/When/Then` 描述，每条用例对齐一个被测行为契约，命名规范（含 Stub Era 后缀）防止"测试名宣称 X 但实际测 Y"的漂移。
 
 需求编号：**SR20260825001**。软件层次：**test**。
 
@@ -398,7 +398,7 @@ depends_on:
 （最高概率项必留）、`ApplyRepetitionPenalty`（score<0 ×p、score≥0 ÷p、未生成不动）、
 `Normalize`（非负、和≈1、概率序随 logit 序）、`Pick`（贪心 argmax / seeded 可复现）、
 全流水线（默认贪心 / seeded 采样可复现）。期望行为另由
-`cann_lm/engine/core/sample/test/sampler_ut.cc`（100 断言，scripts/build_sample.sh）
+`cann_local_lm/engine/core/sample/test/sampler_ut.cc`（100 断言，scripts/build_sample.sh）
 对参考实现侧锚定，两份实现勿单方漂移。
 
 ### 4.6 ut_request_handle（UT-TC-RH-*）——**新建文件**
@@ -466,10 +466,10 @@ depends_on:
 
 ## 第 6 章 约束与依赖
 
-- **被测代码**：`cann_lm/engine/*`（44 个 cpp/h 文件）
+- **被测代码**：`cann_local_lm/engine/*`（44 个 cpp/h 文件）
 - **测试框架**：GoogleTest 1.14（`/usr/src/googletest/`，CMake `find_package(GTest REQUIRED)`）
 - **编译器**：g++ 13 / clang-18 / C++17（与生产代码一致）
-- **构建系统**：CMake ≥ 3.10（与 `cann_lm/engine/CMakeLists.txt` 一致）
+- **构建系统**：CMake ≥ 3.10（与 `cann_local_lm/engine/CMakeLists.txt` 一致）
 - **依赖的模块 SPEC**：tokenizer / c_api / pipeline+engine_executor / model_executor（各模块 §8 TC 编号对齐）
 
 ## 第 7 章 验证标准

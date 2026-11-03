@@ -20,7 +20,7 @@ outputs (y, rstd, x). See `es_nn/es_AddRmsNorm_c.h` and torchair
 `ge.AddRmsNorm`.
 
 This script defines an export-only
-torch op `cann_lm::add_rms_norm`, a torchair GE converter mapping it to
+torch op `cann_local_lm::add_rms_norm`, a torchair GE converter mapping it to
 `ge.AddRmsNorm`, a tiny 2-layer residual+RMSNorm network, and an
 export(.pt2)/compile(.epair) CLI.
 
@@ -42,19 +42,19 @@ os.environ.setdefault("TORCH_DEVICE_BACKEND_AUTOLOAD", "0")
 import torch
 from torch import nn
 
-from cann_lm.converter.export.epair_utils import consolidated_weights_save
+from cann_local_lm.converter.export.epair_utils import consolidated_weights_save
 
 # ─────────────────────────────────────────────────────────────────────
 # op schema + fake (export-only, no real kernel needed)
 # ─────────────────────────────────────────────────────────────────────
-_LIBRARY = torch.library.Library("cann_lm", "FRAGMENT")
+_LIBRARY = torch.library.Library("cann_local_lm", "FRAGMENT")
 _LIBRARY.define(
     "add_rms_norm(Tensor x1, Tensor x2, Tensor gamma, *, float epsilon=1e-6) "
     "-> (Tensor y, Tensor rstd, Tensor x)"
 )
 
 
-@torch.library.register_fake("cann_lm::add_rms_norm")
+@torch.library.register_fake("cann_local_lm::add_rms_norm")
 def _add_rms_norm_meta(
     x1: torch.Tensor,
     x2: torch.Tensor,
@@ -69,7 +69,7 @@ def _add_rms_norm_meta(
     return y, rstd, x_sum
 
 
-@torch.library.impl("cann_lm::add_rms_norm", "cpu")
+@torch.library.impl("cann_local_lm::add_rms_norm", "cpu")
 def _add_rms_norm_cpu(
     x1: torch.Tensor,
     x2: torch.Tensor,
@@ -89,7 +89,7 @@ def register_ge_converters() -> None:
     from torchair import register_fx_node_ge_converter
     from torchair._ge_concrete_graph import ge_apis as ge
 
-    @register_fx_node_ge_converter(torch.ops.cann_lm.add_rms_norm.default)
+    @register_fx_node_ge_converter(torch.ops.cann_local_lm.add_rms_norm.default)
     def _convert_add_rms_norm(
         x1,
         x2,
@@ -131,12 +131,12 @@ class AddRmsNormModel(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # block 1: y = rms_norm(x + fc1(x))
         t1 = self.fc1(x)
-        y1, _, _ = torch.ops.cann_lm.add_rms_norm.default(
+        y1, _, _ = torch.ops.cann_local_lm.add_rms_norm.default(
             x, t1, self.gamma1, epsilon=EPS
         )
         # block 2: y = rms_norm(y1 + fc2(y1))
         t2 = self.fc2(y1)
-        y2, _, _ = torch.ops.cann_lm.add_rms_norm.default(
+        y2, _, _ = torch.ops.cann_local_lm.add_rms_norm.default(
             y1, t2, self.gamma2, epsilon=EPS
         )
         return self.out_proj(y2)

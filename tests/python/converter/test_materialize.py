@@ -7,7 +7,7 @@ materialize_int4/int8 量化正确性 (q=round(w/s) clamp + dequant q*s≈w) + s
 import pytest
 import torch
 
-from cann_lm.converter.export.quant_swap.materialize import (
+from cann_local_lm.converter.export.quant_swap.materialize import (
     _SCALE_MASK,
     materialize_int4_per_group_symmetric,
     materialize_int8_per_channel_symmetric,

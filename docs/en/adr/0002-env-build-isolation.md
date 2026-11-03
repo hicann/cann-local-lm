@@ -59,7 +59,7 @@ Rejected: torch 2.9.0+cpu ABI is stable, the backend .so does not call NPU (only
 
 ### Alternative B: Top-level CMakeLists completely replaces build_csrc.sh (delete build_csrc.sh)
 
-**Adopted** (the original "thin wrapper keeping csrc/" was transitional, ultimately deleted): `build_csrc.sh` has been deleted, and the 6 call sites (2 example CMakeLists + tests CMakeLists + `export_epair_and_compile/run.sh` + `export_quant_matmul_single_op/run.sh` + `om_npu_verify/check_env.sh`) all fall back to `build/libtorch_delegate_backend.so` + `bash scripts/cann_lm_compile/build_cpp.sh --target torch_delegate_backend`. A single C++ build logic (build_cpp.sh), with no build scripts left in the cann_lm/ source tree.
+**Adopted** (the original "thin wrapper keeping csrc/" was transitional, ultimately deleted): `build_csrc.sh` has been deleted, and the 6 call sites (2 example CMakeLists + tests CMakeLists + `export_epair_and_compile/run.sh` + `export_quant_matmul_single_op/run.sh` + `om_npu_verify/check_env.sh`) all fall back to `build/libtorch_delegate_backend.so` + `bash scripts/cann_lm_compile/build_cpp.sh --target torch_delegate_backend`. A single C++ build logic (build_cpp.sh), with no build scripts left in the cann_local_lm/ source tree.
 
 ### Alternative C: npu folded into converter
 

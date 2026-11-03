@@ -93,7 +93,7 @@ SOC_VERSION=KirinX90      # kirinx90; 910 uses Ascend910_9362; 950DT uses Ascend
 |---|----|---------|---------|---------|
 | 1 | **Compiler** | SDK clang (`${OHOS_SDK_NATIVE}/llvm/bin/clang`) | ✓ clang 15.0.4 | Bundled with SDK (inside command-line-tools zip at `llvm/bin/clang`); runs directly on host, no extra install |
 | 2 | **OHOS SDK** | `OHOS_SDK_NATIVE` is set and contains `sysroot/` | ✓ | `export OHOS_SDK_NATIVE=<extracted-dir>/command-line-tools/sdk/default/openharmony/native` |
-| 3 | **java + signing jar** | `java` in PATH; `tools/binary-sign-tool.jar` or `cann_lm/engine/ohos/binary-sign-tool.jar` exists | java 21.0.10 ✓; jar ✓ | `apt install default-jre`; jar is inside the SDK zip at `command-line-tools/sdk/default/openharmony/toolchains/lib/binary-sign-tool.jar`, copy it into the repo `tools/` (`mkdir -p tools/ && cp ... tools/`) |
+| 3 | **java + signing jar** | `java` in PATH; `tools/binary-sign-tool.jar` or `cann_local_lm/engine/ohos/binary-sign-tool.jar` exists | java 21.0.10 ✓; jar ✓ | `apt install default-jre`; jar is inside the SDK zip at `command-line-tools/sdk/default/openharmony/toolchains/lib/binary-sign-tool.jar`, copy it into the repo `tools/` (`mkdir -p tools/ && cp ... tools/`) |
 | 4 | **cmake / make** | same as §1.1 | 3.20.5 / 4.3 ✓ | same as §1.1 |
 
 > **Why java + signing jar is needed**: HarmonyOS requires all binaries (`.so` + executables) to be **signed** before they can run on the device (security mechanism). `binary-sign-tool.jar` is the signing tool (run with `java`); the cross-compiled `libcann_lm_engine.so` + UT executables must be signed by it (selfSign dev signing) before deployment to the device.
@@ -143,7 +143,7 @@ bash scripts/build.sh cpp --asan && ctest --test-dir build
 
 **Key checks** (`scripts/build.sh check` check items):
 - `CONVERTER_PYTHON` is executable
-- `import torch` / `import torchair` / `import torch_delegate` / `import cann_lm` all pass
+- `import torch` / `import torchair` / `import torch_delegate` / `import cann_local_lm` all pass
 - `import torch_npu` **must fail** (stub path OK)
 
 **TBE/tvm dependency packages (for ② omc compilation)**: When `cann_lm_compile` (C++ binary) runs `aclgrphBuildModel` to compile operators, it calls back into Python TBE/tvm, which needs the following packages. These packages are **not in the CANN .run package**, but most are auto-dependencies of `te` (pip package) or `torch`, pulled in automatically by `pip install te` / `pip install torch`:
@@ -233,13 +233,13 @@ pip install torchaudio==2.9.0 --force-reinstall --no-deps --user   # install to 
 
 ## Kirin device side (③b/c device text generation, device ships with it, host does not install)
 
-③b/c runs `cann_lm.generate` on Kirin/HarmonyOS devices (via `libcann_lm_engine.so` + hiai ACL); **the host does not need to install any dependencies** — the device ships with:
+③b/c runs `cann_local_lm.generate` on Kirin/HarmonyOS devices (via `libcann_lm_engine.so` + hiai ACL); **the host does not need to install any dependencies** — the device ships with:
 
 | Component | Source | Purpose |
 |------|------|------|
 | musl libc | provided by HarmonyOS system | C runtime (musl, not glibc) |
 | `libneural_network_core.so` | HarmonyOS system library (Hiai/NNRT) | NPU inference (hiai ACL underlying) |
-| `libc++_shared.so` | embedded in the signed engine wheel (`cann_lm/lib/`) | C++ runtime (same directory as the engine .so) |
+| `libc++_shared.so` | embedded in the signed engine wheel (`cann_local_lm/lib/`) | C++ runtime (same directory as the engine .so) |
 | `libcann_lm_engine.so` | cross-compiled on host (Part 1 §1.3) → deployed to device | engine SHARED library (signed version) |
 
 > The host side only needs to complete the Part 1 build (producing the signed engine wheel); after the artifact is deployed to the device, the device-side runtime carries it.
@@ -262,7 +262,7 @@ Look up "which Part 1 section + which Part 2 section" from the task:
 | Quantization Step A (dopt GPTQ) | `source scripts/set_env_cann.sh --npu` (or GPU env) | — | §2.2 P2 (NPU or GPU) | NPU or GPU |
 | Quantization Step B (converter consumption) | `source scripts/set_env.sh` | — | §1.2 CANN + §2.1 P1 venv | No |
 | ③ NPU text generation (numerical verification) | `source scripts/set_env_cann.sh --npu` | — | §1.2 CANN + §2.2 P2 | NPU |
-| ③b/c Kirin device text generation | `cann_lm.generate` on device | — | §2.3 device side | Kirin device |
+| ③b/c Kirin device text generation | `cann_local_lm.generate` on device | — | §2.3 device side | Kirin device |
 | Release full packaging | root `bash build.sh --pkg` | Part 1 all (§1.1-1.4) | — | No |
 
 > **Compile vs runtime boundary**: Building distributions only (`.whl`/`.run`) requires only Part 1; producing epair/omc/text generation requires Part 2. Without an NPU/Kirin device you can do Part 1 build + Part 2's ①② (CPU, no NPU needed).
@@ -280,7 +280,7 @@ bash scripts/build.sh check
 #   ✓ CANN /home/developer/Ascend/cann-9.3.0
 #   ✓ P1 venv .../deps/torch-delegate/.venv/bin/python
 #   ✓ torch (2.9.0+cpu)
-#   ✓ torchair / torch_delegate / cann_lm
+#   ✓ torchair / torch_delegate / cann_local_lm
 #   ✓ third_party json
 #   optional (③ NPU text generation / quantization acceleration, Part 2; quantization can be NPU or GPU, see §2.2):
 #   ✓ P2 .../python-3.12.9 (for ③ NPU text generation / NPU quantization acceleration)

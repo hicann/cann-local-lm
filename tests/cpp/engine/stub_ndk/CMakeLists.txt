@@ -1,7 +1,7 @@
 # tests/cpp/engine/stub_ndk/CMakeLists.txt
 # 独立 stub .so(external_ndk 层 OH_NN* 打桩):host 回归测试用,shim/backend 零改。
 # 产 libneural_network_core.so + libhiai_foundation.so(扩展名 .so,NDKProxy bare-name
-# LoadLibraryA 在 exe 目录逐字命中),输出到 bbit 的 exe 目录(build/cann_lm/engine/)。
+# LoadLibraryA 在 exe 目录逐字命中),输出到 bbit 的 exe 目录(build/cann_local_lm/engine/)。
 #
 # 仅 host(非 OHOS)构建;OHOS 交叉编译不入产物(真机用真 .so)。
 cmake_minimum_required(VERSION 3.16)
@@ -11,9 +11,9 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # external_cann 头(neural_network_runtime/) + hiai_acl ohos_compat.h(剥 availability)
-# 路径相对 tests/cpp/engine/stub_ndk：../../../.. = 仓根（4 级深；engine 在 cann_lm/engine）。
-set(EXTERNAL_CANN_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../../../cann_lm/engine/external_cann")
-set(OHOS_COMPAT_H      "${CMAKE_CURRENT_SOURCE_DIR}/../../../../cann_lm/engine/hiai_acl/src/ohos_compat.h")
+# 路径相对 tests/cpp/engine/stub_ndk：../../../.. = 仓根（4 级深；engine 在 cann_local_lm/engine）。
+set(EXTERNAL_CANN_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../../../cann_local_lm/engine/external_cann")
+set(OHOS_COMPAT_H      "${CMAKE_CURRENT_SOURCE_DIR}/../../../../cann_local_lm/engine/hiai_acl/src/ohos_compat.h")
 
 # bbit exe 目录(Ninja 默认把 bbit.exe 放 build/ 根,故 .so 也放那,LoadLibraryA exe 目录命中)
 set(STUB_OUTPUT_DIR "${CMAKE_BINARY_DIR}")

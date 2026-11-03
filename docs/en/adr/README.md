@@ -22,7 +22,7 @@ When you get a change, go through these 8 questions; if any answer is Yes, write
 | # | Judgment question | Typical scenario when Yes |
 |---|---------|-----------------|
 | 1 | Are you choosing between two or more technical options? | Self-developed op vs reuse CANN native; V3 vs V4; memory bridge vs disk bridge vs subprocess |
-| 2 | Are you introducing or removing a custom op / GE op registration? | `reg_register.h` adding/removing `REG_OP`; adding a full `cann_lm::` schema+fake+converter set |
+| 2 | Are you introducing or removing a custom op / GE op registration? | `reg_register.h` adding/removing `REG_OP`; adding a full `cann_local_lm::` schema+fake+converter set |
 | 3 | Is the cost of rolling back this change very high? | Requires modifying many files / re-exporting all epairs / recompiling OM / existing artifacts incompatible |
 | 4 | Does it affect the link structure across modules? | quant↔export↔loader↔saver bridging method; prefill-decode dual-graph vs single graph |
 | 5 | Does it change the on-disk format or memory layout of weights/scales? | weight_scale fp32→int64 bit pattern; pre-transposed vs natural orientation; nibble-packed vs unpack |

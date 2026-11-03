@@ -1,7 +1,7 @@
 # tests/cpp/engine/CMakeLists.txt — engine UT 定义
 #
-# 前置：cann_lm_engine target 已定义（host 由 cann_lm/engine/CMakeLists.txt，
-#       OHOS 由 cann_lm/engine/ohos/CMakeLists.txt）
+# 前置：cann_lm_engine target 已定义（host 由 cann_local_lm/engine/CMakeLists.txt，
+#       OHOS 由 cann_local_lm/engine/ohos/CMakeLists.txt）
 # 前置：GTest 已 find_package（host）或 FetchContent（OHOS）
 #
 # Host: 顶层 CMakeLists.txt 在 BUILD_TESTS=ON 时 add_subdirectory(tests/cpp/engine)
@@ -11,7 +11,7 @@ if(NOT TARGET cann_lm_engine)
     message(FATAL_ERROR "cann_lm_engine target not found")
 endif()
 
-set(_ENGINE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../../cann_lm/engine)
+set(_ENGINE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../../cann_local_lm/engine)
 
 # 三方库 (nlohmann_json / GTest): Find 模块 (cmake/third_party/modules → output/third_party)
 # 与 examples/test_engine (bbit) 同款机制; 子目录模式 (OHOS) 下父级已建 target 则模块早退复用

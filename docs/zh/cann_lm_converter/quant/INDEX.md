@@ -2,7 +2,7 @@
 
 简体中文 | [English](../../../en/cann_lm_converter/quant/INDEX.md)
 
-> `cann_lm/converter/quant/` — W4A8 s8s4 量化接入：CANN 轻量化工具 GPTQ 权重量化 + converter 物化 int4 + `npu::npu_quant_matmul` 算子导出。
+> `cann_local_lm/converter/quant/` — W4A8 s8s4 量化接入：CANN 轻量化工具 GPTQ 权重量化 + converter 物化 int4 + `npu::npu_quant_matmul` 算子导出。
 
 ## 模块文档
 
@@ -14,9 +14,9 @@
 
 ## 代码文件
 
-### 轻量化工具编排 + 校准（`cann_lm/converter/quant/`）
+### 轻量化工具编排 + 校准（`cann_local_lm/converter/quant/`）
 
-> converter 侧 `swap.py` 升至 `cann_lm/converter/swap.py`（converter 根，编排层 peer of loader/saver）；`materialize.py` / `quant_linear.py` 落 `cann_lm/converter/export/quant_swap/`（物化内部），详见 [../export/INDEX.md](../export/INDEX.md) "Python 代码文件"。`quant/__init__.py` 不再 re-export materialize/swap 符号。
+> converter 侧 `swap.py` 升至 `cann_local_lm/converter/swap.py`（converter 根，编排层 peer of loader/saver）；`materialize.py` / `quant_linear.py` 落 `cann_local_lm/converter/export/quant_swap/`（物化内部），详见 [../export/INDEX.md](../export/INDEX.md) "Python 代码文件"。`quant/__init__.py` 不再 re-export materialize/swap 符号。
 
 | 文件 | 职责 |
 |------|------|
@@ -41,9 +41,9 @@
 
 | 文件 | 职责 |
 |------|------|
-| `cann_lm/models/fused_ops/quant_matmul.py` | `npu::npu_quant_matmul` custom op（schema + fake/meta + CPU PoC impl） |
-| `cann_lm/models/fused_ops/dynamic_quant.py` | `npu::npu_dynamic_quant` custom op（激活动态量化 s8） |
-| `cann_lm/converter/export/ge_converters/_quant_matmul_converter.py` | `npu::npu_quant_matmul` → `ge.QuantBatchMatmulV4` converter（V4 full IR + dummy bias） |
+| `cann_local_lm/models/fused_ops/quant_matmul.py` | `npu::npu_quant_matmul` custom op（schema + fake/meta + CPU PoC impl） |
+| `cann_local_lm/models/fused_ops/dynamic_quant.py` | `npu::npu_dynamic_quant` custom op（激活动态量化 s8） |
+| `cann_local_lm/converter/export/ge_converters/_quant_matmul_converter.py` | `npu::npu_quant_matmul` → `ge.QuantBatchMatmulV4` converter（V4 full IR + dummy bias） |
 
 ## 关键函数 / 类
 

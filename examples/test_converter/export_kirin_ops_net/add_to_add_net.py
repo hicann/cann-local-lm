@@ -36,7 +36,7 @@ import torch
 from torch import Tensor, nn
 import torch.nn.functional as F
 
-import cann_lm.models.fused_ops  # noqa: F401  (注册 npu_rms_norm)
+import cann_local_lm.models.fused_ops  # noqa: F401  (注册 npu_rms_norm)
 
 
 BATCH = 2
@@ -133,8 +133,8 @@ def compile_to_epair(ep_path: Path, output_dir: Path, max_file_size: int) -> Pat
     """.pt2 -> epair (lite_export_context 绕过 aclrtSetDevice, register_ge_converters)."""
     import torch_delegate
     from torch_delegate import LiteConfig, lite_export_context
-    from cann_lm.converter.export.epair_utils import consolidated_weights_save
-    from cann_lm.converter.export.ge_converters import register_ge_converters
+    from cann_local_lm.converter.export.epair_utils import consolidated_weights_save
+    from cann_local_lm.converter.export.ge_converters import register_ge_converters
 
     output_dir = Path(output_dir).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)

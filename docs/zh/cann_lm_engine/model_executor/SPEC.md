@@ -4,7 +4,7 @@
 
 ## 第 1 章 概述
 
-本规格定义 `cann_lm/engine/core/model_executor` 下 C++ ModelExecutor 模块的业务行为。该模块为 CANN-LM 推理引擎提供**单步前向执行（前向壳）**与 **KV Cache ringBuffer 光标管理**、**输入填充**、**模型加卸载/LoRA 控制**能力，位于 `pipelineExecutor`（上）与 `ModelManager`（下，backend 具体实现）、`TensorManager`（tensor 内存）之间。prefill 与 decode 分别为本模块两个实例（各绑定一个 om 离线编译图），二者共享同一 KV Cache 池、零拷贝。该模块是 engine 内部 C++ 组件，仅被 `pipelineExecutor` 消费，**不对外暴露**任何跨语言或外部接口。
+本规格定义 `cann_local_lm/engine/core/model_executor` 下 C++ ModelExecutor 模块的业务行为。该模块为 CANN-LM 推理引擎提供**单步前向执行（前向壳）**与 **KV Cache ringBuffer 光标管理**、**输入填充**、**模型加卸载/LoRA 控制**能力，位于 `pipelineExecutor`（上）与 `ModelManager`（下，backend 具体实现）、`TensorManager`（tensor 内存）之间。prefill 与 decode 分别为本模块两个实例（各绑定一个 om 离线编译图），二者共享同一 KV Cache 池、零拷贝。该模块是 engine 内部 C++ 组件，仅被 `pipelineExecutor` 消费，**不对外暴露**任何跨语言或外部接口。
 
 需求编号：**SR20260807001**。软件层次：**framework**（engine core 可复用库，含向后兼容性章节）。
 
@@ -53,7 +53,7 @@
 
 ### 3.1 现状
 
-`cann_lm/models` 下各模型推理依赖外部 Python 实现。C++ 推理路径缺乏统一的"前向壳 + KV 管理 + 加卸载控制"组件。pipeline DESIGN（`docs/pipeline+engine_executor`）定义了 L2 `M-04 ModelExecutor` 为前向壳、L3 `C-04 IModelManager` 为底层运行时契约，但将 KV 维护标注为"沉底层 C5"、将 M-04 限定为"仅前向"、并主张 Continuous Batching"无 padding"。
+`cann_local_lm/models` 下各模型推理依赖外部 Python 实现。C++ 推理路径缺乏统一的"前向壳 + KV 管理 + 加卸载控制"组件。pipeline DESIGN（`docs/pipeline+engine_executor`）定义了 L2 `M-04 ModelExecutor` 为前向壳、L3 `C-04 IModelManager` 为底层运行时契约，但将 KV 维护标注为"沉底层 C5"、将 M-04 限定为"仅前向"、并主张 Continuous Batching"无 padding"。
 
 ### 3.2 问题
 
@@ -255,7 +255,7 @@ sequenceDiagram
   - `IBuiltModel`：与 `IModelManager` 同级 L3；经 `BuildModelFromFile/FromBuffer()` 创建（链接期，后端编译时确定）（BuildModelFromFile/FromBuffer 已含加载+编译），`GetInputDescs/GetOutputDescs` 暴露 om 图 I/O 描述。`ModelHandle`（v0.7 移除）被其替代。
   - `TensorManager`（v0.8，具体单例）：`Instance()` 单例访问；`CreateTensor(TensorDesc, modelId)` 按 desc + modelId 申请输入/输出 tensor（RAII 释放）。ModelExecutor 在 Load（Init + `GetModelID + InitWeights(weight)（图与权重分离：Init 只加载图结构，权重经 InitWeights 单独加载；路径模式传 weight 路径，buffer 模式待 backend API 扩展）`）后据 built descs 向其申请 tensor。
   - `embedding 模块（C-02 ITextEmbedding）`：embedding 表由 `pipelineExecutor` 调用本模块加载并绑定至模型；本模块 tokenId 路径经模型内部（om 图）使用该表查表。
-  - `cann_lm/models/*`：权重与 om 构件来源；行为对齐以 om 图 + 权重为 oracle。
+  - `cann_local_lm/models/*`：权重与 om 构件来源；行为对齐以 om 图 + 权重为 oracle。
 - **明确不依赖**：tokenizer（归 C-01）、采样（归 C-03）；embedding 路径上游查表归 pipeline M-06/C-02，tokenId 路径查表在模型内部，本模块不重新实现查表、不加载/拥有 embedding 表（embedding 表加载由 embedding 模块经 `pipelineExecutor` 负责，非 `ModelManager`）。
 - 自检：未遗漏隐式依赖——`CreateModelManager()` 链接符号（构建期保证链接选定后端库）+ `TensorManager` 必须就绪否则本模块无法实例化（`ModelManager` 实例本身在 Load 时由本模块创建，非预先存在）；tokenId 路径前置需 embedding 模块已加载并绑定 embedding 表；decode 须先于 prefill `LoadModel` 以定容共享 KV 池。
 

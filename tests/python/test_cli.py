@@ -1,12 +1,12 @@
-"""Tests for the cann_lm top-level CLI (subcommand dispatcher, mlx_lm-style).
+"""Tests for the cann_local_lm top-level CLI (subcommand dispatcher, mlx_lm-style).
 
-Pure: only the argparse dispatch is exercised (parse `cann_lm generate ...` →
+Pure: only the argparse dispatch is exercised (parse `cann_local_lm generate ...` →
 command=generate, args.func is generate.run, args wired). The actual generate
 run needs the .so (device).
 """
 
-from cann_lm import generate
-from cann_lm import cli
+from cann_local_lm import generate
+from cann_local_lm import cli
 
 
 def _parse(*argv):

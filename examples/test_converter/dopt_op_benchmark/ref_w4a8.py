@@ -1,6 +1,6 @@
 """Tier 0 reference: W4A8 s8s4 per-group quant matmul, from the math spec.
 
-独立于 cann_lm converter / fused_ops 代码实现 (不复用 materialize.py / quant_matmul.py /
+独立于 cann_local_lm converter / fused_ops 代码实现 (不复用 materialize.py / quant_matmul.py /
 dynamic_quant.py)。每步一行，肉眼可审。spec 选择显式写在这里 + bedrock/hand_fixtures.py，
 待 NPU 校准 (Tier 2) 后钉 "规格↔硬件"。
 

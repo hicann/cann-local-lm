@@ -14,7 +14,7 @@
 #include <string_view>
 #include <vector>
 
-namespace cann_lm::engine {
+namespace cann_local_lm::engine {
 namespace {
 
 // 池构造便捷版：2 层稠密（层型与本组用例无关，MapSlot 只看 kv_max/init）
@@ -1083,4 +1083,4 @@ TEST(PromptCacheEnsureTest, OldContractPoolRejectsNewFormGraphDesc)
 }
 
 } // namespace
-} // namespace cann_lm::engine
+} // namespace cann_local_lm::engine

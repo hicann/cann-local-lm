@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# engine OHOS 一键: 编译 + 签名 + 打 whl（产物在 build_ohos/ + dist/）
+# engine OHOS 一键: 编译 + 签名 + 打 whl（产物在 build_ohos/ + build_out/）
 #
 # 流程:
 #   1. build_ohos.sh → cmake 编译 + 签名（签名版就地覆盖裸名 .so）→ build_ohos/*.so
-#   2. 打 engine python whl（内嵌 .so + libc++_shared.so）→ dist/
+#   2. 打 engine python whl（内嵌 .so + libc++_shared.so）→ build_out/
 #   3. 拷一份到 deploy_ohos/（.so + libc++ + whl，方便设备部署）
 set -euo pipefail
 
@@ -12,7 +12,7 @@ REPO_ROOT="$(cd "${THIS_DIR}/../.." && pwd)"
 BUILD_DIR="${BUILD_DIR:-${REPO_ROOT}/build_ohos}"
 DIST="${DIST:-${REPO_ROOT}/build_out}"
 DEPLOY="${REPO_ROOT}/deploy_ohos"
-PY_SRC="${REPO_ROOT}/cann_lm/engine/python"
+PY_SRC="${REPO_ROOT}/cann_local_lm/engine/python"
 SCRIPTS_DIR="${REPO_ROOT}/scripts/cann_lm_engine"
 
 # ── 参数 ──
@@ -38,7 +38,7 @@ if [[ $NO_SIGNED -eq 0 ]]; then
         done
     fi
     if [ -z "$JAR" ]; then
-        for _j in "${REPO_ROOT}/tools/binary-sign-tool.jar" "${REPO_ROOT}/cann_lm/engine/ohos/binary-sign-tool.jar"; do
+        for _j in "${REPO_ROOT}/tools/binary-sign-tool.jar" "${REPO_ROOT}/cann_local_lm/engine/ohos/binary-sign-tool.jar"; do
             [ -f "$_j" ] && JAR="$_j" && break
         done
     fi
@@ -55,7 +55,7 @@ fi
 echo; echo "=== [1/2] OHOS 交叉编译 + 签名 ==="
 bash "${THIS_DIR}/build_ohos.sh" $SIGN_FLAG
 
-# ── 3) 打 engine python whl（内嵌 .so）→ dist/ ──
+# ── 3) 打 engine python whl（内嵌 .so）→ build_out/ ──
 echo; echo "=== [2/2] 打 engine whl + 拷到 deploy_ohos/ ==="
 mkdir -p "$DIST" "$DEPLOY"
 
@@ -71,24 +71,24 @@ CPP_SO_SIGNED="$BUILD_DIR/signed/libc++_shared.so"
 PIP_CMD="pip"
 [ -x "${REPO_ROOT}/deps/torch-delegate/.venv/bin/pip" ] && PIP_CMD="${REPO_ROOT}/deps/torch-delegate/.venv/bin/pip"
 
-mkdir -p "$PY_SRC/cann_lm/lib"
+mkdir -p "$PY_SRC/cann_local_lm/lib"
 
 # ── 2a. 未签名 wheel (含未签名 .so, 版本 0.1.0) ──
 echo "  [unsigned] embedding unsigned .so → cann_local_lm_engine-0.1.0-*.whl"
-cp "$ENGINE_SO_UNSIGNED" "$PY_SRC/cann_lm/lib/libcann_lm_engine.so"
-cp "$CPP_SO_UNSIGNED" "$PY_SRC/cann_lm/lib/libc++_shared.so"
+cp "$ENGINE_SO_UNSIGNED" "$PY_SRC/cann_local_lm/lib/libcann_lm_engine.so"
+cp "$CPP_SO_UNSIGNED" "$PY_SRC/cann_local_lm/lib/libc++_shared.so"
 (cd "$SCRIPTS_DIR" && CANN_LM_ENGINE_VERSION="0.1.0" "$PIP_CMD" wheel . --no-deps -w "$DIST") 2>&1 | grep -E "Created|Built|error" | tail -3
 
 # ── 2b. 签名 wheel (含签名 .so, 版本 0.1.0+signed) ──
 if [[ $NO_SIGNED -eq 0 ]] && [ -f "$ENGINE_SO_SIGNED" ]; then
     echo "  [signed]   embedding signed .so → cann_local_lm_engine-0.1.0+signed-*.whl"
-    cp "$ENGINE_SO_SIGNED" "$PY_SRC/cann_lm/lib/libcann_lm_engine.so"
-    cp "$CPP_SO_SIGNED" "$PY_SRC/cann_lm/lib/libc++_shared.so"
+    cp "$ENGINE_SO_SIGNED" "$PY_SRC/cann_local_lm/lib/libcann_lm_engine.so"
+    cp "$CPP_SO_SIGNED" "$PY_SRC/cann_local_lm/lib/libc++_shared.so"
     (cd "$SCRIPTS_DIR" && CANN_LM_ENGINE_VERSION="0.1.0+signed" "$PIP_CMD" wheel . --no-deps -w "$DIST") 2>&1 | grep -E "Created|Built|error" | tail -3
 fi
 
 # 清理临时文件
-rm -rf "$PY_SRC/cann_lm/lib" "$SCRIPTS_DIR/cann_local_lm_engine.egg-info"
+rm -rf "$PY_SRC/cann_local_lm/lib" "$SCRIPTS_DIR/cann_local_lm_engine.egg-info"
 
 echo; echo "=== 完成 ==="
 echo "  build_ohos/: .so （编译+签名产物）"

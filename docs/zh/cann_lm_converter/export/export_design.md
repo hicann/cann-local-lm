@@ -4,7 +4,7 @@
 
 > 把 HuggingFace 模型导出为 epair 格式的完整设计：注册表 → 加载 → ExportWrapper → torch.export → epair 落盘 → C++ 加载。
 >
-> 涵盖 `cann_lm/models/` 下的 `model_registry.py` / `export_wrapper.py` + `cann_lm/converter/` 下的 `loader.py` / `saver.py` / `swap.py` / `quant_entry.py` / `export/`（含 C++ `csrc/`）。
+> 涵盖 `cann_local_lm/models/` 下的 `model_registry.py` / `export_wrapper.py` + `cann_local_lm/converter/` 下的 `loader.py` / `saver.py` / `swap.py` / `quant_entry.py` / `export/`（含 C++ `csrc/`）。
 >
 > CLI 入口见 [cli_design.md](../cli/cli_design.md)，量化接入见 [quant_design.md](../quant/quant_design.md)。
 >
@@ -31,7 +31,7 @@
 <a id="概述"></a>
 ## 概述
 
-`cann_lm/converter/` 是把 HF 模型导出为 epair 格式的工具链。能力边界：
+`cann_local_lm/converter/` 是把 HF 模型导出为 epair 格式的工具链。能力边界：
 
 - **输入**：HuggingFace 模型目录（`config.json` + safetensors 权重 + tokenizer 文件）
 - **输出**：epair 模型目录（`ep_json_with_ascend_ir.json` + 权重 bin + tokenizer + `model_config.json`），供 C++ 后端加载
@@ -63,11 +63,11 @@ ge::Graph
 ### 目录结构
 
 ```
-cann_lm/
+cann_local_lm/
 ├── models/
 │   ├── model_registry.py          # 模型注册表 (ModelEntry + REGISTRY + detect_model_type + available_models)
 │   ├── export_wrapper.py           # ExportWrapper 基类 (forward + get_sample_inputs + _drive_layers)
-│   ├── fused_ops/                  # 自定义算子库 (cann_lm:: + npu::, 见 fused_ops.md)
+│   ├── fused_ops/                  # 自定义算子库 (cann_local_lm:: + npu::, 见 fused_ops.md)
 │   └── {gemma4,qwen3_5}/     # 各模型定义 + 子类 export_wrapper.py
 └── converter/
     ├── __init__.py
@@ -79,12 +79,12 @@ cann_lm/
     ├── quant/                      # 量化子包 (CANN 轻量化工具 GPTQ / auto_quant, 见 quant_design.md)
     └── export/
         ├── epair_utils.py          # pack_weights + consolidated_weights_save
-        ├── ge_converters/          # register_ge_converters (cann_lm/npu 自定义算子 + 部分 aten 算子的 GE 映射)
+        ├── ge_converters/          # register_ge_converters (cann_local_lm/npu 自定义算子 + 部分 aten 算子的 GE 映射)
         ├── quant_swap/             # 量化物化内部包 (materialize.py + quant_linear.py, 见 quant_design.md)
         └── csrc/                   # C++ 后端 (epair_model_loader / ge_graph_builder / ge_weight_loader, 详见下文 C++ 加载侧)
 ```
 
-自定义算子库位于 `cann_lm/models/fused_ops/`，命中两个命名空间：多数走 `torch.ops.npu.*`（`npu::`，converter env 由 `_library.py` 自定义 schema + `register_fake`，不依赖 torch_npu），仅 `l2_norm` 走 `torch.ops.cann_lm.*`（`cann_lm::`，无 torchair 对应）。算子清单：`chunk_gated_delta_rule` / `dynamic_quant` / `fused_infer_attention_score` / `l2_norm` / `quant_matmul` / `rms_norm` / `rotary_mul` / `scatter_nd_update`。每个算子在 `export/ge_converters/ge_converter.py` 注册对应 GE converter（映射实现见 [`fused_ops.md`](../models/fused_ops/fused_ops.md) §3）。CPU eager impl 由 `_library.py` 的 `register_cpu_impl` 装饰器按需注册（stub/export env 跳过仅留 `register_fake`；非 stub env 注册后可 eager），真实计算靠 GE converter 映射到 NPU 算子。
+自定义算子库位于 `cann_local_lm/models/fused_ops/`，命中两个命名空间：多数走 `torch.ops.npu.*`（`npu::`，converter env 由 `_library.py` 自定义 schema + `register_fake`，不依赖 torch_npu），仅 `l2_norm` 走 `torch.ops.cann_local_lm.*`（`cann_local_lm::`，无 torchair 对应）。算子清单：`chunk_gated_delta_rule` / `dynamic_quant` / `fused_infer_attention_score` / `l2_norm` / `quant_matmul` / `rms_norm` / `rotary_mul` / `scatter_nd_update`。每个算子在 `export/ge_converters/ge_converter.py` 注册对应 GE converter（映射实现见 [`fused_ops.md`](../models/fused_ops/fused_ops.md) §3）。CPU eager impl 由 `_library.py` 的 `register_cpu_impl` 装饰器按需注册（stub/export env 跳过仅留 `register_fake`；非 stub env 注册后可 eager），真实计算靠 GE converter 映射到 NPU 算子。
 
 <a id="模型注册表-model_registrypy"></a>
 ## 模型注册表 model_registry.py
@@ -292,7 +292,7 @@ def collect_tokenizer_files(hf_path: str) -> list[Path]:
 
 > 注：`use_embeddings=True` 时 `saver` 在 `get_sample_inputs`（用它算 sample）+ host 权重抽取**之后**、`torch.export` **之前** 调用 `wrapper.detach_externalized_lookups()` 把外置查表子模块（`embed_tokens`，gemma4 加 `embed_tokens_per_layer`）从模型 `del` 掉 → torch.export 不 lift 它们 → `weights_*.bin` **不含**冗余查表权重（≈ OM，GE 编译本就剪掉它们），查表权重单独打包到 `host_weights_info.json` + `host_weights_*.bin` 给 host（带 dtype/shape）。依赖纯 embeddings forward 不访问这些子模块（`embed_tokens` 被 `inputs_embeds` 跳过、gemma4 `embed_tokens_per_layer` 被实例方法替换跳过）；`saver` 导出后断言它们不在 `inputs_to_parameters` 兜底。tied 模型（qwen3.5）：del `embed_tokens` 后 `lm_head.weight`（同数据）仍在 → 被 OM bake；host 从 `host_weights` 拿 `embed_tokens.weight` 查表（lm_head/embed_tokens 双角色，非冗余）。
 
-基类位于 `cann_lm/models/export_wrapper.py`，子类位于各模型目录（如 `cann_lm/models/qwen3_5/export_wrapper.py`）。
+基类位于 `cann_local_lm/models/export_wrapper.py`，子类位于各模型目录（如 `cann_local_lm/models/qwen3_5/export_wrapper.py`）。
 
 ```python
 class ExportWrapper(nn.Module):
@@ -448,7 +448,7 @@ def save_epair(
     """
     import torch_delegate
     from torch_delegate import EpairConfig
-    from cann_lm.converter.export.ge_converters import register_ge_converters
+    from cann_local_lm.converter.export.ge_converters import register_ge_converters
 
     output_dir = Path(output_dir).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -460,7 +460,7 @@ def save_epair(
     if artifact.wrapper_cls is None:
         raise ValueError(
             f"Model '{artifact.model_type}' has no ExportWrapper subclass registered. "
-            "Please implement one in cann_lm/models/export_wrapper.py."
+            "Please implement one in cann_local_lm/models/export_wrapper.py."
         )
     wrapper = artifact.wrapper_cls(
         artifact.model,
@@ -723,7 +723,7 @@ weights_1.bin: [tensor_2: 6000B]                   → 6000B (单独文件，超
 <a id="c-加载侧"></a>
 ## C++ 加载侧
 
-导出产物由 C++ `EpairModelLoader` 加载。**加载器库源码**位于 `cann_lm/converter/export/csrc/`（`backend/epair_model_loader.cc` / `ge_graph_builder.cc` / `ge_weight_loader.cc` / `epair_model_parser.cc`，构建产物 `libtorch_delegate_backend.so`）；**示例 main + 算子注册**位于 `examples/test_converter/export_llm_model/`（`main.cpp` + `reg_register.h`）。
+导出产物由 C++ `EpairModelLoader` 加载。**加载器库源码**位于 `cann_local_lm/converter/export/csrc/`（`backend/epair_model_loader.cc` / `ge_graph_builder.cc` / `ge_weight_loader.cc` / `epair_model_parser.cc`，构建产物 `libtorch_delegate_backend.so`）；**示例 main + 算子注册**位于 `examples/test_converter/export_llm_model/`（`main.cpp` + `reg_register.h`）。
 
 ### EpairModelLoader API (2 路径)
 
@@ -848,8 +848,8 @@ for (const auto &node : parser.Nodes()) {
 GE 算子注册分两层，互补：
 
 1. **Python 侧 `converter/export/ge_converters/ge_converter.py`** — `register_ge_converters()` 把 `torch.ops` 节点映射到 GE 算子，在 `export_to_epair` 前调用（save_epair 步骤 1）。覆盖：
-   - `npu.*` 自定义算子：`npu_quant_matmul`(→`QuantBatchMatmulV4`)/`npu_chunk_gated_delta_rule`/`npu_scatter_nd_update`(+`_`变体)/`npu_fused_infer_attention_score_v2`（算子定义在 `cann_lm/models/fused_ops/`，GE 映射实现见 [`fused_ops.md`](../models/fused_ops/fused_ops.md) §3）
-   - `cann_lm.*`：`l2norm`(→`L2Normalize`)
+   - `npu.*` 自定义算子：`npu_quant_matmul`(→`QuantBatchMatmulV4`)/`npu_chunk_gated_delta_rule`/`npu_scatter_nd_update`(+`_`变体)/`npu_fused_infer_attention_score_v2`（算子定义在 `cann_local_lm/models/fused_ops/`，GE 映射实现见 [`fused_ops.md`](../models/fused_ops/fused_ops.md) §3）
+   - `cann_local_lm.*`：`l2norm`(→`L2Normalize`)
    - 部分 `aten.*` 算子：`softplus`(→`SoftplusV2`)/`conv1d`/`index_copy`/`index_put`（torch.export 残留的 aten 节点，torchair 无内置映射时补）
    - 另有 `aten.eye`/`aten.type_as` 经 `_EXTRA_DECOMPOSITION_OPS` 白名单走 decomposition（非 GE converter 映射）
 
@@ -906,7 +906,7 @@ output_dir/
 ### 接口
 
 ```python
-from cann_lm.converter.saver import save_epair_prefill_decode
+from cann_local_lm.converter.saver import save_epair_prefill_decode
 
 save_epair_prefill_decode(
     artifact, output_dir,
@@ -957,7 +957,7 @@ td::EpairModelLoader decode_loader("decode_ep_json_with_ascend_ir.json",
 
 prefill-decode 共享 `weights_0.bin` 带来一个隐患：modeling 里 `torch.tensor([q_len])` 创建的 `actual_seq_qlen`/`actual_seq_kvlen`（`FusedInferAttentionScore` 的逐图小常量，prefill=128、decode=1）被 `torch.export` lift 成 GE 图里的 **`Data` 引用节点**（指向共享权重里的同名常量）。prefill `save_weights=True` 把自己的 128 写进 `weights_0.bin`，decode `save_weights=False` 不写却按同名复用 → decode 的融合注意力算子拿到 prefill 的 128 而非自己的 1；且 `Data` 引用输入被 GE 标记 tilingDepend → `FusedInferAttentionScore` 进 `PartitionedCall` 动态子图（950 编译还触发 `actualSeqLengthsQ(128) > Q_S(1)` 校验失败）。
 
-**修复**（`cann_lm/converter/export/epair_utils.py: inline_fused_attn_seq_constants()` + `saver.py:save_epair_prefill_decode` 调用）：在 prefill/decode ep_json 写出后做后处理——把每个 `FusedInferAttentionScore` 算子的 `actual_seq_qlen`(input[5]) / `actual_seq_kvlen`(input[6]) 输入引用替换为内联的 `ge.Const`。函数签名 `inline_fused_attn_seq_constants(ep_json_path, qlen_value, kvlen_value=None)`：`qlen_value` = query 长度（prefill=seq_len、decode=1）；`kvlen_value` 默认 None→用 qlen_value（**prefill 兼容**，无 past 时 kvlen=qlen=seq_len 正确），**decode 显式传 `kv_cache_max_len`**（见下）。`Const` op 严格对齐 ascend_ir 既有格式（`attr.value.t.data` base64 原始字节 + `_readable_value.s`）。
+**修复**（`cann_local_lm/converter/export/epair_utils.py: inline_fused_attn_seq_constants()` + `saver.py:save_epair_prefill_decode` 调用）：在 prefill/decode ep_json 写出后做后处理——把每个 `FusedInferAttentionScore` 算子的 `actual_seq_qlen`(input[5]) / `actual_seq_kvlen`(input[6]) 输入引用替换为内联的 `ge.Const`。函数签名 `inline_fused_attn_seq_constants(ep_json_path, qlen_value, kvlen_value=None)`：`qlen_value` = query 长度（prefill=seq_len、decode=1）；`kvlen_value` 默认 None→用 qlen_value（**prefill 兼容**，无 past 时 kvlen=qlen=seq_len 正确），**decode 显式传 `kv_cache_max_len`**（见下）。`Const` op 严格对齐 ascend_ir 既有格式（`attr.value.t.data` base64 原始字节 + `_readable_value.s`）。
 
 **效果**：
 - 逐图取值正确（decode qlen 拿到 1 不再串 prefill 的 128）→ 950 tiling 校验 `1 ≤ Q_S=1` 通过，decode OM 编译成功。
@@ -1091,17 +1091,17 @@ output_dir/
 
 ### 步骤 1：实现模型代码
 
-在 `cann_lm/models/{model_name}/` 下实现：
+在 `cann_local_lm/models/{model_name}/` 下实现：
 - `configuration_{model_name}.py` — config dataclass（建议实现 `from_pretrained` / `to_dict`）
 - `modeling_{model_name}.py` — model class + `load_{model_name}_weights` 函数
 - `__init__.py` — 导出 config class, model class, load_weights 函数
 
 ### 步骤 2：实现 ExportWrapper 子类
 
-在 `cann_lm/models/{model_name}/export_wrapper.py` 下创建子类，继承 `ExportWrapper`，实现 `_drive_layers`：
+在 `cann_local_lm/models/{model_name}/export_wrapper.py` 下创建子类，继承 `ExportWrapper`，实现 `_drive_layers`：
 
 ```python
-from cann_lm.models.export_wrapper import ExportWrapper
+from cann_local_lm.models.export_wrapper import ExportWrapper
 
 class {ModelName}ExportWrapper(ExportWrapper):
     def _drive_layers(self, input_ids, attention_mask, position_ids,
@@ -1150,7 +1150,7 @@ REGISTRY["{model_name}"] = ModelEntry(
 
 ```bash
 # Python 导出
-python cann_lm/converter/cann_lm_converter.py \
+python cann_local_lm/converter/cann_lm_converter.py \
     --hf-path /path/to/model --output-dir /path/to/output
 
 # C++ 加载
@@ -1299,7 +1299,7 @@ scatter-write 模式下，KV cache 是固定 `[kv_cache_max_len]` 的预分配 b
 **实际案例**（prompt="Hello, my name is"，bfloat16，加 BOS token）：
 
 ```
-HF (Gemma4ClippableLinear):           cann_lm (nn.Linear):
+HF (Gemma4ClippableLinear):           cann_local_lm (nn.Linear):
   #1: token 236743 " "  (18.500)       #1: token 532 " and" (18.500)
   #2: token 532 " and" (18.250)       #2: token 236761 "." (18.500)
   #3: token 236761 "." (18.250)       #3: token 236743 " " (18.500)
@@ -1308,9 +1308,9 @@ HF (Gemma4ClippableLinear):           cann_lm (nn.Linear):
 ```
 
 **原因**：
-1. cann_lm 的 top-3 tokens 的 logits 完全相同（18.500） — 模型在这个位置"不确定"
+1. cann_local_lm 的 top-3 tokens 的 logits 完全相同（18.500） — 模型在这个位置"不确定"
 2. HF 的 `Gemma4ClippableLinear` 的 clamp 让 top-1 和 top-2 产生 0.25 的间隔 → 明确选择 " "
-3. cann_lm 无 clamp → tie-breaking 依赖 argmax 的实现细节 → 选择了 " and" 而非 " "
+3. cann_local_lm 无 clamp → tie-breaking 依赖 argmax 的实现细节 → 选择了 " and" 而非 " "
 4. **第一个 token 不同 → KV cache 不同 → 后续 decode 全部分叉**
 
 **影响范围**：
@@ -1343,20 +1343,20 @@ HF (Gemma4ClippableLinear):           cann_lm (nn.Linear):
 
 | 文件 | 职责 |
 |------|------|
-| `cann_lm/models/model_registry.py` | 模型注册表（ModelEntry + REGISTRY + detect_model_type） |
-| `cann_lm/converter/loader.py` | `load_model` + `build_config` + `collect_tokenizer_files` |
-| `cann_lm/converter/saver.py` | `save_epair` / `save_epair_prefill_decode` / `save_model_config` / `copy_tokenizer_files` |
-| `cann_lm/converter/swap.py` | 量化编排（converter 根，peer of loader/saver）：`swap_from_dopt`（主路径）/ `swap_embeddings_from_dopt` / `load_dopt_state_dict`；绝对 import 自 `export/quant_swap/` |
-| `cann_lm/converter/quant_entry.py` | 量化入口 facade：re-export `run_auto_quant`（`quant/auto_quant.py`）+ `swap_from_dopt`（`swap.py`），供 `cann_lm_converter` 单一 import |
-| `cann_lm/models/export_wrapper.py` | `ExportWrapper` 基类 |
-| `cann_lm/models/{model}/export_wrapper.py` | 各模型 `ExportWrapper` 子类 |
-| `cann_lm/converter/export/epair_utils.py` | 权重打包（`pack_weights`）、磁盘写入（`consolidated_weights_save`） |
-| `cann_lm/converter/export/ge_converters/ge_converter.py` | `register_ge_converters`（cann_lm.* + aten.* → GE 算子映射） |
-| `cann_lm/converter/export/csrc/inc/external/torch_delegate/epair_model_loader.h` | C++ 公共 API：`EpairModelLoader` |
-| `cann_lm/converter/export/csrc/backend/epair_model_loader.cc` | `EpairModelLoader::Impl` 实现 |
-| `cann_lm/converter/export/csrc/backend/ge_graph_builder.h/.cc` | `GeGraphBuilder`：解析 model JSON + 构建 GE Graph |
-| `cann_lm/converter/export/csrc/backend/ge_weight_loader.h/.cc` | `GeWeightLoader`：解析 `weight_info.json`、懒加载 bin |
-| `cann_lm/converter/export/csrc/backend/epair_model_parser.h/.cc` | `EpairModelParser`：解析 `ep_json_with_ascend_ir.json` |
+| `cann_local_lm/models/model_registry.py` | 模型注册表（ModelEntry + REGISTRY + detect_model_type） |
+| `cann_local_lm/converter/loader.py` | `load_model` + `build_config` + `collect_tokenizer_files` |
+| `cann_local_lm/converter/saver.py` | `save_epair` / `save_epair_prefill_decode` / `save_model_config` / `copy_tokenizer_files` |
+| `cann_local_lm/converter/swap.py` | 量化编排（converter 根，peer of loader/saver）：`swap_from_dopt`（主路径）/ `swap_embeddings_from_dopt` / `load_dopt_state_dict`；绝对 import 自 `export/quant_swap/` |
+| `cann_local_lm/converter/quant_entry.py` | 量化入口 facade：re-export `run_auto_quant`（`quant/auto_quant.py`）+ `swap_from_dopt`（`swap.py`），供 `cann_lm_converter` 单一 import |
+| `cann_local_lm/models/export_wrapper.py` | `ExportWrapper` 基类 |
+| `cann_local_lm/models/{model}/export_wrapper.py` | 各模型 `ExportWrapper` 子类 |
+| `cann_local_lm/converter/export/epair_utils.py` | 权重打包（`pack_weights`）、磁盘写入（`consolidated_weights_save`） |
+| `cann_local_lm/converter/export/ge_converters/ge_converter.py` | `register_ge_converters`（cann_local_lm.* + aten.* → GE 算子映射） |
+| `cann_local_lm/converter/export/csrc/inc/external/torch_delegate/epair_model_loader.h` | C++ 公共 API：`EpairModelLoader` |
+| `cann_local_lm/converter/export/csrc/backend/epair_model_loader.cc` | `EpairModelLoader::Impl` 实现 |
+| `cann_local_lm/converter/export/csrc/backend/ge_graph_builder.h/.cc` | `GeGraphBuilder`：解析 model JSON + 构建 GE Graph |
+| `cann_local_lm/converter/export/csrc/backend/ge_weight_loader.h/.cc` | `GeWeightLoader`：解析 `weight_info.json`、懒加载 bin |
+| `cann_local_lm/converter/export/csrc/backend/epair_model_parser.h/.cc` | `EpairModelParser`：解析 `ep_json_with_ascend_ir.json` |
 
 ## 文档关联
 

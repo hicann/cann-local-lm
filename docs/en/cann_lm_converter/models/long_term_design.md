@@ -4,7 +4,7 @@ English | [简体中文](../../../zh/cann_lm_converter/models/long_term_design.m
 
 > Reference the transformers library, gradually introduce base classes such as PreTrainedConfig / ModelOutput / AutoModel
 >
-> Goal: make cann_lm.models loadable and inferable through a unified interface like transformers
+> Goal: make cann_local_lm.models loadable and inferable through a unified interface like transformers
 >
 > Status: Pending review | Last reviewed: 2026-07-14
 
@@ -28,7 +28,7 @@ The long-term scheme unifies the interface at the model code level by introducin
 ## Directory Structure
 
 ```
-cann_lm/
+cann_local_lm/
 ├── models/
 │   ├── __init__.py                  # Export AutoModel / AutoConfig
 │   ├── base/                        # New: base class definitions
@@ -45,7 +45,7 @@ cann_lm/
 ## P0: PreTrainedConfig Base Class
 
 ```python
-# cann_lm/models/base/configuration.py
+# cann_local_lm/models/base/configuration.py
 
 @dataclass
 class PreTrainedConfig:
@@ -117,7 +117,7 @@ class PreTrainedConfig:
 ## P0: ModelOutput Unified Output
 
 ```python
-# cann_lm/models/base/modeling.py
+# cann_local_lm/models/base/modeling.py
 
 @dataclass
 class ModelOutput:
@@ -147,7 +147,7 @@ class CausalLMOutput(ModelOutput):
 ## P0: AutoModel / AutoConfig
 
 ```python
-# cann_lm/models/base/registry.py
+# cann_local_lm/models/base/registry.py
 
 _REGISTRY: dict[str, type] = {}
 
@@ -195,7 +195,7 @@ config = AutoConfig.from_pretrained("/path/to/qwen3.5-0.8B")
 ## P1: Cache Base Class
 
 ```python
-# cann_lm/models/base/cache.py
+# cann_local_lm/models/base/cache.py
 
 class Cache:
     """KV Cache base class"""
@@ -244,7 +244,7 @@ class StaticCache(Cache):
 ## P1: GenerationConfig + GenerationMixin
 
 ```python
-# cann_lm/models/base/generation.py
+# cann_local_lm/models/base/generation.py
 
 @dataclass
 class GenerationConfig:
@@ -293,7 +293,7 @@ class GenerationMixin:
 ## P2: Tokenizer Integration
 
 ```python
-# cann_lm/models/base/tokenization.py
+# cann_local_lm/models/base/tokenization.py
 
 class PreTrainedTokenizer:
     """Unified tokenizer interface"""

@@ -713,4 +713,4 @@ cann-lm-converter positioning close to **coremltools** (convert/export), not oll
 - Legacy issue: [CLI-013](./TODO_notes.md#cli-013-todo-side-llm-tool-cli-and-doc-delivery-survey) (all action items ✅: subcommand-ization evaluation keep single command + console_scripts registered + command reference page cli/INDEX added)
 - cann-lm packaging: `scripts/cann_lm_converter/pyproject.toml` (console_scripts `cann-lm-converter`) + `scripts/cann_lm_engine/pyproject.toml` (engine independent)
 - Design docs: [cli_design.md](./cli/cli_design.md) "Command-line parameters / Complete call chain", [cli/INDEX.md](./cli/INDEX.md) "Command Reference"
-- Code: `cann_lm/converter/cann_lm_converter.py` (CLI entry)
+- Code: `cann_local_lm/converter/cann_lm_converter.py` (CLI entry)

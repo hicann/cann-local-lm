@@ -152,8 +152,8 @@ def export_program(
 
 def compile_to_epair(ep_path: Path, output_dir: Path, max_file_size: int) -> Path:
     import torch_delegate
-    from cann_lm.converter.export.epair_utils import consolidated_weights_save
-    from cann_lm.converter.export.ge_converters import register_ge_converters
+    from cann_local_lm.converter.export.epair_utils import consolidated_weights_save
+    from cann_local_lm.converter.export.ge_converters import register_ge_converters
 
     output_dir = Path(output_dir).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)

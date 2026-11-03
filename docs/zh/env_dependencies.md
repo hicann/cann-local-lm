@@ -93,7 +93,7 @@ SOC_VERSION=KirinX90      # kirinx90; 910 用 Ascend910_9362; 950DT 用 Ascend95
 |---|----|---------|---------|---------|
 | 1 | **编译器** | SDK clang（`${OHOS_SDK_NATIVE}/llvm/bin/clang`） | ✓ clang 15.0.4 | SDK自带（command-line-tools zip内 `llvm/bin/clang`），本机直接运行，无需额外安装 |
 | 2 | **OHOS SDK** | `OHOS_SDK_NATIVE` 已设且含 `sysroot/` | ✓ | `export OHOS_SDK_NATIVE=<解压目录>/command-line-tools/sdk/default/openharmony/native` |
-| 3 | **java + 签名jar** | `java` 在PATH；`tools/binary-sign-tool.jar` 或 `cann_lm/engine/ohos/binary-sign-tool.jar` 存在 | java 21.0.10 ✓；jar ✓ | `apt install default-jre`；jar在SDK zip内 `command-line-tools/sdk/default/openharmony/toolchains/lib/binary-sign-tool.jar`，拷到仓内 `tools/`（`mkdir -p tools/ && cp ... tools/`） |
+| 3 | **java + 签名jar** | `java` 在PATH；`tools/binary-sign-tool.jar` 或 `cann_local_lm/engine/ohos/binary-sign-tool.jar` 存在 | java 21.0.10 ✓；jar ✓ | `apt install default-jre`；jar在SDK zip内 `command-line-tools/sdk/default/openharmony/toolchains/lib/binary-sign-tool.jar`，拷到仓内 `tools/`（`mkdir -p tools/ && cp ... tools/`） |
 | 4 | **cmake / make** | 同 §1.1 | 3.20.5 / 4.3 ✓ | 同 §1.1 |
 
 > **为什么需要java + 签名jar**：鸿蒙要求所有二进制（`.so` + 可执行）必须**签名**才能在设备上运行（安全机制），`binary-sign-tool.jar` 是签名工具（用 `java` 跑），交叉编译产出的 `libcann_lm_engine.so` + UT可执行经它签名（selfSign开发签名）后才能部署到设备。
@@ -143,7 +143,7 @@ bash scripts/build.sh cpp --asan && ctest --test-dir build
 
 **关键校验**（`scripts/build.sh check` 检查项）：
 - `CONVERTER_PYTHON` 可执行
-- `import torch` / `import torchair` / `import torch_delegate` / `import cann_lm` 全通过
+- `import torch` / `import torchair` / `import torch_delegate` / `import cann_local_lm` 全通过
 - `import torch_npu` **必须失败**（stub path OK）
 
 **TBE/tvm依赖包（供 ② omc编译用）**：`cann_lm_compile`（C++ 二进制）跑 `aclgrphBuildModel` 编算子时回调Python TBE/tvm，需以下包。这些包**不在CANN .run包里**，但大部分是 `te`（pip包）或 `torch` 的自动依赖，随 `pip install te` / `pip install torch` 自动拉入：
@@ -233,13 +233,13 @@ pip install torchaudio==2.9.0 --force-reinstall --no-deps --user   # 装到 ~/.l
 
 ## Kirin设备侧（③b/c设备出字，设备自带，host不装）
 
-③b/c在Kirin/HarmonyOS设备上跑 `cann_lm.generate`（经 `libcann_lm_engine.so` + hiai ACL），**host不需装任何依赖**——设备自带：
+③b/c在Kirin/HarmonyOS设备上跑 `cann_local_lm.generate`（经 `libcann_lm_engine.so` + hiai ACL），**host不需装任何依赖**——设备自带：
 
 | 组件 | 来源 | 用途 |
 |------|------|------|
 | musl libc | 鸿蒙系统提供 | C运行时（musl，非glibc） |
 | `libneural_network_core.so` | 鸿蒙系统库（Hiai/NNRT） | NPU推理（hiai ACL底层） |
-| `libc++_shared.so` | 内嵌于签名 engine wheel（`cann_lm/lib/`） | C++ 运行时（与engine .so同目录） |
+| `libc++_shared.so` | 内嵌于签名 engine wheel（`cann_local_lm/lib/`） | C++ 运行时（与engine .so同目录） |
 | `libcann_lm_engine.so` | host交叉编译产（Part 1 §1.3）→ 部署到设备 | engine SHARED库（签名版） |
 
 > host侧只需完成Part 1构建（产签名 engine wheel），产物部署到设备后由设备侧运行时承载。
@@ -262,7 +262,7 @@ pip install torchaudio==2.9.0 --force-reinstall --no-deps --user   # 装到 ~/.l
 | 量化Step A（dopt GPTQ） | `source scripts/set_env_cann.sh --npu`（或GPU env） | — | §2.2 P2（NPU或GPU） | NPU或GPU |
 | 量化Step B（converter消费） | `source scripts/set_env.sh` | — | §1.2 CANN + §2.1 P1 venv | 否 |
 | ③ NPU出字（数值验证） | `source scripts/set_env_cann.sh --npu` | — | §1.2 CANN + §2.2 P2 | NPU |
-| ③b/c Kirin设备出字 | 设备上 `cann_lm.generate` | — | §2.3设备侧 | Kirin设备 |
+| ③b/c Kirin设备出字 | 设备上 `cann_local_lm.generate` | — | §2.3设备侧 | Kirin设备 |
 | 发版全量打包 | 根 `bash build.sh --pkg` | Part 1全装（§1.1-1.4） | — | 否 |
 
 > **编译vs运行边界**：仅构建分发物（`.whl`/`.run`）只装Part 1；产epair/omc/出字才需Part 2。无NPU/Kirin设备可只做Part 1构建 + Part 2的 ①②（CPU，不需NPU）。
@@ -280,7 +280,7 @@ bash scripts/build.sh check
 #   ✓ CANN /home/developer/Ascend/cann-9.3.0
 #   ✓ P1 venv .../deps/torch-delegate/.venv/bin/python
 #   ✓ torch (2.9.0+cpu)
-#   ✓ torchair / torch_delegate / cann_lm
+#   ✓ torchair / torch_delegate / cann_local_lm
 #   ✓ third_party json
 #   可选 (③ NPU 出字 / 量化加速, Part 2; 量化可 NPU 或 GPU, 见 §2.2):
 #   ✓ P2 .../python-3.12.9 (③ NPU 出字 / 量化 NPU 加速用)

@@ -224,7 +224,7 @@ std::shared_ptr<INDTensorBuffer> CreateNDTensorBuffer(const NDTensorDesc& tensor
 }
 } // namespace hiai
 
-namespace cann_lm::engine {
+namespace cann_local_lm::engine {
 namespace {
 
 #ifndef EOS_TOKENIZER_FIXTURE
@@ -400,4 +400,4 @@ TEST(EosStopTest, EosUnconfiguredNoBehaviorChange_TC_EOS3)
 }
 
 } // namespace
-} // namespace cann_lm::engine
+} // namespace cann_local_lm::engine

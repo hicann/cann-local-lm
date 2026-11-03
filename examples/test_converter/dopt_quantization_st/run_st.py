@@ -25,8 +25,8 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 TEMPLATE_PATH = SCRIPT_DIR / "config.yaml.template"
 DEFAULT_OUTPUT_ROOT = SCRIPT_DIR / "output"
 
-# 从已安装的 cann_lm 包查找 quant 目录（包安装模式）
-import cann_lm.converter.quant as _quant_mod
+# 从已安装的 cann_local_lm 包查找 quant 目录（包安装模式）
+import cann_local_lm.converter.quant as _quant_mod
 
 QUANT_DIR = Path(_quant_mod.__path__[0])
 CALIBRATION_DATA = QUANT_DIR / "calibrate_sets" / "calibrate_coig_cqia.jsonl"

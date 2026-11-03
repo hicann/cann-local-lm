@@ -107,7 +107,7 @@ class SimpleKVCache:
         return self.keys[layer_idx], self.values[layer_idx]
 ```
 
-**文件**: `cann_lm/models/qwen3_5/modeling_qwen3_5.py`
+**文件**: `cann_local_lm/models/qwen3_5/modeling_qwen3_5.py`
 
 ### 2. torch.all 数据依赖 → torch.export 不可追踪
 
@@ -130,7 +130,7 @@ if past_key_values is not None and past_key_values.get_seq_length() > 0:
     linear_attn_mask = None
 ```
 
-**文件**: `cann_lm/models/qwen3_5/modeling_qwen3_5.py`
+**文件**: `cann_local_lm/models/qwen3_5/modeling_qwen3_5.py`
 
 ### 3. KV cache 层索引映射错误
 
@@ -155,7 +155,7 @@ def _drive_layers(self, ...):
             cache.update(k, v, layer_idx)
 ```
 
-**文件**: `cann_lm/models/qwen3_5/export_wrapper.py`
+**文件**: `cann_local_lm/models/qwen3_5/export_wrapper.py`
 
 ### 4. logits shape 不匹配（output_pos）
 
@@ -193,7 +193,7 @@ def _create_causal_mask(attention_mask, inputs_embeds, past_key_values):
     ...
 ```
 
-**文件**: `cann_lm/models/qwen3_5/modeling_qwen3_5.py`
+**文件**: `cann_local_lm/models/qwen3_5/modeling_qwen3_5.py`
 
 ## qwen3.5 关键特性
 

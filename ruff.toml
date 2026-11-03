@@ -1,8 +1,8 @@
 # Ruff 配置 — per-file-ignores
 # examples/ 下为调试/验证脚本, 惯用紧凑写法 (一行多语句 E702/E701) 与
 # sys.path 设置后再 import (E402), 属有意模式, 不强制拆分。
-# cann_lm/ 下保留若干副作用 import (注册算子/torch_npu GE lib/custom_op 装饰器等)
+# cann_local_lm/ 下保留若干副作用 import (注册算子/torch_npu GE lib/custom_op 装饰器等)
 # 及历史多 import 单行 (E401), 暂不强制清理以避免误删副作用; 后续可收紧。
 [lint.per-file-ignores]
 "examples/**/*.py" = ["E402", "E701", "E702"]
-"cann_lm/**/*.py" = ["F401", "F403", "F811", "F841", "E401", "E701", "E702", "E741"]
+"cann_local_lm/**/*.py" = ["F401", "F403", "F811", "F841", "E401", "E701", "E702", "E741"]

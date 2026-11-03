@@ -76,7 +76,7 @@
   ],
   "e2e_logits": "e2e_logits.pt  # [n_prompts, vocab] last-token logits",
   "op_io_dir": "op_io/<op_name>.pt  # {inputs:[act...], outputs:[act...]} per prompt",
-  "comparison_contract": "Candidate operator (e.g. cann_lm::quant_matmul / OM int4): load the SAME weight from quant_weight for <op_name>, feed saved op_io/<op>.inputs[i], compute output, compare to op_io/<op>.outputs[i] within atol=0.01 rtol=0.01. No fp16 baseline -> isolates operator correctness from quantization accuracy.",
+  "comparison_contract": "Candidate operator (e.g. cann_local_lm::quant_matmul / OM int4): load the SAME weight from quant_weight for <op_name>, feed saved op_io/<op>.inputs[i], compute output, compare to op_io/<op>.outputs[i] within atol=0.01 rtol=0.01. No fp16 baseline -> isolates operator correctness from quantization accuracy.",
   "atol": 0.01,
   "rtol": 0.01
 }

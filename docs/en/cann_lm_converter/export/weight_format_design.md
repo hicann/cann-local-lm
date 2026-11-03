@@ -4,7 +4,7 @@ English | [简体中文](../../../zh/cann_lm_converter/export/weight_format_desi
 
 > epair export converts weights from ND row-major to fractal block-major on disk (fp16 MatMul → FractNZ; quantized QuantBatchMatmulV4 weight_q → FractZ), avoiding NPU runtime/intra-kernel transdata.
 >
-> Covers `cann_lm/converter/export/weight_format/` (new package) + config file `weight_format_rules.json` + epair_utils integration + C++ format mapping.
+> Covers `cann_local_lm/converter/export/weight_format/` (new package) + config file `weight_format_rules.json` + epair_utils integration + C++ format mapping.
 >
 > Related: export main flow see [export_design.md](./export_design.md), quantization see [quant_design.md](../quant/quant_design.md).
 >
@@ -32,7 +32,7 @@ English | [简体中文](../../../zh/cann_lm_converter/export/weight_format_desi
 <a id="overview"></a>
 ## Overview
 
-When `cann_lm/converter/export/` writes weights to disk, it defaults to ND (row-major) for `weights_*.bin`. Ascend cube compute natively works in NZ (FractNZ, 16×16 block-major) layout; ND on disk introduces transdata at OM compile/runtime. This design converts weight tensors to NZ physical bytes before writing to disk, and synchronously annotates ep_json's `layout` field and C++'s `ge::Format`, letting weight Const nodes enter the GE graph directly as `FORMAT_FRACTAL_NZ`.
+When `cann_local_lm/converter/export/` writes weights to disk, it defaults to ND (row-major) for `weights_*.bin`. Ascend cube compute natively works in NZ (FractNZ, 16×16 block-major) layout; ND on disk introduces transdata at OM compile/runtime. This design converts weight tensors to NZ physical bytes before writing to disk, and synchronously annotates ep_json's `layout` field and C++'s `ge::Format`, letting weight Const nodes enter the GE graph directly as `FORMAT_FRACTAL_NZ`.
 
 ### Capability Boundary
 
@@ -44,7 +44,7 @@ When `cann_lm/converter/export/` writes weights to disk, it defaults to ND (row-
 ## Directory Structure
 
 ```
-cann_lm/converter/export/
+cann_local_lm/converter/export/
 ├── weight_format/                 # ← New package: format conversion functions + rule parsing
 │   ├── __init__.py                # re-export nd2nz / pack_int4_nz / resolve_format / load_rules
 │   ├── layout.py              # nd2nz() (Stage 1, FractNZ) + pack_int4_nz() (Stage 2, FractZ, implemented)
@@ -54,16 +54,16 @@ cann_lm/converter/export/
 └── ...（existing files）
 ```
 
-> **Responsibility Boundary**: `layout.py` contains `nd2nz` (Stage 1) and `pack_int4_nz` (Stage 2, implemented). `transdata_scale` (fp32→int64 bit pattern) semantically also belongs to "format conversion", currently in `cann_lm/converter/export/quant_swap/materialize.py` (`swap.py` at `cann_lm/converter/swap.py`, absolute imports it); it is **materialization bit-pattern packing** (not layout transformation), **not merged into** `weight_format/layout.py`, stays in `materialize.py` with `pack_int4` as the materialization layer (`epair_utils` imports from `quant_swap.materialize`).
+> **Responsibility Boundary**: `layout.py` contains `nd2nz` (Stage 1) and `pack_int4_nz` (Stage 2, implemented). `transdata_scale` (fp32→int64 bit pattern) semantically also belongs to "format conversion", currently in `cann_local_lm/converter/export/quant_swap/materialize.py` (`swap.py` at `cann_local_lm/converter/swap.py`, absolute imports it); it is **materialization bit-pattern packing** (not layout transformation), **not merged into** `weight_format/layout.py`, stays in `materialize.py` with `pack_int4` as the materialization layer (`epair_utils` imports from `quant_swap.materialize`).
 
 <a id="config-file"></a>
 ## Config File
 
-shipped default `cann_lm/converter/export/weight_format_rules.json`; converter always loads this default config (no CLI override exposed). When config is missing → all ND (equivalent to current state, NZ not enabled). There is also an environment variable master switch `CANN_LM_ENABLE_WEIGHT_TRANS` default off (see [Environment Variable Master Switch](#environment-variable-master-switch)) — even if config matches NZ, env not on means no conversion.
+shipped default `cann_local_lm/converter/export/weight_format_rules.json`; converter always loads this default config (no CLI override exposed). When config is missing → all ND (equivalent to current state, NZ not enabled). There is also an environment variable master switch `CANN_LM_ENABLE_WEIGHT_TRANS` default off (see [Environment Variable Master Switch](#environment-variable-master-switch)) — even if config matches NZ, env not on means no conversion.
 
 ### schema
 
-**Current shipped reality** ([`cann_lm/converter/export/weight_format_rules.json`](../../../../cann_lm/converter/export/weight_format_rules.json)):
+**Current shipped reality** ([`cann_local_lm/converter/export/weight_format_rules.json`](../../../../cann_local_lm/converter/export/weight_format_rules.json)):
 
 ```json
 {
@@ -124,7 +124,7 @@ NZ conversion is **off** by default (equivalent to current state, all ND, zero b
 
 **Scope**: Python export side (`epair_utils._pack_weights_to_dir` writes NZ bytes + `weight_info.json` marks `format`) + C++ loading side (`ge_graph_builder.cc:CreateConstNode` reads `weight_info.json`'s `format` field for dispatch, see [C++ format mapping](#c-format-mapping)). env has no C++ read — when env off `weight_info.format` all `"ND"`, C++ goes `MapPt2Layout` (ND); when env on `format` is `"NZ"`, C++ goes `MapGeLayoutString("NZ")` (TODO).
 
-**Naming convention**: `CANN_LM_ENABLE_WEIGHT_TRANS` (`1` enable, other/unset = off). Follows `TORCH_DELEGATE_ENABLE_FALLBACK_CODEGEN`'s `ENABLE` boolean switch style; `CANN_LM_` prefix because it only acts on cann_lm converter export side. Uses `TRANS` (not `NZ`) because master switch gates the entire `weight_format` flow — Stage 1 `nd2nz` + Stage 2 `pack_int4_nz` + future other format conversions, not just NZ.
+**Naming convention**: `CANN_LM_ENABLE_WEIGHT_TRANS` (`1` enable, other/unset = off). Follows `TORCH_DELEGATE_ENABLE_FALLBACK_CODEGEN`'s `ENABLE` boolean switch style; `CANN_LM_` prefix because it only acts on cann_local_lm converter export side. Uses `TRANS` (not `NZ`) because master switch gates the entire `weight_format` flow — Stage 1 `nd2nz` + Stage 2 `pack_int4_nz` + future other format conversions, not just NZ.
 
 ---
 
@@ -503,11 +503,11 @@ NZ rearrange success ⟺ **NPU output NZ OM == ND OM** (max_diff=0) + OM weight 
 
 ### Completed (2026-08-31): quant_swap migrated into export/ + swap promoted to converter root
 
-`materialize.py` / `quant_linear.py` / `swap.py` migrated out of `cann_lm/converter/quant/`:
-- `materialize.py` / `quant_linear.py` → `cann_lm/converter/export/quant_swap/` (materialization internal, co-located with export pipeline)
-- `swap.py` → `cann_lm/converter/swap.py` (converter root, orchestration layer peer of `loader.py` / `saver.py`, absolute imports materialize/quant_linear)
+`materialize.py` / `quant_linear.py` / `swap.py` migrated out of `cann_local_lm/converter/quant/`:
+- `materialize.py` / `quant_linear.py` → `cann_local_lm/converter/export/quant_swap/` (materialization internal, co-located with export pipeline)
+- `swap.py` → `cann_local_lm/converter/swap.py` (converter root, orchestration layer peer of `loader.py` / `saver.py`, absolute imports materialize/quant_linear)
 
-Old import paths cleanly cut: `swap_from_dopt` goes `cann_lm.converter.swap`, materialization symbols go `cann_lm.converter.export.quant_swap`. `quant/` now only retains CANN lightweight tool orchestration (`auto_quant` / `dopt_wrapper`) + vendored `dopt_lm` + calibration data. See [quant_design.md](../quant/quant_design.md) "quant package architecture".
+Old import paths cleanly cut: `swap_from_dopt` goes `cann_local_lm.converter.swap`, materialization symbols go `cann_local_lm.converter.export.quant_swap`. `quant/` now only retains CANN lightweight tool orchestration (`auto_quant` / `dopt_wrapper`) + vendored `dopt_lm` + calibration data. See [quant_design.md](../quant/quant_design.md) "quant package architecture".
 
 ### Decided (2026-09-05): transdata_scale / pack_int4 not merged into weight_format/
 

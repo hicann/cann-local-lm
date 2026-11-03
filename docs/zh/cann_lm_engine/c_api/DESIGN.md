@@ -18,7 +18,7 @@ depends_on: pipeline+engine_executor/DESIGN.md (v0.4.0)
 
 | 属性 | 值 |
 |------|-----|
-| 代码路径 | `cann_lm/engine/api/c/` |
+| 代码路径 | `cann_local_lm/engine/api/c/` |
 | 头文件 | `api/c/c_api.h`（纯 C，仅 `<stddef.h>` / `<stdint.h>`） |
 | 实现 | `api/c/c_api.cpp`（C++17，include C++ API 头） |
 | 编译产物 | 编入 `libcann_lm_engine.a`（同一静态库） |
@@ -388,7 +388,7 @@ C++ 标准库头只在 `.cpp` 中出现，不泄漏到 `api/c/c_api.h`。
 ### 13.3 目录结构
 
 ```
-cann_lm/engine/
+cann_local_lm/engine/
   api/
     c/
       c_api.h      ← C 头（对外）

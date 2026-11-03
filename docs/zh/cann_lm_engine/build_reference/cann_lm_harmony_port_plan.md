@@ -4,17 +4,17 @@
 
 > 配套参考:`docs/build_reference/harmony_acl_build_analysis.md`(harmony_acl 构建分析)、`docs/build_reference/build_guide.md`(实际落地后的总指南)
 > 编制日期:2026-08-24
-> 目标:把 `cann_lm/engine/` 在鸿蒙 PC 上编译为 **.so** 或 **可执行 UT** 并能运行。
+> 目标:把 `cann_local_lm/engine/` 在鸿蒙 PC 上编译为 **.so** 或 **可执行 UT** 并能运行。
 > 本文档为 Phase 3 PLAN 产出(base.DESIGN + chip-adaptation.COMPATIBILITY-MAP)。
 
 > **实际落地(2026-10-15,已实施)**:本 PLAN 已执行,与原计划有几处**故意偏离**,以适配本机(aarch64-linux-glibc)精简环境。**阅读本文时以本节为准,正文 §2–§5 保留原始计划记录供回溯**:
 > - **编译器**:非"OHOS SDK 自带 clang",而用**本机 `clang-18`**(`ohos.toolchain.cmake` 内 `find_program(clang-18)`);精简 SDK **无 `llvm/bin`**。
 > - **构建器**:非 `cmake -G Ninja`,而用 **`cmake -G "Unix Makefiles"` + `make -j$(nproc)`**;精简 SDK **无 `build-tools/ninja`**,本机也不装 ninja。
 > - **SDK**:非完整"华为 command-line-tools",而从 OpenHarmony 开源镜像**精简提取**(只取 sysroot + `llvm/lib` + `llvm/include` + `build/cmake/ohos.toolchain.cmake`,约 82M)。
-> - **CMake 组织**:未按 §Step B 在现有 `cann_lm/engine/CMakeLists.txt` 加 `OHOS_PLATFORM` 分支,而用**独立旁路** `cann_lm/engine/ohos/CMakeLists.txt`(源码清单手抄镜像),Linux 构建文件零改动、零回归。
+> - **CMake 组织**:未按 §Step B 在现有 `cann_local_lm/engine/CMakeLists.txt` 加 `OHOS_PLATFORM` 分支,而用**独立旁路** `cann_local_lm/engine/ohos/CMakeLists.txt`(源码清单手抄镜像),Linux 构建文件零改动、零回归。
 > - **脚本路径**:从顶层 `scripts/` 迁到 **`scripts/cann_lm_engine/`**(多一层,故脚本内 `REPO_ROOT` 用 `../..`)。
 > - **产物**:实际产 **11 个**(2 `.so` + 9 可执行:6 UT 含 `ut_text_embedding` + `bbit` + 2 smoke),各 `*_signed`。
-> - **打包**:`build_package_ohos.sh` 产签名 wheel `cann_lm_engine-*+signed*.whl`（.so 内嵌 `cann_lm/lib/`）。
+> - **打包**:`build_package_ohos.sh` 产签名 wheel `cann_lm_engine-*+signed*.whl`（.so 内嵌 `cann_local_lm/lib/`）。
 >
 > 实际流程详见 `build_guide.md` §3 与 `build_linux_guide.md`;脚本逐个见 `build_guide.md` §1 文件表。
 >
@@ -76,7 +76,7 @@ engine 是**纯标准 C++17**、**零 POSIX 专有依赖**、**零外部库依�
 
 ## 4. 行动路径(分阶段,对应 Locked Step 的 PORT/COMPILE)
 
-> **实施纪要(2026-10-15)**:本节为移植**初期规划设想**(command-line-tools 完整 SDK + `cmake -G Ninja` + 在 `cann_lm/engine/CMakeLists.txt` 内加 OHOS 分支)。**实际实施采用更优路线**:精简 SDK(无 `llvm/bin`、无 `build-tools`) + 本机 `clang-18` + `cmake -G "Unix Makefiles"` + `make -j$(nproc)` + **独立 `cann_lm/engine/ohos/CMakeLists.txt` 旁路**(不改 `engine/CMakeLists.txt`,零回归风险) + 脚本迁至 `scripts/cann_lm_engine/`。最终实施以 `build_guide.md` / `build_linux_guide.md` / `build_win_guide.md` 为准;本节 Step A–D 保留作规划历史参照(其中 `scripts/build_ohos.sh` 路径与 `cmake -G Ninja` 均已被现状取代)。
+> **实施纪要(2026-10-15)**:本节为移植**初期规划设想**(command-line-tools 完整 SDK + `cmake -G Ninja` + 在 `cann_local_lm/engine/CMakeLists.txt` 内加 OHOS 分支)。**实际实施采用更优路线**:精简 SDK(无 `llvm/bin`、无 `build-tools`) + 本机 `clang-18` + `cmake -G "Unix Makefiles"` + `make -j$(nproc)` + **独立 `cann_local_lm/engine/ohos/CMakeLists.txt` 旁路**(不改 `engine/CMakeLists.txt`,零回归风险) + 脚本迁至 `scripts/cann_lm_engine/`。最终实施以 `build_guide.md` / `build_linux_guide.md` / `build_win_guide.md` 为准;本节 Step A–D 保留作规划历史参照(其中 `scripts/build_ohos.sh` 路径与 `cmake -G Ninja` 均已被现状取代)。
 
 ### 前置条件(环境准备,你需提供)
 1. **华为 command-line-tools**(linux x64 版):下载解压,记录其目录路径(对应 harmony_acl 的 `CMD_LINE_TOOLS_DIR`)。下载页:https://developer.huawei.com/consumer/cn/download/command-line-tools-for-hmos
@@ -87,10 +87,10 @@ engine 是**纯标准 C++17**、**零 POSIX 专有依赖**、**零外部库依�
 6. 宿主机 ubuntu 24.04+ + build-essential(跑主机 UT 对照用)。
 
 ### Step A — 引入 OHOS toolchain(不改源码)
-- 在 `cann_lm/engine/` 旁新增 `scripts/ohos.toolchain.cmake`(参照 harmony_acl,或直接用 SDK 官方那个)。
+- 在 `cann_local_lm/engine/` 旁新增 `scripts/ohos.toolchain.cmake`(参照 harmony_acl,或直接用 SDK 官方那个)。
 - 新增 `scripts/build_ohos.sh`:设 `CMD_LINE_TOOLS_DIR`/`OHOS_SDK` 等变量 → `cmake -G Ninja -DCMAKE_TOOLCHAIN_FILE=... -DOHOS_PLATFORM=OHOS -DOHOS_ARCH=arm64-v8a -DOHOS_STL=c++_shared ..` → `cmake --build`。
 
-### Step B — CMake 加 OHOS 分支(改 `cann_lm/engine/CMakeLists.txt`)
+### Step B — CMake 加 OHOS 分支(改 `cann_local_lm/engine/CMakeLists.txt`)
 现状是单分支。改为:
 ```cmake
 if(OHOS_PLATFORM STREQUAL "OHOS")
@@ -142,7 +142,7 @@ endif()
 
 - [x] 兼容性矩阵已记录(本节 §2)
 - [x] .so vs UT 方案已决策(§3:并列,先 UT)
-- [x] OHOS toolchain + build 脚本就位(Step A — 实际为独立 `cann_lm/engine/ohos/ohos.toolchain.cmake` + `scripts/cann_lm_engine/build_ohos.sh`,见顶部"实际落地")
+- [x] OHOS toolchain + build 脚本就位(Step A — 实际为独立 `cann_local_lm/engine/ohos/ohos.toolchain.cmake` + `scripts/cann_lm_engine/build_ohos.sh`,见顶部"实际落地")
 - [x] CMake OHOS 分支接通,主机端仍能原样构建(Step B — 实际用旁路 `ohos/CMakeLists.txt`,非改现有 CMake,Linux 零回归)
 - [x] `cann_lm_engine.so` 产出并签名可加载(Step D — 11 产物全签名,签名 wheel 产出完成)
 - [ ] 鸿蒙 PC 上 UT 跑通 GREEN(Step E — 待设备实跑;签名 wheel 已就绪待部署)

@@ -5,7 +5,7 @@ English | [简体中文](../../../zh/cann_lm_engine/tensor_manager/DESIGN.md)
 | Field | Value |
 |------|-----|
 | Spec ID | — |
-| Level | L3 core component (`cann_lm/engine/core/tensor_manager.h/.cpp`) |
+| Level | L3 core component (`cann_local_lm/engine/core/tensor_manager.h/.cpp`) |
 | Status | **Landed** (v0.12 backend proxy; v0.14 adds KV batch channel `CreateKvCacheTensor`, C-04 landed) |
 | Version | 0.2 |
 

@@ -5,7 +5,7 @@
 | 字段 | 值 |
 |------|-----|
 | Spec ID | — |
-| Level | L3 核心组件（`cann_lm/engine/core/tensor_manager.h/.cpp`） |
+| Level | L3 核心组件（`cann_local_lm/engine/core/tensor_manager.h/.cpp`） |
 | 状态 | **已落地**（v0.12 backend 代理；v0.14 增 KV 批量通道 `CreateKvCacheTensor`，C-04 落地） |
 | 版本 | 0.2 |
 

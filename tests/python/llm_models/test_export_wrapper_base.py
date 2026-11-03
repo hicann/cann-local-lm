@@ -1,4 +1,4 @@
-"""ExportWrapper 基类单元测试 — 顶层 cann_lm/models/export_wrapper.py 的基类行为.
+"""ExportWrapper 基类单元测试 — 顶层 cann_local_lm/models/export_wrapper.py 的基类行为.
 
 基类 forward 依赖子类 _drive_layers (抽象), 故只测 __init__ 属性 / set_quant_embeddings /
 _num_layers; 子类 (Gemma4/Qwen3/Qwen3_5 ExportWrapper) 的端到端验证由各模型 test_* 覆盖.
@@ -10,7 +10,7 @@ import pytest
 import torch
 import torch.nn as nn
 
-from cann_lm.models.export_wrapper import ExportWrapper
+from cann_local_lm.models.export_wrapper import ExportWrapper
 
 
 class _StubInner(nn.Module):

@@ -6,7 +6,7 @@ description: |
   - 导出图含 NPU 不支持的算子 (ge.MaskedFill / ge.Where / ge.SelectV2 等)
   - 导出图含低效算子想替换 (BroadcastTo → ConcatV2D,Pow/Neg/Cos/Sin → Gather)
   - OM 编译失败报 "operator not supported" 或某算子 kernel 缺失
-  - 把 gitee npu_tuned 模式 (host 预构 mask / repeat_kv concat / RoPE 预缓存) 应用到 cann_lm 模型
+  - 把 gitee npu_tuned 模式 (host 预构 mask / repeat_kv concat / RoPE 预缓存) 应用到 cann_local_lm 模型
   - 对 gemma4 / qwen3.5 做 export 前的图改造
 version: 0.1.0-beta.1
 metadata:
@@ -30,7 +30,7 @@ allowedTools:
 
 把 HF 模型导出图里 NPU 不支持 / 低效的算子改造成 NPU 友好形式,使 epair→OM 编译通过且算子表干净。
 来源: gitee `npu_tuned` 模式。
-首次完整应用于 cann_lm gemma4 (e2b 真实配置: 35 层后 20 KV 共享, head_dim=256/global=512, PLE 开, sliding=512, kv_max=2048)。
+首次完整应用于 cann_local_lm gemma4 (e2b 真实配置: 35 层后 20 KV 共享, head_dim=256/global=512, PLE 开, sliding=512, kv_max=2048)。
 
 ## 总览: 三处改造
 
@@ -46,7 +46,7 @@ allowedTools:
 
 - OM 编译报某算子不支持 (查 CANN ops-info 无该算子定义)
 - ATC dump 里出现 `BroadcastTo` / `Pow` / `Neg` / `Cos` / `Sin` / `MaskedFill` / `Where` / `SelectV2` 等想消除的算子
-- 适配新模型到 cann_lm export pipeline 前的图清洗
+- 适配新模型到 cann_local_lm export pipeline 前的图清洗
 
 ## 改造 1: host 预构 mask (消除 ge.MaskedFill)
 
@@ -122,7 +122,7 @@ def _build_mask_sliding(self, seq_len, kv_max, dtype, new_kv_cache_pos):
 - PLE 开启时 `per_layer_token_identity` 同理 host 预算 (embed_tokens_per_layer 查表外置)
 
 ### 文件
-- `cann_lm/models/gemma4/export_wrapper.py` (`Gemma4ExportWrapper.forward` / `_drive_layers` / `_build_mask_full` / `_build_mask_sliding`)
+- `cann_local_lm/models/gemma4/export_wrapper.py` (`Gemma4ExportWrapper.forward` / `_drive_layers` / `_build_mask_full` / `_build_mask_sliding`)
 
 ## 改造 2: repeat_kv reshape+cat (BroadcastTo → ConcatV2D)
 
@@ -153,7 +153,7 @@ def repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
 - 数值零差 (maxdiff=0.00e+00), e2b OM dump 实测 ConcatV2D=70 (=35 层 × 2(k,v)), BroadcastTo=0
 
 ### 文件
-- `cann_lm/models/gemma4/modeling_gemma4.py` `repeat_kv()` (qwen3.5 同名函数同改)
+- `cann_local_lm/models/gemma4/modeling_gemma4.py` `repeat_kv()` (qwen3.5 同名函数同改)
 
 ## 改造 3: RoPE 预缓存表 + Gather (Pow/Neg/Cos/Sin → Gather)
 
@@ -201,7 +201,7 @@ def forward(self, x, position_ids, layer_type="full_attention"):
 - `_compute_inv_freq` 仍保留在 init 调用 (proportional / default 两种 rope_type 分支), 不进图即可
 
 ### 文件
-- `cann_lm/models/gemma4/modeling_gemma4.py` `Gemma4TextRotaryEmbedding`
+- `cann_local_lm/models/gemma4/modeling_gemma4.py` `Gemma4TextRotaryEmbedding`
 
 ## 验证方法 (改造后必做)
 
@@ -294,9 +294,9 @@ gemma4 PLE 的 `embed_tokens_per_layer` 查表若留在图内, 是大 embedding 
 
 | 文件 | 作用 |
 |---|---|
-| `cann_lm/models/gemma4/export_wrapper.py` | 改造 1 (bypass forward + host mask + PLE 外置) |
-| `cann_lm/models/gemma4/modeling_gemma4.py` `repeat_kv()` | 改造 2 (reshape+cat) |
-| `cann_lm/models/gemma4/modeling_gemma4.py` `Gemma4TextRotaryEmbedding` | 改造 3 (预缓存 + Gather) |
+| `cann_local_lm/models/gemma4/export_wrapper.py` | 改造 1 (bypass forward + host mask + PLE 外置) |
+| `cann_local_lm/models/gemma4/modeling_gemma4.py` `repeat_kv()` | 改造 2 (reshape+cat) |
+| `cann_local_lm/models/gemma4/modeling_gemma4.py` `Gemma4TextRotaryEmbedding` | 改造 3 (预缓存 + Gather) |
 | `examples/test_converter/llm_models_run_on_cpu/debug_gemma4/verify_gemma4_wrapper_bypass.py` | 数值验证 (wrapper vs 原始) |
 | `examples/test_converter/llm_models_run_on_cpu/debug_gemma4/verify_gemma4_wrapper_export.py` | 导出验证 |
 | `examples/test_converter/export_llm_model/om_npu_verify/` | OM 编译 + 推理工具 |

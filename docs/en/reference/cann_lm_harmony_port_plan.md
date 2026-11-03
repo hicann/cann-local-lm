@@ -4,7 +4,7 @@ English | [简体中文](../../zh/reference/cann_lm_harmony_port_plan.md)
 
 > Companion reference: `docs/reference/harmony_acl_build_analysis.md` (harmony_acl build analysis)
 > Date compiled: 2026-08-24
-> Goal: compile `cann_lm/engine/` on a HarmonyOS PC into **.so** or **executable UT** and be able to run it.
+> Goal: compile `cann_local_lm/engine/` on a HarmonyOS PC into **.so** or **executable UT** and be able to run it.
 > This document is a Phase 3 PLAN deliverable (base.DESIGN + chip-adaptation.COMPATIBILITY-MAP).
 
 ---
@@ -69,10 +69,10 @@ Your goal: "compile into a so, or compile executable ut files". The two are not 
 6. Host machine ubuntu 24.04+ + build-essential (for running host UT as a control).
 
 ### Step A — Introduce the OHOS toolchain (no source changes)
-- Add `scripts/ohos.toolchain.cmake` next to `cann_lm/engine/` (following harmony_acl, or directly use the SDK's official one).
+- Add `scripts/ohos.toolchain.cmake` next to `cann_local_lm/engine/` (following harmony_acl, or directly use the SDK's official one).
 - Add `scripts/build_ohos.sh`: set `CMD_LINE_TOOLS_DIR`/`OHOS_SDK` and other variables → `cmake -G Ninja -DCMAKE_TOOLCHAIN_FILE=... -DOHOS_PLATFORM=OHOS -DOHOS_ARCH=arm64-v8a -DOHOS_STL=c++_shared ..` → `cmake --build`.
 
-### Step B — Add an OHOS branch to CMake (modify `cann_lm/engine/CMakeLists.txt`)
+### Step B — Add an OHOS branch to CMake (modify `cann_local_lm/engine/CMakeLists.txt`)
 Current state is a single branch. Change to:
 ```cmake
 if(OHOS_PLATFORM STREQUAL "OHOS")

@@ -172,7 +172,7 @@ python verify_gemma4_multiturn.py --prompts "你好||刚才我说了什么？||�
 
 ## 4. `verify_gemma4_vs_hf.py` — pure-torch vs HF 数值对齐
 
-cann_lm Gemma4ForCausalLM vs HF Gemma4ForConditionalGeneration (text: `language_model` + `lm_head` + `softcap` 拆解), 对比:
+cann_local_lm Gemma4ForCausalLM vs HF Gemma4ForConditionalGeneration (text: `language_model` + `lm_head` + `softcap` 拆解), 对比:
 - per-position logits max_diff / argmax_match / top5_overlap (chat prompt + random 32-token)
 - prefill cache-vs-nocache invariant (mine 内部一致性)
 - greedy 生成 token-id 一致

@@ -497,7 +497,7 @@ Semantics: Append appends this turn's generated tokens; Read gets history for ne
 
 ### §12.1 C-01 Tokenizer (engine internal polymorphic module, C8 v1.2)
 
-**One-line contract**: engine internal tokenizer module (`cann_lm/engine/core/tokenizer`, see `docs/tokenizer/`) provides text↔token id tokenization capability to M-06 (encode)/M-07 (decode). Polymorphic base class `TokenizerBase` + `TokenizerFactory` + BPE/SentencePiece derived (self-registration); engine internal, not underlying injection (C8 v1.2, corrects v1.1's concrete class mechanism; constraint #1/#2: error unified Status + base class name TokenizerBase replaces ITokenizer; IModelManager remains only L2→L3 injection point).
+**One-line contract**: engine internal tokenizer module (`cann_local_lm/engine/core/tokenizer`, see `docs/tokenizer/`) provides text↔token id tokenization capability to M-06 (encode)/M-07 (decode). Polymorphic base class `TokenizerBase` + `TokenizerFactory` + BPE/SentencePiece derived (self-registration); engine internal, not underlying injection (C8 v1.2, corrects v1.1's concrete class mechanism; constraint #1/#2: error unified Status + base class name TokenizerBase replaces ITokenizer; IModelManager remains only L2→L3 injection point).
 
 **Data schema**:
 ```cpp

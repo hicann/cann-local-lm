@@ -4,7 +4,7 @@
 
 > epair 导出时把权重从 ND 行主序转为分形块主序落盘（fp16 MatMul → FractNZ；量化 QuantBatchMatmulV4 weight_q → FractZ），避免 NPU 运行期/内核内 transdata。
 >
-> 涵盖 `cann_lm/converter/export/weight_format/`（新包）+ 配置文件 `weight_format_rules.json` + epair_utils 集成 + C++ format 映射。
+> 涵盖 `cann_local_lm/converter/export/weight_format/`（新包）+ 配置文件 `weight_format_rules.json` + epair_utils 集成 + C++ format 映射。
 >
 > 关联：导出主流程见 [export_design.md](./export_design.md)，量化见 [quant_design.md](../quant/quant_design.md)。
 >
@@ -33,7 +33,7 @@
 <a id="概述"></a>
 ## 概述
 
-`cann_lm/converter/export/` 落盘权重时，默认按 ND（行主序）写 `weights_*.bin`。Ascend cube 计算原生以 NZ（FractNZ，16×16 块主序）布局工作，ND 落盘会在 OM 编译/运行期引入 transdata。本设计在落盘前把权重张量转成 NZ 物理字节，并同步标注 ep_json 的 `layout` 字段与 C++ 的 `ge::Format`，让权重 Const 节点直接以 `FORMAT_FRACTAL_NZ` 进入 GE 图。
+`cann_local_lm/converter/export/` 落盘权重时，默认按 ND（行主序）写 `weights_*.bin`。Ascend cube 计算原生以 NZ（FractNZ，16×16 块主序）布局工作，ND 落盘会在 OM 编译/运行期引入 transdata。本设计在落盘前把权重张量转成 NZ 物理字节，并同步标注 ep_json 的 `layout` 字段与 C++ 的 `ge::Format`，让权重 Const 节点直接以 `FORMAT_FRACTAL_NZ` 进入 GE 图。
 
 ### 能力边界
 
@@ -44,7 +44,7 @@
 ## 目录结构
 
 ```
-cann_lm/converter/export/
+cann_local_lm/converter/export/
 ├── weight_format/                 # ← 新包：格式转换函数 + 规则解析
 │   ├── __init__.py                # re-export nd2nz / pack_int4_nz / resolve_format / load_rules
 │   ├── layout.py              # nd2nz()（Stage 1, FractNZ）+ pack_int4_nz()（Stage 2, FractZ,已实现）
@@ -54,16 +54,16 @@ cann_lm/converter/export/
 └── ...（既有文件）
 ```
 
-> **职责边界**：`layout.py` 含 `nd2nz`（Stage 1）与 `pack_int4_nz`（Stage 2，已实现）。`transdata_scale`（fp32→int64 位模式）语义上同属"格式转换"，现位于 `cann_lm/converter/export/quant_swap/materialize.py`（`swap.py` 在 `cann_lm/converter/swap.py`，绝对 import 它）；属**物化位模式打包**（非布局变换），**不并入** `weight_format/layout.py`，留 `materialize.py` 与 `pack_int4` 同属物化层（`epair_utils` 从 `quant_swap.materialize` import）。
+> **职责边界**：`layout.py` 含 `nd2nz`（Stage 1）与 `pack_int4_nz`（Stage 2，已实现）。`transdata_scale`（fp32→int64 位模式）语义上同属"格式转换"，现位于 `cann_local_lm/converter/export/quant_swap/materialize.py`（`swap.py` 在 `cann_local_lm/converter/swap.py`，绝对 import 它）；属**物化位模式打包**（非布局变换），**不并入** `weight_format/layout.py`，留 `materialize.py` 与 `pack_int4` 同属物化层（`epair_utils` 从 `quant_swap.materialize` import）。
 
 <a id="配置文件"></a>
 ## 配置文件
 
-shipped 默认 `cann_lm/converter/export/weight_format_rules.json`，converter 固定加载此默认配置（不暴露 CLI 覆盖）。该配置缺失时 → 全 ND（等价现状，不启用 NZ）。另有环境变量总开关 `CANN_LM_ENABLE_WEIGHT_TRANS` 默认关闭（见 [环境变量总开关](#环境变量总开关)）——即使配置文件命中 NZ，env 未开也不转换。
+shipped 默认 `cann_local_lm/converter/export/weight_format_rules.json`，converter 固定加载此默认配置（不暴露 CLI 覆盖）。该配置缺失时 → 全 ND（等价现状，不启用 NZ）。另有环境变量总开关 `CANN_LM_ENABLE_WEIGHT_TRANS` 默认关闭（见 [环境变量总开关](#环境变量总开关)）——即使配置文件命中 NZ，env 未开也不转换。
 
 ### schema
 
-**当前 shipped 实况**（[`cann_lm/converter/export/weight_format_rules.json`](../../../../cann_lm/converter/export/weight_format_rules.json)）：
+**当前 shipped 实况**（[`cann_local_lm/converter/export/weight_format_rules.json`](../../../../cann_local_lm/converter/export/weight_format_rules.json)）：
 
 ```json
 {
@@ -124,7 +124,7 @@ NZ 转换默认**关闭**（等价现状，全 ND，零字节变化）。导出�
 
 **作用范围**：Python 导出侧（`epair_utils._pack_weights_to_dir` 写 NZ 字节 + `weight_info.json` 标 `format`）+ C++ 加载侧（`ge_graph_builder.cc:CreateConstNode` 读 `weight_info.json` 的 `format` 字段分流，见 [C++ format 映射](#c-format-映射)）。env 无 C++ 读取——env 关闭时 `weight_info.format` 全 `"ND"`，C++ 走 `MapPt2Layout`（ND）；env 开启时 `format` 为 `"NZ"`，C++ 走 `MapGeLayoutString("NZ")`（待实现）。
 
-**命名约定**：`CANN_LM_ENABLE_WEIGHT_TRANS`（`1` 启用，其他/未设 = 关闭）。沿用 `TORCH_DELEGATE_ENABLE_FALLBACK_CODEGEN` 的 `ENABLE` 布尔开关风格；`CANN_LM_` 前缀因仅作用于 cann_lm converter 导出侧。用 `TRANS`（非 `NZ`）因总开关 gate 整个 `weight_format` 流程——Stage 1 `nd2nz` + Stage 2 `pack_int4_nz` + 未来其他格式转换，非仅 NZ。
+**命名约定**：`CANN_LM_ENABLE_WEIGHT_TRANS`（`1` 启用，其他/未设 = 关闭）。沿用 `TORCH_DELEGATE_ENABLE_FALLBACK_CODEGEN` 的 `ENABLE` 布尔开关风格；`CANN_LM_` 前缀因仅作用于 cann_local_lm converter 导出侧。用 `TRANS`（非 `NZ`）因总开关 gate 整个 `weight_format` 流程——Stage 1 `nd2nz` + Stage 2 `pack_int4_nz` + 未来其他格式转换，非仅 NZ。
 
 ---
 
@@ -504,11 +504,11 @@ NZ 重排成功 ⟺ **NPU 输出 NZ OM == ND OM**(max_diff=0)+ OM 里权重 Cons
 
 ### 已完成（2026-08-31）：quant_swap 迁入 export/ + swap 升至 converter 根
 
-`materialize.py` / `quant_linear.py` / `swap.py` 已从 `cann_lm/converter/quant/` 迁出：
-- `materialize.py` / `quant_linear.py` → `cann_lm/converter/export/quant_swap/`（物化内部，与 export pipeline 同位）
-- `swap.py` → `cann_lm/converter/swap.py`（converter 根，编排层 peer of `loader.py` / `saver.py`，绝对 import materialize/quant_linear）
+`materialize.py` / `quant_linear.py` / `swap.py` 已从 `cann_local_lm/converter/quant/` 迁出：
+- `materialize.py` / `quant_linear.py` → `cann_local_lm/converter/export/quant_swap/`（物化内部，与 export pipeline 同位）
+- `swap.py` → `cann_local_lm/converter/swap.py`（converter 根，编排层 peer of `loader.py` / `saver.py`，绝对 import materialize/quant_linear）
 
-旧 import 路径已干净切断：`swap_from_dopt` 走 `cann_lm.converter.swap`，物化符号走 `cann_lm.converter.export.quant_swap`。`quant/` 现仅留 CANN 轻量化工具编排（`auto_quant` / `dopt_wrapper`）+ vendored `dopt_lm` + 校准数据。详见 [quant_design.md](../quant/quant_design.md) "quant 包架构"。
+旧 import 路径已干净切断：`swap_from_dopt` 走 `cann_local_lm.converter.swap`，物化符号走 `cann_local_lm.converter.export.quant_swap`。`quant/` 现仅留 CANN 轻量化工具编排（`auto_quant` / `dopt_wrapper`）+ vendored `dopt_lm` + 校准数据。详见 [quant_design.md](../quant/quant_design.md) "quant 包架构"。
 
 ### 已决定（2026-09-05）：transdata_scale / pack_int4 不并入 weight_format/
 

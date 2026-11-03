@@ -9,7 +9,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 # ── paths ──
 set(PROJECT_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../..")
-set(CSRC_DIR "${PROJECT_ROOT}/cann_lm/converter/export/csrc")
+set(CSRC_DIR "${PROJECT_ROOT}/cann_local_lm/converter/export/csrc")
 # 自带三方库 (bash scripts/build.sh third_party 产出), 不再依赖 sibling torch-delegate-harmony
 # 镜像内 （MIRROR_THIRD_PARYT=ON）: 三方库直连CANN_3RD_LIB_PATH/lib_cache，PATHS 仅作非镜像兜底
 if(MIRROR_THIRD_PARTY AND CANN_3RD_LIB_PATH)

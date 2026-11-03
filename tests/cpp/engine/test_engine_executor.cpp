@@ -8,7 +8,7 @@
 #include <fstream>
 #include <string>
 
-namespace cann_lm::engine {
+namespace cann_local_lm::engine {
 namespace {
 
 // SR20260903001：单一构件（双图位）。三路径全空 = 无模型部署形态
@@ -332,9 +332,9 @@ TEST(EngineExecutorTest, SetContextNotFoundLogsPipelineSetContext)
 }
 
 } // namespace
-} // namespace cann_lm::engine
+} // namespace cann_local_lm::engine
 
-namespace cann_lm::engine {
+namespace cann_local_lm::engine {
 // ═══════════════════════════════════════════════════════════════════════════
 // SR20260903001：meta_json 三段解析（内联步骤）行为用例。
 // 载体：AutoregressivePipelineExecutor 直构 + 只读观测点（M-08 §8）——
@@ -1988,4 +1988,4 @@ TEST(KvCacheTensorApiTest, SevenArgOverloadKeepsLegacyAxisOrder_TC609)
     EXPECT_EQ(out[0]->GetSize(), 16u * 2u * 3u * 4u * 4u); // fp32 4B
 }
 
-} // namespace cann_lm::engine
+} // namespace cann_local_lm::engine

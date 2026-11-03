@@ -33,12 +33,12 @@ apt install -y cmake build-essential python3 python3-venv python3-pip patchelf g
 
 ## CANN
 
-CANN是**外部预置**（用户先source其 `set_env.sh`），本仓不构建。
+CANN是**外部预置**（用户先source其 `set_env.sh`），本仓不构建,当前只支持x86版本。
 
 | 组件 | 版本 | 获取 |
 |------|------|------|
-| CANN toolkit | >= 9.3.0 | [master下载](https://ascend.devcloud.huaweicloud.com/artifactory/cann-run-mirror/software/master) |
-| CANN ops | 按SOC | Ascend910 → `Ascend910-ops`；kirinx90 → `ops-nn`/`ops-math`/`ops-transformer` |
+| CANN toolkit mobile station | >= 9.3.0 | [cann-mobile-station](https://kiri-obs.obs.cn-north-4.myhuaweicloud.com/Cann%20Large%20Model%20Foundation%208.5.0.rc003/Ascend-cann-toolkit_9.3.0_linux-x86_64-mobile-station.run) |
+| CANN ops | KirinX90 | [KirinX90](https://kiri-obs.obs.cn-north-4.myhuaweicloud.com/Cann%20Large%20Model%20Foundation%208.5.0.rc003/Ascend-cann-kirinx90-ops_9.3.0_linux-x86_64.run) |
 
 安装（以下值为示例，按实际版本/SOC/架构调整）：
 
@@ -65,7 +65,7 @@ ln -s ${install_path}/cann-${cann_version} ${install_path}/cann
 
 ```bash
 source $HOME/Ascend/cann/set_env.sh
-echo $ASCEND_HOME_PATH   # 期望: .../cann-9.3.0/cann-9.3.0
+echo $ASCEND_HOME_PATH   # 期望: .../cann-9.3.0（单层，指向 toolkit 安装根）
 ```
 
 > 后续所有 `source $HOME/Ascend/cann/set_env.sh` 均指向此路径。如安装到其他路径，替换 `$HOME/Ascend` 为实际路径。
@@ -137,7 +137,7 @@ cann-local-lm 的运行时分为两套互相隔离的环境：
 > **P1/P2隔离根因**：converter设计为可脱离NPU运行（CPU-only机器也能导出），为此对torchair与torch_npu **解耦**——torchair GE转换不依赖torch_npu。P1刻意不装torch_npu（走stub路径），P2装真torch_npu跑NPU；两者虽同为torch 2.9.0但venv与系统python隔离，依赖不同、环境不同，不能共用。
 
 > **⚠️ 如果当前环境已存在 torch_npu（如系统python已装 torch_npu 2.9.0.post8）**：
-> 强烈建议为 torch_delegate、torchair、cann-lm-converter 创建一套**独立 venv**（即 P1 converter venv）。直接在装了 torch_npu 的 python 环境中安装 converter 会导致 torchair 代理覆盖、`_LazyTorchair` 冲突、FX→GE 转换失败等问题。P1 venv 与 P2 系统python 隔离是 converter 的设计约束，不可省略。
+> 强烈建议为 torch_delegate、torchair、cllm-converter 创建一套**独立 venv**（即 P1 converter venv）。直接在装了 torch_npu 的 python 环境中安装 converter 会导致 torchair 代理覆盖、`_LazyTorchair` 冲突、FX→GE 转换失败等问题。P1 venv 与 P2 系统python 隔离是 converter 的设计约束，不可省略。
 
 ### P1 converter venv 安装
 
@@ -151,7 +151,7 @@ source $HOME/Ascend/cann/set_env.sh
 cd /path/to/cann-local-lm
 
 # 1. torch-delegate：仓内源码构建（build.sh 自动创建 .venv [torch 2.9.0+cpu] + 编译 whl）
-mkdir deps & cp -a torch_delegate deps/torch-delegate
+mkdir -p deps && cp -a torch_delegate deps/torch-delegate
 cd deps/torch-delegate && ./build.sh && .venv/bin/pip install --no-deps output/package/torch_delegate-*.whl
 
 # 2. torchair（二选一）：
@@ -212,7 +212,7 @@ TORCH_DEVICE_BACKEND_AUTOLOAD=0 deps/torch-delegate/.venv/bin/python -c "import 
 # 预期: OK /mnt/workspace/.../deps/torch-delegate/.venv/lib/python3.12/site-packages/torchair/__init__.py
 ```
 
-> 此处仅验证 torchair import 是否成功（捕获 ABI 不匹配 / 缺依赖等问题）。完整基底校验（含 cann_lm / third_party）见 Part 2 末尾「[环境校验](#环境校验)」。
+> 此处仅验证 torchair import 是否成功（捕获 ABI 不匹配 / 缺依赖等问题）。完整基底校验（含 cann_local_lm / third_party）见 Part 2 末尾「[环境校验](#环境校验)」。
 
 ---
 
@@ -231,10 +231,11 @@ bash build.sh --pkg
 > `--pkg` 自动下载+构建三方库（nlohmann_json / GTest / makeself，从gitcode镜像），首次运行下载，后续幂等跳过。
 
 产物落 `build_out/`（由 `build.sh` 的 `DIST` 变量控制，默认 `${REPO}/build_out`，可环境变量覆盖）：
-- `cann_local_lm_converter-*.run`（Ascend910 编译机，**必备**）—— 含 `cann_lm_compile` + `libtorch_delegate_backend.so` + cann_lm whl + set_env.sh
-- `cann_local_lm-*.whl`（converter whl，HF→epair 导出用）
+- `cann_local_lm_converter-*.run`（Ascend910 编译机，**必备**）—— 含 `cann_lm_compile` + `libtorch_delegate_backend.so` + `libcustom_pass_plugin.so` + `op_cpu/` + `op_pass/` + cann_lm whl + set_env.sh
 - `cann_local_lm_engine-*.whl`（engine python ctypes 绑定 whl，纯 python 不含 .so）
 - `deploy_ohos/`（engine OHOS 交叉编译产物：signed `libcann_lm_engine.so` + UT/bbit/smoke，**需 OHOS SDK**；缺 SDK 时该步跳过，不影响 910 OM 编译流程）
+
+> converter whl 已打进 `.run` 的 `wheels/` 目录，打包后从 `build_out/` 移除。
 
 ## 安装
 
@@ -259,7 +260,43 @@ source /opt/cann-local-lm/set_env.sh         # cann-local-lm
 # cllm chat --config testcase.json
 ```
 
-> **权值分离**：`/opt/cann-local-lm/set_env.sh` 默认不设 `GE_EXTERNAL_WEIGHT`，编译出的 OM **内嵌权重**（如 gemma4 5B 约 4.5G/段）。若需更小的 OM + 外置权值文件，编译前 `export GE_EXTERNAL_WEIGHT=2`，产物为 `<out>.om`（数十 M）+ `<out>/weight/*.bin`（外置权值，运行时加载）。
+> **权值分离**：非 Kirin SOC 下 `/opt/cann-local-lm/set_env.sh` 不设 `GE_EXTERNAL_WEIGHT`，编译出的 OM **内嵌权重**（如 gemma4 5B 约 4.5G/段）。若需更小的 OM + 外置权值文件，编译前 `export GE_EXTERNAL_WEIGHT=2`，产物为 `<out>.om`（数十 M）+ 同目录 `weight/`（外置权值，运行时加载）。Kirin 系 SOC 自动设 `=2`，见下节。
+
+> ⚠️ **Kirin 平台强制要求**：模型权重超过 **2 GB** 时**必须**使用外置权重（`GE_EXTERNAL_WEIGHT=2`），即产物为 `<out>.omc` + 同目录 `weight/`，运行时两者一起加载。内嵌模式（`GE_EXTERNAL_WEIGHT=0`）在 Kirin 平台仅适用于 2 GB 以内的模型；超过该规模请勿设 `=0`。Kirin 系 SOC 下 `set_env.sh` 已自动设 `=2`，正常无需干预——只有在手工 `export GE_EXTERNAL_WEIGHT=0` 时才需要确认模型规模。
+
+## 编译环境变量（GE / mobile）
+
+`set_env.sh` 会按 `SOC_VERSION` 自动设置下列变量：**Kirin 系（`KirinX90` / `Kirin9030` / …）自动进入 mobile 编译链**，其余 SOC 不设 mobile 相关项。一般无需手工设置，仅在需要覆盖默认值时手动 `export`。
+
+| 变量 | 默认 | 作用 | 何时需要改 |
+|------|------|------|-----------|
+| `SOC_VERSION` | 包内 `KirinX90`；独立 `cann_lm_compile` 包 `Ascend910_9362` | 目标 SoC，传给 GE 的 `ge.socVersion`。**Kirin 系 → mobile 编译链**（`.omc` + `MobileModelHelper` 路径）；其余 → 通用 `.om` 路径 | 换目标芯片时。这是唯一的模式开关，设成非 Kirin 值即关闭 mobile 分支 |
+| `GE_FUSION_SWITCH_FILE` | 包内 `fusion_autoub_off.cfg` | GE 图融合开关配置。默认关闭 auto-UB 融合 | 需要开融合调优时指向自定义 cfg；调试融合问题时临时 `unset` 用 GE 默认 |
+| `TORCH_DEVICE_BACKEND_AUTOLOAD` | `0` | 阻止 torch 自动加载 npu backend | 不要改。P1 converter venv 未装 torch_npu，置 1 会 import 失败 |
+| `GE_EXTERNAL_WEIGHT` | 包内：mobile 下 `2`，非 mobile 不设；开发态 `set_env.sh`：恒为 `2` | `2` = 权值外置（`<out>.omc` + 同目录 `weight/`，运行时加载）；`0` = 权值内嵌进 omc | **Kirin 平台模型权重 > 2 GB 时必须为 `2`**（内嵌仅适用 ≤ 2 GB）。非 Kirin 平台需要单文件分发、不介意体积时可设 `0` |
+| `GE_MOBILE_WEIGHT_SHARE_OPS` | `MatMulV3,QuantBatchMatmulV4,RmsNorm` | mobile 共享权重算子白名单（GE `[Mobile]` 路径读取）。列出的算子若输入来自同一 `FileConstant`，只存一份权重 | 出现权重重复导致产物过大时，把对应算子名加进来；排查共享权重问题时置空回退 GE 内置默认 |
+| `ASCEND_CUSTOM_OPP_PATH` | mobile 下 `<安装目录>/op_cpu` | GE python 自定义算子插件目录，注册 `Bitcast` / `TransData` 的 HostCpu kernel（int4 布局常量折叠） | 不要改。缺失会导致 int4 量化图编译失败（`TransData` 无 kernel） |
+| `ASCEND_GE_PY_PASS_PATH` | mobile 下 `<安装目录>/op_pass` | GE python pass 插件目录，注册 `QbmX2TransDataPass`（`QuantBatchMatmulV4` 的 x2 int4 `ND→FRACTAL_Z`） | 不要改。缺失会报 `FRACTAL_Z infershape requires x2 4D shape` |
+
+典型用法：
+
+```bash
+# 量化 mobile 编译（Kirin）：只需设 SOC，其余自动
+source $HOME/Ascend/cann/set_env.sh
+export SOC_VERSION=KirinX90
+source /opt/cann-local-lm/set_env.sh
+/opt/cann-local-lm/cann_lm_compile <ep_json> <weight_info> <out>   # → <out>.omc + weight/
+
+# 通用 Ascend910 编译：设非 Kirin SOC 即关闭 mobile 分支
+export SOC_VERSION=Ascend910_9362
+source /opt/cann-local-lm/set_env.sh
+/opt/cann-local-lm/cann_lm_compile <ep_json> <weight_info> <out>   # → <out>.om
+
+# 内嵌权重（单文件分发；Kirin 平台仅限模型 ≤ 2 GB）
+export GE_EXTERNAL_WEIGHT=0        # source set_env.sh 前后设均可（默认值只在未设时生效）
+```
+
+> 开发态（源码树，未打 `.run` 包）用法完全一致，只是把 `source /opt/cann-local-lm/set_env.sh` 换成 `source scripts/cann_lm_compile/set_env.sh`，插件目录自动指向源码树 `cann_local_lm/converter/export/{op_cpu,op_pass}`。
 
 > 端到端用例见 [快速入门](QUICKSTART.md)。
 
@@ -279,11 +316,11 @@ bash scripts/build.sh check
   ✓ torch (2.9.0+cpu)
   ✓ torchair
   ✓ torch_delegate
-  ✓ cann_lm (converter)
+  ✓ cann_local_lm (converter)
   ✓ third_party json
 ```
 
-> 若 `cann_lm (converter)` 显示 ✗：运行 `bash scripts/build.sh deps` 装入 P1 venv（仅装 converter，不含 engine）。
+> 若 `cann_local_lm (converter)` 显示 ✗：运行 `bash scripts/build.sh deps` 装入 P1 venv（仅装 converter，不含 engine）。
 > 若 `third_party` 显示 ✗：运行 `bash build.sh third_party`（或 `--pkg` 已自动构建）。
 > 若 `torchair` 显示 ✗：见 [Q2](#q2-torchair--torch_delegate未安装)。
 
@@ -313,7 +350,7 @@ bash scripts/build.sh check
 | `tests` | `--no-asan` / `--skip-run` | ASAN构建 + ctest |
 | `third_party` | `--third_party_path=PATH` / `--jobs=N` | 自建nlohmann_json + GTest + makeself |
 | `deps` | （无） | 装cann_lm wheels进P1 venv |
-| `wheel` | （无） | cann_lm + cann_lm_engine whl |
+| `wheel` | （无） | cann_local_lm + cann_lm_engine whl |
 | `package` | （透传） | 打 `cann_lm_compile-*.run` |
 | `all` | （透传） | deps → third_party → cpp → wheel |
 
@@ -373,6 +410,18 @@ pip install torchaudio==2.9.0 --force-reinstall --no-deps --user   # 匹配 torc
 ### Q8: OHOS交叉编译大量 `clang++: warning: argument unused`
 
 OHOS工具链cmake传递的冗余flag，**无害**，不影响编译结果。
+
+
+### Q9: kirin平台模型调试工具
+
+[model_run_tool](https:/kiri-obs.obs.cn-north-4.myhuaweicloud.com/Cann%20Large%20Model%20Foundation%208.5.0.rc003/CANN-Kit-tools-7.0.1.0.run) 详细使用说明请./model_run_tool -h 。
+
+### Q10: prefill、decode权重共享说明
+ `GE_EXTERNAL_WEIGHT` 、`GE_MOBILE_WEIGHT_SHARE_OPS` 两个参数必须配合使用。其中 `GE_EXTERNAL_WEIGHT` ，kirin平台只支持 `GE_EXTERNAL_WEIGHT`=0、2；`GE_MOBILE_WEIGHT_SHARE_OPS` 参数仅kirin支持。且该功能仅PC 7.0 B115SPX及以后版本支持，其余版本仅做兼容性适配。
+
+### Q11 量化场景必须设置自定义融合算子
+`ASCEND_CUSTOM_OPP_PATH`、`ASCEND_GE_PY_PASS_PATH` 当前配套版本的量化算子仅支持`FRACTAL_Z`格式，权重转换和重排需在CPU侧去实现。
+
 
 ## 相关文件
 

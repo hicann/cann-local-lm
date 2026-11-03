@@ -9,7 +9,7 @@ GE 内部解 nibble), 而 CPU impl _npu_quant_matmul_cpu 期望 unpacked [K,N]
 import pytest
 import torch
 
-from cann_lm.converter.export.quant_swap.quant_linear import (
+from cann_local_lm.converter.export.quant_swap.quant_linear import (
     QuantLinear,
     _OUT_DTYPE_CODE,
 )

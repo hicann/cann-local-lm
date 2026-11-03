@@ -22,7 +22,7 @@
 #include <utility>
 #include <vector>
 
-namespace cann_lm::engine {
+namespace cann_local_lm::engine {
 namespace {
 
 #ifndef TOKENIZER_FIXTURE_DIR
@@ -739,4 +739,4 @@ TEST(QwenTokenizerTest, MetaSpecialTokensSymmetricRoundTrip)
 }
 
 } // namespace
-} // namespace cann_lm::engine
+} // namespace cann_local_lm::engine

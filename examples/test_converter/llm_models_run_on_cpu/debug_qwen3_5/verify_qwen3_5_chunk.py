@@ -8,7 +8,7 @@ qwen3.5 混合架构: full_attention SimpleKVCache + linear_attention delta_cach
 attention_mask=None: model._create_causal_mask 自动用 past_len 算 total_len.
 
 模式:
-  --mode cann (默认): cann_lm model.forward (cat KV + delta_cache)
+  --mode cann (默认): cann_local_lm model.forward (cat KV + delta_cache)
   --mode wrapper      : Qwen3_5ExportWrapper.forward (delta box 持久)
 
 固定: chat_template + bfloat16
@@ -32,17 +32,17 @@ from pathlib import Path
 import torch
 
 _PROJECT_ROOT = next(
-    p for p in Path(__file__).resolve().parents if (p / "cann_lm").is_dir()
+    p for p in Path(__file__).resolve().parents if (p / "cann_local_lm").is_dir()
 )
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-from cann_lm.models.qwen3_5 import (
+from cann_local_lm.models.qwen3_5 import (
     Qwen3_5ForCausalLM,
     Qwen3_5TextConfig,
     load_qwen3_5_weights,
 )
-from cann_lm.models.qwen3_5.export_wrapper import Qwen3_5ExportWrapper
+from cann_local_lm.models.qwen3_5.export_wrapper import Qwen3_5ExportWrapper
 
 HF_PATH = os.environ["QWEN3_5_HF_PATH"]
 DEFAULT_PROMPTS = [
@@ -198,7 +198,7 @@ def main():
         "--mode",
         choices=["cann", "wrapper"],
         default="cann",
-        help="cann_lm model.forward 或 Qwen3_5ExportWrapper",
+        help="cann_local_lm model.forward 或 Qwen3_5ExportWrapper",
     )
     parser.add_argument(
         "--chunk-size",
@@ -221,7 +221,7 @@ def main():
 
     print("[1/3] Loading model")
     model, config = load_cann_model(HF_PATH, dtype)
-    print(f"  cann_lm params: {sum(p.numel() for p in model.parameters()):,}")
+    print(f"  cann_local_lm params: {sum(p.numel() for p in model.parameters()):,}")
     print(
         f"  Layers: {config.num_hidden_layers} (layer_types: {config.layer_types[:8]}...)"
     )

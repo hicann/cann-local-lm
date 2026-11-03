@@ -47,7 +47,7 @@ export QWEN3_5_HF_PATH=<qwen3.5 model dir>   # 必填
 ## 2. `verify_qwen3_5_vs_hf.py` — pure-torch vs HF 数值对齐
 
 **测试场景**:
-- cann_lm pure-torch 模型 vs HuggingFace transformers Qwen3.5
+- cann_local_lm pure-torch 模型 vs HuggingFace transformers Qwen3.5
 - chat prompt + random 32-token 序列的 logits 对比(max_diff / argmax_match / top5_overlap)
 - greedy 生成 8 token 对比
 
@@ -79,7 +79,7 @@ python verify_qwen3_5_vs_hf.py --model $QWEN3_5_HF_PATH --gen-tokens 8
   2. ep.module prefill(scatter 模式):获取 KV_ep(验证 logits_ep == logits_w)
   3. wrapper decode:用 KV_ep + `_delta_cache_box`(delta_cache 来自 step 1)
 - **形状特化**:ep.module 按 prompt 的实际 seq_len 导出(每个 seq_len 缓存一个 ep)
-- **chunk_gated_delta_rule**:linear attention 用 cann_lm 融合算子(单 GE 节点,避免 19418 节点 segfault)
+- **chunk_gated_delta_rule**:linear attention 用 cann_local_lm 融合算子(单 GE 节点,避免 19418 节点 segfault)
 
 **用法**:
 ```bash

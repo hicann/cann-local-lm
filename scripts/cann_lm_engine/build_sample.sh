@@ -6,7 +6,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-SAMPLE_DIR="$REPO_ROOT/cann_lm/engine/core/sample"
+SAMPLE_DIR="$REPO_ROOT/cann_local_lm/engine/core/sample"
 
 # CANN 环境（若有则 source；原型不依赖 CANN，仅生产版需要。无则跳过。）
 if [ -f /home/developer/Ascend/cann/set_env.sh ]; then

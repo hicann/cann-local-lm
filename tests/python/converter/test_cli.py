@@ -13,13 +13,13 @@ import sys
 
 import pytest
 
-from cann_lm.converter.cann_lm_converter import parse_args
+from cann_local_lm.converter.cann_lm_converter import parse_args
 
 
 def _run_parse(argv):
     """临时替换 sys.argv 调 parse_args (argparse 读 sys.argv)."""
     old = sys.argv
-    sys.argv = ["cann-lm-converter"] + argv
+    sys.argv = ["cllm-converter"] + argv
     try:
         return parse_args()
     finally:
@@ -28,7 +28,7 @@ def _run_parse(argv):
 
 def _expect_exit(argv, code=2):
     old = sys.argv
-    sys.argv = ["cann-lm-converter"] + argv
+    sys.argv = ["cllm-converter"] + argv
     try:
         parse_args()
     except SystemExit as e:

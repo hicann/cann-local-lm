@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """CANN-LM Python bindings — usage example.
 
-Demonstrates the full public API of the `cann_lm` ctypes passthrough package
-(mirrors cann_lm/engine/api/c/c_api.h 1:1):
+Demonstrates the full public API of the `cann_local_lm` ctypes passthrough package
+(mirrors cann_local_lm/engine/api/c/c_api.h 1:1):
 
   0. Library resolution            — get_library / is_library_available
   1. Engine lifecycle              — Engine (no-model form + real model load)
@@ -23,14 +23,14 @@ Without one it prints discovery guidance and exits cleanly.
 import os
 import sys
 
-# Make `import cann_lm` resolve from the engine python package dir
-# (cann_lm/engine/python/cann_lm/ <- cann_lm/engine/python/ on sys.path;
-#  C2 后包由 cann_lm/python/ 迁入 cann_lm/engine/python/)。
+# Make `import cann_local_lm` resolve from the engine python package dir
+# (cann_local_lm/engine/python/cann_local_lm/ <- cann_local_lm/engine/python/ on sys.path;
+#  C2 后包由 cann_local_lm/python/ 迁入 cann_local_lm/engine/python/)。
 _HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.join(_HERE, "..", "cann_lm", "engine", "python"))
+sys.path.insert(0, os.path.join(_HERE, "..", "cann_local_lm", "engine", "python"))
 
-import cann_lm
-from cann_lm import (
+import cann_local_lm
+from cann_local_lm import (
     Engine,
     CannLmError,
     CannLmStatusError,
@@ -41,7 +41,7 @@ from cann_lm import (
 
 
 def _print_result(label, r):
-    """r is a cann_lm.Result: token_ids (list[int]), text (str), finish_reason."""
+    """r is a cann_local_lm.Result: token_ids (list[int]), text (str), finish_reason."""
     print(
         f"  [{label}] finish={r.finish_reason.name}  "
         f"tokens={len(r.token_ids)}  text={r.text!r}"
@@ -121,7 +121,9 @@ def section_async(eng):
 def main():
     import argparse
 
-    ap = argparse.ArgumentParser(description="cann_lm Python bindings usage example")
+    ap = argparse.ArgumentParser(
+        description="cann_local_lm Python bindings usage example"
+    )
     ap.add_argument("--prefill", help="prefill graph path (.omc)")
     ap.add_argument("--decode", help="decode graph path (.omc)")
     ap.add_argument("--meta", help="meta.json path")
@@ -139,7 +141,7 @@ def main():
         print("  Set CANN_LM_LIB or pass --lib=<path> to a matching-arch .so")
         print("  (e.g. deploy_ohos/libcann_lm_engine.so on the OHOS device).")
         return
-    print(f"  loaded: {cann_lm.get_library(args.lib).cann_lm_path}")
+    print(f"  loaded: {cann_local_lm.get_library(args.lib).cann_lm_path}")
 
     # ── 1. Engine ──
     print("\n=== 1. Engine ===")

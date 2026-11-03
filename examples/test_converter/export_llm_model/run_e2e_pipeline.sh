@@ -53,7 +53,7 @@ if [[ $CHECK_ENV -eq 0 ]]; then
   [[ -n "$HF_PATH" ]] || { echo "需要 --hf-path 或 export HF_PATH=<model dir> (--check-env 不需要)" >&2; exit 1; }
 fi
 
-CONVERTER="$PROJECT_ROOT/cann_lm/converter/cann_lm_converter.py"
+CONVERTER="$PROJECT_ROOT/cann_local_lm/converter/cann_lm_converter.py"
 COMPILE_BIN="$PROJECT_ROOT/build/cann_lm_compile"
 NPY_RUNNER_DIR="$SCRIPT_DIR/om_npu_verify"
 case "$MODEL_TYPE" in

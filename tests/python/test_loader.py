@@ -7,7 +7,7 @@ expanduser'd and (b) a directory rather than the .so file itself.
 
 import os
 
-from cann_lm._ffi import _candidate_paths
+from cann_local_lm._ffi import _candidate_paths
 
 
 class TestCandidatePaths:

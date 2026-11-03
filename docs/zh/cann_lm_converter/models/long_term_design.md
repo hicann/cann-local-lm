@@ -4,7 +4,7 @@
 
 > 参考 transformers 库，逐步引入 PreTrainedConfig / ModelOutput / AutoModel 等基类
 >
-> 目标：使 cann_lm.models 像 transformers 一样可通过通用接口加载和推理
+> 目标：使 cann_local_lm.models 像 transformers 一样可通过通用接口加载和推理
 >
 > 状态: 待核对 | 最后核对: 2026-07-14
 
@@ -28,7 +28,7 @@
 ## 目录结构
 
 ```
-cann_lm/
+cann_local_lm/
 ├── models/
 │   ├── __init__.py                  # 导出 AutoModel / AutoConfig
 │   ├── base/                        # 新增: 基类定义
@@ -45,7 +45,7 @@ cann_lm/
 ## P0: PreTrainedConfig 基类
 
 ```python
-# cann_lm/models/base/configuration.py
+# cann_local_lm/models/base/configuration.py
 
 @dataclass
 class PreTrainedConfig:
@@ -117,7 +117,7 @@ class PreTrainedConfig:
 ## P0: ModelOutput 统一输出
 
 ```python
-# cann_lm/models/base/modeling.py
+# cann_local_lm/models/base/modeling.py
 
 @dataclass
 class ModelOutput:
@@ -147,7 +147,7 @@ class CausalLMOutput(ModelOutput):
 ## P0: AutoModel / AutoConfig
 
 ```python
-# cann_lm/models/base/registry.py
+# cann_local_lm/models/base/registry.py
 
 _REGISTRY: dict[str, type] = {}
 
@@ -195,7 +195,7 @@ config = AutoConfig.from_pretrained("/path/to/qwen3.5-0.8B")
 ## P1: Cache 基类
 
 ```python
-# cann_lm/models/base/cache.py
+# cann_local_lm/models/base/cache.py
 
 class Cache:
     """KV Cache 基类"""
@@ -244,7 +244,7 @@ class StaticCache(Cache):
 ## P1: GenerationConfig + GenerationMixin
 
 ```python
-# cann_lm/models/base/generation.py
+# cann_local_lm/models/base/generation.py
 
 @dataclass
 class GenerationConfig:
@@ -293,7 +293,7 @@ class GenerationMixin:
 ## P2: Tokenizer 集成
 
 ```python
-# cann_lm/models/base/tokenization.py
+# cann_local_lm/models/base/tokenization.py
 
 class PreTrainedTokenizer:
     """统一 tokenizer 接口"""

@@ -17,7 +17,7 @@
 #include <string>
 #include <vector>
 
-namespace cann_lm::engine {
+namespace cann_local_lm::engine {
 namespace {
 
 // ── 公共夹具 ─────────────────────────────────────────────────────────────────
@@ -272,4 +272,4 @@ TEST(LinearStatePoolTest, ResetLaneOutOfRangeSlotDefensivelySkipped)
 }
 
 } // namespace
-} // namespace cann_lm::engine
+} // namespace cann_local_lm::engine

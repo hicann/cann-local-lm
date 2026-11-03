@@ -4,7 +4,7 @@ English | [简体中文](../../../zh/cann_lm_engine/tokenizer/SPEC.md)
 
 ## Chapter 1 Overview
 
-This spec defines the business behavior of the C++ tokenizer module under `cann_lm/engine/core/component/tokenizer`. This module provides CANN-LM inference engine with unified text tokenization capability, must support two usable tokenization implementations — **BPETokenizer** (hand-written BPE, vocabulary is HF `tokenizer.json` product (model.type=BPE), serves gemma4 model) and **QwenTokenizer** (hand-written ByteLevel BPE pipeline, vocabulary is HF `tokenizer.json` product, serves Qwen3.5-like models) — and retains **SPMTokenizer** (Google SentencePiece library path) as placeholder for this period (registered but unavailable, see 4.1.6), to accept subsequent algorithms in an extensible way without modifying existing code for new algorithms. This module is an engine internal C++ component, only consumed by same-layer C++ code (pipeline/api), **does not expose** any cross-language or external interfaces.
+This spec defines the business behavior of the C++ tokenizer module under `cann_local_lm/engine/core/component/tokenizer`. This module provides CANN-LM inference engine with unified text tokenization capability, must support two usable tokenization implementations — **BPETokenizer** (hand-written BPE, vocabulary is HF `tokenizer.json` product (model.type=BPE), serves gemma4 model) and **QwenTokenizer** (hand-written ByteLevel BPE pipeline, vocabulary is HF `tokenizer.json` product, serves Qwen3.5-like models) — and retains **SPMTokenizer** (Google SentencePiece library path) as placeholder for this period (registered but unavailable, see 4.1.6), to accept subsequent algorithms in an extensible way without modifying existing code for new algorithms. This module is an engine internal C++ component, only consumed by same-layer C++ code (pipeline/api), **does not expose** any cross-language or external interfaces.
 
 Requirement ID: **SR20260728001**. Software layer: **framework** (engine core reusable library, includes backward compatibility chapter).
 
@@ -41,7 +41,7 @@ Reader should understand within 30 seconds: this spec defines the behavior contr
 
 ### 3.1 Current State
 
-Each model's (gemma4, qwen3_5, etc.) tokenization under `cann_lm/models` depends on external Python implementations (HuggingFace transformers / `tokenizers` / `sentencepiece`). `cann_lm/models/qwen3_5/tokenization_qwen3_5.py` explicitly constructs `BPE` + NFC + ByteLevel pipeline; gemma4 repo has no corresponding tokenization file, its special token ids are scattered in `configuration_gemma4.py` (pad=0, eos=1, bos=2 and boi/eoi/image/video/audio and other multimodal tokens). C++ inference path on encoding side is forced to cross-language callback Python, or each reinvents, with no unified authoritative source.
+Each model's (gemma4, qwen3_5, etc.) tokenization under `cann_local_lm/models` depends on external Python implementations (HuggingFace transformers / `tokenizers` / `sentencepiece`). `cann_local_lm/models/qwen3_5/tokenization_qwen3_5.py` explicitly constructs `BPE` + NFC + ByteLevel pipeline; gemma4 repo has no corresponding tokenization file, its special token ids are scattered in `configuration_gemma4.py` (pad=0, eos=1, bos=2 and boi/eoi/image/video/audio and other multimodal tokens). C++ inference path on encoding side is forced to cross-language callback Python, or each reinvents, with no unified authoritative source.
 
 ### 3.2 Problems
 
@@ -52,7 +52,7 @@ Each model's (gemma4, qwen3_5, etc.) tokenization under `cann_lm/models` depends
 
 ### 3.3 Expectations
 
-`cann_lm/engine/core/component/tokenizer` provides unified C++ tokenizer abstraction: defines stable behavior contract by base class, concrete implementation by derived classes (BPETokenizer and QwenTokenizer both hand-written, vocabulary HF tokenizer.json; SPMTokenizer is sentencepiece library placeholder path), creates instances by factory per runtime enum, self-registration mechanism allows new algorithms to be inserted without modifying existing code. Module as engine internal C++ component is directly consumed by pipeline/api layer, not externally exposed; its output must be element-wise id consistent with corresponding reference implementation under same input (BPETokenizer against gemma4 reference implementation, QwenTokenizer against in-repo `tokenization_qwen3_5.py`, using existing Python implementation as correctness oracle, see TC_203).
+`cann_local_lm/engine/core/component/tokenizer` provides unified C++ tokenizer abstraction: defines stable behavior contract by base class, concrete implementation by derived classes (BPETokenizer and QwenTokenizer both hand-written, vocabulary HF tokenizer.json; SPMTokenizer is sentencepiece library placeholder path), creates instances by factory per runtime enum, self-registration mechanism allows new algorithms to be inserted without modifying existing code. Module as engine internal C++ component is directly consumed by pipeline/api layer, not externally exposed; its output must be element-wise id consistent with corresponding reference implementation under same input (BPETokenizer against gemma4 reference implementation, QwenTokenizer against in-repo `tokenization_qwen3_5.py`, using existing Python implementation as correctness oracle, see TC_203).
 
 ## Chapter 4 Functional Requirements
 
@@ -195,7 +195,7 @@ Self-check: timing consistent with 4.1.2 / 4.1.3 / 4.1.6; factory query registry
 
 ## Chapter 5 Non-Functional Requirements
 
-> Performance thresholds are currently **budget targets** (agent proposal, no measurement baseline), listed as open issues U-1/U-3, pending DESIGN stage measurement to confirm; do not block spec behavior release. Evidence sources for factual assertions about vocabulary scale, token id, etc.: `cann_lm/models/qwen3_5/configuration_qwen3_5.py` (embedding scale 248320), `cann_lm/models/gemma4/configuration_gemma4.py` (vocab=262144, pad=0/eos=1/bos=2), **`tmp/qwen/tokenizer.json` actual (vocabulary entry total 248070 = base 248044 + added 26; config's 248320 is padding-post embedding matrix scale, not vocabulary entry count)**.
+> Performance thresholds are currently **budget targets** (agent proposal, no measurement baseline), listed as open issues U-1/U-3, pending DESIGN stage measurement to confirm; do not block spec behavior release. Evidence sources for factual assertions about vocabulary scale, token id, etc.: `cann_local_lm/models/qwen3_5/configuration_qwen3_5.py` (embedding scale 248320), `cann_local_lm/models/gemma4/configuration_gemma4.py` (vocab=262144, pad=0/eos=1/bos=2), **`tmp/qwen/tokenizer.json` actual (vocabulary entry total 248070 = base 248044 + added 26; config's 248320 is padding-post embedding matrix scale, not vocabulary entry count)**.
 
 | Dimension | Metric | Test condition | Evidence source |
 |------|------|----------|----------|
@@ -215,9 +215,9 @@ Self-check: each item measurable, verifiable; N/A items annotated with reason; o
 - **Hardware dependencies**: target platform aarch64 (Ascend/CANN host) and OHOS musl cross target; no dedicated IP, pure CPU computation.
 - **Software dependencies**: C++17 compiler (g++ 13 verified; pre-split uses std::regex byte-level + POSIX character classes, see DESIGN D-10), CMake ≥ 3.20, GoogleTest 1.14 (UT); tokenizer.json parsing dependency see DESIGN D-09 (vendored nlohmann/json single header). **No sentencepiece runtime dependency this period** (SPMTokenizer is placeholder; library dependency introduction deferred to its implementation time, see open issue U-5). Test artifact strategy: small fixture + pre-generated golden ids in repo (A layer), real artifacts (`tmp/`, gitignore) drive `tokenizer_realdata` target (B layer, see U-6); optional transformers/tokenizers Python reference implementation for golden generation (test period only). Module does not depend on pybind11 (internal component, not exposed to Python).
 - **Cross-module interactions**:
-  - `cann_lm/models/*`: this module's output must align with each model's tokenizer behavior, using existing Python implementation as correctness oracle (see TC_203).
-  - `cann_lm/engine/core`: tokenizer as core submodule, consumed by pipeline/api layer.
-  - `cann_lm/converter`: conversion chain may reuse tokenizer for id alignment validation.
+  - `cann_local_lm/models/*`: this module's output must align with each model's tokenizer behavior, using existing Python implementation as correctness oracle (see TC_203).
+  - `cann_local_lm/engine/core`: tokenizer as core submodule, consumed by pipeline/api layer.
+  - `cann_local_lm/converter`: conversion chain may reuse tokenizer for id alignment validation.
 - Self-check: no implicit dependencies omitted — explicitly does not depend on GPU/NPU operators; explicitly does not undertake dynamic library hot-unload support; NFC normalization skipped this period (U-4) does not introduce ICU dependency.
 
 ## Chapter 7 Backward Compatibility

@@ -2,7 +2,7 @@
 """ACL python 运行 prefill.om + decode.om 生成文本 (qwen3.5-0.8B, use_embeddings 入图).
 
 OM 图输入含 embeddings [1,seq,hidden], 无 input_ids (embed_tokens 查表外置到 host);
-host 用 cann_lm 模型 embed_tokens 查表算 embeddings 喂 OM (每 prefill chunk + 每 decode token);
+host 用 cann_local_lm 模型 embed_tokens 查表算 embeddings 喂 OM (每 prefill chunk + 每 decode token);
 KV cache 6 对 + 36 delta_states 累积传递 + mask/pos 由 runner 构造.
 
 支持单轮/多轮 (命令行 prompt 数决定): 1 个 prompt = 单轮; N 个 prompt = 多轮会话
@@ -21,7 +21,7 @@ OM 产物 (prefill.om + decode.om, use-embeddings, converter --mode prefill-deco
 import os
 import sys
 import torch
-import torch_npu  # noqa: F401  # NPU env: 让 torch_npu 的 npu:: 算子先注册, 避免 cann_lm fused_ops stub 先注册后 torch_npu 重复定义崩溃
+import torch_npu  # noqa: F401  # NPU env: 让 torch_npu 的 npu:: 算子先注册, 避免 cann_local_lm fused_ops stub 先注册后 torch_npu 重复定义崩溃
 
 PREFILL_OM = os.environ.get("PREFILL_OM", "/tmp/opencode/qwen3_5_pd/prefill.om")
 DECODE_OM = os.environ.get("DECODE_OM", "/tmp/opencode/qwen3_5_pd/decode.om")
@@ -32,12 +32,12 @@ MAX_NEW = 20
 PREFILL_SEQ = int(os.environ.get("PREFILL_SEQ", 8))
 os.environ.setdefault("TORCH_DEVICE_BACKEND_AUTOLOAD", "0")
 
-from cann_lm.models.qwen3_5 import (
+from cann_local_lm.models.qwen3_5 import (
     Qwen3_5ForCausalLM,
     Qwen3_5TextConfig,
     load_qwen3_5_weights,
 )
-from cann_lm.models.qwen3_5.export_wrapper import Qwen3_5ExportWrapper
+from cann_local_lm.models.qwen3_5.export_wrapper import Qwen3_5ExportWrapper
 from transformers import AutoTokenizer
 
 import acl

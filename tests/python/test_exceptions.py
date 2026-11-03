@@ -8,8 +8,8 @@ points back at the exact boundary call that failed).
 
 import pytest
 
-from cann_lm._enums import Status
-from cann_lm.exceptions import CannLmError, CannLmStatusError, raise_for_status
+from cann_local_lm._enums import Status
+from cann_local_lm.exceptions import CannLmError, CannLmStatusError, raise_for_status
 
 
 class TestRaiseForStatus:

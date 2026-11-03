@@ -497,7 +497,7 @@ size_t Size() const noexcept;
 
 ### §12.1 C-01 Tokenizer（engine 内部多态模块，C8 v1.2）
 
-**契约一句话**：engine 内部 tokenizer 模块（`cann_lm/engine/core/tokenizer`，见 `docs/tokenizer/`）向 M-06（encode）/M-07（decode）提供文本↔token id 分词能力。多态基类 `TokenizerBase` + `TokenizerFactory` + BPE/SentencePiece 派生（自注册）；engine 内部、非底层注入（C8 v1.2，修正 v1.1 的具体类机制；约束 #1/#2：错误归一 Status + 基类名 TokenizerBase 取代 ITokenizer；IModelManager 仍为唯一 L2→L3 注入点）。
+**契约一句话**：engine 内部 tokenizer 模块（`cann_local_lm/engine/core/tokenizer`，见 `docs/tokenizer/`）向 M-06（encode）/M-07（decode）提供文本↔token id 分词能力。多态基类 `TokenizerBase` + `TokenizerFactory` + BPE/SentencePiece 派生（自注册）；engine 内部、非底层注入（C8 v1.2，修正 v1.1 的具体类机制；约束 #1/#2：错误归一 Status + 基类名 TokenizerBase 取代 ITokenizer；IModelManager 仍为唯一 L2→L3 注入点）。
 
 **数据 schema**：
 ```cpp

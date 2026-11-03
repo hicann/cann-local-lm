@@ -8,7 +8,7 @@
 #   cmake -S examples/test_engine -B build_smoke \
 #       -DCMAKE_TOOLCHAIN_FILE=<ohos.toolchain.cmake> \
 #       -DCANN_LM_ENGINE_LIB=<build_ohos>/libcann_lm_engine.so \
-#       -DCANN_LM_ENGINE_INCLUDE=<repo>/cann_lm/engine
+#       -DCANN_LM_ENGINE_INCLUDE=<repo>/cann_local_lm/engine
 #   cmake --build build_smoke -j$(nproc)
 
 cmake_minimum_required(VERSION 3.18)
@@ -23,7 +23,7 @@ if(NOT TARGET cann_lm_engine)
         message(FATAL_ERROR "CANN_LM_ENGINE_LIB not set (point to libcann_lm_engine.so)")
     endif()
     if(NOT CANN_LM_ENGINE_INCLUDE)
-        message(FATAL_ERROR "CANN_LM_ENGINE_INCLUDE not set (point to cann_lm/engine/)")
+        message(FATAL_ERROR "CANN_LM_ENGINE_INCLUDE not set (point to cann_local_lm/engine/)")
     endif()
 
     add_library(cann_lm_engine SHARED IMPORTED)
@@ -38,7 +38,7 @@ if(NOT TARGET cann_lm_engine)
     )
 else()
     # 子目录模式：target 已定义
-    set(ENGINE_INCLUDE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../cann_lm/engine)
+    set(ENGINE_INCLUDE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../cann_local_lm/engine)
     set(ENGINE_BACKEND_INCLUDES "")
 endif()
 

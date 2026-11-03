@@ -1,5 +1,5 @@
-"""Layout tests — the ctypes Structures in cann_lm._ffi MUST mirror the C
-structs in cann_lm/engine/api/c/c_api.h byte-for-byte (field order, types,
+"""Layout tests — the ctypes Structures in cann_local_lm._ffi MUST mirror the C
+structs in cann_local_lm/engine/api/c/c_api.h byte-for-byte (field order, types,
 padding) on a 64-bit target. Wrong layout = memory corruption across the FFI
 boundary, so these are the highest-value assertions in the whole suite.
 
@@ -18,7 +18,7 @@ import ctypes as ct
 
 
 # RED: _ffi does not exist yet -> ImportError is the expected first failure.
-from cann_lm._ffi import (
+from cann_local_lm._ffi import (
     CANN_LMEngine_Buffer,
     CANN_LMEngine_EngineOptions,
     CANN_LMEngine_ModelArtifact,

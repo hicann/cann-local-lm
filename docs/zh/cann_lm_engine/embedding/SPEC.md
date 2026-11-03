@@ -4,7 +4,7 @@
 
 ## 第 1 章 概述
 
-本规格定义 `cann_lm/engine/core/component/text_embedding` 下 C++ embedding 模块的业务行为。该模块为 CANN-LM 推理引擎提供 embedding 表的加载、host 侧查表（gather）、以及模型输入工位填充能力：把文件系统上的低精度 embedding 表与反量化 scale 参数加载进内存，或（InFlash 模式）让表留在文件系统、按需直接读取；在 host 侧按下标 gather 低精度行，并将结果按 om 图 `TensorDesc` 声明的类型填入模型输入工位（`input_embed` / `embed_scales`）。反量化（dequant）**永远在 NPU 侧完成**，本模块在 host 侧不做任何反量化数学运算。该模块是 engine 内部 C++ 组件，仅被 pipeline / model_executor 层消费，**不对外暴露**任何跨语言或外部接口。
+本规格定义 `cann_local_lm/engine/core/component/text_embedding` 下 C++ embedding 模块的业务行为。该模块为 CANN-LM 推理引擎提供 embedding 表的加载、host 侧查表（gather）、以及模型输入工位填充能力：把文件系统上的低精度 embedding 表与反量化 scale 参数加载进内存，或（InFlash 模式）让表留在文件系统、按需直接读取；在 host 侧按下标 gather 低精度行，并将结果按 om 图 `TensorDesc` 声明的类型填入模型输入工位（`input_embed` / `embed_scales`）。反量化（dequant）**永远在 NPU 侧完成**，本模块在 host 侧不做任何反量化数学运算。该模块是 engine 内部 C++ 组件，仅被 pipeline / model_executor 层消费，**不对外暴露**任何跨语言或外部接口。
 
 需求编号：**SR20260828001**。软件层次：**framework**（engine core 可复用库，含向后兼容性章节）。
 
@@ -38,7 +38,7 @@
 
 ### 3.1 现状
 
-`cann_lm/engine/core/component/text_embedding/text_embedding.h/.cpp` 当前为 stub era 桩实现：`TextEmbedding::LoadAndBind()` 直接返回 `FAILURE`，头注释标注"多态性待 docs/embedding DESIGN"。同文件还存放 `ModalityEntry`（多模态占位符定位条目，归 Preprocessor 消费的另一职责）。`INPUT_INFO.md` 记录 `embed_scales` 工位填充者为 embedding 模块（当前搁置）。用户需求原始输入见 `docs/embedding/proposal.md`。
+`cann_local_lm/engine/core/component/text_embedding/text_embedding.h/.cpp` 当前为 stub era 桩实现：`TextEmbedding::LoadAndBind()` 直接返回 `FAILURE`，头注释标注"多态性待 docs/embedding DESIGN"。同文件还存放 `ModalityEntry`（多模态占位符定位条目，归 Preprocessor 消费的另一职责）。`INPUT_INFO.md` 记录 `embed_scales` 工位填充者为 embedding 模块（当前搁置）。用户需求原始输入见 `docs/embedding/proposal.md`。
 
 ### 3.2 问题
 

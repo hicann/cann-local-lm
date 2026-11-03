@@ -10,7 +10,7 @@
 #include <gtest/gtest.h>
 #include <memory>
 
-namespace cann_lm::engine {
+namespace cann_local_lm::engine {
 namespace {
 
 // 按 dims×dtype 容量申请 tensor（size 字段已不存在——NDTensorDesc 无此成员）
@@ -153,4 +153,4 @@ TEST(TensorManagerTest, CreateKvCacheTensorRejectsDimProductOverflow)
 }
 
 } // namespace
-} // namespace cann_lm::engine
+} // namespace cann_local_lm::engine

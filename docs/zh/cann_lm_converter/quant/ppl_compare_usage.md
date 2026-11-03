@@ -2,7 +2,7 @@
 
 简体中文 | [English](../../../en/cann_lm_converter/quant/ppl_compare_usage.md)
 
-> `cann_lm/converter/quant/ppl_compare.py` — 对比浮点 HF 模型与 CANN 轻量化工具 GPTQ 量化产物的困惑度（PPL），评估 W4A8 量化损伤。单文件脚本，无 `dopt_lm`/converter 运行时依赖。
+> `cann_local_lm/converter/quant/ppl_compare.py` — 对比浮点 HF 模型与 CANN 轻量化工具 GPTQ 量化产物的困惑度（PPL），评估 W4A8 量化损伤。单文件脚本，无 `dopt_lm`/converter 运行时依赖。
 >
 > 状态: 已实测（Qwen3-0.6B, 2026-10-10） | 最后核对: 2026-10-10
 
@@ -21,7 +21,7 @@ GPTQ 产物由 `--hf-type-save` 落盘，是**普通 HF 权重格式**（W4 伪�
 前置：任一装有 `torch` + `transformers` 的 python（NPU 机器需含 `torch_npu`）。
 
 ```bash
-cd cann_lm/converter/quant
+cd cann_local_lm/converter/quant
 
 # CPU（无需 NPU，dtype 自动 float32）
 python ppl_compare.py \

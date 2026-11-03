@@ -1,6 +1,6 @@
 # cann_lm_cli_export — cann_lm_converter.py CLI 测试
 
-用 `cann_lm/converter/cann_lm_converter.py` CLI 把 gemma4 / qwen3.5 两个 HuggingFace 模型导出为 epair 格式,并验证产物完整性。
+用 `cann_local_lm/converter/cann_lm_converter.py` CLI 把 gemma4 / qwen3.5 两个 HuggingFace 模型导出为 epair 格式,并验证产物完整性。
 
 ## 文件
 
@@ -81,10 +81,10 @@ prefill-decode 模式产物含 `prefill_ep_json_with_ascend_ir.json` + `decode_e
 
 qwen3.5 的 linear attention 层(GatedDeltaNet)原本用纯 torch `torch_chunk_gated_delta_rule` 的 Python for 循环,`torch.export` 展开后产生约 19418 个图节点,`export_to_epair` 的 GE 转换阶段图爆炸 segfault。
 
-**已解决**:新增 `cann_lm::chunk_gated_delta_rule` 融合算子(单 GE 节点,不展开循环):
-- `cann_lm/models/fused_ops/chunk_gated_delta_rule.py`:schema + fake meta + CPU impl(复用 torch_chunk 做 BHSD↔BSHD 转换)
+**已解决**:新增 `cann_local_lm::chunk_gated_delta_rule` 融合算子(单 GE 节点,不展开循环):
+- `cann_local_lm/models/fused_ops/chunk_gated_delta_rule.py`:schema + fake meta + CPU impl(复用 torch_chunk 做 BHSD↔BSHD 转换)
 - `ge_converter.py`:手动定义 `ge.ChunkGatedDeltaRule`(torchair auto_generated 未生成此算子)
-- `modeling_qwen3_5.py`:调 `torch.ops.cann_lm.chunk_gated_delta_rule`(prefill + decode 共用)
+- `modeling_qwen3_5.py`:调 `torch.ops.cann_local_lm.chunk_gated_delta_rule`(prefill + decode 共用)
 
 精度验证:vs HF max_diff=0.0(greedy identical)+ wrapper vs original max_diff=0.0(KV cache 全 match)。
 
@@ -122,7 +122,7 @@ epair_<model>/
 
 ## C++ OM 编译 (`cann_lm_compile`)
 
-用 `cann_lm/converter/export/csrc/tools/compile_main.cc` 加载 epair → 构建 GE Graph → 编译 OM(`aclgrphBuildModel`)。本机 NPU Ascend910_9362,soc_version 用 `SOC_VERSION` 环境变量(默认 `Ascend910_9362`)。
+用 `cann_local_lm/converter/export/csrc/tools/compile_main.cc` 加载 epair → 构建 GE Graph → 编译 OM(`aclgrphBuildModel`)。本机 NPU Ascend910_9362,soc_version 用 `SOC_VERSION` 环境变量(默认 `Ascend910_9362`)。
 
 ### 编译 + 运行
 
@@ -180,11 +180,11 @@ qwen3.5 的 OM 编译历经多轮修复,Conv2D infershape **已解决**;ChunkGat
 - **`reg_register.h`** 已 **IR 校准**：以 `ops_IR(Ascend 950)/ops/*.md` 的 `REG_OP` 为标准，73 个有 IR 的算子全对齐官方 IR（dtype/inputs/outputs/attrs），8 个无 IR 的自研算子（`QuantMatmulS8S4`/`RotaryMul`/`ChunkGatedDeltaRule`/`ConcatD`/`SoftmaxV3`/`SliceD`/`TransposeD`/`TensorMove`）保留原定义。master 在 `examples/test_converter/export_llm_model/reg_register.h`（84 ops，2026-08-16 补 `Greater`/`Log1p`/`SelectV2`），`om_npu_verify/reg_register.h` 与 `export_epair_and_compile/reg_register.h` 为其软链（单一源）。本机 `DT_BFLOAT16`/`DT_FLOAT32` 经别名可编译，按 IR 原文保留。
   - 历史补算子（现已含在校准版）：gemma4 `AddRmsNorm`+`RotaryMul`；qwen3.5 `ChunkGatedDeltaRule`+`Shape`/`Expand`/`Gather`/`Minimum`/`Pack`/`ScatterElements`/`SplitV`+`Conv2D`/`Squeeze`；`Unsqueeze` 用 `TensorType::ALL()`；2026-08-16 补 qwen3.5 softplus 分解路径的 `Greater`/`Log1p`/`SelectV2`（CANN 官方 IR）。
 - **`ge_converter.py`** 补 GE 映射:
-  - `cann_lm::chunk_gated_delta_rule` → 手动定义 `ge.ChunkGatedDeltaRule`(torchair auto_generated 未生成此算子),填 output desc shape/dtype(从 meta_outputs)
+  - `cann_local_lm::chunk_gated_delta_rule` → 手动定义 `ge.ChunkGatedDeltaRule`(torchair auto_generated 未生成此算子),填 output desc shape/dtype(从 meta_outputs)
   - `aten.conv1d` → `ge.Unsqueeze + _npu_convolution + ge.Squeeze`(1D→2D),手动填 Unsqueeze/Conv2D 的 output_desc.shape.dim + dtype(从 meta_outputs.size 反推 L_in)+ layout="NCHW"(避 inputDesc 空传播 + format ND 被拒)
   - `aten.type_as` 的 `meta_outputs` 移到 kwargs(避免 `Converter.__call__` 参数数错)
   - `aten.index_copy` → `ge.InplaceUpdate + ge.Transpose`（KV cache scatter-write；曾注释掉，已取消注释以打通 gemma4 prefill-decode 导出，备份 `ge_converter.py.bak`）
-- **C++ backend(`cann_lm/converter/export/csrc/`)**:
+- **C++ backend(`cann_local_lm/converter/export/csrc/`)**:
   - `ge_graph_builder.cc:1366`:PlanConverterNode 对 input 调 `FindTensorValue(op.inputs[i])` 当 fallback_meta(方案 1,边界输入命中 tensor_values 拿 shape,内部 GE ref 返回 nullptr 无害)
   - `aten_tensor_desc_mapper.cc:91`:`MapGeLayoutString` 补认 "NCHW"/"NHWC"(原只认 "ND",Conv2D 要求 input format NCHW)
   - `saver.py`:`save_epair`/`save_epair_prefill_decode` 加 `whitelist_decompositions`(默认 EpairConfig whitelist,linear/matmul 等分解)

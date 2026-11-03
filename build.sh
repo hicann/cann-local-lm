@@ -3,8 +3,8 @@
 # build.sh — CANN-LM 顶层 end-to-end 构建入口
 #
 # subcommand:
-#   check         校验基底 (CANN / P1 venv / torchair / torch_delegate / cann_lm / third_party), 不构建
-#   deps          装 cann_lm (converter) wheel 进 P1 venv (torchair+torch-delegate 为前置条件, 见 docs/build_guide.md)
+#   check         校验基底 (CANN / P1 venv / torchair / torch_delegate / cann_local_lm / third_party), 不构建
+#   deps          装 cann_local_lm (converter) wheel 进 P1 venv (torchair+torch-delegate 为前置条件, 见 docs/build_guide.md)
 #   third_party   自带 C++ 三方库 (nlohmann_json + GTest + makeself) → output/third_party [不需 env]
 #   cpp [flags]   delegate build_cpp.sh (.so + cann_lm_compile, 不含测试)
 #   wheel         delegate converter + engine build_wheel.sh (P1 venv, 不需 CANN)
@@ -65,7 +65,7 @@ cmd_check() {
   if _have torch; then _ok "torch ($("${CONVERTER_PYTHON}" -c 'import torch;print(torch.__version__)' 2>/dev/null))"; else _ng "torch (前置: 见 docs/build_guide.md 安装 torch-delegate)"; fail=1; fi
   if _have torchair;       then _ok "torchair";       else _ng "torchair (前置: 见 docs/build_guide.md)";        fail=1; fi
   if _have torch_delegate; then _ok "torch_delegate"; else _ng "torch_delegate (前置: 见 docs/build_guide.md)";  fail=1; fi
-  if _have cann_lm.converter; then _ok "cann_lm (converter)"; else _ng "cann_lm (bash build.sh wheel)";        fail=1; fi
+  if _have cann_local_lm.converter; then _ok "cann_local_lm (converter)"; else _ng "cann_local_lm (bash build.sh wheel)";        fail=1; fi
   if [[ -d "${REPO}/output/third_party/json" ]]; then _ok "third_party json"; else _ng "third_party (bash build.sh third_party)"; fail=1; fi
   # ── 可选 (仅量化需 NPU 加速时需要, converter/compile 不依赖) ──
   echo "  可选 (仅量化 NPU 加速):"
@@ -76,9 +76,9 @@ cmd_check() {
   if [[ $fail -eq 0 ]]; then _ok "基底齐 (converter+compile ①② 必需项就绪; ③ NPU 量化加速为可选)"; else _ng "缺 ${fail} 项必需项 (按提示补)"; return 1; fi
 }
 
-# ── deps (装 cann_lm converter wheel 进 P1 venv; torchair/torch-delegate 为前置条件, 见 docs/build_guide.md) ──
+# ── deps (装 cann_local_lm converter wheel 进 P1 venv; torchair/torch-delegate 为前置条件, 见 docs/build_guide.md) ──
 cmd_deps() {
-  _log "deps → 装 cann_lm (converter) wheel 进 P1 venv (torchair+torch-delegate 须前置就绪)"
+  _log "deps → 装 cann_local_lm (converter) wheel 进 P1 venv (torchair+torch-delegate 须前置就绪)"
   src_env >/dev/null 2>&1   # 设 CONVERTER_PYTHON 等; 需先 source CANN set_env.sh
 
   # 前置条件校验: P1 venv + torchair + torch_delegate 须就绪
@@ -91,22 +91,22 @@ cmd_deps() {
   [[ $fail -eq 0 ]] || { _ng "前置条件缺 ${fail} 项, 中止 (补齐后重跑)"; return 1; }
 
   # cann_lm_engine 不装 P1 venv (engine 运行于 OHOS 设备, 非 converter 环境);
-  # 若旧版 deps 曾装入, 先卸载以免其 cann_lm/__init__.py (from .engine import ...) 破坏 PEP 420 命名空间.
+  # 若旧版 deps 曾装入, 先卸载以免其 cann_local_lm/__init__.py (from .engine import ...) 破坏 PEP 420 命名空间.
   if "${CONVERTER_PYTHON}" -c "import importlib.metadata; importlib.metadata.version('cann-local-lm-engine')" 2>/dev/null; then
     _step "uninstall stale cann-local-lm-engine (engine 不属于 converter venv)"
     "${CONVERTER_PYTHON}" -m pip uninstall cann-local-lm-engine -y
   fi
 
-  # 装 cann_lm (converter) wheel 进 P1 venv (幂等: 已装则跳)
-  if _have cann_lm.converter; then _skip "cann_lm (converter, 已装 → 复用)"; else
-    _step "build + install cann_lm (converter) wheel"
+  # 装 cann_local_lm (converter) wheel 进 P1 venv (幂等: 已装则跳)
+  if _have cann_local_lm.converter; then _skip "cann_local_lm (converter, 已装 → 复用)"; else
+    _step "build + install cann_local_lm (converter) wheel"
     bash "${REPO}/scripts/cann_lm_converter/build_wheel.sh"
     local cw; cw="$(ls "${DIST}"/cann_local_lm-*.whl 2>/dev/null | grep -v engine | head -1 || true)"
-    [[ -f "$cw" ]] || { _ng "cann_lm whl 未产出 (${DIST})"; return 1; }
+    [[ -f "$cw" ]] || { _ng "cann_local_lm whl 未产出 (${DIST})"; return 1; }
     "${CONVERTER_PYTHON}" -m pip install --force-reinstall --no-deps "$cw"
     # converter 运行时依赖 (首次安装; 幂等: 已装则 pip 跳过)
     "${CONVERTER_PYTHON}" -m pip install safetensors transformers 2>/dev/null || true
-    _ok "cann_lm (converter) installed"
+    _ok "cann_local_lm (converter) installed"
   fi
   echo ""
   _ok "converter+compile env 就绪: source scripts/cann_lm_compile/set_env.sh"
@@ -262,25 +262,30 @@ need_third_party() {
   return $miss
 }
 
-# ── ① compile (C++ epair→OM 工具 + backend lib) ───────────────────────────
+# ── ① compile (C++ epair→OM 工具 + backend lib + custom pass 插件) ─────────
 build_compile() {
-  _log "[1/4] compile: build_cpp.sh --no-tests --target cann_lm_compile"
+  # 不传 --target: 需同时产出 cann_lm_compile / libtorch_delegate_backend.so /
+  # libcustom_pass_plugin.so (package_run_all.sh 硬性要求三件套, 单 target 构建缺插件)
+  _log "[1/4] compile: build_cpp.sh --no-tests (全 target)"
   need_cann || return 1
   if [[ "$MIRROR_THIRD_PARTY" == "ON" ]]; then
     _step "镜像内: 透传 MIRROR_THIRD_PARTY=ON + CANN_3RD_LIB_PATH (lib_cache 直连)"
     MIRROR_THIRD_PARTY=ON CANN_3RD_LIB_PATH="$CANN_3RD_LIB_PATH" \
-      bash "${REPO}/scripts/cann_lm_compile/build_cpp.sh" --no-tests --target cann_lm_compile
+      bash "${REPO}/scripts/cann_lm_compile/build_cpp.sh" --no-tests
   else
-    bash "${REPO}/scripts/cann_lm_compile/build_cpp.sh" --no-tests --target cann_lm_compile
+    bash "${REPO}/scripts/cann_lm_compile/build_cpp.sh" --no-tests
   fi
-  [[ -f "$REPO/build/cann_lm_compile" && -f "$REPO/build/libtorch_delegate_backend.so" ]] || {
-    _ng "compile 产物缺失 (build/cann_lm_compile 或 build/libtorch_delegate_backend.so)"; return 1; }
-  _ok "compile 产物就绪: build/cann_lm_compile + build/libtorch_delegate_backend.so"
+  local miss=""
+  for f in cann_lm_compile libtorch_delegate_backend.so libcustom_pass_plugin.so; do
+    [[ -f "$REPO/build/$f" ]] || miss="$miss $f"
+  done
+  [[ -z "$miss" ]] || { _ng "compile 产物缺失:$miss"; return 1; }
+  _ok "compile 产物就绪: build/{cann_lm_compile, libtorch_delegate_backend.so, libcustom_pass_plugin.so}"
 }
 
 # ── ② converter (HF→epair 导出 whl) ───────────────────────────────────────
 build_converter() {
-  _log "[2/4] converter: build cann_lm wheel (--no-deps 纯源码打包)"
+  _log "[2/4] converter: build cann_local_lm wheel (--no-deps 纯源码打包)"
   mkdir -p "$DIST"
   # PIP 覆盖: 默认系统 pip; 有 deps venv 则用它 (与 package_run_all.sh 的 PIP_CMD 同源)
   local pip_cmd="${PIP:-}"
@@ -334,7 +339,7 @@ engine_probe_mirror_deps() {
   fi
 
   # 2) 签名 jar: 仓库无 jar 时从 SDK toolchains/lib 拷入 tools/
-  if [[ ! -f "$REPO/tools/binary-sign-tool.jar" && ! -f "$REPO/cann_lm/engine/ohos/binary-sign-tool.jar" ]]; then
+  if [[ ! -f "$REPO/tools/binary-sign-tool.jar" && ! -f "$REPO/cann_local_lm/engine/ohos/binary-sign-tool.jar" ]]; then
     local _jar_src=""
     for _cand in \
         "${OHOS_SDK_NATIVE:-}/../toolchains/lib/binary-sign-tool.jar" \
@@ -375,7 +380,7 @@ engine_probe_mirror_deps() {
 # 前置硬依赖(缺任一即逐项 ✗ 并中断 --pkg, 不打包/不跳过现有 deploy_ohos/):
 #   1) 编译器: SDK 自带 clang(llvm/bin/clang, 路线A) 或 本机 clang-18/clang++-18 (路线B) 二选一
 #   2) OHOS_SDK_NATIVE 含 sysroot
-#   3) java + binary-sign-tool.jar (tools/ 或 cann_lm/engine/ohos/)
+#   3) java + binary-sign-tool.jar (tools/ 或 cann_local_lm/engine/ohos/)
 #   4) GTEST_TAR (googletest 源码 tarball, 默认 /mnt/workspace/gtest-1.14.0.tar.gz, 可 export 覆盖)
 #   5) cmake / make
 build_engine() {
@@ -505,8 +510,8 @@ cmd_smoke() {
   fi
   _ok "编译器: SDK clang (${OHOS_SDK_NATIVE}/llvm/bin/clang)"
 
-  local toolchain="$REPO/cann_lm/engine/ohos/ohos.toolchain.cmake"
-  local engine_inc="$REPO/cann_lm/engine"
+  local toolchain="$REPO/cann_local_lm/engine/ohos/ohos.toolchain.cmake"
+  local engine_inc="$REPO/cann_local_lm/engine"
   local smoke_build="$REPO/build_smoke"
 
   _step "cmake configure (examples/test_engine/)"
@@ -564,14 +569,14 @@ usage() {
 build.sh — cann-local-lm 顶层 end-to-end 构建入口 (仓库根, 自包含完整逻辑)
 
 subcommand:
-  check         校验基底 (CANN / P1 venv / torchair / torch_delegate / cann_lm / third_party), 不构建
-  deps          装 cann_lm (converter) wheel 进 P1 venv (torchair+torch-delegate 为前置条件, 见 docs/build_guide.md)
+  check         校验基底 (CANN / P1 venv / torchair / torch_delegate / cann_local_lm / third_party), 不构建
+  deps          装 cann_local_lm (converter) wheel 进 P1 venv (torchair+torch-delegate 为前置条件, 见 docs/build_guide.md)
   third_party   自带 C++ 三方库 (nlohmann_json + GTest + makeself) → output/third_party
   cpp [flags]   delegate build_cpp.sh (.so + cann_lm_compile, 不含测试)
   wheel         delegate converter + engine build_wheel.sh (P1 venv, 不需 CANN)
   package       delegate package_run.sh (打 .run 自解压包)
   all           deps → third_party → cpp → wheel
-  pkg|--pkg     全量构建 + 打包: compile C++ / converter whl / engine OHOS → whl + .run (dist/)
+  pkg|--pkg     全量构建 + 打包: compile C++ / converter whl / engine OHOS → whl + .run (build_out/)
   ut|-u         编译含 UT 的部分并运行: C++ UT (engine+converter ASAN) / Python UT
   smoke|--smoke  从 examples/test_engine/ 独立构建 smoke + bbit（OHOS clang，需先 --pkg）
   --no-signed   与 --pkg / --smoke 连用: 跳过签名 (engine .so / smoke 二进制, 不走 java/jar)

@@ -17,7 +17,7 @@ gemma4 特有:
   - 无 delta_cache (标准 transformer, 不像 qwen3.5 混合架构)
 
 模式:
-  --mode cann (默认): cann_lm model.forward (cat KV)
+  --mode cann (默认): cann_local_lm model.forward (cat KV)
   --mode wrapper      : Gemma4ExportWrapper.forward (scatter-write)
 
 固定: bfloat16 (gemma4 必须)
@@ -45,14 +45,14 @@ from pathlib import Path
 import torch
 
 _PROJECT_ROOT = next(
-    p for p in Path(__file__).resolve().parents if (p / "cann_lm").is_dir()
+    p for p in Path(__file__).resolve().parents if (p / "cann_local_lm").is_dir()
 )
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-from cann_lm.models.gemma4 import Gemma4ForCausalLM, Gemma4TextConfig
-from cann_lm.models.gemma4.modeling_gemma4 import load_gemma4_weights
-from cann_lm.models.gemma4.export_wrapper import Gemma4ExportWrapper
+from cann_local_lm.models.gemma4 import Gemma4ForCausalLM, Gemma4TextConfig
+from cann_local_lm.models.gemma4.modeling_gemma4 import load_gemma4_weights
+from cann_local_lm.models.gemma4.export_wrapper import Gemma4ExportWrapper
 
 HF_PATH = os.environ["GEMMA4_HF_PATH"]
 DEFAULT_TURNS = ["Hello, my name is", "What is my name?", "Tell me about AI"]
@@ -342,7 +342,7 @@ def main():
         "--mode",
         choices=["cann", "wrapper"],
         default="cann",
-        help="cann_lm model.forward 或 Gemma4ExportWrapper",
+        help="cann_local_lm model.forward 或 Gemma4ExportWrapper",
     )
     parser.add_argument(
         "--chunk-size", type=int, default=8, help="chunk prefill size (0=非 chunk)"
@@ -367,7 +367,7 @@ def main():
 
     print("[1/2] Loading model")
     model, config = load_cann_model(HF_PATH, dtype)
-    print(f"  cann_lm params: {sum(p.numel() for p in model.parameters()):,}")
+    print(f"  cann_local_lm params: {sum(p.numel() for p in model.parameters()):,}")
     print(
         f"  Layers: {config.num_hidden_layers} (shared: {getattr(config, 'num_kv_shared_layers', 0)})"
     )

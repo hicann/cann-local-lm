@@ -1,10 +1,10 @@
 # dopt_quantization_st — gemma4/Qwen3.5 真实量化系统测试
 
-本目录把两个固定真实模型收敛为 ST。模型权重由运行环境提供；校准数据使用已安装的 `cann_lm` pip 包内的 `calibrate_sets/calibrate_coig_cqia.jsonl`，使用者只需配置模型路径。
+本目录把两个固定真实模型收敛为 ST。模型权重由运行环境提供；校准数据使用已安装的 `cann_local_lm` pip 包内的 `calibrate_sets/calibrate_coig_cqia.jsonl`，使用者只需配置模型路径。
 
 仓库不归档真实模型权重、量化产物或机器相关模型路径。默认输出目录 `output/` 已被 `.gitignore` 屏蔽。
 
-> **前置**：`.run` 包已安装（`/opt/cann-local-lm/`），`cann_lm` whl 已装进系统 python（`--no-deps --user`）。
+> **前置**：`.run` 包已安装（`/opt/cann-local-lm/`），`cann_local_lm` whl 已装进系统 python（`--no-deps --user`）。
 
 ## ST 用例
 

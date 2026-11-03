@@ -2,7 +2,7 @@
 
 把导出的 epair 编译为 OM，在 NPU 上运行验证：单 OM vs eager 对比、prefill+decode 文本生成（出字）。
 
-> 前置：`.run` 包已安装（`/opt/cann-local-lm/`），`cann_lm` whl 已装进 P1 venv + 系统 python。
+> 前置：`.run` 包已安装（`/opt/cann-local-lm/`），`cann_local_lm` whl 已装进 P1 venv + 系统 python。
 
 ## 目录结构
 
@@ -38,7 +38,7 @@ source /opt/cann-local-lm/set_env.sh --npu
 ### 1. 导出 epair
 
 ```bash
-$CONVERTER_PYTHON -m cann_lm.converter.cann_lm_converter \
+$CONVERTER_PYTHON -m cann_local_lm.converter.cann_lm_converter \
   --hf-path "$GEMMA4_HF_PATH" \
   --output-dir epair_gemma4 \
   --mode prefill-decode --target-soc Ascend910B
@@ -184,7 +184,7 @@ prompt 基串：`The quick brown fox jumps over the lazy dog. `（11 tok/重复�
 | **>576** | ×60 | 601 | **ring wrap 触发**（pos≥576，chunk9 pos576..600） | 10 | "This is a bit of a mixed input! It seems" |
 | **>2048** | ×210 | 2101 | ring wrap + **full KV 溢出**（full 层 kv_max=2048，pos≥2048 散列覆盖旧位） | 33 | "jumps over the lazy dog. The quick brown fox jumps" |
 
-跑法（须 `PYTHONPATH=repo` 用 repo 的 ring cann_lm，venv whl 是 stale 无 ring 版）：
+跑法（须 `PYTHONPATH=repo` 用 repo 的 ring cann_local_lm，venv whl 是 stale 无 ring 版）：
 
 ```bash
 source /home/developer/Ascend/cann/set_env.sh

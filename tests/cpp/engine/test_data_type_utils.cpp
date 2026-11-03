@@ -11,7 +11,7 @@
 #include <cstring>
 #include <vector>
 
-namespace cann_lm::engine {
+namespace cann_local_lm::engine {
 namespace {
 
 // ── fp16 位级转换：FloatToHalfBits / HalfBitsToFloat ────────────────────────
@@ -201,4 +201,4 @@ TEST(DataTypeUtilsTest, FormatElemsHalfAndInt)
 }
 
 } // namespace
-} // namespace cann_lm::engine
+} // namespace cann_local_lm::engine

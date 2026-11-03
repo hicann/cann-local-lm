@@ -17,19 +17,19 @@
 
 | 文件 | 职责 |
 |------|------|
-| `cann_lm/models/model_registry.py` | `ModelEntry` + `REGISTRY` + `detect_model_type` + `available_models` |
-| `cann_lm/converter/loader.py` | `load_model` + `build_config` + `collect_tokenizer_files` |
-| `cann_lm/converter/saver.py` | `save_epair` / `save_epair_prefill_decode` / `save_model_config` / `copy_tokenizer_files` |
-| `cann_lm/models/export_wrapper.py` | `ExportWrapper` 基类（`forward` + `get_sample_inputs` + `_drive_layers`） |
-| `cann_lm/models/{gemma4,qwen3_5}/export_wrapper.py` | 各模型 `ExportWrapper` 子类 |
-| `cann_lm/converter/export/epair_utils.py` | `pack_weights` + `consolidated_weights_save` |
-| `cann_lm/converter/export/weight_format/` | 权重格式转换包（已实现）：`nd2nz`（ND→FractNZ，Stage 1）+ `pack_int4_nz`（int4pack→FractZ，Stage 2）+ `rules.resolve_format`（配置解析，按 op_type 分流）+ `load_rules`（详见 [weight_format_design.md](./weight_format_design.md)） |
-| `cann_lm/converter/export/weight_format_rules.json` | shipped 默认配置（`name_pattern` + `op_type` + `format` + `pack` + 迁移后规则级 `enable`）：MatMul `*_proj.weight`→NZ（迁移后 `enable:false` 不做转换）、QuantBatchMatmulV4 `*.weight_q`→Z（`enable:true` 必做）；缺失/清空 rules → 全 ND（逃生门）。迁移后作 format 控制的唯一权威（替代 env 总开关，见设计文档"总开关废弃设计"） |
-| `cann_lm/converter/export/quant_swap/` | 量化物化内部包（2026-08-31 从 `quant/` 迁入）：`materialize.py`（int4 物化 + `transdata_scale`/`pack_int4`）/ `quant_linear.py`（QuantLinear）；`__init__` re-export 6 物化符号。编排层 `swap.py` 已升至 `cann_lm/converter/swap.py`（converter 根）。详见 [quant_design.md](../quant/quant_design.md) |
-| `cann_lm/converter/export/ge_converters/ge_converter.py` | `register_ge_converters`（cann_lm.* + aten.* → GE 算子映射） |
-| `cann_lm/converter/export/ge_converters/_quant_matmul_converter.py` | `npu::npu_quant_matmul` → `ge.QuantBatchMatmulV4` GE converter（详见 [INDEX.md](../quant/INDEX.md)） |
+| `cann_local_lm/models/model_registry.py` | `ModelEntry` + `REGISTRY` + `detect_model_type` + `available_models` |
+| `cann_local_lm/converter/loader.py` | `load_model` + `build_config` + `collect_tokenizer_files` |
+| `cann_local_lm/converter/saver.py` | `save_epair` / `save_epair_prefill_decode` / `save_model_config` / `copy_tokenizer_files` |
+| `cann_local_lm/models/export_wrapper.py` | `ExportWrapper` 基类（`forward` + `get_sample_inputs` + `_drive_layers`） |
+| `cann_local_lm/models/{gemma4,qwen3_5}/export_wrapper.py` | 各模型 `ExportWrapper` 子类 |
+| `cann_local_lm/converter/export/epair_utils.py` | `pack_weights` + `consolidated_weights_save` |
+| `cann_local_lm/converter/export/weight_format/` | 权重格式转换包（已实现）：`nd2nz`（ND→FractNZ，Stage 1）+ `pack_int4_nz`（int4pack→FractZ，Stage 2）+ `rules.resolve_format`（配置解析，按 op_type 分流）+ `load_rules`（详见 [weight_format_design.md](./weight_format_design.md)） |
+| `cann_local_lm/converter/export/weight_format_rules.json` | shipped 默认配置（`name_pattern` + `op_type` + `format` + `pack` + 迁移后规则级 `enable`）：MatMul `*_proj.weight`→NZ（迁移后 `enable:false` 不做转换）、QuantBatchMatmulV4 `*.weight_q`→Z（`enable:true` 必做）；缺失/清空 rules → 全 ND（逃生门）。迁移后作 format 控制的唯一权威（替代 env 总开关，见设计文档"总开关废弃设计"） |
+| `cann_local_lm/converter/export/quant_swap/` | 量化物化内部包（2026-08-31 从 `quant/` 迁入）：`materialize.py`（int4 物化 + `transdata_scale`/`pack_int4`）/ `quant_linear.py`（QuantLinear）；`__init__` re-export 6 物化符号。编排层 `swap.py` 已升至 `cann_local_lm/converter/swap.py`（converter 根）。详见 [quant_design.md](../quant/quant_design.md) |
+| `cann_local_lm/converter/export/ge_converters/ge_converter.py` | `register_ge_converters`（cann_local_lm.* + aten.* → GE 算子映射） |
+| `cann_local_lm/converter/export/ge_converters/_quant_matmul_converter.py` | `npu::npu_quant_matmul` → `ge.QuantBatchMatmulV4` GE converter（详见 [INDEX.md](../quant/INDEX.md)） |
 
-### C++（`cann_lm/converter/export/csrc/`）
+### C++（`cann_local_lm/converter/export/csrc/`）
 
 | 文件 | 职责 |
 |------|------|
@@ -66,7 +66,7 @@
 | ~~`inline_weight_layout(ep_json_path, names_nz)`~~ | **已弃用**：pt2 layout 枚举无 NZ 表达不了，format 信号改走 `weight_info.json` 的 `format` 字段（设计文档"ep_json layout 标注"） |
 | `td::EpairModelLoader` | C++ 加载 epair → 构建 GE Graph |
 | `GeWeightLoader` | C++ 懒加载权重 bin |
-| `register_ge_converters()` | 注册 cann_lm.* + aten.* → GE 算子映射 |
+| `register_ge_converters()` | 注册 cann_local_lm.* + aten.* → GE 算子映射 |
 
 ## 产物布局
 

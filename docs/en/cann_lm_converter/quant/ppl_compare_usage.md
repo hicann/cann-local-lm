@@ -2,7 +2,7 @@
 
 English | [简体中文](../../../zh/cann_lm_converter/quant/ppl_compare_usage.md)
 
-> `cann_lm/converter/quant/ppl_compare.py` — Compare the perplexity (PPL) of a float HF model and a CANN lightweight tool GPTQ quantized artifact to evaluate W4A8 quantization degradation. Single-file script, no `dopt_lm`/converter runtime dependency.
+> `cann_local_lm/converter/quant/ppl_compare.py` — Compare the perplexity (PPL) of a float HF model and a CANN lightweight tool GPTQ quantized artifact to evaluate W4A8 quantization degradation. Single-file script, no `dopt_lm`/converter runtime dependency.
 >
 > Status: Measured (Qwen3-0.6B, 2026-10-10) | Last reviewed: 2026-10-10
 
@@ -17,7 +17,7 @@ Comparison fairness: both sides use **same dtype / same data / same sliding wind
 Prerequisite: any python with `torch` + `transformers` (NPU machines need `torch_npu`).
 
 ```bash
-cd cann_lm/converter/quant
+cd cann_local_lm/converter/quant
 
 # CPU (no NPU needed, dtype auto float32)
 python ppl_compare.py \

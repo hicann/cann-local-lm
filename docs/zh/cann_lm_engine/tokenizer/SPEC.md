@@ -4,7 +4,7 @@
 
 ## 第 1 章 概述
 
-本规格定义 `cann_lm/engine/core/component/tokenizer` 下 C++ tokenizer 模块的业务行为。该模块为 CANN-LM 推理引擎提供统一的文本 token 化能力，必须支持两种可用分词实现——**BPETokenizer**（手写 BPE，词表为 HF `tokenizer.json` 产物（model.type=BPE），服务 gemma4 模型）与 **QwenTokenizer**（手写 ByteLevel BPE 流水线，词表为 HF `tokenizer.json` 产物，服务 Qwen3.5 类模型）——并保留 **SPMTokenizer**（Google SentencePiece 库路径）为本期占位（注册但不可用，见 4.1.6），以可扩展方式接纳后续算法，不必为新增算法改动既有代码。该模块是 engine 内部 C++ 组件，仅被同层 C++ 代码（pipeline/api）消费，**不对外暴露**任何跨语言或外部接口。
+本规格定义 `cann_local_lm/engine/core/component/tokenizer` 下 C++ tokenizer 模块的业务行为。该模块为 CANN-LM 推理引擎提供统一的文本 token 化能力，必须支持两种可用分词实现——**BPETokenizer**（手写 BPE，词表为 HF `tokenizer.json` 产物（model.type=BPE），服务 gemma4 模型）与 **QwenTokenizer**（手写 ByteLevel BPE 流水线，词表为 HF `tokenizer.json` 产物，服务 Qwen3.5 类模型）——并保留 **SPMTokenizer**（Google SentencePiece 库路径）为本期占位（注册但不可用，见 4.1.6），以可扩展方式接纳后续算法，不必为新增算法改动既有代码。该模块是 engine 内部 C++ 组件，仅被同层 C++ 代码（pipeline/api）消费，**不对外暴露**任何跨语言或外部接口。
 
 需求编号：**SR20260728001**。软件层次：**framework**（engine core 可复用库，含向后兼容性章节）。
 
@@ -41,7 +41,7 @@
 
 ### 3.1 现状
 
-`cann_lm/models` 下各模型（gemma4、qwen3_5 等）的 token 化依赖外部 Python 实现（HuggingFace transformers / `tokenizers` / `sentencepiece`）。`cann_lm/models/qwen3_5/tokenization_qwen3_5.py` 显式构造 `BPE` + NFC + ByteLevel 流水线；gemma4 仓库内无对应 tokenization 文件，其特殊 token id 散落于 `configuration_gemma4.py`（pad=0、eos=1、bos=2 及 boi/eoi/image/video/audio 等多模态 token）。C++ 推理路径在编码侧被迫跨语言回调 Python，或各自重造，无统一权威源。
+`cann_local_lm/models` 下各模型（gemma4、qwen3_5 等）的 token 化依赖外部 Python 实现（HuggingFace transformers / `tokenizers` / `sentencepiece`）。`cann_local_lm/models/qwen3_5/tokenization_qwen3_5.py` 显式构造 `BPE` + NFC + ByteLevel 流水线；gemma4 仓库内无对应 tokenization 文件，其特殊 token id 散落于 `configuration_gemma4.py`（pad=0、eos=1、bos=2 及 boi/eoi/image/video/audio 等多模态 token）。C++ 推理路径在编码侧被迫跨语言回调 Python，或各自重造，无统一权威源。
 
 ### 3.2 问题
 
@@ -52,7 +52,7 @@
 
 ### 3.3 期望
 
-`cann_lm/engine/core/component/tokenizer` 提供统一 C++ tokenizer 抽象：以基类定义稳定行为契约，以派生类承载具体实现（BPETokenizer 与 QwenTokenizer 均为手写、词表 HF tokenizer.json；SPMTokenizer 为 sentencepiece 库占位路径），以工厂按运行时枚举创建实例、以自注册机制使新算法可插入而无需改动既有代码。模块作为 engine 内部 C++ 组件被 pipeline/api 层直接消费，不对外暴露；其输出须与对应参考实现在相同输入下逐 id 一致（BPETokenizer 对照 gemma4 参考实现、QwenTokenizer 对照仓内 `tokenization_qwen3_5.py`，以既有 Python 实现作为正确性 oracle，见 TC_203）。
+`cann_local_lm/engine/core/component/tokenizer` 提供统一 C++ tokenizer 抽象：以基类定义稳定行为契约，以派生类承载具体实现（BPETokenizer 与 QwenTokenizer 均为手写、词表 HF tokenizer.json；SPMTokenizer 为 sentencepiece 库占位路径），以工厂按运行时枚举创建实例、以自注册机制使新算法可插入而无需改动既有代码。模块作为 engine 内部 C++ 组件被 pipeline/api 层直接消费，不对外暴露；其输出须与对应参考实现在相同输入下逐 id 一致（BPETokenizer 对照 gemma4 参考实现、QwenTokenizer 对照仓内 `tokenization_qwen3_5.py`，以既有 Python 实现作为正确性 oracle，见 TC_203）。
 
 ## 第 4 章 功能需求
 
@@ -195,7 +195,7 @@ sequenceDiagram
 
 ## 第 5 章 非功能需求
 
-> 性能阈值当前为**预算目标**（agent 提案，无实测基线），列为未决项 U-1/U-3，待 DESIGN 阶段实测后确认；不阻塞 spec 行为放行。词表规模、token id 等事实性断言的证据来源：`cann_lm/models/qwen3_5/configuration_qwen3_5.py`（嵌入规模 248320）、`cann_lm/models/gemma4/configuration_gemma4.py`（vocab=262144、pad=0/eos=1/bos=2）、**`tmp/qwen/tokenizer.json` 实物（词表条目总数 248070 = base 248044 + added 26；config 的 248320 为 padding 后嵌入矩阵规模，非词表条目数）**。
+> 性能阈值当前为**预算目标**（agent 提案，无实测基线），列为未决项 U-1/U-3，待 DESIGN 阶段实测后确认；不阻塞 spec 行为放行。词表规模、token id 等事实性断言的证据来源：`cann_local_lm/models/qwen3_5/configuration_qwen3_5.py`（嵌入规模 248320）、`cann_local_lm/models/gemma4/configuration_gemma4.py`（vocab=262144、pad=0/eos=1/bos=2）、**`tmp/qwen/tokenizer.json` 实物（词表条目总数 248070 = base 248044 + added 26；config 的 248320 为 padding 后嵌入矩阵规模，非词表条目数）**。
 
 | 维度 | 指标 | 测试条件 | 证据来源 |
 |------|------|----------|----------|
@@ -215,9 +215,9 @@ sequenceDiagram
 - **硬件依赖**：目标平台 aarch64（Ascend/CANN 宿主）与 OHOS musl 交叉目标；无专用 IP，纯 CPU 计算。
 - **软件依赖**：C++17 编译器（g++ 13 已验证；预切分用 std::regex 字节级 + POSIX 字符类，见 DESIGN D-10）、CMake ≥ 3.20、GoogleTest 1.14（UT）；tokenizer.json 解析依赖见 DESIGN D-09（vendored nlohmann/json 单头）。**本期运行时无 sentencepiece 依赖**（SPMTokenizer 为占位；引入库依赖推迟至其实现期，见未决项 U-5）。测试产物策略：小型 fixture + 预生成 golden ids 入库（A 层），真实产物（`tmp/`，gitignore）驱动 `tokenizer_realdata` 目标（B 层，见 U-6）；可选 transformers/tokenizers Python 参考实现用于 golden 生成（仅测试期）。模块不依赖 pybind11（内部组件，不对 Python 暴露）。
 - **跨模块交互**：
-  - `cann_lm/models/*`：本模块产出须与各模型 tokenizer 行为对齐，以既有 Python 实现为正确性 oracle（见 TC_203）。
-  - `cann_lm/engine/core`：tokenizer 作为 core 子模块，被 pipeline/api 层消费。
-  - `cann_lm/converter`：转换链路可能复用 tokenizer 做 id 对齐校验。
+  - `cann_local_lm/models/*`：本模块产出须与各模型 tokenizer 行为对齐，以既有 Python 实现为正确性 oracle（见 TC_203）。
+  - `cann_local_lm/engine/core`：tokenizer 作为 core 子模块，被 pipeline/api 层消费。
+  - `cann_local_lm/converter`：转换链路可能复用 tokenizer 做 id 对齐校验。
 - 自检：未遗漏隐式依赖——明确不依赖 GPU/NPU 算子；明确不承担动态库热卸载支持；NFC 归一化本期跳过（U-4）不引入 ICU 依赖。
 
 ## 第 7 章 向后兼容性

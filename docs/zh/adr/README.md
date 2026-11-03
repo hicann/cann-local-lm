@@ -22,7 +22,7 @@
 | # | 判断问题 | Yes 时的典型场景 |
 |---|---------|-----------------|
 | 1 | 是否在两个以上技术方案间做选择？ | 自研算子 vs 复用 CANN 原生；V3 vs V4；内存桥接 vs 磁盘桥接 vs subprocess |
-| 2 | 是否引入或删除一个 custom op / GE 算子注册？ | `reg_register.h` 新增/删除 `REG_OP`；新加 `cann_lm::` schema+fake+converter 全套 |
+| 2 | 是否引入或删除一个 custom op / GE 算子注册？ | `reg_register.h` 新增/删除 `REG_OP`；新加 `cann_local_lm::` schema+fake+converter 全套 |
 | 3 | 回退这个改动的代价是否很高？ | 需改多文件 / 重导出所有 epair / 重编译 OM / 已有产物不兼容 |
 | 4 | 是否跨模块影响链路结构？ | quant↔export↔loader↔saver 的桥接方式；prefill-decode 双图 vs single 图 |
 | 5 | 是否改变权重/scale 的落盘格式或内存布局？ | weight_scale fp32→int64 位模式；预转置 vs 自然朝向；nibble-packed vs unpack |

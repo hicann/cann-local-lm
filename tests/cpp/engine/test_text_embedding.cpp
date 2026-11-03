@@ -35,7 +35,7 @@
 
 #include <gtest/gtest.h>
 
-namespace cann_lm::engine {
+namespace cann_local_lm::engine {
 namespace {
 
 constexpr size_t kVocab = 16;
@@ -1854,4 +1854,4 @@ TEST_F(TextEmbeddingTest, ScaleSegmentAbsentRejects_TC_D)
 }
 
 } // namespace
-} // namespace cann_lm::engine
+} // namespace cann_local_lm::engine

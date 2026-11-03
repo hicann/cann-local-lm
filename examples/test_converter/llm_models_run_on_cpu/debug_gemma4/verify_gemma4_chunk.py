@@ -5,7 +5,7 @@
 去除重复 (make_causal_mask / 模型加载 / chunk 推理核心逻辑).
 
 模式:
-  --mode cann      (默认): cann_lm model.forward (cat KV 累积)
+  --mode cann      (默认): cann_local_lm model.forward (cat KV 累积)
   --mode wrapper          : Gemma4ExportWrapper.forward
   --vs-hf                 : 加 HF transformers model.generate 对比
 
@@ -33,14 +33,14 @@ from pathlib import Path
 import torch
 
 _PROJECT_ROOT = next(
-    p for p in Path(__file__).resolve().parents if (p / "cann_lm").is_dir()
+    p for p in Path(__file__).resolve().parents if (p / "cann_local_lm").is_dir()
 )
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-from cann_lm.models.gemma4 import Gemma4ForCausalLM, Gemma4TextConfig
-from cann_lm.models.gemma4.modeling_gemma4 import load_gemma4_weights
-from cann_lm.models.gemma4.export_wrapper import Gemma4ExportWrapper
+from cann_local_lm.models.gemma4 import Gemma4ForCausalLM, Gemma4TextConfig
+from cann_local_lm.models.gemma4.modeling_gemma4 import load_gemma4_weights
+from cann_local_lm.models.gemma4.export_wrapper import Gemma4ExportWrapper
 
 HF_PATH = os.environ["GEMMA4_HF_PATH"]
 BOS_TOKEN_ID = 2
@@ -113,14 +113,14 @@ def build_masks(wrapper, seq_len, new_kv_cache_pos):
 
 
 # ──────────────────────────────────────────────
-# cann_lm model.forward (cat KV 累积)
+# cann_local_lm model.forward (cat KV 累积)
 # ──────────────────────────────────────────────
 
 
 def generate_cann(
     model, input_ids, num_steps, dtype, chunked=False, chunk_size=8, return_logits=False
 ):
-    """cann_lm 一次性/分 chunk prefill + greedy decode.
+    """cann_local_lm 一次性/分 chunk prefill + greedy decode.
 
     return_logits=True (仅非 chunk): 返回 (tokens, [(label, logits), ...]).
     """
@@ -380,7 +380,7 @@ def main():
         "--mode",
         choices=["cann", "wrapper"],
         default="cann",
-        help="cann_lm model.forward (cat KV) 或 Gemma4ExportWrapper",
+        help="cann_local_lm model.forward (cat KV) 或 Gemma4ExportWrapper",
     )
     parser.add_argument("--vs-hf", action="store_true", help="加 HF transformers 对比")
     parser.add_argument("--chunk-size", type=int, default=8)
@@ -406,7 +406,7 @@ def main():
 
     print("[1/3] Loading model")
     model, config = load_cann_model(HF_PATH, dtype)
-    print(f"  cann_lm params: {sum(p.numel() for p in model.parameters()):,}")
+    print(f"  cann_local_lm params: {sum(p.numel() for p in model.parameters()):,}")
     print(
         f"  Layers: {config.num_hidden_layers} (shared: {getattr(config, 'num_kv_shared_layers', 0)})"
     )

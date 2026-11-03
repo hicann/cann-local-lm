@@ -322,7 +322,7 @@ if ple_enabled:
 
 ### embed_tokens_per_layer 查表(→ per_layer_token_identity)
 
-轻量化工具不专门量化 `embed_tokens_per_layer` 查表(只作 `get_per_layer_inputs` 输入,float)→ cann_lm `per_layer_token_identity` 也 float(无 scale)。
+轻量化工具不专门量化 `embed_tokens_per_layer` 查表(只作 `get_per_layer_inputs` 输入,float)→ cann_local_lm `per_layer_token_identity` 也 float(无 scale)。
 
 ### 轻量化工具 gemma4 量化汇总
 
@@ -331,9 +331,9 @@ if ple_enabled:
 | `embed_tokens`(Gemma4TextScaledWordEmbedding) | QGemma4ScaledEmbedding(int8 + embed_scale) | ✅(weight scale + embed_scale) |
 | `per_layer_model_projection`(PLE projection Linear) | GPTQ int4 | ✅(group_size/scale) |
 | `embed_tokens_per_layer`(PLE 查表) | 不专门量化(只作 `get_per_layer_inputs` 输入,float) | ❌(float 查表) |
-| **per_layer_token_identity**(cann_lm) | `embed_tokens_per_layer(input_ids)` float 查表 | ❌(无 scale) |
+| **per_layer_token_identity**(cann_local_lm) | `embed_tokens_per_layer(input_ids)` float 查表 | ❌(无 scale) |
 
-**轻量化工具量化的是 `per_layer_model_projection`(projection Linear,int4),不是 `embed_tokens_per_layer`(查表 Embedding)**。`embed_tokens_per_layer` 在轻量化工具里只作 `get_per_layer_inputs` 的查表输入(float),不量化 → cann_lm 的 `per_layer_token_identity`(= embed_tokens_per_layer 查表)也无 scale(float)。
+**轻量化工具量化的是 `per_layer_model_projection`(projection Linear,int4),不是 `embed_tokens_per_layer`(查表 Embedding)**。`embed_tokens_per_layer` 在轻量化工具里只作 `get_per_layer_inputs` 的查表输入(float),不量化 → cann_local_lm 的 `per_layer_token_identity`(= embed_tokens_per_layer 查表)也无 scale(float)。
 
 ---
 
@@ -414,5 +414,5 @@ output_dir/
 ## 关联
 
 - 设计文档:[export_design.md](./export/export_design.md)「纯 embeddings 模式」「saver」「host_weights 机制」
-- 代码:`cann_lm/converter/saver.py`、`cann_lm/models/export_wrapper.py`、`cann_lm/converter/swap.py`(`swap_embeddings_from_dopt`)、`cann_lm/models/gemma4/export_wrapper.py`
-- 轻量化工具:`cann_lm/converter/quant/dopt_lm/do_opt.py`、`modules/qembed.py`、`opt_funcs/weight_quant_ptq/ptq_algo_hessian/ptq_loop.py`
+- 代码:`cann_local_lm/converter/saver.py`、`cann_local_lm/models/export_wrapper.py`、`cann_local_lm/converter/swap.py`(`swap_embeddings_from_dopt`)、`cann_local_lm/models/gemma4/export_wrapper.py`
+- 轻量化工具:`cann_local_lm/converter/quant/dopt_lm/do_opt.py`、`modules/qembed.py`、`opt_funcs/weight_quant_ptq/ptq_algo_hessian/ptq_loop.py`

@@ -1,8 +1,8 @@
-"""Tests for the cann_lm.generate CLI's pure logic + arg wiring + cli dispatch.
+"""Tests for the cann_local_lm.generate CLI's pure logic + arg wiring + cli dispatch.
 
 The actual generate call needs the engine .so (run on device via
-`cann_lm generate --config ... --prompt ...` or the standalone `cann_lm.generate`).
-Here we test resolve_request + add_args + the cann_lm subcommand dispatch —
+`cann_local_lm generate --config ... --prompt ...` or the standalone `cann_local_lm.generate`).
+Here we test resolve_request + add_args + the cann_local_lm subcommand dispatch —
 pure, no .so.
 """
 
@@ -10,8 +10,8 @@ import argparse
 import os
 
 from bbit import load_config
-from cann_lm.generate import add_args, resolve_request, run
-from cann_lm.config import print_resolved_paths
+from cann_local_lm.generate import add_args, resolve_request, run
+from cann_local_lm.config import print_resolved_paths
 
 # bbit 测试用例随 9a4640c 布局重构从 tests/bbit/ 迁至 examples/bbit/;后续加 test_engine 层区分 engine 用例。
 BBIT_DIR = os.path.normpath(
@@ -103,22 +103,22 @@ class TestGateSurfacesLoadError:
     that hides the fix."""
 
     def test_missing_dep_reason_surfaced(self, monkeypatch, capsys):
-        import cann_lm
+        import cann_local_lm
 
         # pretend load_config succeeds (cfg content irrelevant — gate fires next)
         monkeypatch.setattr(
-            "cann_lm.generate.load_config", lambda c: {"sentences": [{}]}
+            "cann_local_lm.generate.load_config", lambda c: {"sentences": [{}]}
         )
 
         # pretend the .so is found but its deps are missing (the device failure)
         def boom(lib_path=None):
-            raise cann_lm.CannLmError(
+            raise cann_local_lm.CannLmError(
                 "libcann_lm_engine.so could not be loaded.\n"
                 "Found but CDLL failed (likely missing runtime deps or wrong arch):\n"
                 "  /storage/x/libcann_lm_engine.so: libhiai_ascendcl.so: cannot open shared object file"
             )
 
-        monkeypatch.setattr(cann_lm, "get_library", boom)
+        monkeypatch.setattr(cann_local_lm, "get_library", boom)
         args = argparse.Namespace(
             config="ignored.json",
             prompt="hi",
@@ -134,7 +134,7 @@ class TestGateSurfacesLoadError:
 
 
 class TestShowPaths:
-    """`cann_lm generate --config x --show-paths` prints each resolved config
+    """`cann_local_lm generate --config x --show-paths` prints each resolved config
     path + its on-disk existence, then exits (no .so, no Engine). For the
     'I set the paths but the engine says meta_json unreadable' class of mismatch."""
 
@@ -169,14 +169,14 @@ class TestShowPaths:
     def test_show_paths_flag_exits_before_so_gate(self, monkeypatch, tmp_path, capsys):
         # --show-paths must NOT touch the .so: monkeypatch get_library to explode
         # if it's ever called; if the flag works, run() returns before the gate.
-        import cann_lm
+        import cann_local_lm
 
         def boom(*a, **k):
             raise AssertionError("--show-paths must not call get_library")
 
-        monkeypatch.setattr(cann_lm, "get_library", boom)
+        monkeypatch.setattr(cann_local_lm, "get_library", boom)
         cfg = self._cfg(tmp_path)
-        monkeypatch.setattr("cann_lm.generate.load_config", lambda c: cfg)
+        monkeypatch.setattr("cann_local_lm.generate.load_config", lambda c: cfg)
         args = argparse.Namespace(
             config="ignored.json",
             prompt=None,
@@ -209,7 +209,7 @@ class TestShowPaths:
             "decode_weight": str(files["wd"]),
             "sentences": [{}],
         }
-        monkeypatch.setattr("cann_lm.generate.load_config", lambda c: cfg)
+        monkeypatch.setattr("cann_local_lm.generate.load_config", lambda c: cfg)
         args = argparse.Namespace(
             config="x",
             prompt=None,

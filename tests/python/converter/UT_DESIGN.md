@@ -2,7 +2,7 @@
 
 ## 1. 文档信息
 
-- 被测对象：`cann_lm/converter/`（不含 `quant/dopt_lm/` 与 `quant/dopt_wrapper.py`，二者归 `tests/python/dopt_lm/`）
+- 被测对象：`cann_local_lm/converter/`（不含 `quant/dopt_lm/` 与 `quant/dopt_wrapper.py`，二者归 `tests/python/dopt_lm/`）
 - 测试归档目录：`tests/python/converter`
 - 测试框架：`pytest`
 - 基准环境：Python 3.11、converter venv（torch 2.9.0+cpu + torchair + torch-delegate，不装 `torch_npu`），`TORCH_DEVICE_BACKEND_AUTOLOAD=0`
@@ -10,7 +10,7 @@
 
 ## 2. 测试目标与范围
 
-本轮 UT 验证 `cann_lm/converter/` 中**可隔离的纯逻辑/解析/打包函数**：权重量化 materialize、epair 权重打包切分与 ep_json 后处理、loader 配置构造与 tokenizer 收集、swap 的 CANN 轻量化工具产物解析与 Linear/Embedding 替换、saver 配置落盘与文件复制、QuantLinear 构造、CLI argparse、weight_format 布局变换。测试必须满足以下原则：
+本轮 UT 验证 `cann_local_lm/converter/` 中**可隔离的纯逻辑/解析/打包函数**：权重量化 materialize、epair 权重打包切分与 ep_json 后处理、loader 配置构造与 tokenizer 收集、swap 的 CANN 轻量化工具产物解析与 Linear/Embedding 替换、saver 配置落盘与文件复制、QuantLinear 构造、CLI argparse、weight_format 布局变换。测试必须满足以下原则：
 
 1. 默认在 CPU 离线运行，`tmp_path` 造假 HF/轻量化工具产物，不下载 Hugging Face 模型或数据集。
 2. 数值算法使用小尺寸确定性 Tensor，验证数值、形状、dtype 与 `torch.equal`/`allclose` 精确重建。
@@ -265,7 +265,7 @@ TORCH_DEVICE_BACKEND_AUTOLOAD=0 /mnt/workspace/torch-delegate-harmony/.venv/bin/
 
 ```bash
 TORCH_DEVICE_BACKEND_AUTOLOAD=0 /mnt/workspace/torch-delegate-harmony/.venv/bin/python \
-  -m pytest tests/python/converter --cov=cann_lm/converter --cov-report=term-missing -q
+  -m pytest tests/python/converter --cov=cann_local_lm/converter --cov-report=term-missing -q
 ```
 
 ## 8. 准入与遗留风险
@@ -304,10 +304,10 @@ pytest exit code: 0
 
 ```bash
 TORCH_DEVICE_BACKEND_AUTOLOAD=0 /mnt/workspace/torch-delegate-harmony/.venv/bin/python \
-  -m pytest tests/python/converter --cov=cann_lm/converter --cov-report=term -q
+  -m pytest tests/python/converter --cov=cann_local_lm/converter --cov-report=term -q
 ```
 
-整体行覆盖率为 **44%（1239 statements，707 missed）**。覆盖率含 `cann_lm/converter/` 全量模块（含按设计归 e2e 的 torchair/GE/网络/NPU 模块，均为 0%）；可测纯逻辑模块覆盖情况：
+整体行覆盖率为 **44%（1239 statements，707 missed）**。覆盖率含 `cann_local_lm/converter/` 全量模块（含按设计归 e2e 的 torchair/GE/网络/NPU 模块，均为 0%）；可测纯逻辑模块覆盖情况：
 
 | 模块 | 行覆盖率 |
 |---|---:|

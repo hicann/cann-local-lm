@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CPU eager impl 单元测试 for cann_lm/models/fused_ops 自定义算子.
+"""CPU eager impl 单元测试 for cann_local_lm/models/fused_ops 自定义算子.
 
 覆盖每个算子的 CPU eager kernel (schema + fake/meta + impl, 在 converter venv
 无 torch_npu、无 stub LD_PRELOAD 下由 _library.py 注册). 测 shape + 基本数值正确性.
@@ -18,7 +18,7 @@ torch_npu dispatcher 报 NotImplementedError):
 import pytest
 import torch
 
-import cann_lm.models.fused_ops  # noqa: F401 — 触发 schema + fake + CPU impl 注册
+import cann_local_lm.models.fused_ops  # noqa: F401 — 触发 schema + fake + CPU impl 注册
 
 
 def _maybe_unwrap(x):
@@ -39,7 +39,7 @@ def test_npu_rms_norm(shape):
     gamma = torch.randn(shape[-1], dtype=torch.float32)
     eps = 1e-6
 
-    y, rstd = torch.ops.cann_lm.rms_norm(x, gamma, eps)
+    y, rstd = torch.ops.cann_local_lm.rms_norm(x, gamma, eps)
 
     assert y.shape == x.shape
     assert rstd.shape == x.shape[:-1] + (1,)
@@ -56,7 +56,7 @@ def test_npu_rms_norm_default_eps():
     x = torch.randn(3, 6, dtype=torch.float32)
     gamma = torch.randn(6, dtype=torch.float32)
 
-    y, rstd = torch.ops.cann_lm.rms_norm(x, gamma)
+    y, rstd = torch.ops.cann_local_lm.rms_norm(x, gamma)
 
     ms = x.pow(2).mean(-1, keepdim=True) + 1e-6
     expected = x * torch.rsqrt(ms) * gamma
@@ -77,7 +77,7 @@ def test_npu_rotary_mul_half(d):
     r1 = torch.randn(2, 4, d, dtype=torch.float32)
     r2 = torch.randn(2, 4, d, dtype=torch.float32)
 
-    out = torch.ops.cann_lm.rotary_mul(x, r1, r2, "half")
+    out = torch.ops.cann_local_lm.rotary_mul(x, r1, r2, "half")
 
     assert out.shape == x.shape
     x1 = x[..., : d // 2]
@@ -93,7 +93,7 @@ def test_npu_rotary_mul_default_mode():
     r1 = torch.randn(2, 8, dtype=torch.float32)
     r2 = torch.randn(2, 8, dtype=torch.float32)
 
-    out = torch.ops.cann_lm.rotary_mul(x, r1, r2)  # default "half"
+    out = torch.ops.cann_local_lm.rotary_mul(x, r1, r2)  # default "half"
 
     x1, x2 = x[..., :4], x[..., 4:]
     expected = (x * r1) + (torch.cat((-x2, x1), dim=-1) * r2)
@@ -101,7 +101,7 @@ def test_npu_rotary_mul_default_mode():
 
 
 # ---------------------------------------------------------------------------
-# 3. cann_lm::l2norm  (l2_norm.py)
+# 3. cann_local_lm::l2norm  (l2_norm.py)
 #    schema: l2norm(Tensor x, int dim=-1, float eps=1e-6) -> Tensor
 #    cpu: inv_norm = rsqrt((x*x).sum(dim, keepdim) + eps); return x * inv_norm
 # ---------------------------------------------------------------------------
@@ -110,7 +110,7 @@ def test_cann_lm_l2norm_unit_norm_and_values(dim):
     torch.manual_seed(0)
     x = torch.randn(3, 4, 5, dtype=torch.float32)
 
-    out = torch.ops.cann_lm.l2norm(x, dim=dim, eps=1e-6)
+    out = torch.ops.cann_local_lm.l2norm(x, dim=dim, eps=1e-6)
 
     assert out.shape == x.shape
     norm = (out * out).sum(dim=dim, keepdim=True).sqrt()
@@ -129,7 +129,7 @@ def test_npu_dynamic_quant_shape_dtype_and_roundtrip():
     torch.manual_seed(0)
     x = torch.randn(4, 16, dtype=torch.float32) * 3.0
 
-    y, scale = torch.ops.cann_lm.dynamic_quant(x)
+    y, scale = torch.ops.cann_local_lm.dynamic_quant(x)
 
     assert y.shape == x.shape
     assert y.dtype == torch.int8
@@ -162,7 +162,7 @@ def test_npu_scatter_nd_update_1d_indices():
     indices = torch.tensor([1, 3], dtype=torch.int64)
     updates = torch.randn(2, 3, 2, 4, dtype=torch.float32)
 
-    out = torch.ops.cann_lm.scatter_nd_update(cache, indices, updates)
+    out = torch.ops.cann_local_lm.scatter_nd_update(cache, indices, updates)
 
     assert out.shape == cache.shape
     expected = cache.clone()
@@ -182,7 +182,7 @@ def test_npu_scatter_nd_update_2d_indices():
     indices = torch.tensor([[0, 0, 1], [1, 2, 4]], dtype=torch.int64)  # [num, ndim]
     updates = torch.randn(2, 4, dtype=torch.float32)
 
-    out = torch.ops.cann_lm.scatter_nd_update(cache, indices, updates)
+    out = torch.ops.cann_local_lm.scatter_nd_update(cache, indices, updates)
 
     assert out.shape == cache.shape
     expected = cache.clone()
@@ -207,7 +207,7 @@ def test_npu_quant_matmul_group1_plain_matmul():
     x2 = torch.randn(K, N, dtype=torch.float32)
     scale = torch.ones(1, N, dtype=torch.float32)  # group=1 -> [1, N]
 
-    out = torch.ops.cann_lm.quant_matmul(
+    out = torch.ops.cann_local_lm.quant_matmul(
         x1,
         x2,
         scale,
@@ -231,7 +231,7 @@ def test_npu_quant_matmul_grouped_scale_and_bias():
     sc = torch.rand(K // group, N, dtype=torch.float32) + 0.1
     bias = torch.randn(N, dtype=torch.float32)
 
-    out = torch.ops.cann_lm.quant_matmul(
+    out = torch.ops.cann_local_lm.quant_matmul(
         x1, w, sc, bias=bias, group_sizes=[1, 1, group], output_dtype=6
     )
     out = _maybe_unwrap(out)
@@ -251,7 +251,7 @@ def test_npu_quant_matmul_pertoken_scale_dequant():
     scale = torch.ones(1, N, dtype=torch.float32)
     ps = torch.rand(M, 1, dtype=torch.float32) + 0.5  # [M, 1] per-token scale
 
-    out = torch.ops.cann_lm.quant_matmul(
+    out = torch.ops.cann_local_lm.quant_matmul(
         x1, x2, scale, pertoken_scale=ps, group_sizes=[1, 1, 1], output_dtype=6
     )
     out = _maybe_unwrap(out)
@@ -268,8 +268,8 @@ def test_npu_quant_matmul_pertoken_scale_dequant():
 
 # ---------------------------------------------------------------------------
 # 7. npu::npu_chunk_gated_delta_rule  (chunk_gated_delta_rule.py)
-#    Note: 仓内实际注册在 npu 命名空间带 npu_ 前缀 (非 cann_lm::), 故调用
-#    torch.ops.cann_lm.chunk_gated_delta_rule.
+#    Note: 仓内实际注册在 npu 命名空间带 npu_ 前缀 (非 cann_local_lm::), 故调用
+#    torch.ops.cann_local_lm.chunk_gated_delta_rule.
 #    schema: npu_chunk_gated_delta_rule(Tensor query, Tensor key, Tensor value,
 #               *, Tensor? beta, Tensor? initial_state, Tensor? actual_seq_lengths,
 #               float? scale, Tensor? g) -> (Tensor out, Tensor final_state)
@@ -287,7 +287,7 @@ def test_npu_chunk_gated_delta_rule_shape_finite():
     init_state = torch.zeros(B, Nv, Dv, Dk, dtype=torch.float32)
     actual_seq = torch.tensor([T], dtype=torch.int32)
 
-    out, final_state = torch.ops.cann_lm.chunk_gated_delta_rule(
+    out, final_state = torch.ops.cann_local_lm.chunk_gated_delta_rule(
         q,
         k,
         v,
@@ -321,7 +321,7 @@ def test_npu_fused_infer_attention_score_v2_bnsd_full():
     v = torch.randn(b, h, s, d, dtype=torch.float32)
     scale = 0.25
 
-    out, lse = torch.ops.cann_lm.fused_infer_attention_score_v2(
+    out, lse = torch.ops.cann_local_lm.fused_infer_attention_score_v2(
         q,
         k,
         v,
@@ -343,7 +343,7 @@ def test_npu_fused_infer_attention_score_v2_bnsd_full():
 def test_npu_fused_infer_attention_score_v2_causal_shape_finite():
     # sparse_mode=3 (causal): CPU impl _build_sparse_mask unpacks
     # `b,n,s_q,s_k = q.shape` 但 BNSD 下 q=[b,n,s,d] 使 s_k=d, s_q!=s_k 命中
-    # early-return None -> causal mask 被跳过. 乃 cann_lm CPU impl 限制 (不修改
+    # early-return None -> causal mask 被跳过. 乃 cann_local_lm CPU impl 限制 (不修改
     # 主仓), 此处仅校验 shape + 有限值, 不做数值对齐.
     torch.manual_seed(0)
     b, h, s, d = 2, 4, 8, 16
@@ -351,7 +351,7 @@ def test_npu_fused_infer_attention_score_v2_causal_shape_finite():
     k = torch.randn(b, h, s, d, dtype=torch.float32)
     v = torch.randn(b, h, s, d, dtype=torch.float32)
 
-    out, lse = torch.ops.cann_lm.fused_infer_attention_score_v2(
+    out, lse = torch.ops.cann_local_lm.fused_infer_attention_score_v2(
         q,
         k,
         v,
@@ -375,7 +375,7 @@ def test_npu_fused_infer_attention_score_v2_gqa_bsh():
     k = torch.randn(b, s, nkv * d, dtype=torch.float32)
     v = torch.randn(b, s, nkv * d, dtype=torch.float32)
 
-    out, lse = torch.ops.cann_lm.fused_infer_attention_score_v2(
+    out, lse = torch.ops.cann_local_lm.fused_infer_attention_score_v2(
         q,
         k,
         v,
@@ -400,7 +400,7 @@ def test_npu_fused_infer_attention_score_v2_extern_mask():
     # bool mask: True = mask out (-inf); shape [b,1,s,s]
     mask = torch.triu(torch.ones(s, s, dtype=torch.bool), diagonal=1).view(b, 1, s, s)
 
-    out, _ = torch.ops.cann_lm.fused_infer_attention_score_v2(
+    out, _ = torch.ops.cann_local_lm.fused_infer_attention_score_v2(
         q,
         k,
         v,
@@ -431,7 +431,7 @@ def test_fa_v2_sparse_mode3_causal_square():
     v = torch.randn(b, h, s, s, dtype=torch.float32)
     scale = 0.5
 
-    out, lse = torch.ops.cann_lm.fused_infer_attention_score_v2(
+    out, lse = torch.ops.cann_local_lm.fused_infer_attention_score_v2(
         q,
         k,
         v,
@@ -463,7 +463,7 @@ def test_fa_v2_sparse_mode4_sliding_square():
     v = torch.randn(b, h, s, s, dtype=torch.float32)
     scale = 0.4
 
-    out, _ = torch.ops.cann_lm.fused_infer_attention_score_v2(
+    out, _ = torch.ops.cann_local_lm.fused_infer_attention_score_v2(
         q,
         k,
         v,
@@ -498,7 +498,7 @@ def test_fa_v2_tnd_layout():
     v = torch.randn(t, n, d, dtype=torch.float32)
     scale = 0.5
 
-    out, lse = torch.ops.cann_lm.fused_infer_attention_score_v2(
+    out, lse = torch.ops.cann_local_lm.fused_infer_attention_score_v2(
         q,
         k,
         v,
@@ -527,7 +527,7 @@ def test_fa_v2_bsnd_layout():
     v = torch.randn(b, s, n, d, dtype=torch.float32)
     scale = 0.3
 
-    out, _ = torch.ops.cann_lm.fused_infer_attention_score_v2(
+    out, _ = torch.ops.cann_local_lm.fused_infer_attention_score_v2(
         q,
         k,
         v,
@@ -556,7 +556,7 @@ def test_fa_v2_default_kv_heads_equals_query_heads():
     scale = 0.25
 
     # omit num_key_value_heads -> default 0 -> line 78 sets it to num_query_heads
-    out, _ = torch.ops.cann_lm.fused_infer_attention_score_v2(
+    out, _ = torch.ops.cann_local_lm.fused_infer_attention_score_v2(
         q,
         k,
         v,
@@ -590,7 +590,7 @@ def test_fa_v2_float_non_square_extern_mask_sliced():
     mask = torch.where(causal, 0.0, min_val).view(b, 1, kv_max, kv_max)
     scale = 0.5
 
-    out, _ = torch.ops.cann_lm.fused_infer_attention_score_v2(
+    out, _ = torch.ops.cann_local_lm.fused_infer_attention_score_v2(
         q,
         k,
         v,
@@ -620,7 +620,7 @@ def test_fa_v2_unknown_sparse_mode_returns_no_mask():
     v = torch.randn(b, h, s, s, dtype=torch.float32)
     scale = 0.5
 
-    out, _ = torch.ops.cann_lm.fused_infer_attention_score_v2(
+    out, _ = torch.ops.cann_local_lm.fused_infer_attention_score_v2(
         q,
         k,
         v,

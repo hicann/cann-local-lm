@@ -4,7 +4,7 @@ English | [简体中文](../../../zh/cann_lm_engine/model_executor/SPEC.md)
 
 ## Chapter 1 Overview
 
-This spec defines the business behavior of the C++ ModelExecutor module under `cann_lm/engine/core/model_executor`. This module provides CANN-LM inference engine with **single-step forward execution (forward shell)** and **KV Cache ringBuffer cursor management**, **input filling**, **model load-unload/LoRA control** capabilities, located between `pipelineExecutor` (above) and `ModelManager` (below, backend specific implementation), `TensorManager` (tensor memory). prefill and decode are two instances of this module respectively (each bound to one om offline compiled graph), the two share the same KV Cache pool, zero-copy. This module is an internal C++ component of engine, only consumed by `pipelineExecutor`, **does not expose** any cross-language or external interfaces.
+This spec defines the business behavior of the C++ ModelExecutor module under `cann_local_lm/engine/core/model_executor`. This module provides CANN-LM inference engine with **single-step forward execution (forward shell)** and **KV Cache ringBuffer cursor management**, **input filling**, **model load-unload/LoRA control** capabilities, located between `pipelineExecutor` (above) and `ModelManager` (below, backend specific implementation), `TensorManager` (tensor memory). prefill and decode are two instances of this module respectively (each bound to one om offline compiled graph), the two share the same KV Cache pool, zero-copy. This module is an internal C++ component of engine, only consumed by `pipelineExecutor`, **does not expose** any cross-language or external interfaces.
 
 Requirement ID: **SR20260807001**. Software layer: **framework** (engine core reusable library, includes backward compatibility chapter).
 
@@ -53,7 +53,7 @@ Reader should understand within 30 seconds: this spec defines the behavior contr
 
 ### 3.1 Current State
 
-Each model inference under `cann_lm/models` depends on external Python implementation. C++ inference path lacks a unified "forward shell + KV management + load-unload control" component. pipeline DESIGN (`docs/pipeline+engine_executor`) defines L2 `M-04 ModelExecutor` as forward shell, L3 `C-04 IModelManager` as underlying runtime contract, but marks KV maintenance as "sink to lower layer C5", limits M-04 to "forward only", and advocates Continuous Batching "no padding".
+Each model inference under `cann_local_lm/models` depends on external Python implementation. C++ inference path lacks a unified "forward shell + KV management + load-unload control" component. pipeline DESIGN (`docs/pipeline+engine_executor`) defines L2 `M-04 ModelExecutor` as forward shell, L3 `C-04 IModelManager` as underlying runtime contract, but marks KV maintenance as "sink to lower layer C5", limits M-04 to "forward only", and advocates Continuous Batching "no padding".
 
 ### 3.2 Problems
 
@@ -255,7 +255,7 @@ Self-check: each item measurable/verifiable; open issues registered at end of do
   - `IBuiltModel`: same level L3 as `IModelManager`; created via `BuildModelFromFile/FromBuffer()` (link-time, backend determined at compile time) (BuildModelFromFile/FromBuffer already includes loading+compilation), `GetInputDescs/GetOutputDescs` exposes om graph I/O descriptions. `ModelHandle` (removed in v0.7) replaced by it.
   - `TensorManager` (v0.8, concrete singleton): `Instance()` singleton access; `CreateTensor(TensorDesc, modelId)` applies input/output tensor by desc + modelId (RAII release). ModelExecutor after Load (Init + `GetModelID + InitWeights(weight) (graph and weight separation: Init only loads graph structure, weights loaded separately via InitWeights; path mode passes weight path, buffer mode pending backend API extension)`) applies to it for tensors by built descs.
   - `embedding module (C-02 ITextEmbedding)`: embedding table loaded by `pipelineExecutor` calling this module and bound to model; this module's tokenId path uses that table for lookup via model internal (om graph).
-  - `cann_lm/models/*`: weights and om artifact sources; behavior alignment uses om graph + weights as oracle.
+  - `cann_local_lm/models/*`: weights and om artifact sources; behavior alignment uses om graph + weights as oracle.
 - **Explicitly not dependent on**: tokenizer (belongs to C-01), sampling (belongs to C-03); embedding path upstream lookup belongs to pipeline M-06/C-02, tokenId path lookup is inside model, this module does not re-implement lookup, does not load/own embedding table (embedding table loading is embedding module's responsibility via `pipelineExecutor`, not `ModelManager`).
 - Self-check: no implicit dependencies omitted — `CreateModelManager()` link symbol (build-time guarantee link selected backend library) + `TensorManager` must be ready otherwise this module cannot instantiate (`ModelManager` instance itself is created by this module at Load time, not pre-existing); tokenId path prerequisite requires embedding module loaded and bound embedding table; decode must `LoadModel` before prefill to size shared KV pool.
 

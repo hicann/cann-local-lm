@@ -54,7 +54,7 @@ export LD_LIBRARY_PATH=/opt/buildtools/python-3.12.9/lib:$PROJECT_ROOT/build_kx:
 #   sitecustomize.py 内容: import sys; [sys.modules.__setitem__(m, None) for m in ('torch_npu','torch','torchair','torch_delegate')]
 #   PYTHONPATH 前置含 sitecustomize.py 的目录; GE 嵌入 libpython 加载 site 时阻止 torch_npu 被 import
 export PYTHONPATH="<sitecustomize_dir>:${PYTHONPATH:-}"
-# ASAN build (定位堆损坏用, D 节): cann_lm_compile 编到 build_kx_asan/, GE lib 未插桩但 cann_lm 代码插桩
+# ASAN build (定位堆损坏用, D 节): cann_lm_compile 编到 build_kx_asan/, GE lib 未插桩但 cann_local_lm 代码插桩
 #   cmake -S $PROJECT_ROOT -B build_kx_asan -DASCEND_INSTALL_PATH=<cann-kirinx90>/aarch64-linux -DENABLE_ASAN=ON ...
 # cd 到输出目录跑（onlinec→.omc rename 同目录同设备，见 A6）
 ```
@@ -307,7 +307,7 @@ python -c "import json; g=json.load(open('/tmp/opencode/tap.json'))['graph'][0];
 
 跑 `gen_golden_with_dump.py` 生成 golden（`out/golden_<model>/`，含 `node_<name>.bin` 逐 FX node 输出）→ 用 `--tap` 编译同名中间值进 OM → 跑 OM 拿 tapped output → `np.fromfile` 读两边 `.bin` 比 maxdiff。tap 名直接取 golden 目录下 `node_*.bin` 的文件名（去掉 `node_` 前缀和 `.bin` 后缀），即 FX node name，一一对应。
 
-> `--tap` 的完整实现见 `cann_lm/converter/export/csrc/`：`tools/compile_main.cc`（CLI 解析 + `SplitTapList`）、`backend/ge_graph_builder.cc`（`FinalizeGraph` tap 解析循环）、`inc/external/torch_delegate/epair_model_loader.h`（3 参构造重载）。`csrc/tools/README.md` 有 cann_lm_compile 的完整选项（环境变量、权值分离、`.air` 保存等）。
+> `--tap` 的完整实现见 `cann_local_lm/converter/export/csrc/`：`tools/compile_main.cc`（CLI 解析 + `SplitTapList`）、`backend/ge_graph_builder.cc`（`FinalizeGraph` tap 解析循环）、`inc/external/torch_delegate/epair_model_loader.h`（3 参构造重载）。`csrc/tools/README.md` 有 cann_lm_compile 的完整选项（环境变量、权值分离、`.air` 保存等）。
 
 ## 规避清单
 
@@ -339,7 +339,7 @@ python -c "import json; g=json.load(open('/tmp/opencode/tap.json'))['graph'][0];
 
 ### B.2 Kirin converter patches 机制（真实模型层规避）
 
-> 当 `--target-soc` 是 Kirin 系列（`KirinX90` 等）时，`cann_lm/converter/export/ge_converters/ge_converter.py` 通过 `active_config().target_soc`（由 saver 经 `lite_export_context(LiteConfig(target_soc=...))` 注入）检测到 Kirin soc，加载 `_kirinx90_converter_patches.py`；`KIRINX90_CONVERTER_PATCHES=1` 可作 force-on 覆盖（向后兼容）。在 `register_ge_converters()` 之后 `register_kirinx90_patches()` 覆盖（last-write-wins）6 类算子 converter：
+> 当 `--target-soc` 是 Kirin 系列（`KirinX90` 等）时，`cann_local_lm/converter/export/ge_converters/ge_converter.py` 通过 `active_config().target_soc`（由 saver 经 `lite_export_context(LiteConfig(target_soc=...))` 注入）检测到 Kirin soc，加载 `_kirinx90_converter_patches.py`；`KIRINX90_CONVERTER_PATCHES=1` 可作 force-on 覆盖（向后兼容）。在 `register_ge_converters()` 之后 `register_kirinx90_patches()` 覆盖（last-write-wins）6 类算子 converter：
 > 1. `aten.mm`/`matmul`/`bmm` → `MatMulV3`/`BatchMatMulV3`（kirinx90 aicore 只 V3，无 plain MatMul）
 > 2. `npu_rotary_mul` → `RotaryPositionEmbedding`（kirinx90 有此算子，走 arch35）
 > 3. `aten.mul`（标量 `Muls`）→ `Mul`（标量转 `Const` tensor）
@@ -349,7 +349,7 @@ python -c "import json; g=json.load(open('/tmp/opencode/tap.json'))['graph'][0];
 
 | # | 卡点 | 规避 | 落点 |
 |---|---|---|---|
-| B4 | **`cat→ConcatD` apt 编译失败**：`concat_d_apt.py:216` 硬编码 `ascendc_src_file="arch31/concat_d.cpp"`，kernel 用 `KERNEL_TYPE_AIV_ONLY`（`arch31/concat_d.cpp:17`）。`compile_op`→`KernelInfoInfer.get_kernel_type_enum("AIV_ONLY")`（`asc_op_compile_base/asc_op_compiler/kernel_info_infer.py:195`）走 **else 分支 `raise Exception("...not support in current core version")`**——因为 kirinx90 的 soc（`KirinX90`）不在 `is_v200`/`is_v220`/`is_c310` 白名单（`ascendc_common_utility.py`：`is_v200` 只认 `Ascend310P/610`，`is_v220` 只认 `Ascend910B/910_93`，`is_c310` 只认 `Ascend950/350`），三者皆 False → else 抛异常 → `opRes.result=exception` → `second gen tbe op_info not found` → `BuildSingleOp ConcatD failed`。**注意**：① 不是 int32 不支持（ConcatD op_info dtype 含 int32、`concat_d_apt.py` DTYPE_MAP 有 int32、kernel 按字节 copy 不依赖 dtype）；② 不是 arch31/arch32 不匹配（`get_kernel_type_enum` 在 ccec 编译前抛异常，与 arch 无关）；③ `GatherV2` 也是 `AIV_ONLY` 但 GE 编译成功（走不同路径未触发 `get_kernel_type_enum`，待复测）；④ 源码注释 `KERNEL_TYPE_AIV_ONLY`（`conversion/concat_d/op_kernel/arch31/concat_d.cpp` 未提交改动）可过 `get_kernel_type_enum`，但**引入新错误**——tiling info 缺 `_pattern` + `dsl_compile_info is nullptr`（`TilingPrepare4ConcatD`），注释非完整修复。触发场景：gemma4 真实层 KV cache scatter indices 构建（`modeling_gemma4.py:68` `torch.cat([col_b,col_n,col_pos],dim=0)`，int32，K/V cache 各一次） | ⚠️ **不能 fallback `cat→ConcatV2`（落 aicpu）——kirinx90 不支持 AICPU（见背景硬约束）**。正确方向：scatter indices 的 int32 cat 是**坐标拼接**，不进 aicore 计算——在 converter 阶段把 indices 常量化/固定（K/V cache scatter 的 b/n/pos 坐标在 seq_len 固定时可预算），或用 host 侧（`DNN_VM_GE_LOCAL`/RTS）算子替代，**不留 aicpu 算子在图里** | `cann_lm/converter/export/ge_converters/_kirinx90_converter_patches.py::_kirinx90_aten_cat` + `cann_lm/models/gemma4/modeling_gemma4.py::_scatter_kv_cache` |
+| B4 | **`cat→ConcatD` apt 编译失败**：`concat_d_apt.py:216` 硬编码 `ascendc_src_file="arch31/concat_d.cpp"`，kernel 用 `KERNEL_TYPE_AIV_ONLY`（`arch31/concat_d.cpp:17`）。`compile_op`→`KernelInfoInfer.get_kernel_type_enum("AIV_ONLY")`（`asc_op_compile_base/asc_op_compiler/kernel_info_infer.py:195`）走 **else 分支 `raise Exception("...not support in current core version")`**——因为 kirinx90 的 soc（`KirinX90`）不在 `is_v200`/`is_v220`/`is_c310` 白名单（`ascendc_common_utility.py`：`is_v200` 只认 `Ascend310P/610`，`is_v220` 只认 `Ascend910B/910_93`，`is_c310` 只认 `Ascend950/350`），三者皆 False → else 抛异常 → `opRes.result=exception` → `second gen tbe op_info not found` → `BuildSingleOp ConcatD failed`。**注意**：① 不是 int32 不支持（ConcatD op_info dtype 含 int32、`concat_d_apt.py` DTYPE_MAP 有 int32、kernel 按字节 copy 不依赖 dtype）；② 不是 arch31/arch32 不匹配（`get_kernel_type_enum` 在 ccec 编译前抛异常，与 arch 无关）；③ `GatherV2` 也是 `AIV_ONLY` 但 GE 编译成功（走不同路径未触发 `get_kernel_type_enum`，待复测）；④ 源码注释 `KERNEL_TYPE_AIV_ONLY`（`conversion/concat_d/op_kernel/arch31/concat_d.cpp` 未提交改动）可过 `get_kernel_type_enum`，但**引入新错误**——tiling info 缺 `_pattern` + `dsl_compile_info is nullptr`（`TilingPrepare4ConcatD`），注释非完整修复。触发场景：gemma4 真实层 KV cache scatter indices 构建（`modeling_gemma4.py:68` `torch.cat([col_b,col_n,col_pos],dim=0)`，int32，K/V cache 各一次） | ⚠️ **不能 fallback `cat→ConcatV2`（落 aicpu）——kirinx90 不支持 AICPU（见背景硬约束）**。正确方向：scatter indices 的 int32 cat 是**坐标拼接**，不进 aicore 计算——在 converter 阶段把 indices 常量化/固定（K/V cache scatter 的 b/n/pos 坐标在 seq_len 固定时可预算），或用 host 侧（`DNN_VM_GE_LOCAL`/RTS）算子替代，**不留 aicpu 算子在图里** | `cann_local_lm/converter/export/ge_converters/_kirinx90_converter_patches.py::_kirinx90_aten_cat` + `cann_local_lm/models/gemma4/modeling_gemma4.py::_scatter_kv_cache` |
 
 ### C. 产物层（.omc 其实已生成）
 
@@ -361,7 +361,7 @@ python -c "import json; g=json.load(open('/tmp/opencode/tap.json'))['graph'][0];
 
 - `--asan` 重建 `cann_lm_compile`（针对 cann-kirinx90，`build_kx_asan/`）：确认非我方堆损坏——无 ASAN 报错，`model.length` 由垃圾值（~2^48 指针）变 sane（6778732）；定位到 `model.data null` 是 mobile 路径行为，非内存损坏。
 - debug 日志 `ASCEND_GLOBAL_LOG_LEVEL=0`：定位到 `mobile_model_helper.cc::SaveToOmModel → model_file_saver.cc::SaveCompiledModelToFile output_model_file: onlinec`。
-- **ASAN + sitecustomize 定位 torch_npu 双重 GE（A7）+ 揭示 B4**：非 ASAN build + 系统 python 直接崩 `corrupted size vs. prev_size`（A7 堆损坏），崩点非确定（BuildInitialize/BuildModel/Finalize 随堆布局变），无法定位真正错误。**关键三步**：① `sitecustomize.py` 设 `sys.modules['torch_npu']=None` 屏蔽 torch_npu（消除 A7 堆损坏）；② ASAN build（`build_kx_asan`，`-DENABLE_ASAN=ON`）改变内存布局使 glibc 不再 crash（GE lib 未插桩但 cann_lm 代码插桩，exit 255 非 crash）；③ `ASCEND_GLOBAL_LOG_LEVEL=0` SLOG 重定向后 grep ERROR 定位到 `get_kernel_type_enum`/`Cannot find engine`/`failed to recompile` 等真正编译错误（B4 的 `AIV_ONLY not support` 即此法定位）。
+- **ASAN + sitecustomize 定位 torch_npu 双重 GE（A7）+ 揭示 B4**：非 ASAN build + 系统 python 直接崩 `corrupted size vs. prev_size`（A7 堆损坏），崩点非确定（BuildInitialize/BuildModel/Finalize 随堆布局变），无法定位真正错误。**关键三步**：① `sitecustomize.py` 设 `sys.modules['torch_npu']=None` 屏蔽 torch_npu（消除 A7 堆损坏）；② ASAN build（`build_kx_asan`，`-DENABLE_ASAN=ON`）改变内存布局使 glibc 不再 crash（GE lib 未插桩但 cann_local_lm 代码插桩，exit 255 非 crash）；③ `ASCEND_GLOBAL_LOG_LEVEL=0` SLOG 重定向后 grep ERROR 定位到 `get_kernel_type_enum`/`Cannot find engine`/`failed to recompile` 等真正编译错误（B4 的 `AIV_ONLY not support` 即此法定位）。
 - **手动调 apt compile_op 复现单算子**：`python3 -c "from impl.ops_math.dynamic import concat_d_apt; concat_d_apt.concat_d(...)"`（PYTHONPATH 含 cann-kirinx90 python site-packages + tbe opp），直接看 `compile_op` 抛的 Exception（B4 的 `current kernel type: KERNEL_TYPE_AIV_ONLY is not support in current core version`），比 GE 全流程快且无 A7 干扰。
 
 ## 验证
@@ -502,7 +502,7 @@ export LD_LIBRARY_PATH="/opt/buildtools/python-3.12.9/lib:${LD_LIBRARY_PATH:-}"
 ### 导出
 
 ```bash
-$CONVERTER_PYTHON cann_lm/converter/cann_lm_converter.py \
+$CONVERTER_PYTHON cann_local_lm/converter/cann_lm_converter.py \
   --hf-path <gemma-4-E2B-it> --output-dir <out> \
   --mode prefill-decode --seq-len 128 --num-layers <N> \
   --target-soc KirinX90
@@ -592,13 +592,13 @@ bash /mnt/workspace/gitCode/cann/ge/build_out/cann-ge-executor_9.2.0_linux-aarch
 
 | # | 项 | 位置 | 状态 |
 |---|---|---|---|
-| T1 | `compile_main.cc` 适配 mobile 路径：BuildModel 后检测 `onlinec` → 改名 `{output_name}.omc`（Kirin SOC）/`.om`（否则），跳过多余的 `aclgrphSaveModel`，消除红鲱鱼报错 + 自动正确命名 | `cann_lm/converter/export/csrc/tools/compile_main.cc` | ✅ 已落地（`All 3 stages passed`，直接出 `kirin_ops_kirinx90.omc`，无 `onlinec` 残留） |
+| T1 | `compile_main.cc` 适配 mobile 路径：BuildModel 后检测 `onlinec` → 改名 `{output_name}.omc`（Kirin SOC）/`.om`（否则），跳过多余的 `aclgrphSaveModel`，消除红鲱鱼报错 + 自动正确命名 | `cann_local_lm/converter/export/csrc/tools/compile_main.cc` | ✅ 已落地（`All 3 stages passed`，直接出 `kirin_ops_kirinx90.omc`，无 `onlinec` 残留） |
 | T2 | ops-nn 构建补 l2_normalize 正向 apt 入口打包（`norm/l2_norm` 加 `gelu_src_copy` 同款 CMake target），彻底替代手写 wrapper | `/mnt/workspace/gitCode/ops-nn`（外部仓） | ✅ 已落地（源仓 `norm/l2_normalize` 含正向 apt 入口；`build.sh --pkg --soc=kirinx90` 产出的 `.run` 含 `impl/ops_nn/dynamic/l2_normalize.py`(9688B，md5 与 B3 手写 wrapper 一致)+ kernel `L2Normalize_1_high_performance.o` + `kernel/config/kirinx90/ops_nn/l2_normalize.json`；`--upgrade` 装回后 ops-info-nn.json 含 L2Normalize。2026-09-17 验证，见「算子包源码构建」章节） |
-| T3 | network 的 `Muls→Mul`、`kv_cache 作输入`、scatter converter monkeypatch 固化为 kirinx90-target 正式改动（或 converter 层按 SOC 条件不发 TensorMove） | `examples/.../kirin_ops_net.py` + `cann_lm/converter/export/ge_converters/_scatter_nd_update_converter.py` | ⬜ 待办 |
+| T3 | network 的 `Muls→Mul`、`kv_cache 作输入`、scatter converter monkeypatch 固化为 kirinx90-target 正式改动（或 converter 层按 SOC 条件不发 TensorMove） | `examples/.../kirin_ops_net.py` + `cann_local_lm/converter/export/ge_converters/_scatter_nd_update_converter.py` | ⬜ 待办 |
 | T4 | 确认 Gelu/L2Normalize 以外的 6 算子 kernel 在 kirinx90 上无 tvm-CCE 类残留问题（均已编过，留复测） | — | ⬜ 待办 |
 | T5 | 把 MatMul/BatchMatMul 挪回 aicore：monkeypatch `aten.mm`/`aten.bmm` converter，用 `torchair.ge.custom_op("MatMulV3"/"BatchMatMulV3",...)` 手建 V3 节点（须先验 converter stub 环境 `get_registered_ir_def("MatMulV3")` 放行）；SoftmaxV2→`MaskedSoftmaxWithRelPosBias`（可调用，需 rel_pos_bias） | `examples/.../kirin_ops_net.py` + `compile_to_epair` | ✅ MatMulV3 已落地——Kirin converter patches 机制（`--target-soc KirinX90` 触发；`_kirinx90_converter_patches.py::_matmul_v3` 用 `ge_op("MatMulV3",...)` 覆盖 `aten.mm`/`matmul`，last-write-wins），2026-09-17 simple_network e2e 验证：ep_json 3× MatMulV3/0× plain MatMul，.omc aicore 零 aicpu；⬜ SoftmaxV2→`MaskedSoftmaxWithRelPosBias` 仍未做（simple_network 未含 softmax，待真实模型层验证） |
-| T6 | 权重分离：`compile_main.cc` 设 `ge.externalWeightDir`（走 init_options 非 build_options）→ =2 出权重分离 .omc（.omc + `weight/delegate_graph_weight_combined` + meta.json） | `cann_lm/converter/export/csrc/tools/compile_main.cc` | ✅ 已落地（=2 验证有效；=1 仍失败 per-file 不支持） |
-| T7 | ~~`cat→ConcatV2`（落 aicpu）~~ **方案废弃**——kirinx90 不支持 AICPU（见背景硬约束），ConcatV2 落 aicpu 同样失败。正确方向：scatter indices 的 int32 cat（`modeling_gemma4.py:68` `[col_b,col_n,col_pos]`）是坐标拼接不进 aicore，在 converter 阶段常量化（seq_len 固定时 b/n/pos 可预算）或用 host 侧算子，不留 aicpu 算子。B4 根因（`get_kernel_type_enum` AIV_ONLY + kirinx90 不在白名单；注释 KERNEL_TYPE 引入 tiling `_pattern`/`dsl_compile_info` 缺失）说明 concat_d apt 本身在 kirinx90 不可用，需绕开 apt 路径 | `cann_lm/converter/export/ge_converters/_kirinx90_converter_patches.py::_kirinx90_aten_cat` + `cann_lm/models/gemma4/modeling_gemma4.py::_scatter_kv_cache` | ⬜ 待办 |
+| T6 | 权重分离：`compile_main.cc` 设 `ge.externalWeightDir`（走 init_options 非 build_options）→ =2 出权重分离 .omc（.omc + `weight/delegate_graph_weight_combined` + meta.json） | `cann_local_lm/converter/export/csrc/tools/compile_main.cc` | ✅ 已落地（=2 验证有效；=1 仍失败 per-file 不支持） |
+| T7 | ~~`cat→ConcatV2`（落 aicpu）~~ **方案废弃**——kirinx90 不支持 AICPU（见背景硬约束），ConcatV2 落 aicpu 同样失败。正确方向：scatter indices 的 int32 cat（`modeling_gemma4.py:68` `[col_b,col_n,col_pos]`）是坐标拼接不进 aicore，在 converter 阶段常量化（seq_len 固定时 b/n/pos 可预算）或用 host 侧算子，不留 aicpu 算子。B4 根因（`get_kernel_type_enum` AIV_ONLY + kirinx90 不在白名单；注释 KERNEL_TYPE 引入 tiling `_pattern`/`dsl_compile_info` 缺失）说明 concat_d apt 本身在 kirinx90 不可用，需绕开 apt 路径 | `cann_local_lm/converter/export/ge_converters/_kirinx90_converter_patches.py::_kirinx90_aten_cat` + `cann_local_lm/models/gemma4/modeling_gemma4.py::_scatter_kv_cache` | ⬜ 待办 |
 
 ## 遗留 bug：mobile 路径 `aclgrphBuildModel` 不填 `ModelBufferData` 且硬编码输出文件名
 
@@ -632,9 +632,9 @@ bash /mnt/workspace/gitCode/cann/ge/build_out/cann-ge-executor_9.2.0_linux-aarch
 | `examples/test_converter/export_kirin_ops_net/kirin_ops_net.py` | 小网络 + export/compile/eager CLI；含 B1/B2 规避 |
 | `examples/test_converter/export_kirin_ops_net/aicore_only_net.py` | 纯 aicore 网络（零 aicpu，规避 MatMul/BatchMatMul/SoftmaxV2/SplitV）+ golden CLI |
 | `examples/test_converter/export_kirin_ops_net/check_op_coverage.py` | 静态算子覆盖率核对（epair ascend_ir ∩ SOC ops-info json） |
-| `cann_lm/converter/export/csrc/tools/compile_main.cc` | mobile 路径收尾（T1：onlinec→.omc 改名）+ 权重分离（T6：ge.externalWeightDir 走 init_options） |
-| `cann_lm/converter/export/ge_converters/_kirinx90_converter_patches.py` | Kirin converter patches 机制（B.2）：6 类算子 converter 覆盖；B4 的 cat→ConcatD 失败待改 ConcatV2（T7） |
-| `cann_lm/converter/export/ge_converters/ge_converter.py:87` | `active_config().target_soc` 含 "kirin" 检测（或 `KIRINX90_CONVERTER_PATCHES=1` force-on）+ 加载 patches |
+| `cann_local_lm/converter/export/csrc/tools/compile_main.cc` | mobile 路径收尾（T1：onlinec→.omc 改名）+ 权重分离（T6：ge.externalWeightDir 走 init_options） |
+| `cann_local_lm/converter/export/ge_converters/_kirinx90_converter_patches.py` | Kirin converter patches 机制（B.2）：6 类算子 converter 覆盖；B4 的 cat→ConcatD 失败待改 ConcatV2（T7） |
+| `cann_local_lm/converter/export/ge_converters/ge_converter.py:87` | `active_config().target_soc` 含 "kirin" 检测（或 `KIRINX90_CONVERTER_PATCHES=1` force-on）+ 加载 patches |
 | `asc_op_compile_base/asc_op_compiler/kernel_info_infer.py:195` | B4 根因：`get_kernel_type_enum` else 分支抛 `AIV_ONLY not support`（kirinx90 soc 不在 `is_v200/v220/c310` 白名单） |
 | `asc_op_compile_base/asc_op_compiler/ascendc_common_utility.py:516-609` | soc 白名单：`is_v220`(Ascend910B/910_93) / `is_v200`(Ascend310P/610) / `is_c310`(Ascend950/350)，均不含 KirinX90 |
 | `/mnt/workspace/cann-kirinx90/cann-9.2.0/opp/.../tbe/impl/ops_math/dynamic/concat_d_apt.py:216` | 硬编码 `arch31/concat_d.cpp`（AIV_ONLY），触发 B4 |

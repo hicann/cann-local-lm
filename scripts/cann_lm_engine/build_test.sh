@@ -93,10 +93,10 @@ fi
 cmake --build "$BUILD_DIR" -j"$JOBS"
 
 # 编译 stub NDK .so (NDKProxy dlopen 需要)
-ENGINE_DIR="$BUILD_DIR/cann_lm/engine"
+ENGINE_DIR="$BUILD_DIR/cann_local_lm/engine"
 if [[ -d "$ENGINE_DIR" ]]; then
-    _EXT="$REPO/cann_lm/engine/external_cann"
-    _COMPAT="$REPO/cann_lm/engine/hiai_acl/src/ohos_compat.h"
+    _EXT="$REPO/cann_local_lm/engine/external_cann"
+    _COMPAT="$REPO/cann_local_lm/engine/hiai_acl/src/ohos_compat.h"
     for stub_src in stub_neural_network_core stub_hiai_foundation; do
         stub_so="$ENGINE_DIR/lib${stub_src#stub_}.so"
         if [[ ! -f "$stub_so" ]]; then

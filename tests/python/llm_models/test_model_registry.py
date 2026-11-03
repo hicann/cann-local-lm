@@ -5,16 +5,16 @@
 
 import pytest
 
-from cann_lm.models.gemma4 import Gemma4ForCausalLM, Gemma4TextConfig
-from cann_lm.models.gemma4.export_wrapper import Gemma4ExportWrapper
-from cann_lm.models.model_registry import (
+from cann_local_lm.models.gemma4 import Gemma4ForCausalLM, Gemma4TextConfig
+from cann_local_lm.models.gemma4.export_wrapper import Gemma4ExportWrapper
+from cann_local_lm.models.model_registry import (
     REGISTRY,
     available_models,
     detect_model_type,
     get_entry,
 )
-from cann_lm.models.qwen3_5 import Qwen3_5ForCausalLM, Qwen3_5TextConfig
-from cann_lm.models.qwen3_5.export_wrapper import Qwen3_5ExportWrapper
+from cann_local_lm.models.qwen3_5 import Qwen3_5ForCausalLM, Qwen3_5TextConfig
+from cann_local_lm.models.qwen3_5.export_wrapper import Qwen3_5ExportWrapper
 
 
 def test_available_models_covers_two_models():

@@ -14,7 +14,7 @@ English | [简体中文](../../../zh/cann_lm_converter/cli/INDEX.md)
 
 | File | Responsibility |
 |------|------|
-| `cann_lm/converter/cann_lm_converter.py` | CLI entry (`parse_args` + `convert`) + programmatic `convert()` function |
+| `cann_local_lm/converter/cann_lm_converter.py` | CLI entry (`parse_args` + `convert`) + programmatic `convert()` function |
 
 ## Key Functions
 
@@ -52,10 +52,10 @@ parse_args → convert → loader.load_model (export_index) → [optional quant 
 | Method | Command |
 |------|------|
 | console_scripts (direct call after pip install) | `cann-lm-converter --hf-path ... --output-dir ...` |
-| Script direct call | `python cann_lm/converter/cann_lm_converter.py --hf-path ... --output-dir ...` |
-| Module entry | `python -m cann_lm.converter.cann_lm_converter --hf-path ... --output-dir ...` |
+| Script direct call | `python cann_local_lm/converter/cann_lm_converter.py --hf-path ... --output-dir ...` |
+| Module entry | `python -m cann_local_lm.converter.cann_lm_converter --hf-path ... --output-dir ...` |
 
-> console_scripts registration: `scripts/cann_lm_converter/pyproject.toml:20-21` `cann-lm-converter = "cann_lm.converter.cann_lm_converter:main"`
+> console_scripts registration: `scripts/cann_lm_converter/pyproject.toml:20-21` `cann-lm-converter = "cann_local_lm.converter.cann_lm_converter:main"`
 
 ### Usage Examples
 

@@ -25,15 +25,15 @@ tests/
 ├── python/              # 单一 Python UT 根
 │   ├── conftest.py      # engine FFI bindings 根 conftest（2 级深，_REPO=../..）
 │   ├── test_*.py        # engine ctypes FFI bindings 测试（扁平）
-│   ├── converter/       # 镜像 cann_lm/converter（自带 conftest.py + UT_DESIGN.md，3 级深 parents[3]=repo）
-│   ├── dopt_lm/         # 镜像 cann_lm/converter/quant/dopt_lm
-│   └── llm_models/      # 镜像 cann_lm/models
+│   ├── converter/       # 镜像 cann_local_lm/converter（自带 conftest.py + UT_DESIGN.md，3 级深 parents[3]=repo）
+│   ├── dopt_lm/         # 镜像 cann_local_lm/converter/quant/dopt_lm
+│   └── llm_models/      # 镜像 cann_local_lm/models
 └── cpp/engine/  # fixture 文件（gitignored）
 ```
 
 `tests/cpp/engine/`：**gitignored 生成物**（`.gitignore: fixtures/`），由 `tests/cpp/engine/gen_fixture.py`（需 HF `tokenizers`）生成；`tests/python/conftest.py` 开跑前自动生成（有库时），`test_token_count.py` 缺则 skip。C++ 侧 `ut_tokenizer` 经 CMake 注入同路径，目前**无对等的自动生成/skip 机制**（见 §3 债务 5）。
 
-C++ UT 注册分两处：engine 侧（`tests/cpp/engine/`）在 `cann_lm/engine/CMakeLists.txt`（`UT_DIR=tests/cpp/engine`）；converter 侧（`tests/cpp/epair_archive/`）自带 `CMakeLists.txt`，由顶层 `CMakeLists.txt` 在 `BUILD_CONVERTER`（OFF 默认，需 torch+CANN 工具链）下 `add_subdirectory`。
+C++ UT 注册分两处：engine 侧（`tests/cpp/engine/`）在 `cann_local_lm/engine/CMakeLists.txt`（`UT_DIR=tests/cpp/engine`）；converter 侧（`tests/cpp/epair_archive/`）自带 `CMakeLists.txt`，由顶层 `CMakeLists.txt` 在 `BUILD_CONVERTER`（OFF 默认，需 torch+CANN 工具链）下 `add_subdirectory`。
 
 ## 3. 已知债务（尚未执行）
 
@@ -46,7 +46,7 @@ C++ UT 注册分两处：engine 侧（`tests/cpp/engine/`）在 `cann_lm/engine/
 
 ## 4. 新增测试放哪（迁移完成前，按目标结构放，不加重存量债）
 
-- Python，被测在 `cann_lm/converter*` / `cann_lm/models`：`tests/python/<对应包>/test_*.py`，包内补 `conftest.py`。
+- Python，被测在 `cann_local_lm/converter*` / `cann_local_lm/models`：`tests/python/<对应包>/test_*.py`，包内补 `conftest.py`。
 - Python，被测在 engine ctypes FFI bindings：`tests/python/test_*.py`。
 - C++ GTest（engine，host 可跑）：`tests/cpp/engine/test_<unit>.cpp`（CMake target 名仍保 `ut_*`，见 §3 债务 1）。
 - C++ GTest（converter，需 CANN 工具链但无 NPU 设备）：`tests/cpp/<模块>/test_*.cpp`（参照 `tests/cpp/epair_archive/` 模式）。

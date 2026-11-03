@@ -1,6 +1,6 @@
-# examples/ — cann_lm 端到端用例集
+# examples/ — cann_local_lm 端到端用例集
 
-cann_lm 从 **HuggingFace 模型 → CLI 导出 epair → C++ OM 编译 → NPU 运行/出字 → 验证 PASS** 的完整用例集。本文是总览 + 端到端步骤导航，各子目录有自己的 README 细节。
+cann_local_lm 从 **HuggingFace 模型 → CLI 导出 epair → C++ OM 编译 → NPU 运行/出字 → 验证 PASS** 的完整用例集。本文是总览 + 端到端步骤导航，各子目录有自己的 README 细节。
 
 ## 总览：端到端流水线
 
@@ -32,7 +32,7 @@ OM 运行/出字 (系统 Python + torch_npu + acl + NPU)
 | ├ OM 编译+出字　　　 | `export_llm_model/om_npu_verify/`　　　　　　　　　　　　　　　　　　 | ②③　　　　　　　 | `run_*_gen.py`/`run_*_om.py` + `check_env.sh`(source ①基底) + README；OM/HF 路径经 env 传入　　　　　　　　　　　　　|
 | └ e2e 编排　　　　　 | `export_llm_model/run_e2e_pipeline.sh`　　　　　　　　　　　　　　　| ①②③　　　　　　 | 串 cli_export→OM 编译→NPU 出字；每步子 shell source 对应基底脚本（隔离 LD）；产物落 `output/`　　　　　　　　　 |
 | **CPU 调试验证**　　 | [`llm_models_run_on_cpu/`](llm_models_run_on_cpu/)　　　　　　　　　　　　　| ①③(ep回环)　　　 | 脱离 epair 编译链；`check_env.sh`(source ①基底) + `debug_*/verify_*.py`（ep 回环、vs HF、chunk）+ skills；HF 路径必填 env　　　 |
-| └ OM 编译器+算子注册 | `cann_lm/converter/export/csrc/{tools/compile_main.cc, inc/external/reg_register.h}` | ③　　　　　　　　| `compile_main.cc`=EpairModelLoader→OM（产 `build/cann_lm_compile`）；`reg_register.h`=IR 校准 81 ops（master，om_npu_verify/export_epair_and_compile 经 backend PUBLIC include 引用） |
+| └ OM 编译器+算子注册 | `cann_local_lm/converter/export/csrc/{tools/compile_main.cc, inc/external/reg_register.h}` | ③　　　　　　　　| `compile_main.cc`=EpairModelLoader→OM（产 `build/cann_lm_compile`）；`reg_register.h`=IR 校准 81 ops（master，om_npu_verify/export_epair_and_compile 经 backend PUBLIC include 引用） |
 | **CANN 轻量化工具量化 ST**　　 | [`dopt_quantization_st/`](dopt_quantization_st/)　　　　　　　　　　| GPTQ+产物校验　　 | gemma4/Qwen3.5 真实模型路径运行时注入，校准集内置；仓库不含真实权重和机器路径；支持无权重静态自检　　　　　　　　　　　　|
 
 ## 端到端流程（从 CLI 到验证 PASS）
@@ -48,7 +48,7 @@ export TORCH_DELEGATE_HOME=$TORCH_DELEGATE_HOME
 export TORCH_DEVICE_BACKEND_AUTOLOAD=0; export TORCH_DELEGATE_ENABLE_FALLBACK_CODEGEN=0
 VENV=$TORCH_DELEGATE_HOME/.venv
 
-$VENV/bin/python3 cann_lm/converter/cann_lm_converter.py \
+$VENV/bin/python3 cann_local_lm/converter/cann_lm_converter.py \
   --hf-path /mnt/workspace/data/models/gemma-4-E2B-it \
   --output-dir examples/test_converter/export_llm_model/om_npu_verify/epair_gemma4_pd \
   --dtype bfloat16 --mode prefill-decode   # --use-embeddings 默认 True; seq_len 固定 64

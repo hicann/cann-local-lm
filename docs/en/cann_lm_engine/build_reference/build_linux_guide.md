@@ -131,7 +131,7 @@ GTest tarball (for OHOS cross-compilation):
 curl -L -o /mnt/workspace/gtest-1.14.0.tar.gz \
   https://github.com/google/googletest/releases/download/v1.14.0/googletest-1.14.0.tar.gz
 ```
-> `cann_lm/engine/ohos/CMakeLists.txt` references this tarball via FetchContent (CMake variable `GTEST_TAR`, default `/mnt/workspace/gtest-1.14.0.tar.gz`). If missing, it will `FATAL_ERROR` with a download URL prompt. No `find_package(GTest)` needed (host GTest is unavailable under cross-compilation).
+> `cann_local_lm/engine/ohos/CMakeLists.txt` references this tarball via FetchContent (CMake variable `GTEST_TAR`, default `/mnt/workspace/gtest-1.14.0.tar.gz`). If missing, it will `FATAL_ERROR` with a download URL prompt. No `find_package(GTest)` needed (host GTest is unavailable under cross-compilation).
 
 ## 4. Compile
 
@@ -151,7 +151,7 @@ bash scripts/cann_lm_engine/build_package_ohos.sh
 
 1. **SDK location**: `OHOS_SDK_NATIVE` environment variable; if empty, auto-detect (`cli_native` full SDK > `ohos_native/native` minimal SDK), validates `sysroot` exists.
 2. **Compiler check**: SDK-bundled `${OHOS_SDK_NATIVE}/llvm/bin/clang` takes priority (Route A); if absent, check host `clang-18` (Route B). Error only if both are missing.
-3. **CMake configure**: `cmake -G "Unix Makefiles" -DCMAKE_TOOLCHAIN_FILE=cann_lm/engine/ohos/ohos.toolchain.cmake -DOHOS_SDK_NATIVE=... -DOHOS_PLATFORM=OHOS -DCMAKE_BUILD_TYPE=Release -B build_ohos -S cann_lm/engine/ohos`.
+3. **CMake configure**: `cmake -G "Unix Makefiles" -DCMAKE_TOOLCHAIN_FILE=cann_local_lm/engine/ohos/ohos.toolchain.cmake -DOHOS_SDK_NATIVE=... -DOHOS_PLATFORM=OHOS -DCMAKE_BUILD_TYPE=Release -B build_ohos -S cann_local_lm/engine/ohos`.
 4. **Make build**: `cmake --build build_ohos -j$(nproc)` (host make, not ninja).
 5. **Artifact validation**: 11 artifacts checked one by one `[ok]`/`[missing]` (see §5); if `libc++_shared.so` is missing, fallback-copy from SDK.
 6. **Signing**: Auto-calls `scripts/cann_lm_engine/sign_ohos.sh`.
@@ -193,7 +193,7 @@ readelf -h libcann_lm_engine.so | grep Machine
 
 ### Produce Signed Wheel (`build_package_ohos.sh`)
 
-`build_package_ohos.sh` automatically copies the signed `.so` into `cann_lm/lib/` and runs `pip wheel` to produce `build_out/cann_lm_engine-*+signed*.whl` (embeds `.so` + `libc++_shared.so`) after compile+sign.
+`build_package_ohos.sh` automatically copies the signed `.so` into `cann_local_lm/lib/` and runs `pip wheel` to produce `build_out/cann_lm_engine-*+signed*.whl` (embeds `.so` + `libc++_shared.so`) after compile+sign.
 
 On device: `pip install cann_lm_engine-*+signed*.whl` then `cllm generate --config testcase.json` (see [Quick Start](../../QUICKSTART.md)). C++ tests (bbit/smoke) require separate `bash build.sh --smoke`, then push to device and run `./bbit --config testcase.json`.
 

@@ -84,7 +84,7 @@ status: draft
 <a id="1-范围与目标"></a>
 ## §1 范围与目标
 
-- **in scope**：`cann_lm/engine/core/model_executor` 下 C++ 前向壳——单步 Forward（embedding/tokenId 两路径→logits）+ KV ringBuffer 光标管理（内存归 TensorManager）+ 输入填充（attentionMask + decode batch padding）+ load/unload/LoRA 控制接口（直接暴露；**ModelManager 由本实例在 Load 时创建并持有**，具体实现仍委托 ModelManager）+ DFX。prefill/decode 为本类两个实例（各绑一个 om），共享 KV 池零拷贝。内部模块，不对 Python 暴露。
+- **in scope**：`cann_local_lm/engine/core/model_executor` 下 C++ 前向壳——单步 Forward（embedding/tokenId 两路径→logits）+ KV ringBuffer 光标管理（内存归 TensorManager）+ 输入填充（attentionMask + decode batch padding）+ load/unload/LoRA 控制接口（直接暴露；**ModelManager 由本实例在 Load 时创建并持有**，具体实现仍委托 ModelManager）+ DFX。prefill/decode 为本类两个实例（各绑一个 om），共享 KV 池零拷贝。内部模块，不对 Python 暴露。
 - **out of scope**（含理由）：
   - KV tensor 内存申请/释放——spec §4.1.2 归 `TensorManager`，本模块只管 pos/offset/光标。
   - 加卸载/前向/LoRA **具体实现**——spec §4.1.4/4.1.5 归 `ModelManager`；本模块在 Load 时**创建并持有** ModelManager 实例，但具体算子/图执行仍在其内。
@@ -245,7 +245,7 @@ graph TD
   - M-03 → 本节 + M-02 + F-02/F-03
   - M-04 → 本节 + M-02
 - 集成里程碑：①M-02+mock C-04 跑通 alloc/free/evict/snapshot；②M-03+mock M-02 跑通 pos 推导 + padding + mask；③M-04+mock 文件 sink 跑通 dump 开关 + 落盘失败降级；④M-01+stub `CreateModelManager()` 返 mock IModelManager 跑通 Load 自创建 MM + Forward 两路径返 fake logits + single-flight + Load/Unload/LoadLora/UnloadLora 控制；⑤prefill+decode 两实例 + 共享池跑通零拷贝（decode 先 Load→定容 pool→prefill Load）。
-- 源码落 `cann_lm/engine/core/model_executor/`，UT 落 `tests/cpp/engine/model_executor/`，CMake target 在根 CMakeLists（待建）。
+- 源码落 `cann_local_lm/engine/core/model_executor/`，UT 落 `tests/cpp/engine/model_executor/`，CMake target 在根 CMakeLists（待建）。
 - 后端绑定：`CreateModelManager()` 的定义由编译时选定链接的后端库提供（构建配置 `CANN_LM_BACKEND` 之类选 backend lib）；UT 用 stub 定义（返 mock MM）链接。M-01 代码不引用任何具体后端类名。
 
 <a id="9-风险与未决项"></a>

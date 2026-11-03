@@ -2,7 +2,7 @@
 
 从 dopt trained_quant_weight.pth 取一个算子的 weight+scale, materialize (按 target_soc:
 kirinx90→int4pack int32 / Ascend910→int8 nibble), 包成 1-QuantLinear 模型, torch.export +
-lite_export_context → epair (含单个 cann_lm::quant_matmul → GE QuantBatchMatmulV4 节点)。
+lite_export_context → epair (含单个 cann_local_lm::quant_matmul → GE QuantBatchMatmulV4 节点)。
 
 env: converter venv (source scripts/cann_lm_compile/set_env_export.sh)。复用 swap 的 materialize + export_epair 的导出模式。
 """
@@ -15,16 +15,16 @@ import torch
 import torch_delegate
 from torch_delegate import LiteConfig, lite_export_context
 
-from cann_lm.converter.export.epair_utils import consolidated_weights_save
-from cann_lm.converter.export.ge_converters import register_ge_converters
-from cann_lm.converter.export.quant_swap.materialize import (
+from cann_local_lm.converter.export.epair_utils import consolidated_weights_save
+from cann_local_lm.converter.export.ge_converters import register_ge_converters
+from cann_local_lm.converter.export.quant_swap.materialize import (
     materialize_int4_per_group_symmetric,
 )
-from cann_lm.converter.export.quant_swap.quant_linear import QuantLinear
+from cann_local_lm.converter.export.quant_swap.quant_linear import QuantLinear
 
 
 class OpModel(torch.nn.Module):
-    """单算子模型: 一个 QuantLinear (forward = dynamic_quant + cann_lm::quant_matmul)。"""
+    """单算子模型: 一个 QuantLinear (forward = dynamic_quant + cann_local_lm::quant_matmul)。"""
 
     def __init__(self, ql: QuantLinear):
         super().__init__()

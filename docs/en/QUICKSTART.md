@@ -14,14 +14,14 @@ English | [简体中文](../zh/QUICKSTART.md)
 # 1. Extract .run package (automatically runs set_env.sh to print environment hints)
 bash /path/to/cann_local_lm_converter-0.1.0-aarch64.run --extract=/opt/cann-local-lm
 
-# 2. Install cann_lm whl into P1 venv (used by converter, provides cllm-converter CLI)
+# 2. Install cann_local_lm whl into P1 venv (used by converter, provides cllm-converter CLI)
 export CONVERTER_PYTHON=/path/to/venv/bin/python
 $CONVERTER_PYTHON -m pip install /opt/cann-local-lm/wheels/cann_local_lm-*.whl
 
 # 3. (Only needed for quantization) Set DOPT_PYTHON to the system python that has torch_npu
 export DOPT_PYTHON=/path/to/python3
 # Or auto-detect (requires CANN sourced first): source $HOME/Ascend/cann/set_env.sh && source /opt/cann-local-lm/set_env.sh --npu
-# First deployment only — if system python lacks cann_lm/dopt_lm: $DOPT_PYTHON -m pip install /opt/cann-local-lm/wheels/cann_local_lm-*.whl --no-deps --user
+# First deployment only — if system python lacks cann_local_lm/dopt_lm: $DOPT_PYTHON -m pip install /opt/cann-local-lm/wheels/cann_local_lm-*.whl --no-deps --user
 ```
 
 ---
@@ -59,7 +59,7 @@ cllm-converter \
     --mode prefill-decode --target-soc KirinX90
 ```
 
-> The converter will hang at GE finalize during background execution (known issue), but the artifacts have already been written to disk by then. You can run it in the background + poll for artifact files + kill to work around this.
+> A normal export exits on its own (the last log line is `Done. Output: <dir>`). If the process fails to exit in some environments, all artifacts have already been written to disk by then and you can kill it directly.
 
 **Quantized export (optional):**
 
@@ -82,8 +82,8 @@ cllm-converter \
     --quant-method gptq
 
 # Method 2: manually run dopt + converter consumes the output (two-step; dopt requires NPU, converter does not)
-# Preparation: copy calibration data and config from cann_lm package directory to working directory
-PKG_QUANT=$($DOPT_PYTHON -c "import cann_lm.converter.quant as q; print(q.__path__[0])")
+# Preparation: copy calibration data and config from cann_local_lm package directory to working directory
+PKG_QUANT=$($DOPT_PYTHON -c "import cann_local_lm.converter.quant as q; print(q.__path__[0])")
 mkdir -p ./output/dopt_quant
 cp -r "$PKG_QUANT/calibrate_sets" ./output/dopt_quant/
 cp "$PKG_QUANT/config.yaml" ./output/dopt_quant/
@@ -141,11 +141,12 @@ Complete artifacts after ① export + ② compilation (`$OUT/` = `./output/e2e` 
 | `weights_0.bin` | ① export | Weight data (loaded during ② compilation) |
 | `host_weights_info.json` | ① export | Host-side weight index (weights not in the graph, such as embeddings; loaded during ② compilation) |
 | `host_weights_0.bin` | ① export | Host-side weight data (such as embeddings; loaded during ② compilation) |
-| `model_config.json` | ① export | Model configuration (for inference) |
+| `model.json` | ① export | **Meta config for inference** (contains the `model_config` / `embedding_config` / `tokenizer_config` sections); use it as `model_meta_config` when deploying |
+| `model_config.json` | ① export | Snapshot of the HF-side model config (for reference; **not** the engine's `model_meta_config`) |
 | `tokenizer.json` / `tokenizer_config.json` | ① export | tokenizer (for inference) |
 | `prefill/prefill.omc` | ② compilation | prefill segment omc (deployed to device for execution) |
 | `decode/decode.omc` | ② compilation | decode segment omc |
-| `prefill\|decode/weight/*.bin` | ② compilation | External weights when weight separation is enabled |
+| `prefill\|decode/weight/` | ② compilation | External weight directory when weight separation is enabled (contains `delegate_graph_weight_combined` / `meta.json` / `SubGraph_*.weight` / `weight_0.weight`) |
 
 ---
 
@@ -154,7 +155,7 @@ Complete artifacts after ① export + ② compilation (`$OUT/` = `./output/e2e` 
 ### 1. Push engine + model artifacts
 
 ```bash
-# Signed engine wheel (.so embedded in cann_lm/lib/, from --pkg or build_package_ohos.sh)
+# Signed engine wheel (.so embedded in cann_local_lm/lib/, from --pkg or build_package_ohos.sh)
 hdc file send build_out/cann_local_lm_engine-0.1.0+signed-py3-none-any.whl /data/local/tmp/cann_lm_engine/
 
 # Model artifacts (omc + weights + tokenizer + model_config)
@@ -167,7 +168,7 @@ hdc file send ./output/e2e /data/local/tmp/cann_lm_engine/
 hdc shell
 cd /data/local/tmp/cann_lm_engine
 
-# Install engine wheel (.so auto-discovered from cann_lm/lib/)
+# Install engine wheel (.so auto-discovered from cann_local_lm/lib/)
 pip3 install cann_local_lm_engine-0.1.0+signed-py3-none-any.whl
 
 # Write testcase.json (model paths + tokenizer + sampling params)
@@ -177,7 +178,7 @@ cat > testcase.json <<'EOF'
     "tokenizer_path": "/data/local/tmp/cann_lm_engine/output/e2e/tokenizer.json",
     "model_path_prefill": "/data/local/tmp/cann_lm_engine/output/e2e/prefill/prefill.omc",
     "model_path_decode": "/data/local/tmp/cann_lm_engine/output/e2e/decode/decode.omc",
-    "model_meta_config": "/data/local/tmp/cann_lm_engine/output/e2e/model_config.json",
+    "model_meta_config": "/data/local/tmp/cann_lm_engine/output/e2e/model.json",
     "model_weight_dir_prefill": "/data/local/tmp/cann_lm_engine/output/e2e/prefill/weight",
     "model_weight_dir_decode": "/data/local/tmp/cann_lm_engine/output/e2e/decode/weight",
     "sentences": [{
@@ -189,7 +190,7 @@ cat > testcase.json <<'EOF'
 EOF
 ```
 
-> **No pip available**: `unzip cann_local_lm_engine-*.whl -d . && export PYTHONPATH=.:$PYTHONPATH && export CANN_LM_LIB=./cann_lm/lib/libcann_lm_engine.so`
+> **No pip available**: `unzip cann_local_lm_engine-*.whl -d . && export PYTHONPATH=.:$PYTHONPATH && export CANN_LM_LIB=./cann_local_lm/lib/libcann_lm_engine.so`
 >
 > **Weight directories**: if `GE_EXTERNAL_WEIGHT=2` was not set during compilation (embedded weights), `model_weight_dir_*` can point to the omc's directory.
 
@@ -206,6 +207,6 @@ cllm chat --config testcase.json
 cllm generate --config testcase.json --show-paths
 ```
 
-> `.so` discovery order: `--lib PATH` > `$CANN_LM_LIB` > wheel's `cann_lm/lib/`. If loading fails, add the `.so` directory to `LD_LIBRARY_PATH` (`libc++_shared.so` must be in the same directory).
+> `.so` discovery order: `--lib PATH` > `$CANN_LM_LIB` > wheel's `cann_local_lm/lib/`. If loading fails, add the `.so` directory to `LD_LIBRARY_PATH` (`libc++_shared.so` must be in the same directory).
 >
-> C++ black-box tests (bbit/smoke) can be built separately via `bash build.sh --smoke`, pushed to device, and run with `./bbit --config testcase.json`. See [engine Python README](../../cann_lm/engine/python/README.md).
+> C++ black-box tests (bbit/smoke) can be built separately via `bash build.sh --smoke`, pushed to device, and run with `./bbit --config testcase.json`. See [engine Python README](../../cann_local_lm/engine/python/README.md).

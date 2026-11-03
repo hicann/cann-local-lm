@@ -6,7 +6,7 @@ description: |
   - Export graph contains NPU-unsupported ops (ge.MaskedFill / ge.Where / ge.SelectV2 etc.)
   - Export graph contains inefficient ops to replace (BroadcastTo → ConcatV2D, Pow/Neg/Cos/Sin → Gather)
   - OM compile fails with "operator not supported" or a missing op kernel
-  - Applying gitee npu_tuned mode (host pre-constructed mask / repeat_kv concat / RoPE pre-cached Gather) to cann_lm models
+  - Applying gitee npu_tuned mode (host pre-constructed mask / repeat_kv concat / RoPE pre-cached Gather) to cann_local_lm models
   - Graph rewriting before export for gemma4 / qwen3.5
 version: 0.1.0-beta.1
 metadata:
@@ -30,7 +30,7 @@ English | [简体中文](../../zh/cann_lm_converter/reference_npu_op_elimination
 
 Rewrites NPU-unsupported / inefficient ops in the HF model export graph into NPU-friendly form, making epair→OM compile pass and the op table clean.
 Source: gitee `npu_tuned` mode.
-First complete application to cann_lm gemma4 (e2b real config: 35 layers with 20 KV shared at the end, head_dim=256/global=512, PLE on, sliding=512, kv_max=2048).
+First complete application to cann_local_lm gemma4 (e2b real config: 35 layers with 20 KV shared at the end, head_dim=256/global=512, PLE on, sliding=512, kv_max=2048).
 
 ## Overview: Three Rewrites
 
@@ -46,7 +46,7 @@ Verification baseline: e2b gemma4 three OM compiles then dump op table confirms 
 
 - OM compile reports an op unsupported (check CANN ops-info for that op definition)
 - ATC dump shows `BroadcastTo` / `Pow` / `Neg` / `Cos` / `Sin` / `MaskedFill` / `Where` / `SelectV2` etc. to eliminate
-- Graph cleanup before adapting a new model to cann_lm export pipeline
+- Graph cleanup before adapting a new model to cann_local_lm export pipeline
 
 ## Rewrite 1: host pre-construct mask (eliminate ge.MaskedFill)
 
@@ -122,7 +122,7 @@ def _build_mask_sliding(self, seq_len, kv_max, dtype, new_kv_cache_pos):
 - When PLE on, `per_layer_token_identity` similarly host-precomputed (embed_tokens_per_layer lookup externalized)
 
 ### File
-- `cann_lm/models/gemma4/export_wrapper.py` (`Gemma4ExportWrapper.forward` / `_drive_layers` / `_build_mask_full` / `_build_mask_sliding`)
+- `cann_local_lm/models/gemma4/export_wrapper.py` (`Gemma4ExportWrapper.forward` / `_drive_layers` / `_build_mask_full` / `_build_mask_sliding`)
 
 ## Rewrite 2: repeat_kv reshape+cat (BroadcastTo → ConcatV2D)
 
@@ -153,7 +153,7 @@ def repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
 - Zero numerical difference (maxdiff=0.00e+00), e2b OM dump measured ConcatV2D=70 (=35 layers × 2 (k,v)), BroadcastTo=0
 
 ### File
-- `cann_lm/models/gemma4/modeling_gemma4.py` `repeat_kv()` (qwen3.5 same-named function same change)
+- `cann_local_lm/models/gemma4/modeling_gemma4.py` `repeat_kv()` (qwen3.5 same-named function same change)
 
 ## Rewrite 3: RoPE pre-cached table + Gather (Pow/Neg/Cos/Sin → Gather)
 
@@ -201,7 +201,7 @@ def forward(self, x, position_ids, layer_type="full_attention"):
 - `_compute_inv_freq` still called in init (proportional / default two rope_type branches), just not in graph
 
 ### File
-- `cann_lm/models/gemma4/modeling_gemma4.py` `Gemma4TextRotaryEmbedding`
+- `cann_local_lm/models/gemma4/modeling_gemma4.py` `Gemma4TextRotaryEmbedding`
 
 ## Verification Method (must do after rewrite)
 
@@ -294,9 +294,9 @@ gemma4 PLE's `embed_tokens_per_layer` lookup if left in-graph is a large embeddi
 
 | File | Purpose |
 |---|---|
-| `cann_lm/models/gemma4/export_wrapper.py` | Rewrite 1 (bypass forward + host mask + PLE externalization) |
-| `cann_lm/models/gemma4/modeling_gemma4.py` `repeat_kv()` | Rewrite 2 (reshape+cat) |
-| `cann_lm/models/gemma4/modeling_gemma4.py` `Gemma4TextRotaryEmbedding` | Rewrite 3 (pre-cache + Gather) |
+| `cann_local_lm/models/gemma4/export_wrapper.py` | Rewrite 1 (bypass forward + host mask + PLE externalization) |
+| `cann_local_lm/models/gemma4/modeling_gemma4.py` `repeat_kv()` | Rewrite 2 (reshape+cat) |
+| `cann_local_lm/models/gemma4/modeling_gemma4.py` `Gemma4TextRotaryEmbedding` | Rewrite 3 (pre-cache + Gather) |
 | `examples/test_converter/llm_models_run_on_cpu/debug_gemma4/verify_gemma4_wrapper_bypass.py` | Numerical verification (wrapper vs original) |
 | `examples/test_converter/llm_models_run_on_cpu/debug_gemma4/verify_gemma4_wrapper_export.py` | Export verification |
 | `examples/test_converter/export_llm_model/om_npu_verify/` | OM compile + inference tools |

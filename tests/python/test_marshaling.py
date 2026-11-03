@@ -10,7 +10,7 @@ These run without the engine .so — pure ctypes array/buffer work.
 import ctypes as ct
 
 
-from cann_lm.engine import build_buffer, build_request_options
+from cann_local_lm.engine import build_buffer, build_request_options
 
 
 # ────────────────────────── stop_token_ids ──────────────────────────

@@ -33,12 +33,12 @@ apt install -y cmake build-essential python3 python3-venv python3-pip patchelf g
 
 ## CANN
 
-CANN is **externally preinstalled** (the user sources its `set_env.sh` first); this repo does not build it.
+CANN is **externally preinstalled** (the user sources its `set_env.sh` first); this repo does not build it. Currently only x86 is supported.
 
 | Component | Version | Source |
 |-----------|---------|--------|
-| CANN toolkit | >= 9.3.0 | [master download](https://ascend.devcloud.huaweicloud.com/artifactory/cann-run-mirror/software/master) |
-| CANN ops | by SOC | Ascend910 → `Ascend910-ops`; kirinx90 → `ops-nn`/`ops-math`/`ops-transformer` |
+| CANN toolkit mobile station | >= 9.3.0 | [cann-mobile-station](https://kiri-obs.obs.cn-north-4.myhuaweicloud.com/Cann%20Large%20Model%20Foundation%208.5.0.rc003/Ascend-cann-toolkit_9.3.0_linux-x86_64-mobile-station.run) |
+| CANN ops | KirinX90 | [KirinX90](https://kiri-obs.obs.cn-north-4.myhuaweicloud.com/Cann%20Large%20Model%20Foundation%208.5.0.rc003/Ascend-cann-kirinx90-ops_9.3.0_linux-x86_64.run) |
 
 Install (values below are examples; adjust by actual version/SOC/architecture):
 
@@ -65,7 +65,7 @@ Verify after install:
 
 ```bash
 source $HOME/Ascend/cann/set_env.sh
-echo $ASCEND_HOME_PATH   # Expected: .../cann-9.3.0/cann-9.3.0
+echo $ASCEND_HOME_PATH   # Expected: .../cann-9.3.0 (single level, the toolkit install root)
 ```
 
 > All subsequent `source $HOME/Ascend/cann/set_env.sh` commands point to this path. If installed elsewhere, replace `$HOME/Ascend` with the actual path.
@@ -138,7 +138,7 @@ source $HOME/Ascend/cann/set_env.sh
 cd /path/to/cann-local-lm
 
 # 1. torch-delegate: build from in-repo source (build.sh auto-creates .venv [torch 2.9.0+cpu] + compiles whl)
-cp -a torch_delegate deps/torch-delegate
+mkdir -p deps && cp -a torch_delegate deps/torch-delegate
 cd deps/torch-delegate && ./build.sh && .venv/bin/pip install --no-deps output/package/torch_delegate-*.whl
 
 # 2. torchair (choose one):
@@ -200,7 +200,7 @@ TORCH_DEVICE_BACKEND_AUTOLOAD=0 deps/torch-delegate/.venv/bin/python -c "import 
 # Expected: OK /mnt/workspace/.../deps/torch-delegate/.venv/lib/python3.12/site-packages/torchair/__init__.py
 ```
 
-> This only verifies that `import torchair` succeeds (catches ABI mismatch / missing deps early). The full baseline check (including cann_lm / third_party) is at the end of Part 2: "[Environment Check](#environment-check)".
+> This only verifies that `import torchair` succeeds (catches ABI mismatch / missing deps early). The full baseline check (including cann_local_lm / third_party) is at the end of Part 2: "[Environment Check](#environment-check)".
 
 ---
 
@@ -219,10 +219,11 @@ bash build.sh --pkg
 > `--pkg` auto-downloads and builds third-party libs (nlohmann_json / GTest / makeself, from the gitcode mirror); downloads on first run, idempotently skipped afterward.
 
 Artifacts go under `build_out/` (controlled by `build.sh`'s `DIST` variable, default `${REPO}/build_out`, overridable via environment):
-- `cann_local_lm_converter-*.run` (Ascend910 build host, **required**) — contains `cann_lm_compile` + `libtorch_delegate_backend.so` + cann_lm whl + set_env.sh
-- `cann_local_lm-*.whl` (converter whl, for HF→epair export)
+- `cann_local_lm_converter-*.run` (Ascend910 build host, **required**) — contains `cann_lm_compile` + `libtorch_delegate_backend.so` + `libcustom_pass_plugin.so` + `op_cpu/` + `op_pass/` + cann_lm whl + set_env.sh
 - `cann_local_lm_engine-*.whl` (engine python ctypes binding whl, pure python without .so)
 - `deploy_ohos/` (engine OHOS cross-compile artifacts: signed `libcann_lm_engine.so` + UT/bbit/smoke, **requires OHOS SDK**; skipped when SDK is absent, does not affect the 910 OM compilation flow)
+
+> The converter whl is packed inside the `.run` under `wheels/` and removed from `build_out/` after packaging.
 
 ## Install
 
@@ -247,7 +248,43 @@ source /opt/cann-local-lm/set_env.sh         # cann-local-lm
 # cllm chat --config testcase.json
 ```
 
-> **Weight separation**: `/opt/cann-local-lm/set_env.sh` does not set `GE_EXTERNAL_WEIGHT` by default, so the compiled OM **embeds weights** (e.g. ~4.5G/segment for gemma4 5B). For a smaller OM plus external weight files, `export GE_EXTERNAL_WEIGHT=2` before compilation; the output is then `<out>.om` (tens of MB) + `<out>/weight/*.bin` (external weights, loaded at runtime).
+> **Weight separation**: For non-Kirin SOCs, `/opt/cann-local-lm/set_env.sh` does not set `GE_EXTERNAL_WEIGHT`, so the compiled OM **embeds weights** (e.g. ~4.5G/segment for gemma4 5B). For a smaller OM plus external weight files, `export GE_EXTERNAL_WEIGHT=2` before compilation; the output is then `<out>.om` (tens of MB) + a sibling `weight/` directory (external weights, loaded at runtime). Kirin SOCs set `=2` automatically — see the next section.
+
+> ⚠️ **Kirin platform requirement**: When model weights exceed **2 GB**, external weights (`GE_EXTERNAL_WEIGHT=2`) are **mandatory** — the output is `<out>.omc` plus a sibling `weight/` directory, and both are loaded together at runtime. Embedded mode (`GE_EXTERNAL_WEIGHT=0`) is only valid on Kirin for models up to 2 GB; do not set `=0` beyond that size. On Kirin SOCs `set_env.sh` already sets `=2` automatically, so no action is normally needed — only verify model size if you manually `export GE_EXTERNAL_WEIGHT=0`.
+
+## Compile Environment Variables (GE / mobile)
+
+`set_env.sh` sets the variables below based on `SOC_VERSION`: **Kirin family (`KirinX90` / `Kirin9030` / …) automatically enters the mobile compile chain**; other SOCs leave the mobile-related items unset. Manual configuration is normally unnecessary — only `export` a variable to override its default.
+
+| Variable | Default | Purpose | When to change |
+|----------|---------|---------|----------------|
+| `SOC_VERSION` | `KirinX90` in the combined package; `Ascend910_9362` in the standalone `cann_lm_compile` package | Target SoC, passed to GE as `ge.socVersion`. **Kirin family → mobile compile chain** (`.omc` + `MobileModelHelper` path); others → generic `.om` path | When targeting a different chip. This is the only mode switch — any non-Kirin value disables the mobile branch |
+| `GE_FUSION_SWITCH_FILE` | `fusion_autoub_off.cfg` in the package | GE graph-fusion switch config. Auto-UB fusion is off by default | Point to a custom cfg for fusion tuning; temporarily `unset` to fall back to GE defaults when debugging fusion |
+| `TORCH_DEVICE_BACKEND_AUTOLOAD` | `0` | Prevents torch from auto-loading the npu backend | Do not change. The P1 converter venv has no torch_npu; setting `1` makes the import fail |
+| `GE_EXTERNAL_WEIGHT` | Package: `2` under mobile, unset otherwise. Dev-mode `set_env.sh`: always `2` | `2` = external weights (`<out>.omc` + sibling `weight/` directory, loaded at runtime); `0` = weights embedded in the omc | **On Kirin, must be `2` when model weights exceed 2 GB** (embedding is only valid up to 2 GB). On non-Kirin, use `0` for single-file distribution when size is acceptable |
+| `GE_MOBILE_WEIGHT_SHARE_OPS` | `MatMulV3,QuantBatchMatmulV4,RmsNorm` | Shared-weight op whitelist on the mobile path (read by GE's `[Mobile]` path). Listed ops whose inputs come from the same `FileConstant` store only one weight copy | Add op names here if duplicated weights bloat the artifact; clear it to fall back to GE's built-in default when debugging shared weights |
+| `ASCEND_CUSTOM_OPP_PATH` | `<install-dir>/op_cpu` under mobile | GE Python custom-op plugin dir; registers the `Bitcast` / `TransData` HostCpu kernels (int4 layout constant folding) | Do not change. Missing it breaks int4 quantized graph compilation (`TransData` has no kernel) |
+| `ASCEND_GE_PY_PASS_PATH` | `<install-dir>/op_pass` under mobile | GE Python pass plugin dir; registers `QbmX2TransDataPass` (`QuantBatchMatmulV4` x2 int4 `ND→FRACTAL_Z`) | Do not change. Missing it reports `FRACTAL_Z infershape requires x2 4D shape` |
+
+Typical usage:
+
+```bash
+# Quantized mobile compile (Kirin): set SOC only, the rest is automatic
+source $HOME/Ascend/cann/set_env.sh
+export SOC_VERSION=KirinX90
+source /opt/cann-local-lm/set_env.sh
+/opt/cann-local-lm/cann_lm_compile <ep_json> <weight_info> <out>   # → <out>.omc + weight/
+
+# Generic Ascend910 compile: a non-Kirin SOC disables the mobile branch
+export SOC_VERSION=Ascend910_9362
+source /opt/cann-local-lm/set_env.sh
+/opt/cann-local-lm/cann_lm_compile <ep_json> <weight_info> <out>   # → <out>.om
+
+# Embedded weights (single-file distribution; on Kirin only for models ≤ 2 GB)
+export GE_EXTERNAL_WEIGHT=0        # may be set before or after source set_env.sh (the default applies only when unset)
+```
+
+> Development mode (source tree, no `.run` package) works identically — just replace `source /opt/cann-local-lm/set_env.sh` with `source scripts/cann_lm_compile/set_env.sh`; the plugin dirs then point to the source tree's `cann_local_lm/converter/export/{op_cpu,op_pass}`.
 
 > For end-to-end examples, see [Quick Start](QUICKSTART.md).
 
@@ -267,11 +304,11 @@ Expected output (all ✓):
   ✓ torch (2.9.0+cpu)
   ✓ torchair
   ✓ torch_delegate
-  ✓ cann_lm (converter)
+  ✓ cann_local_lm (converter)
   ✓ third_party json
 ```
 
-> If `cann_lm (converter)` shows ✗: run `bash scripts/build.sh deps` to install into P1 venv (converter only, not engine).
+> If `cann_local_lm (converter)` shows ✗: run `bash scripts/build.sh deps` to install into P1 venv (converter only, not engine).
 > If `third_party` shows ✗: run `bash build.sh third_party` (or `--pkg` which builds it automatically).
 > If `torchair` shows ✗: see [Q2](#q2-torchair--torch_delegate-not-installed).
 
@@ -300,8 +337,8 @@ Expected output (all ✓):
 | `cpp` | `--debug`/`--release`(default) / `--asan` / `--no-tests` / `--no-compile-tool` / `--target <name>` | Build `libtorch_delegate_backend.so` + `cann_lm_compile` |
 | `tests` | `--no-asan` / `--skip-run` | ASAN build + ctest |
 | `third_party` | `--third_party_path=PATH` / `--jobs=N` | Build nlohmann_json + GTest + makeself |
-| `deps` | (none) | Install cann_lm wheels into the P1 venv |
-| `wheel` | (none) | cann_lm + cann_lm_engine whl |
+| `deps` | (none) | Install cann_local_lm wheels into the P1 venv |
+| `wheel` | (none) | cann_local_lm + cann_lm_engine whl |
 | `package` | (passthrough) | Package `cann_lm_compile-*.run` |
 | `all` | (passthrough) | deps → third_party → cpp → wheel |
 
@@ -361,6 +398,18 @@ pip install torchaudio==2.9.0 --force-reinstall --no-deps --user   # Match torch
 ### Q8: OHOS cross-compilation shows many `clang++: warning: argument unused`
 
 Redundant flags passed by the OHOS toolchain cmake; **harmless** and does not affect build results.
+
+### Q9: Kirin platform model debugging tool
+
+[model_run_tool](https:/kiri-obs.obs.cn-north-4.myhuaweicloud.com/Cann%20Large%20Model%20Foundation%208.5.0.rc003/CANN-Kit-tools-7.0.1.0.run) — see `./model_run_tool -h` for detailed usage.
+
+### Q10: prefill/decode weight sharing
+
+`GE_EXTERNAL_WEIGHT` and `GE_MOBILE_WEIGHT_SHARE_OPS` must be used together. For the Kirin platform, `GE_EXTERNAL_WEIGHT` only supports values 0 and 2; `GE_MOBILE_WEIGHT_SHARE_OPS` is Kirin-only. This feature requires PC 7.0 B115SPX or later; other versions only do compatibility adaptation.
+
+### Q11: Custom fusion operators required for quantization
+
+`ASCEND_CUSTOM_OPP_PATH` and `ASCEND_GE_PY_PASS_PATH` — the current companion version's quantization operators only support `FRACTAL_Z` format; weight conversion and reordering must be implemented on the CPU side.
 
 ## Related Files
 

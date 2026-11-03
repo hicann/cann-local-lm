@@ -41,15 +41,15 @@ from pathlib import Path
 import torch
 
 _PROJECT_ROOT = next(
-    p for p in Path(__file__).resolve().parents if (p / "cann_lm").is_dir()
+    p for p in Path(__file__).resolve().parents if (p / "cann_local_lm").is_dir()
 )
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-from cann_lm.models.gemma4 import Gemma4ForCausalLM, Gemma4TextConfig
-from cann_lm.models.gemma4.modeling_gemma4 import load_gemma4_weights
-from cann_lm.models.gemma4.export_wrapper import Gemma4ExportWrapper
-from cann_lm.converter.export.ge_converters import register_ge_converters
+from cann_local_lm.models.gemma4 import Gemma4ForCausalLM, Gemma4TextConfig
+from cann_local_lm.models.gemma4.modeling_gemma4 import load_gemma4_weights
+from cann_local_lm.models.gemma4.export_wrapper import Gemma4ExportWrapper
+from cann_local_lm.converter.export.ge_converters import register_ge_converters
 from transformers import AutoTokenizer
 
 HF_PATH = os.environ["GEMMA4_HF_PATH"]

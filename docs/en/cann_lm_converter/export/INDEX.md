@@ -17,19 +17,19 @@ English | [简体中文](../../../zh/cann_lm_converter/export/INDEX.md)
 
 | File | Responsibility |
 |------|------|
-| `cann_lm/models/model_registry.py` | `ModelEntry` + `REGISTRY` + `detect_model_type` + `available_models` |
-| `cann_lm/converter/loader.py` | `load_model` + `build_config` + `collect_tokenizer_files` |
-| `cann_lm/converter/saver.py` | `save_epair` / `save_epair_prefill_decode` / `save_model_config` / `copy_tokenizer_files` |
-| `cann_lm/models/export_wrapper.py` | `ExportWrapper` base class (`forward` + `get_sample_inputs` + `_drive_layers`) |
-| `cann_lm/models/{gemma4,qwen3_5}/export_wrapper.py` | Per-model `ExportWrapper` subclasses |
-| `cann_lm/converter/export/epair_utils.py` | `pack_weights` + `consolidated_weights_save` |
-| `cann_lm/converter/export/weight_format/` | Weight format conversion package (implemented): `nd2nz` (ND→FractNZ, Stage 1) + `pack_int4_nz` (int4pack→FractZ, Stage 2) + `rules.resolve_format` (config parsing, dispatch by op_type) + `load_rules` (see [weight_format_design.md](./weight_format_design.md)) |
-| `cann_lm/converter/export/weight_format_rules.json` | shipped default config (`name_pattern` + `op_type` + `format` + `pack` + post-migration rule-level `enable`): MatMul `*_proj.weight`→NZ (post-migration `enable:false` no conversion), QuantBatchMatmulV4 `*.weight_q`→Z (`enable:true` mandatory); missing/empty rules → all ND (escape hatch). Post-migration it is the sole authority for format control (replaces env master switch, see design doc "Master Switch Deprecation Design") |
-| `cann_lm/converter/export/quant_swap/` | Quantization materialization internal package (migrated from `quant/` on 2026-08-31): `materialize.py` (int4 materialization + `transdata_scale`/`pack_int4`) / `quant_linear.py` (QuantLinear); `__init__` re-exports 6 materialization symbols. Orchestration layer `swap.py` promoted to `cann_lm/converter/swap.py` (converter root). See [quant_design.md](../quant/quant_design.md) |
-| `cann_lm/converter/export/ge_converters/ge_converter.py` | `register_ge_converters` (cann_lm.* + aten.* → GE op mapping) |
-| `cann_lm/converter/export/ge_converters/_quant_matmul_converter.py` | `npu::npu_quant_matmul` → `ge.QuantBatchMatmulV4` GE converter (see [INDEX.md](../quant/INDEX.md)) |
+| `cann_local_lm/models/model_registry.py` | `ModelEntry` + `REGISTRY` + `detect_model_type` + `available_models` |
+| `cann_local_lm/converter/loader.py` | `load_model` + `build_config` + `collect_tokenizer_files` |
+| `cann_local_lm/converter/saver.py` | `save_epair` / `save_epair_prefill_decode` / `save_model_config` / `copy_tokenizer_files` |
+| `cann_local_lm/models/export_wrapper.py` | `ExportWrapper` base class (`forward` + `get_sample_inputs` + `_drive_layers`) |
+| `cann_local_lm/models/{gemma4,qwen3_5}/export_wrapper.py` | Per-model `ExportWrapper` subclasses |
+| `cann_local_lm/converter/export/epair_utils.py` | `pack_weights` + `consolidated_weights_save` |
+| `cann_local_lm/converter/export/weight_format/` | Weight format conversion package (implemented): `nd2nz` (ND→FractNZ, Stage 1) + `pack_int4_nz` (int4pack→FractZ, Stage 2) + `rules.resolve_format` (config parsing, dispatch by op_type) + `load_rules` (see [weight_format_design.md](./weight_format_design.md)) |
+| `cann_local_lm/converter/export/weight_format_rules.json` | shipped default config (`name_pattern` + `op_type` + `format` + `pack` + post-migration rule-level `enable`): MatMul `*_proj.weight`→NZ (post-migration `enable:false` no conversion), QuantBatchMatmulV4 `*.weight_q`→Z (`enable:true` mandatory); missing/empty rules → all ND (escape hatch). Post-migration it is the sole authority for format control (replaces env master switch, see design doc "Master Switch Deprecation Design") |
+| `cann_local_lm/converter/export/quant_swap/` | Quantization materialization internal package (migrated from `quant/` on 2026-08-31): `materialize.py` (int4 materialization + `transdata_scale`/`pack_int4`) / `quant_linear.py` (QuantLinear); `__init__` re-exports 6 materialization symbols. Orchestration layer `swap.py` promoted to `cann_local_lm/converter/swap.py` (converter root). See [quant_design.md](../quant/quant_design.md) |
+| `cann_local_lm/converter/export/ge_converters/ge_converter.py` | `register_ge_converters` (cann_local_lm.* + aten.* → GE op mapping) |
+| `cann_local_lm/converter/export/ge_converters/_quant_matmul_converter.py` | `npu::npu_quant_matmul` → `ge.QuantBatchMatmulV4` GE converter (see [INDEX.md](../quant/INDEX.md)) |
 
-### C++ (`cann_lm/converter/export/csrc/`)
+### C++ (`cann_local_lm/converter/export/csrc/`)
 
 | File | Responsibility |
 |------|------|
@@ -66,7 +66,7 @@ English | [简体中文](../../../zh/cann_lm_converter/export/INDEX.md)
 | ~~`inline_weight_layout(ep_json_path, names_nz)`~~ | **Deprecated**: pt2 layout enum has no NZ expression; format signal now goes through `weight_info.json`'s `format` field (design doc "ep_json layout annotation") |
 | `td::EpairModelLoader` | C++ load epair → build GE Graph |
 | `GeWeightLoader` | C++ lazy-load weight bin |
-| `register_ge_converters()` | Register cann_lm.* + aten.* → GE op mapping |
+| `register_ge_converters()` | Register cann_local_lm.* + aten.* → GE op mapping |
 
 ## Artifact Layout
 

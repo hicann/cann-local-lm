@@ -1,4 +1,4 @@
-"""Tests for the cann_lm.chat CLI's pure logic + arg wiring + cli dispatch +
+"""Tests for the cann_local_lm.chat CLI's pure logic + arg wiring + cli dispatch +
 the interactive run() loop (exercised with a mocked Engine + faked stdin, no .so).
 
 Pure-logic helpers (build_prompt / enforce_budget / check_round_limit / add_args)
@@ -8,9 +8,15 @@ end-to-end via a FakeEngine + monkeypatched builtins.input.
 
 import argparse
 
-from cann_lm import chat
-from cann_lm import cli
-from cann_lm.chat import add_args, build_prompt, check_round_limit, enforce_budget, run
+from cann_local_lm import chat
+from cann_local_lm import cli
+from cann_local_lm.chat import (
+    add_args,
+    build_prompt,
+    check_round_limit,
+    enforce_budget,
+    run,
+)
 
 
 class TestBuildPrompt:
@@ -157,7 +163,7 @@ class TestChatAddArgs:
 
 
 class TestCliChatDispatch:
-    """cann_lm chat --config ... routes to chat.run (the dispatcher wires the
+    """cann_local_lm chat --config ... routes to chat.run (the dispatcher wires the
     chat subcommand into the reserved slot in cli.build_parser)."""
 
     def test_chat_subcommand_routes_to_chat_run(self):
@@ -197,14 +203,14 @@ class TestChatRunShowPaths:
     def test_show_paths_flag_exits_before_so_gate(self, monkeypatch, tmp_path, capsys):
         # --show-paths must NOT touch the .so: monkeypatch get_library to explode
         # if it's ever called; if the flag works, run() returns before the gate.
-        import cann_lm
+        import cann_local_lm
 
         def boom(*a, **k):
             raise AssertionError("--show-paths must not call get_library")
 
-        monkeypatch.setattr(cann_lm, "get_library", boom)
+        monkeypatch.setattr(cann_local_lm, "get_library", boom)
         cfg = self._cfg(tmp_path)
-        monkeypatch.setattr("cann_lm.chat.load_config", lambda c: cfg)
+        monkeypatch.setattr("cann_local_lm.chat.load_config", lambda c: cfg)
         args = argparse.Namespace(
             config="ignored.json",
             max_tokens=None,
@@ -235,7 +241,7 @@ class TestChatRunShowPaths:
             "decode_weight": str(files["wd"]),
             "sentences": [{}],
         }
-        monkeypatch.setattr("cann_lm.chat.load_config", lambda c: cfg)
+        monkeypatch.setattr("cann_local_lm.chat.load_config", lambda c: cfg)
         args = argparse.Namespace(
             config="x", max_tokens=None, stop_strings=None, lib=None, show_paths=True
         )
@@ -244,7 +250,7 @@ class TestChatRunShowPaths:
 
     def test_bad_config_returns_2(self, monkeypatch):
         # load_config returns None (parse error / missing file) -> run returns 2
-        monkeypatch.setattr("cann_lm.chat.load_config", lambda c: None)
+        monkeypatch.setattr("cann_local_lm.chat.load_config", lambda c: None)
         args = argparse.Namespace(
             config="bad.json",
             max_tokens=None,
@@ -271,7 +277,7 @@ class _FakeContext:
 
 
 class _FakeEngine:
-    """Drop-in for cann_lm.Engine. Records every generate() prompt; optionally
+    """Drop-in for cann_local_lm.Engine. Records every generate() prompt; optionally
     raises CannLmStatusError on the first N calls to exercise error-continues."""
 
     fail_first_n = 0  # class-level: fail the first N generate() calls
@@ -289,9 +295,11 @@ class _FakeEngine:
     def generate(self, prompt, sampling_params=None, max_tokens=0, stop_strings=None):
         self._calls += 1
         if self._calls <= _FakeEngine.fail_first_n:
-            import cann_lm
+            import cann_local_lm
 
-            raise cann_lm.CannLmStatusError(cann_lm.Status.FAILURE, "ExecutorGenerate")
+            raise cann_local_lm.CannLmStatusError(
+                cann_local_lm.Status.FAILURE, "ExecutorGenerate"
+            )
         self.prompts.append(prompt)
         return _FakeResult(f"reply:{prompt[:8]}")
 
@@ -344,13 +352,13 @@ def _chat_cfg(tmp_path):
 
 
 def _wire_chat_env(monkeypatch, tmp_path, cfg, inputs):
-    """Monkeypatch cann_lm.get_library/Engine + load_config + builtins.input so
+    """Monkeypatch cann_local_lm.get_library/Engine + load_config + builtins.input so
     run() executes without a .so. Returns nothing; assertions read stdout/stderr."""
-    import cann_lm
+    import cann_local_lm
 
-    monkeypatch.setattr(cann_lm, "get_library", lambda lib=None: object())
-    monkeypatch.setattr(cann_lm, "Engine", _FakeEngine)
-    monkeypatch.setattr("cann_lm.chat.load_config", lambda c: cfg)
+    monkeypatch.setattr(cann_local_lm, "get_library", lambda lib=None: object())
+    monkeypatch.setattr(cann_local_lm, "Engine", _FakeEngine)
+    monkeypatch.setattr("cann_local_lm.chat.load_config", lambda c: cfg)
     monkeypatch.setattr(_FakeEngine, "fail_first_n", 0)
     it = iter(inputs)
 
@@ -424,9 +432,9 @@ class TestChatRunLoop:
         # while generate() blocks, an animated 'thinking.' spinner must render to
         # stdout so the user sees the model is working (not a silent hang)
         _wire_chat_env(monkeypatch, tmp_path, _chat_cfg(tmp_path), ["hi", "/quit"])
-        import cann_lm
+        import cann_local_lm
 
-        monkeypatch.setattr(cann_lm, "Engine", _SlowFakeEngine)
+        monkeypatch.setattr(cann_local_lm, "Engine", _SlowFakeEngine)
         rc = run(_args())
         out = capsys.readouterr().out
         assert rc == 0
@@ -441,7 +449,7 @@ class TestThinkingIndicator:
 
     def test_cycles_through_multiple_frames(self, capsys):
         import time
-        from cann_lm.chat import _ThinkingIndicator
+        from cann_local_lm.chat import _ThinkingIndicator
 
         ind = _ThinkingIndicator(interval=0.04)
         ind.start()
@@ -456,7 +464,7 @@ class TestThinkingIndicator:
     def test_stop_clears_the_line(self, capsys):
         # after stop(), the spinner text must be overwritten (cleared) so the
         # reply starts at column 0, not appended after 'thinking...'
-        from cann_lm.chat import _ThinkingIndicator
+        from cann_local_lm.chat import _ThinkingIndicator
 
         ind = _ThinkingIndicator(interval=0.5)
         ind.start()

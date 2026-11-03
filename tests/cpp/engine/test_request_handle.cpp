@@ -7,7 +7,7 @@
 
 #include <gtest/gtest.h>
 
-namespace cann_lm::engine {
+namespace cann_local_lm::engine {
 namespace {
 
 // UT-TC-RH-001 (NEW-5): 空句柄 GetStatus 返回 Queued（impl_ 为空分支）
@@ -74,4 +74,4 @@ TEST(RequestHandleTest, EmptyHandleWaitWithNullOutReturnsInvalidArgument_TC103)
 }
 
 } // namespace
-} // namespace cann_lm::engine
+} // namespace cann_local_lm::engine

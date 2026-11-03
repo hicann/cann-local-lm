@@ -12,13 +12,13 @@ The converter has three stages in its full pipeline, each with different compute
 
 | Stage | What it does | Compute-domain requirement |
 |------|--------|-----------|
-| Load `load_model` + swap | Load cann_lm model, materialize int4, setattr to replace nn.Linear | Only needs tensor operations (CPU is fine) |
+| Load `load_model` + swap | Load cann_local_lm model, materialize int4, setattr to replace nn.Linear | Only needs tensor operations (CPU is fine) |
 | Quantization GPTQ (`--quant-method gptq`) | CANN lightweight tool runs Hessian matrix accumulation `X^T X` + Cholesky inversion + per-column update | Needs real forward + backward, must run on a compute device (NPU/GPU) |
 | Export epair (`torch.export` + torchair GE conversion) | Trace model → FX graph → GE IR | Only needs fake-meta (for tracing) + torchair stubs (C symbols) |
 
 Key constraints:
 
-1. **cann_lm fused ops are only implemented on CPU**: Ops in `cann_lm/models/fused_ops/` (`npu_quant_matmul` / `npu_dynamic_quant` / `fused_infer_attention_score`, etc.) are provided by `_library.py` with schema + fake-meta + CPU PoC impl, **do not support real NPU execution** (only support torch.export tracing). Therefore the cann_lm model loaded by `load_model` cannot be forwarded on NPU.
+1. **cann_local_lm fused ops are only implemented on CPU**: Ops in `cann_local_lm/models/fused_ops/` (`npu_quant_matmul` / `npu_dynamic_quant` / `fused_infer_attention_score`, etc.) are provided by `_library.py` with schema + fake-meta + CPU PoC impl, **do not support real NPU execution** (only support torch.export tracing). Therefore the cann_local_lm model loaded by `load_model` cannot be forwarded on NPU.
 2. **converter venv is CPU-only**: `torch 2.9.0+cpu` + `torchair` (source-compiled `NO_ASCEND_SDK=1`) + lib stubs (`libtorch_npu.so` etc. stubbed, providing C symbols for the torchair GE engine, avoiding real NPU `aclrtSetDevice→107001`). **The torch_npu python package is not installed.**
 3. **GPTQ needs real op eager**: dopt_lm uses `transformers.AutoModelForCausalLM` + real torch_npu/torch.cuda ops eager to run GPTQ (Hessian requires batch forward accumulation, Cholesky requires compute power). dopt_lm `SUPPORTED_DEVICE_TYPES = {"cpu","cuda","npu"}` **includes CPU** (CPU uses `dispatch_dtype=float32`), but 7B+ model Hessian is several GB, extremely slow on CPU (only suitable for small models/debugging).
 4. **Environment conflict is unsolvable**: If the converter main process installs real torch_npu, it will hit the `_LazyTorchair` proxy overriding the source torchair (`torch_npu/dynamo/__init__.py` unconditionally installs `sys.modules['torchair']=_LazyTorchair()`, hijacking to the bundled wrapper, whose `fx2ge_converter.parse_input` has an AssertionError failing on the `input_ids` placeholder) + torch_npu version dependency (`npu_chunk_gated_delta_rule` schema only in ≥2.7.1.post8) + `_get_deterministic_level` API missing. See cli_design.md "Relationship between converter and torch_npu" for details.
@@ -44,12 +44,12 @@ Rationale: Export only needs fake-meta tracing (self-provided by `_library.py`, 
 - **Negative/Cost**:
   - subprocess has disk-bridge IO (temp dir via `tempfile.mkdtemp`, cleaned up with `shutil.rmtree` after successful swap, retained on failure for debugging)
   - ~~`auto_quant.py` and `dopt_wrapper.py` each have a copy of `_build_layer_strategy` (duplicated, planned to merge into a single file to eliminate, not yet landed)~~ **Landed (2026-08-31)**: `auto_quant._build_layer_strategy` deleted, `dopt_wrapper._build_layer_strategy` renamed to `build_layer_strategy`, single implementation
-  - Scenario 2 memory peak is 2× (2 HF models from the lightweight tool inside the subprocess + main process cann_lm, in separate processes; not a true one-step integration)
+  - Scenario 2 memory peak is 2× (2 HF models from the lightweight tool inside the subprocess + main process cann_local_lm, in separate processes; not a true one-step integration)
 - **Constraints introduced**:
-  - `load_model` is always CPU (cann_lm fused ops are only implemented on CPU, no plan to port to NPU)
+  - `load_model` is always CPU (cann_local_lm fused ops are only implemented on CPU, no plan to port to NPU)
   - `--quant-device` only affects the subprocess, not the main process
   - Pure CPU environment (no NPU/GPU) `--quant-method gptq` falls back to `cpu` (dopt_lm supports this, 7B+ is extremely slow); or use `--quant-path` to consume offline output
-  - cann_lm model layer names must be consistent with transformers layer names (the HF model layer names quantized by the lightweight tool must be portable to the cann_lm model, relying on naming consistency)
+  - cann_local_lm model layer names must be consistent with transformers layer names (the HF model layer names quantized by the lightweight tool must be portable to the cann_local_lm model, relying on naming consistency)
 
 ## Alternatives (Alternatives)
 
@@ -82,10 +82,10 @@ converter main process imports dopt_lm to run GPTQ in-process, saving the subpro
 Rejection reasons:
 1. Environment conflict is unsolvable (converter venv CPU stubs contradicts the lightweight tool's need for real NPU, cannot be satisfied simultaneously in the same process)
 2. dopt_lm's `args` global singleton + `ptq_loop` reentrancy risk (in-process reentrancy will error)
-3. Memory peak 3-4× (cann_lm + lightweight tool's 2 HF copies + state_dict)
+3. Memory peak 3-4× (cann_local_lm + lightweight tool's 2 HF copies + state_dict)
 
 ## Related
 
 - See cli_design.md "Runtime Environment Support (NPU / GPU / Pure CPU)" three-environment matrix + "Relationship between converter and torch_npu" three coupling issues
 - quant_design.md "One-click quantization scheme selection" three-option comparison (A modify lightweight tool / B memory / C subprocess, chose C i.e. this ADR)
-- If cann_lm fused ops are ported to NPU in the future (supporting real execution): the "load_model hard-coded to CPU" constraint of this ADR can be relaxed, but subprocess isolation may still be retained (to avoid environment conflicts)
+- If cann_local_lm fused ops are ported to NPU in the future (supporting real execution): the "load_model hard-coded to CPU" constraint of this ADR can be relaxed, but subprocess isolation may still be retained (to avoid environment conflicts)

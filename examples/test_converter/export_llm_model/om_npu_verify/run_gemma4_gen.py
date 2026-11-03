@@ -33,9 +33,9 @@ PREFILL_SEQ = int(os.environ.get("PREFILL_SEQ", 64))
 import torch_npu  # noqa: F401  # for wrapper eager if needed; mainly for mask helpers
 from safetensors import safe_open
 
-# cann_lm fused_ops 为无 torch_npu 环境构建 (register_fake npu:: 假算子); ③ 有真 torch_npu 时
-# 这些 op 已由 torch_npu 注册 Meta → cann_lm 再 register_fake 冲突. 包一层跳过已注册的 op,
-# 用 torch_npu 的 (等价 _HAS_TORCH_NPU=True), 避免改 cann_lm/_library.py.
+# cann_local_lm fused_ops 为无 torch_npu 环境构建 (register_fake npu:: 假算子); ③ 有真 torch_npu 时
+# 这些 op 已由 torch_npu 注册 Meta → cann_local_lm 再 register_fake 冲突. 包一层跳过已注册的 op,
+# 用 torch_npu 的 (等价 _HAS_TORCH_NPU=True), 避免改 cann_local_lm/_library.py.
 _rf = torch.library.register_fake
 
 
@@ -53,9 +53,9 @@ def _safe_register_fake(*a, **k):
 
 torch.library.register_fake = _safe_register_fake
 try:
-    from cann_lm.models.gemma4 import Gemma4ForCausalLM, Gemma4TextConfig
-    from cann_lm.models.gemma4.modeling_gemma4 import load_gemma4_weights
-    from cann_lm.models.gemma4.export_wrapper import Gemma4ExportWrapper
+    from cann_local_lm.models.gemma4 import Gemma4ForCausalLM, Gemma4TextConfig
+    from cann_local_lm.models.gemma4.modeling_gemma4 import load_gemma4_weights
+    from cann_local_lm.models.gemma4.export_wrapper import Gemma4ExportWrapper
 finally:
     torch.library.register_fake = _rf
 

@@ -713,4 +713,4 @@ cann-lm-converter 定位接近 **coremltools**(转换/导出),不是 ollama/mlc-
 - 遗留问题:[CLI-013](./TODO_notes.md#cli-013-todo端侧-llm-工具-cli-与文档提供方式调研)(行动项全 ✅:子命令化评估保持单命令 + console_scripts 已注册 + 命令参考页 cli/INDEX 已加)
 - cann-lm 打包:`scripts/cann_lm_converter/pyproject.toml`(console_scripts `cann-lm-converter`)+ `scripts/cann_lm_engine/pyproject.toml`(engine 独立)
 - 设计文档:[cli_design.md](./cli/cli_design.md)「命令行参数 / 完整调用链」、[cli/INDEX.md](./cli/INDEX.md)「命令参考」
-- 代码:`cann_lm/converter/cann_lm_converter.py`(CLI 入口)
+- 代码:`cann_local_lm/converter/cann_lm_converter.py`(CLI 入口)

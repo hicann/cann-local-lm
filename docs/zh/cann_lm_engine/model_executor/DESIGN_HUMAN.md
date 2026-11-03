@@ -75,7 +75,7 @@ v0.3 曾用一个运行时注入的 `ModelManagerFactory`（工厂对象）来�
 
 v0.7 把"模型加载"拆成两个同级 L3 角色，并改了配置来源：
 
-- **新增 `IBuiltModel`**（与 `IModelManager` 同级，声明在 `cann_lm/engine/core/tensor_manager.h`）：负责"构件 → 已构建模型"——`BuildModelFromFile/FromBuffer()` 加载 om 路径/buffer 成已构建模型（含编译），`GetInputDescs/GetOutputDescs` 暴露 om 图 I/O 张量描述（`TensorDesc` 定义在 `core/tensor_manager.h`）。经链接期 `BuildModelFromFile/FromBuffer()` 创建（同 CreateModelManager 模式，后端编译时确定）。
+- **新增 `IBuiltModel`**（与 `IModelManager` 同级，声明在 `cann_local_lm/engine/core/tensor_manager.h`）：负责"构件 → 已构建模型"——`BuildModelFromFile/FromBuffer()` 加载 om 路径/buffer 成已构建模型（含编译），`GetInputDescs/GetOutputDescs` 暴露 om 图 I/O 张量描述（`TensorDesc` 定义在 `core/tensor_manager.h`）。经链接期 `BuildModelFromFile/FromBuffer()` 创建（同 CreateModelManager 模式，后端编译时确定）。
 - **`ModelHandle` 移除**——被 `IBuiltModel` 替代。模型引用即 owned `IBuiltModel`，经 `Init` 移交给 ModelManager 持有，ModelExecutor 不再持句柄。
 - **`ModelMetaInfo` → `ModelConfig`**：配置**不再是加载时从 artifact meta_json 解析出来的输出**，而是**用户用 JSON 传给 pipeline、由 pipeline 调 `model_executor::Load` 时作为入参传入**。Load 签名变成 `Load(artifact, ModelConfig)`。
 - **`IModelManager::Load` 去掉，改 `Init(ModelConfig, shared_ptr<IBuiltModel>)`**：ModelManager **不直接经 artifact 加载**——构件加载归 IBuiltModel，MM 只接收已构建的 BuiltModel 做运行时初始化（权重上 NPU、图就绪）。`Forward`/`Release` 不再接收 handle（MM 经 Init 绑定唯一 built）。`GetMeta`→`GetConfig`。
@@ -618,7 +618,7 @@ v0.3 曾用一个运行时注入的 `ModelManagerFactory`（工厂对象）来�
 
 可并行：KV 池和维测互不依赖，可以同时开工。
 
-源码落 `cann_lm/engine/core/model_executor/`，UT 落 `tests/cpp/engine/model_executor/`。后端库由构建配置选定链接，提供 `CreateModelManager()` 定义；UT 链接 stub（返 mock MM）。
+源码落 `cann_local_lm/engine/core/model_executor/`，UT 落 `tests/cpp/engine/model_executor/`。后端库由构建配置选定链接，提供 `CreateModelManager()` 定义；UT 链接 stub（返 mock MM）。
 
 ---
 

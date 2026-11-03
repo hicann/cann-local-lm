@@ -23,7 +23,7 @@ import torch
 
 THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 _PROJECT_ROOT = next(
-    p for p in Path(__file__).resolve().parents if (p / "cann_lm").is_dir()
+    p for p in Path(__file__).resolve().parents if (p / "cann_local_lm").is_dir()
 )
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
@@ -35,7 +35,7 @@ if _LLM_ENGINE_DIR not in sys.path:
     sys.path.insert(0, _LLM_ENGINE_DIR)
 import hf_cpu  # noqa: F401  disables torch_npu probe before importing transformers
 
-from cann_lm.models.qwen3_5 import (
+from cann_local_lm.models.qwen3_5 import (
     Qwen3_5ForCausalLM,
     Qwen3_5TextConfig,
     load_qwen3_5_weights,
@@ -124,7 +124,7 @@ def main():
     compare_logits("random-32", my_r, hf_r)
 
     # prefill-with-cache == prefill-without-cache (mine internal invariant)
-    from cann_lm.models.qwen3_5 import SimpleKVCache, SimpleDeltaNetCache
+    from cann_local_lm.models.qwen3_5 import SimpleKVCache, SimpleDeltaNetCache
 
     gdn = mine.model.layers[0].linear_attn
     kv = SimpleKVCache()

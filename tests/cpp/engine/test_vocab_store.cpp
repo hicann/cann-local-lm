@@ -36,7 +36,7 @@
 #include <string>
 #include <vector>
 
-namespace cann_lm::engine {
+namespace cann_local_lm::engine {
 namespace {
 
 // 与 ut_text_embedding/ut_pipeline_embed 同族确定性 fixture（微型 BPE 词表
@@ -373,4 +373,4 @@ TEST(VocabStoreBincacheTest, EnvDefaultOffOptInGatesCachePlanes_L4_5)
 }
 
 } // namespace
-} // namespace cann_lm::engine
+} // namespace cann_local_lm::engine

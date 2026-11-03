@@ -3,20 +3,20 @@ set -euo pipefail
 #=============================================================================
 # build_wheel.sh — 打包 cann-local-lm-engine whl (engine python ctypes 绑定)
 #
-# 源头: cann_lm/engine/python/(flat-layout 项目根, pyproject.toml 在此, 包 cann_lm/
+# 源头: cann_local_lm/engine/python/(flat-layout 项目根, pyproject.toml 在此, 包 cann_local_lm/
 # 居其下)。本 whl 纯 python(ctypes 直通 C ABI, 零运行时依赖), 不含 C++ .so —
 # .so 由消费者经 CANN_LM_LIB env 提供(host 用 build_host2 的 libcann_lm_engine.so,
 # 设备用 deploy_ohos/ 的 OHOS aarch64 .so; OHOS .so 平台 tag 不入 wheel)。
 #
-# 与 cann-lm converter wheel 共享 cann_lm 命名空间: 本 wheel 的 cann_lm/__init__.py
-# 含 pkgutil.extend_path, 两 wheel 同 env 不互隐(cann_lm.Engine 与 cann_lm.converter 并存)。
+# 与 cann-local-lm converter wheel 共享 cann_local_lm 命名空间: 本 wheel 的 cann_local_lm/__init__.py
+# 含 pkgutil.extend_path, 两 wheel 同 env 不互隐(cann_local_lm.Engine 与 cann_local_lm.converter 并存)。
 #
 # 用法: bash scripts/cann_lm_engine/build_wheel.sh
 # 产物: $REPO/build_out/cann_local_lm_engine-*.whl
 #=============================================================================
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$SCRIPT_DIR/../.." && pwd)"
-PY_SRC="$REPO/cann_lm/engine/python"
+PY_SRC="$REPO/cann_local_lm/engine/python"
 PYPROJECT="$REPO/scripts/cann_lm_engine/pyproject.toml"
 DIST="${DIST:-$REPO/build_out}"
 mkdir -p "$DIST"

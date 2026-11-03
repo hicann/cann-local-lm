@@ -18,7 +18,7 @@ English | [简体中文](../../../zh/cann_lm_engine/c_api/DESIGN.md)
 
 | Attribute | Value |
 |------|-----|
-| Code path | `cann_lm/engine/api/c/` |
+| Code path | `cann_local_lm/engine/api/c/` |
 | Header file | `api/c/c_api.h` (pure C, only `<stddef.h>` / `<stdint.h>`) |
 | Implementation | `api/c/c_api.cpp` (C++17, includes C++ API headers) |
 | Build artifact | Compiled into `libcann_lm_engine.a` (same static library) |
@@ -388,7 +388,7 @@ C++ standard library headers only appear in `.cpp`, do not leak into `api/c/c_ap
 ### 13.3 Directory Structure
 
 ```
-cann_lm/engine/
+cann_local_lm/engine/
   api/
     c/
       c_api.h      ← C header (external)

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Numerical alignment: pure-torch gemma4 vs HuggingFace transformers gemma4.
 
-Loads the SAME checkpoint into cann_lm Gemma4ForCausalLM and HF
+Loads the SAME checkpoint into cann_local_lm Gemma4ForCausalLM and HF
 Gemma4ForConditionalGeneration (text-only: language_model + lm_head + softcap),
 compares per-position logits (max_diff / argmax_match / top5_overlap) + greedy
 generation token-id equality.
@@ -27,7 +27,7 @@ from pathlib import Path
 import torch
 
 _PROJECT_ROOT = next(
-    p for p in Path(__file__).resolve().parents if (p / "cann_lm").is_dir()
+    p for p in Path(__file__).resolve().parents if (p / "cann_local_lm").is_dir()
 )
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
@@ -39,8 +39,8 @@ if _LLM_ENGINE_DIR not in sys.path:
     sys.path.insert(0, _LLM_ENGINE_DIR)
 import hf_cpu  # noqa: F401  disables torch_npu probe before importing transformers
 
-from cann_lm.models.gemma4 import Gemma4ForCausalLM, Gemma4TextConfig
-from cann_lm.models.gemma4.modeling_gemma4 import load_gemma4_weights
+from cann_local_lm.models.gemma4 import Gemma4ForCausalLM, Gemma4TextConfig
+from cann_local_lm.models.gemma4.modeling_gemma4 import load_gemma4_weights
 
 HF_PATH = os.environ["GEMMA4_HF_PATH"]
 BOS_TOKEN_ID = 2
@@ -97,7 +97,7 @@ def hf_forward(hf_full, input_ids, dtype):
 
 
 def mine_forward(mine, input_ids, dtype):
-    """cann_lm Gemma4ForCausalLM forward (手动 4D mask + shared_kv_states PLE)."""
+    """cann_local_lm Gemma4ForCausalLM forward (手动 4D mask + shared_kv_states PLE)."""
     mask = make_causal_mask(input_ids.shape[1], input_ids.shape[1], dtype)
     with torch.no_grad():
         out = mine(

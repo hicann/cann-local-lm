@@ -52,7 +52,7 @@ def convert(
 ) -> None:
     """程序化入口：HF 模型 → epair
 
-    load_model 写死 CPU (融合算子 cann_lm/models/fused_ops/ 只在 CPU 实现),
+    load_model 写死 CPU (融合算子 cann_local_lm/models/fused_ops/ 只在 CPU 实现),
     不接受 device 参数. NPU 跑 GPTQ 通过 quant_method + subprocess 隔离.
 
     mode:
@@ -65,7 +65,7 @@ def convert(
     dopt_out_path = None
     dopt_out_is_temp = False  # True = converter 临时目录 (场景 2), swap 后清理; False = 用户路径 (场景 1)
     if quant_method == "gptq":
-        from cann_lm.converter.quant_entry import run_auto_quant
+        from cann_local_lm.converter.quant_entry import run_auto_quant
         dopt_out_path = run_auto_quant(hf_path)
         dopt_out_is_temp = True
     elif quant_path:
@@ -93,7 +93,7 @@ def convert(
     # 量化 swap: 场景 1 + 场景 2 共用统一路径 (一次 load → Linear swap + Embedding 抽取)
     embed_quant = None
     if dopt_out_path:
-        from cann_lm.converter.quant_entry import swap_from_dopt
+        from cann_local_lm.converter.quant_entry import swap_from_dopt
         info, embed_quant = swap_from_dopt(artifact.model, dopt_out_path, target_soc=target_soc)
         artifact.quant_info = info
         print(f"      Quantized {info['n_quantized']} linears (skipped {info['n_skipped_no_dopt_key']}, group_size={info['group_size']})")
@@ -171,7 +171,7 @@ def parse_args():
 <a id="完整调用链"></a>
 ## 完整调用链
 
-> **改造(2026-08-18)**:场景 2 (`--quant-method gptq`) 时 `load_model` 推到 `run_auto_quant` 之后,避免主进程 cann_lm 模型与 subprocess transformers 模型同时持有(2× 内存峰值)。策略赋值逻辑在 subprocess 内用 transformers 模型生成(`dopt_wrapper.build_layer_strategy`),swap 移回主进程与场景 1 共用统一路径。**当前 subprocess 入口为独立脚本 `quant/dopt_wrapper.py`**(`python dopt_wrapper.py ...`,系统 Python + torch_npu + NPU env)。
+> **改造(2026-08-18)**:场景 2 (`--quant-method gptq`) 时 `load_model` 推到 `run_auto_quant` 之后,避免主进程 cann_local_lm 模型与 subprocess transformers 模型同时持有(2× 内存峰值)。策略赋值逻辑在 subprocess 内用 transformers 模型生成(`dopt_wrapper.build_layer_strategy`),swap 移回主进程与场景 1 共用统一路径。**当前 subprocess 入口为独立脚本 `quant/dopt_wrapper.py`**(`python dopt_wrapper.py ...`,系统 Python + torch_npu + NPU env)。
 
 ```
 cann_lm_converter.py (CLI)
@@ -185,7 +185,7 @@ convert(hf_path, output_dir, dtype, ...)   # device 写死 CPU, 不暴露 CLI
     │
     ▼
 (可选) 场景 2 量化前置: spawn 轻量化工具 subprocess      # ① GPTQ (详见 quant_design.md "方案 C")
-    │   场景2 (--quant-method gptq, 主进程不预 load cann_lm):
+    │   场景2 (--quant-method gptq, 主进程不预 load cann_local_lm):
      │     auto_quant.run_auto_quant(hf_path) → 返回 dopt_out_dir
      │       └─ spawn 'python dopt_wrapper.py --model-path <hf> --optimize-config config.yaml --output-dir <临时盘> --hf-type-save' (系统 python + torch_npu + NPU)
      │            内部 dopt_wrapper.main() 运行 (parse_args 从命令行读 --model-path / --optimize-config / --output-dir / --hf-type-save)
@@ -200,7 +200,7 @@ convert(hf_path, output_dir, dtype, ...)   # device 写死 CPU, 不暴露 CLI
     │   无量化: dopt_out_path = None
     │
     ▼
-loader.load_model(hf_path, dtype, device)            # ② 加载 cann_lm 模型 (场景 2 时在 subprocess 之后)
+loader.load_model(hf_path, dtype, device)            # ② 加载 cann_local_lm 模型 (场景 2 时在 subprocess 之后)
     │
     ├── 读 config.json
     ├── model_registry.detect_model_type(hf_config)
@@ -240,7 +240,7 @@ saver.save_epair(...) / save_epair_prefill_decode(...)  # ④ 保存 (详见 exp
 ### CLI 用法
 
 ```bash
-python cann_lm/converter/cann_lm_converter.py \
+python cann_local_lm/converter/cann_lm_converter.py \
     --hf-path /path/to/gemma-4-E2B \
     --output-dir /path/to/output \
     --mode prefill-decode \
@@ -252,7 +252,7 @@ python cann_lm/converter/cann_lm_converter.py \
 ### 接口（saver 侧，详见 export_design.md）
 
 ```python
-from cann_lm.converter.saver import save_epair_prefill_decode
+from cann_local_lm.converter.saver import save_epair_prefill_decode
 
 save_epair_prefill_decode(
     artifact, output_dir,
@@ -312,7 +312,7 @@ export TORCH_DEVICE_BACKEND_AUTOLOAD=0
 export TORCH_DELEGATE_ENABLE_FALLBACK_CODEGEN=0
 
 # 默认: 纯 embeddings (use_embeddings=True 默认, dtype 从 --target-soc 派生)
-python cann_lm/converter/cann_lm_converter.py \
+python cann_local_lm/converter/cann_lm_converter.py \
     --hf-path /path/to/qwen3.5-0.8B \
     --output-dir /path/to/output
 
@@ -325,7 +325,7 @@ python3 examples/test_converter/export_llm_model/om_npu_verify/run_qwen3_5_om.py
     output/ep_json_with_ascend_ir.json output/weight_info.json output
 
 # prefill/decode 分离 (推理用, prefill+decode 两图 + 共享权重; 默认模式)
-python cann_lm/converter/cann_lm_converter.py \
+python cann_local_lm/converter/cann_lm_converter.py \
     --hf-path /path/to/gemma-4-E2B \
     --output-dir /path/to/output \
     --mode prefill-decode \
@@ -388,7 +388,7 @@ converter 全流程三阶段：**加载**（torch CPU）→ **量化**（GPTQ �
 <a id="converter-与-torch_npu-的关系设计决策不依赖真实-torch_npu"></a>
 ## converter 与 torch_npu 的关系（设计决策：不依赖真实 torch_npu）
 
-> converter（① 导出 epair）**不依赖真实 torch_npu python 包**。走 stub 路径：converter venv 不装 `torch_npu`，`cann_lm/models/fused_ops/_library.py` 自定义 `npu::` 算子的 schema+fake-meta（含 `npu_chunk_gated_delta_rule`/`npu_dynamic_quant`/`npu_quant_matmul` 等），torch.export 能 trace；`cann_lm::` 算子本就由 `_library.py` 自定义。lib 层 stub（`.so` 在 `LD_LIBRARY_PATH`）给 torchair GE 引擎提供 C 符号。
+> converter（① 导出 epair）**不依赖真实 torch_npu python 包**。走 stub 路径：converter venv 不装 `torch_npu`，`cann_local_lm/models/fused_ops/_library.py` 自定义 `npu::` 算子的 schema+fake-meta（含 `npu_chunk_gated_delta_rule`/`npu_dynamic_quant`/`npu_quant_matmul` 等），torch.export 能 trace；`cann_local_lm::` 算子本就由 `_library.py` 自定义。lib 层 stub（`.so` 在 `LD_LIBRARY_PATH`）给 torchair GE 引擎提供 C 符号。
 
 ### 为什么不依赖真实 torch_npu（背景与踩坑）
 

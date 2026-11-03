@@ -39,20 +39,20 @@ enable_testing()
 #   cmake -B build -DBUILD_CONVERTER=ON   # 同时构建 converter/csrc + tests
 # ──────────────────────────────────────────────────────────────
 
-# engine: C++ 推理引擎 (cann_lm/engine, fork 主线, 不依赖 torch)
-option(BUILD_ENGINE "Build cann_lm C++ engine (cann_lm/engine)" ON)
+# engine: C++ 推理引擎 (cann_local_lm/engine, fork 主线, 不依赖 torch)
+option(BUILD_ENGINE "Build cann_local_lm C++ engine (cann_local_lm/engine)" ON)
 
-# converter: epair→OM 工具 + backend lib (cann_lm/converter/export/csrc)
+# converter: epair→OM 工具 + backend lib (cann_local_lm/converter/export/csrc)
 #   依赖 cmake/modules 的 DelegateCommonFlags/TorchDelegateCannCommon + torch + CANN
-option(BUILD_CONVERTER "Build cann_lm converter/export/csrc + tests (needs torch+CANN)" OFF)
+option(BUILD_CONVERTER "Build cann_local_lm converter/export/csrc + tests (needs torch+CANN)" OFF)
 
 # engine UT: tests/cpp/engine (host 端 GTest + stub NDK)
-# build_test.sh 经 -DBUILD_TESTS=ON 开启; 须在 add_subdirectory(cann_lm/engine)
+# build_test.sh 经 -DBUILD_TESTS=ON 开启; 须在 add_subdirectory(cann_local_lm/engine)
 # 之后——tests CMakeLists 要求 cann_lm_engine target 已定义
 option(BUILD_TESTS "Build engine C++ unit tests (tests/cpp/engine)" OFF)
 
 if(BUILD_ENGINE)
-    add_subdirectory(cann_lm/engine)
+    add_subdirectory(cann_local_lm/engine)
 endif()
 
 if(BUILD_ENGINE AND BUILD_TESTS)
@@ -71,7 +71,7 @@ if(BUILD_CONVERTER)
     torch_delegate_cann_library_search_paths(CANN_LIB_DIRS)
 
     # ── backend lib + cann_lm_compile 工具 (均由 csrc/CMakeLists 提供, 不依赖 torch) ──
-    add_subdirectory(cann_lm/converter/export/csrc)
+    add_subdirectory(cann_local_lm/converter/export/csrc)
 
     # ── C++ tests (tests/cpp/epair_archive; converter C++ UT, 需 CANN 工具链, 无 NPU 设备) ──
     add_subdirectory(tests/cpp/epair_archive)

@@ -9,7 +9,7 @@ Sources in c_api.h:
 
 import pytest
 
-from cann_lm._enums import FinishReason, RequestStatus, Status
+from cann_local_lm._enums import FinishReason, RequestStatus, Status
 
 
 class TestStatus:

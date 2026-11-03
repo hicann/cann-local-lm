@@ -8,7 +8,7 @@
 #include <gtest/gtest.h>
 #include <memory>
 
-namespace cann_lm::engine {
+namespace cann_local_lm::engine {
 namespace {
 
 struct SchedulerFixture {
@@ -263,4 +263,4 @@ TEST(SchedulerTest, EmptyChunksTaskNotReadyFailsAndDrains_TC905)
 }
 
 } // namespace
-} // namespace cann_lm::engine
+} // namespace cann_local_lm::engine

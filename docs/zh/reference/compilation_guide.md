@@ -19,7 +19,7 @@
                    → build/cann_lm_compile (epair→OM 编译工具, ~308K)
                    → build/libtorch_delegate_backend.so (C++ backend, ~845K)
 [2/5] converter    纯源码 pip wheel (--no-deps)
-                   → build_out/cann_lm-<ver>-py3-none-any.whl (converter 导出 whl)
+                   → build_out/cann_local_lm-<ver>-py3-none-any.whl (converter 导出 whl)
 [3/5] engine whl   engine python ctypes 绑定 whl (纯 python, 不依赖 OHOS)
                    → build_out/cann_local_lm_engine-<ver>-py3-none-any.whl
 [4/5] engine OHOS  OHOS 交叉编译 + 签名 (build_package_ohos.sh, 需 OHOS SDK)
@@ -62,7 +62,7 @@
 |---|----|---------|---------|
 | 1 | **编译器** | `$OHOS_SDK_NATIVE/llvm/bin/clang` 存在且可执行| 用完整SDK（华为官方command-line-tools组件 的native子树带有，需要在环境内使用对应组件） |
 | 2 | **OHOS SDK** | `OHOS_SDK_NATIVE` 已设且含 `sysroot/` 子目录 | `export OHOS_SDK_NATIVE=<sdk>/linux/<ver>/native` |
-| 3 | **java + 签名jar** | `java` 在PATH；`tools/binary-sign-tool.jar` 或 `cann_lm/engine/ohos/binary-sign-tool.jar` 存在 | `apt install default-jre`；从SDK `.../26.0.0/toolchains/lib/binary-sign-tool.jar` 拷到 `tools/` |
+| 3 | **java + 签名jar** | `java` 在PATH；`tools/binary-sign-tool.jar` 或 `cann_local_lm/engine/ohos/binary-sign-tool.jar` 存在 | `apt install default-jre`；从SDK `.../26.0.0/toolchains/lib/binary-sign-tool.jar` 拷到 `tools/` |
 | 4 | **GTest源码tarball** | `GTEST_TAR`（三方库gtest`gtest-1.14.0.tar.gz`）文件存在 | 执行`export GTEST_TAR=<path>/googletest-1.14.0.tar.gz`设置|
 | 5 | **cmake / make** | 同2.1-3 | — |
 
@@ -101,9 +101,9 @@ bash build.sh --pkg
   845K .../build/libtorch_delegate_backend.so
   ✓ compile 产物就绪: build/cann_lm_compile + build/libtorch_delegate_backend.so   ← 阶段1 成功标志
 
-▶ [2/4] converter: build cann_lm wheel (--no-deps 纯源码打包)
-  Created wheel for cann-lm: filename=cann_lm-0.1.0-py3-none-any.whl size=163313   ← 阶段2 关键行
-  ✓ converter whl: .../build_out/cann_lm-0.1.0-py3-none-any.whl (160K)                  ← 阶段2 成功标志
+▶ [2/4] converter: build cann_local_lm wheel (--no-deps 纯源码打包)
+  Created wheel for cann-lm: filename=cann_local_lm-0.1.0-py3-none-any.whl size=163313   ← 阶段2 关键行
+  ✓ converter whl: .../build_out/cann_local_lm-0.1.0-py3-none-any.whl (160K)                  ← 阶段2 成功标志
 
 ▶ [3/4] engine: OHOS 交叉编译 (build_package_ohos.sh, 强制环境检查)
   ✓ 编译器: SDK clang (.../23/native/llvm/bin/clang)                               ← 5 项前置检查全 ✓
@@ -125,8 +125,8 @@ bash build.sh --pkg
   ✓ libcann_lm_engine.so -> libcann_lm_engine_signed.so
   ✓ ... (其余 10 项)                                                            ← 签名全 ✓
 === [2/2] 打包签名 wheel (build_package_ohos.sh → cann_local_lm_engine-*+signed*.whl) ===
-  ✓ copy signed .so → cann_lm/lib/libcann_lm_engine.so
-  ✓ copy libc++_shared.so → cann_lm/lib/
+  ✓ copy signed .so → cann_local_lm/lib/libcann_lm_engine.so
+  ✓ copy libc++_shared.so → cann_local_lm/lib/
   ✓ pip wheel → build_out/cann_local_lm_engine-0.1.0+signed-py3-none-any.whl   ← 阶段3 成功标志
 
 ▶ [4/4] 打包 .run (compile_converter)

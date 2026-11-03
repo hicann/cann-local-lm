@@ -10,15 +10,15 @@ requires-python = ">=3.8"
 dependencies = []  # pure stdlib (ctypes) — zero runtime deps
 
 [project.scripts]
-cllm = "cann_lm.cli:main"
+cllm = "cann_local_lm.cli:main"
 
 [tool.setuptools.dynamic]
 # 版本由环境变量 CANN_LM_ENGINE_VERSION 提供（签名版=0.1.0+signed，未签名=0.1.0）
-version = {attr = "cann_lm.__version__"}
+version = {attr = "cann_local_lm.__version__"}
 
 [tool.setuptools]
-packages = ["cann_lm"]
-package-dir = {"cann_lm" = "../../cann_lm/engine/python/cann_lm"}
+packages = ["cann_local_lm"]
+package-dir = {"cann_local_lm" = "../../cann_local_lm/engine/python/cann_local_lm"}
 
 [tool.setuptools.package-data]
-cann_lm = ["lib/*.so"]
+cann_local_lm = ["lib/*.so"]

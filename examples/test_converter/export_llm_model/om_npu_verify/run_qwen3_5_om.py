@@ -4,7 +4,7 @@
 OM 图输入含 embeddings [1,8,1024], 无 input_ids (embed_tokens 查表外置到 host);
 host 用 CPU 模型 embed_tokens 查表算 embeddings 喂 OM (tie_word_embeddings,
 embed_tokens weight = lm_head weight; OM 图内 lm_head 保留, 查表权重 host 侧复用);
-对比 HF (HF 用 input_ids, 数值等价: cann_lm embed_tokens weight 来自 HF).
+对比 HF (HF 用 input_ids, 数值等价: cann_local_lm embed_tokens weight 来自 HF).
 
 流程: CPU 模型查表 embeddings → OM (acl NPU) run → 对比 HF logits + top5.
 
@@ -25,12 +25,12 @@ KV_MAX = 2048
 DEV = 0
 os.environ.setdefault("TORCH_DEVICE_BACKEND_AUTOLOAD", "0")
 
-from cann_lm.models.qwen3_5 import (
+from cann_local_lm.models.qwen3_5 import (
     Qwen3_5ForCausalLM,
     Qwen3_5TextConfig,
     load_qwen3_5_weights,
 )
-from cann_lm.models.qwen3_5.export_wrapper import Qwen3_5ExportWrapper
+from cann_local_lm.models.qwen3_5.export_wrapper import Qwen3_5ExportWrapper
 
 import acl
 

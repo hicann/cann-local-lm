@@ -2,7 +2,7 @@
 
 ## 1. 文档信息
 
-- 被测对象：`cann_lm/converter/export/csrc/`（C++ backend：epair 加载/解析/权重打包/aten 映射/value registry）
+- 被测对象：`cann_local_lm/converter/export/csrc/`（C++ backend：epair 加载/解析/权重打包/aten 映射/value registry）
 - 测试归档目录：`tests/cpp/epair_archive`
 - 测试框架：GoogleTest（GTest）+ CMake `ctest`
 - 基准环境：② 真 CANN（`source scripts/set_env_cann.sh`，无 stubs）+ ASAN（`-static-libasan`）
@@ -19,7 +19,7 @@
 4. 编译零警告：`-Wall -Wextra -Werror` 由 `DELEGATE_COMMON_FLAGS` 统一注入；PR 不许引入新警告。
 5. 错误路径通过 `ValidationResult` 累积 issue code（如 `MISSING_TENSOR_META`/`MISSING_WEIGHTS_INDEX`/`UNSUPPORTED_FUNCTIONALIZED_V1`），同时检查 `result.ok` 与 issue code。
 
-范围内模块（`cann_lm/converter/export/csrc/`）：
+范围内模块（`cann_local_lm/converter/export/csrc/`）：
 
 - `backend/aten_schema_resolver`、`backend/aten_tensor_desc_mapper`
 - `backend/epair_model_parser`、`backend/ge_weight_loader`
@@ -195,11 +195,11 @@ bash scripts/build.sh cpp --asan && ctest --test-dir build --output-on-failure
 BUILD_DIR=build_cov bash scripts/cann_lm_compile/build_cpp.sh --coverage
 ctest --test-dir build_cov
 lcov --capture --directory build_cov --output-file build_cov/coverage.info
-lcov --extract build_cov/coverage.info "$(pwd)/cann_lm/*" --output-file build_cov/coverage.cann_lm.info
-lcov --summary build_cov/coverage.cann_lm.info
+lcov --extract build_cov/coverage.info "$(pwd)/cann_local_lm/*" --output-file build_cov/coverage.cann_local_lm.info
+lcov --summary build_cov/coverage.cann_local_lm.info
 ```
 
-> 注：`--no-external` 会误排除 csrc 源（路径解析），用「全抓 + extract cann_lm」替代；ASAN build 裸跑无需 `LD_PRELOAD`（flags 含 `-static-libasan`）。
+> 注：`--no-external` 会误排除 csrc 源（路径解析），用「全抓 + extract cann_local_lm」替代；ASAN build 裸跑无需 `LD_PRELOAD`（flags 含 `-static-libasan`）。
 
 ## 8. 准入与遗留风险
 
@@ -250,9 +250,9 @@ ctest exit code: 0
 ```bash
 ctest --test-dir build_cov
 lcov --capture --directory build_cov --output-file build_cov/coverage.info
-lcov --extract build_cov/coverage.info "$(pwd)/cann_lm/*" \
-  --output-file build_cov/coverage.cann_lm.info
-lcov --summary build_cov/coverage.cann_lm.info
+lcov --extract build_cov/coverage.info "$(pwd)/cann_local_lm/*" \
+  --output-file build_cov/coverage.cann_local_lm.info
+lcov --summary build_cov/coverage.cann_local_lm.info
 ```
 
 整体行覆盖率为 **37.7%（774 of 2054 lines）**，函数覆盖率为 **50.7%（69 of 136 functions）**，branch 无数据（lcov 默认不报，需 `--rc lcov_branch_coverage=1`）。纯逻辑/映射模块达到不低于 80% 的准入目标；OM 编译路径 0% 归 e2e。核心模块覆盖情况：
@@ -274,6 +274,6 @@ lcov --summary build_cov/coverage.cann_lm.info
 
 | ID | 原现象 | 修复内容 | 回归结果 |
 |---|---|---|---|
-| — | — | 本会话只验证 ASAN 构建 + ctest 通过与覆盖率采集，未改动 `cann_lm/` 或 test/CMake 文件 | 7/7 PASS、ASAN 无内存错误、覆盖率 37.7% 行/50.7% 函数 |
+| — | — | 本会话只验证 ASAN 构建 + ctest 通过与覆盖率采集，未改动 `cann_local_lm/` 或 test/CMake 文件 | 7/7 PASS、ASAN 无内存错误、覆盖率 37.7% 行/50.7% 函数 |
 
 本轮无缺陷修复记录：测试代码与 `csrc` 在 ASAN 构建下全部通过，覆盖率基线（37.7%/50.7%）作为后续回归对比的基线供参考。

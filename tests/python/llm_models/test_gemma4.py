@@ -8,12 +8,12 @@ pytest 风格: 顶层 test_* 函数, check() 失败即 raise (pytest 捕获).
 import torch
 import pytest
 
-from cann_lm.models.gemma4.configuration_gemma4 import (
+from cann_local_lm.models.gemma4.configuration_gemma4 import (
     Gemma4TextConfig,
     Gemma4Config,
     Gemma4VisionConfig,
 )
-from cann_lm.models.gemma4.modeling_gemma4 import (
+from cann_local_lm.models.gemma4.modeling_gemma4 import (
     Gemma4ForCausalLM,
     Gemma4TextModel,
     Gemma4TextDecoderLayer,
@@ -26,7 +26,7 @@ from cann_lm.models.gemma4.modeling_gemma4 import (
     rotate_half,
     eager_attention_forward,
 )
-from cann_lm.models.gemma4.export_wrapper import Gemma4ExportWrapper
+from cann_local_lm.models.gemma4.export_wrapper import Gemma4ExportWrapper
 
 
 def check(name, condition):

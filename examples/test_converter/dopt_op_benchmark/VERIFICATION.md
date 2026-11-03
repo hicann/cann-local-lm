@@ -48,7 +48,7 @@
 - **轻量化工具 golden op_io**（已抓）：固定激活（轻量化工具 fakequant 抓的）→ W4A16 轻量化工具 output → ⑥ 跨语义标准（cos≥0.99，含激活 int8 量化差）+ ② 权重网格交叉。
 
 **轻量化工具权重来源**（fixture 的 provenance）：
-- 产出：`cann_lm/converter/quant/dopt_wrapper.py:main` → `weight_quant_pipline`（`dopt_lm/opt_funcs/eco_stage/train.py`，GPTQ）→ `torch.save` → `trained_quant_weight.pth`（+ `dopt_config.json`）。产物在 `${DOPT_QUANT_DIR}`（轻量化工具量化输出目录，不进仓）。
+- 产出：`cann_local_lm/converter/quant/dopt_wrapper.py:main` → `weight_quant_pipline`（`dopt_lm/opt_funcs/eco_stage/train.py`，GPTQ）→ `torch.save` → `trained_quant_weight.pth`（+ `dopt_config.json`）。产物在 `${DOPT_QUANT_DIR}`（轻量化工具量化输出目录，不进仓）。
 - 单算子抽取（op_npu_verify ②/对比侧用）：`op_npu_verify/build_epair.py:materialize_op`（导出路径）+ `op_npu_verify/verify_op.py:load_op_weight`（对比侧）—— 两者 `mmap` 加载 `trained_quant_weight.pth`，抽 `<op_name>.weight` + `<op_name>.quant_op.weight_quantizer.s`（按 op_name）。
 - 注：轻量化工具权重是 fixture（不验轻量化工具精度），只验"产物合法"（① 契约）+ "权重网格对"（② Part5）。
 
@@ -133,7 +133,7 @@ q = 四舍五入(权重 / scale)，限制在 [-7, 7]      # 量化
 
 ### 4.5 对齐之后才验算子
 
-reference 钉好（手算夹具 + NPU 校准两道保险），它就是可信标准。converter 的算子（`materialize` 打包、`cann_lm::quant_matmul`）都是**被测对象**，拿 reference 对：
+reference 钉好（手算夹具 + NPU 校准两道保险），它就是可信标准。converter 的算子（`materialize` 打包、`cann_local_lm::quant_matmul`）都是**被测对象**，拿 reference 对：
 - 打包对不对 → bit 级（pack 再 unpack 能否还原）
 - 量化网格对不对 → `materialize` 算出的 q 跟 reference 的 q（round(w/s)）逐个对，该 bit-exact
 - matmul 输出对不对 → 同权重同输入，输出跟 reference 比，在容差内
@@ -176,7 +176,7 @@ e2e     端到端模型质量                                            ← 意
 
 - **全用 fp16**：算子对不上（W4A16 vs W4A8 语义不同）。
 - **全用轻量化工具仿真**：不覆盖激活量化 + 可能同源 bug。
-- **全用 cann_lm CPU impl**：它自己是被测对象，可能错。
+- **全用 cann_local_lm CPU impl**：它自己是被测对象，可能错。
 - **全用 NPU 内核**：慢、要跨 env、CI 跑不起。
 
 所以**分层**：数学定义（便宜、bit 级、手算钉）做日常标准；NPU 内核做一次性校准（钉"规格↔现实"）；fp16 只用在"测精度损失"处。
@@ -232,7 +232,7 @@ e2e     端到端模型质量                                            ← 意
 | `ref_w4a8.py` | **Tier 0**：极简纯 torch W4A8 s8s4 reference（独立于 converter 代码，每步一行）| **算子正确性的标准**（②③④对齐基准）|
 | `bedrock/hand_fixtures.py` | **Tier 0 bedrock**：手算微夹具（人算 expected，5 case：权重量化/round-half-to-even/clamp/dynamic_quant/全 W4A8 matmul=-698/127）| 钉 Tier 0 到"人的算术"，不依赖任何代码 |
 | `verify_materialize.py` | **②materialize 对齐 Tier 0**：`materialize_int4_per_group_symmetric` q vs Tier 0 q（bit-exact）+ `pack_int4` round-trip + `transdata_scale` round-trip + **Part6 `pack_int4_int32` ↔ ops-nn golden**；合成夹具 + 真实轻量化工具权重 | 验 converter `quant_swap/materialize.py` 的 weight 量化/打包/int4pack/scale 存储符合数学定义 |
-| `verify_quant_matmul.py` | **③cann_lm 算子链对齐 Tier 0**：A `dynamic_quant`、B `quant_matmul`(unpacked)、C `QuantLinear.forward`(packed 链) vs `ref_dynamic_quant`/`ref_quant_matmul`/`ref_w4a8_linear` | 验 `dynamic_quant.py`+`quant_matmul.py`+`quant_linear.py` 的 wiring；C surface eager 路径断裂 finding |
+| `verify_quant_matmul.py` | **③cann_local_lm 算子链对齐 Tier 0**：A `dynamic_quant`、B `quant_matmul`(unpacked)、C `QuantLinear.forward`(packed 链) vs `ref_dynamic_quant`/`ref_quant_matmul`/`ref_w4a8_linear` | 验 `dynamic_quant.py`+`quant_matmul.py`+`quant_linear.py` 的 wiring；C surface eager 路径断裂 finding |
 
 **关键定位**：当前 golden 是 **W4A16 轻量化工具 fakequant**（权重 int4 反量化 + fp 激活 + fp matmul，`input_state=False`）。它能当：
 - ①的**精度参照**（量化后 vs 原始 fp16 的输出对比，见外部 `eval_qlinear.py`）；
@@ -263,8 +263,8 @@ e2e     端到端模型质量                                            ← 意
 ### 已修复 / 已接入的问题
 
 - **P1（materialize clamp）**：`materialize.py:125-129` 由 `clamp(-7,7)` 改 `clamp(-8,7)`（加 `qmin=-(1<<(nbits-1))=-8`），对齐轻量化工具 `qmin_max.py:124-125` + 标准 signed int4 二补码全范围。修复前丢每层 1万~5万个 -8（共 11.5万/3层，每个偏 +1 量子）；修复后 `verify_materialize Part5` 验 0 改动（回归守卫）。同步改 `tests/python/converter/test_materialize.py`（原测试编码了 [-7,7] bug）+ Tier 0 `INT4_NEG_CLIP=-8` + 手算夹具 W2/W2b。126 UT pass。
-- **KirinX90 int4pack int32 路径（已接入，④ 待验 cube）**：按 `convert_weight_to_int4_pack`（ops-nn）沿 N pack 的权威，cann_lm 切到 int32 int4pack：`reg_register.h` V4 x2 += DT_INT32（对齐 ops-nn 新 V4 proto.h:71）；`swap.py` 加 `target_soc` SoC 分流（kirinx90→`packed="int4pack"` 沿 N 产 [K,N//8] int32 不 transpose，Ascend910 保留 int8 nibble）；`quant_linear.py` weight_q 保留 dtype（int8/int32）；`_quant_matmul_converter.py` is_s8s4 加 DT_INT32 + dummy bias 对 int4pack 算 N×8；`materialize.py` `pack_int4_int32` docstring lifts "需验证"（Part6 已对齐 ops-nn canonical unpack bit-exact）。`test_swap.py` 加 kirinx90 int4pack 用例。**127 UT pass**（int8 nibble 无回归）。⏳ KirinX90 cube `mad_s8s4` 的 pack 轴(N)/方向 + C++ reg_register 改动——**待 ④NPU + C++ build/ctest**。
-- **quant 导出断点修复（dynamic_quant converter）**：根因——`cann_lm::dynamic_quant` **无 FX→GE converter**（`ge_converter.py` 注册了 quant_matmul/rms_norm/rotary_mul/... 但漏了 dynamic_quant），QuantLinear.forward 调 dynamic_quant → 无 converter → torchair auto-callback 跑 `get_registered_ir_def("DynamicQuant")`（`custom_op_pre_scan.py:71`/`fx2ge_converter.py:919`）→ Lite EPAIR `check_violations` 拒 → **quant 导出整体失败**（非 quant 导出不调 dynamic_quant，故不受影响；佐证：现有 5 个 qwen3.5 epair 全是 MatMul，无 quant_matmul）。修法——加 `_dynamic_quant_converter.py`（镜像 torchair `npu::npu_dynamic_quant` → `ge.DynamicQuant`，built-in）+ 注册到 `ge_converter.py`。结果：build_epair 1-op QuantLinear 导出**成功**（epair 存 int4pack int32 [K,N//8]），IR 含 `DynamicQuant`+`QuantBatchMatmulV4`（④ PASS）；127 UT pass。**这是 quant pipeline 的真实断点修复（之前 quant 导出从未成功过）**。
+- **KirinX90 int4pack int32 路径（已接入，④ 待验 cube）**：按 `convert_weight_to_int4_pack`（ops-nn）沿 N pack 的权威，cann_local_lm 切到 int32 int4pack：`reg_register.h` V4 x2 += DT_INT32（对齐 ops-nn 新 V4 proto.h:71）；`swap.py` 加 `target_soc` SoC 分流（kirinx90→`packed="int4pack"` 沿 N 产 [K,N//8] int32 不 transpose，Ascend910 保留 int8 nibble）；`quant_linear.py` weight_q 保留 dtype（int8/int32）；`_quant_matmul_converter.py` is_s8s4 加 DT_INT32 + dummy bias 对 int4pack 算 N×8；`materialize.py` `pack_int4_int32` docstring lifts "需验证"（Part6 已对齐 ops-nn canonical unpack bit-exact）。`test_swap.py` 加 kirinx90 int4pack 用例。**127 UT pass**（int8 nibble 无回归）。⏳ KirinX90 cube `mad_s8s4` 的 pack 轴(N)/方向 + C++ reg_register 改动——**待 ④NPU + C++ build/ctest**。
+- **quant 导出断点修复（dynamic_quant converter）**：根因——`cann_local_lm::dynamic_quant` **无 FX→GE converter**（`ge_converter.py` 注册了 quant_matmul/rms_norm/rotary_mul/... 但漏了 dynamic_quant），QuantLinear.forward 调 dynamic_quant → 无 converter → torchair auto-callback 跑 `get_registered_ir_def("DynamicQuant")`（`custom_op_pre_scan.py:71`/`fx2ge_converter.py:919`）→ Lite EPAIR `check_violations` 拒 → **quant 导出整体失败**（非 quant 导出不调 dynamic_quant，故不受影响；佐证：现有 5 个 qwen3.5 epair 全是 MatMul，无 quant_matmul）。修法——加 `_dynamic_quant_converter.py`（镜像 torchair `npu::npu_dynamic_quant` → `ge.DynamicQuant`，built-in）+ 注册到 `ge_converter.py`。结果：build_epair 1-op QuantLinear 导出**成功**（epair 存 int4pack int32 [K,N//8]），IR 含 `DynamicQuant`+`QuantBatchMatmulV4`（④ PASS）；127 UT pass。**这是 quant pipeline 的真实断点修复（之前 quant 导出从未成功过）**。
 - **待修**：P2（QuantLinear eager CPU packed 断裂，不影响部署）、③C、⑤ .omc 编译、⑥ NPU 跑（kirinx90 hw）。
 
 ---

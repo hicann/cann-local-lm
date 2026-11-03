@@ -2,7 +2,7 @@
 
 English | [简体中文](../../../zh/cann_lm_converter/quant/INDEX.md)
 
-> `cann_lm/converter/quant/` — W4A8 s8s4 quantization integration: CANN lightweight tool GPTQ weight quantization + converter int4 materialization + `npu::npu_quant_matmul` operator export.
+> `cann_local_lm/converter/quant/` — W4A8 s8s4 quantization integration: CANN lightweight tool GPTQ weight quantization + converter int4 materialization + `npu::npu_quant_matmul` operator export.
 
 ## Module Documentation
 
@@ -14,9 +14,9 @@ English | [简体中文](../../../zh/cann_lm_converter/quant/INDEX.md)
 
 ## Code Files
 
-### Lightweight Tool Orchestration + Calibration (`cann_lm/converter/quant/`)
+### Lightweight Tool Orchestration + Calibration (`cann_local_lm/converter/quant/`)
 
-> The converter-side `swap.py` was promoted to `cann_lm/converter/swap.py` (converter root, orchestration layer peer of loader/saver); `materialize.py` / `quant_linear.py` moved to `cann_lm/converter/export/quant_swap/` (internal materialization), see [../export/INDEX.md](../export/INDEX.md) "Python Code Files". `quant/__init__.py` no longer re-exports materialize/swap symbols.
+> The converter-side `swap.py` was promoted to `cann_local_lm/converter/swap.py` (converter root, orchestration layer peer of loader/saver); `materialize.py` / `quant_linear.py` moved to `cann_local_lm/converter/export/quant_swap/` (internal materialization), see [../export/INDEX.md](../export/INDEX.md) "Python Code Files". `quant/__init__.py` no longer re-exports materialize/swap symbols.
 
 | File | Responsibility |
 |------|------|
@@ -41,9 +41,9 @@ English | [简体中文](../../../zh/cann_lm_converter/quant/INDEX.md)
 
 | File | Responsibility |
 |------|------|
-| `cann_lm/models/fused_ops/quant_matmul.py` | `npu::npu_quant_matmul` custom op (schema + fake/meta + CPU PoC impl) |
-| `cann_lm/models/fused_ops/dynamic_quant.py` | `npu::npu_dynamic_quant` custom op (activation dynamic quantization s8) |
-| `cann_lm/converter/export/ge_converters/_quant_matmul_converter.py` | `npu::npu_quant_matmul` → `ge.QuantBatchMatmulV4` converter (V4 full IR + dummy bias) |
+| `cann_local_lm/models/fused_ops/quant_matmul.py` | `npu::npu_quant_matmul` custom op (schema + fake/meta + CPU PoC impl) |
+| `cann_local_lm/models/fused_ops/dynamic_quant.py` | `npu::npu_dynamic_quant` custom op (activation dynamic quantization s8) |
+| `cann_local_lm/converter/export/ge_converters/_quant_matmul_converter.py` | `npu::npu_quant_matmul` → `ge.QuantBatchMatmulV4` converter (V4 full IR + dummy bias) |
 
 ## Key Functions / Classes
 

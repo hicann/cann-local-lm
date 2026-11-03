@@ -2,7 +2,7 @@
 
 > **验证方法论与现状**：整条量化过程怎么验证、本目录在体系里的位置、还缺什么，见 [`VERIFICATION.md`](VERIFICATION.md)。
 
-把 CANN 轻量化工具参考算子（`QLinear` fakequant）的输入/输出固化为 **golden 标杆数据**，用于验证候选量化 matmul 算子实现（`cann_lm::quant_matmul` → GE `QuantBatchMatmulV4` → OM 真 int4 内核）的数值一致性。
+把 CANN 轻量化工具参考算子（`QLinear` fakequant）的输入/输出固化为 **golden 标杆数据**，用于验证候选量化 matmul 算子实现（`cann_local_lm::quant_matmul` → GE `QuantBatchMatmulV4` → OM 真 int4 内核）的数值一致性。
 
 ## 核心思想：算子本身 vs 量化精度
 
@@ -10,7 +10,7 @@
 
 | 对比轴 | 参考算子 | 候选算子 |
 |---|---|---|
-| 实现 | `dopt.QLinear.fakequant`（quant→dequant→fp matmul，weight-only） | `cann_lm::quant_matmul` / OM int4 内核 |
+| 实现 | `dopt.QLinear.fakequant`（quant→dequant→fp matmul，weight-only） | `cann_local_lm::quant_matmul` / OM int4 内核 |
 | 权重 | `trained_quant_weight.pth`（**同一套**） | `trained_quant_weight.pth`（**同一套**） |
 | 输入 | `op_io/<op>.inputs[i]`（**同一批固定激活**） | `op_io/<op>.inputs[i]`（**同一批固定激活**） |
 | 输出 | `op_io/<op>.outputs[i]` = golden | 候选算子计算结果 |

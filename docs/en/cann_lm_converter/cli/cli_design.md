@@ -52,7 +52,7 @@ def convert(
 ) -> None:
     """Programmatic entry: HF model → epair
 
-    load_model is hardwired to CPU (fused ops cann_lm/models/fused_ops/ only implemented on CPU),
+    load_model is hardwired to CPU (fused ops cann_local_lm/models/fused_ops/ only implemented on CPU),
     does not accept a device parameter. NPU GPTQ is isolated via quant_method + subprocess.
 
     mode:
@@ -65,7 +65,7 @@ def convert(
     dopt_out_path = None
     dopt_out_is_temp = False  # True = converter temp dir (scenario 2), cleaned after swap; False = user path (scenario 1)
     if quant_method == "gptq":
-        from cann_lm.converter.quant_entry import run_auto_quant
+        from cann_local_lm.converter.quant_entry import run_auto_quant
         dopt_out_path = run_auto_quant(hf_path)
         dopt_out_is_temp = True
     elif quant_path:
@@ -93,7 +93,7 @@ def convert(
     # Quantization swap: scenario 1 + scenario 2 share unified path (one load → Linear swap + Embedding extraction)
     embed_quant = None
     if dopt_out_path:
-        from cann_lm.converter.quant_entry import swap_from_dopt
+        from cann_local_lm.converter.quant_entry import swap_from_dopt
         info, embed_quant = swap_from_dopt(artifact.model, dopt_out_path, target_soc=target_soc)
         artifact.quant_info = info
         print(f"      Quantized {info['n_quantized']} linears (skipped {info['n_skipped_no_dopt_key']}, group_size={info['group_size']})")
@@ -171,7 +171,7 @@ def parse_args():
 <a id="complete-call-chain"></a>
 ## Complete Call Chain
 
-> **Refactoring (2026-08-18)**: In scenario 2 (`--quant-method gptq`), `load_model` is deferred until after `run_auto_quant`, avoiding the main process cann_lm model and subprocess transformers model being held simultaneously (2× memory peak). Strategy assignment logic runs inside the subprocess using the transformers model (`dopt_wrapper.build_layer_strategy`), and swap is moved back to the main process sharing a unified path with scenario 1. **The current subprocess entry is a standalone script `quant/dopt_wrapper.py`** (`python dopt_wrapper.py ...`, system Python + torch_npu + NPU env).
+> **Refactoring (2026-08-18)**: In scenario 2 (`--quant-method gptq`), `load_model` is deferred until after `run_auto_quant`, avoiding the main process cann_local_lm model and subprocess transformers model being held simultaneously (2× memory peak). Strategy assignment logic runs inside the subprocess using the transformers model (`dopt_wrapper.build_layer_strategy`), and swap is moved back to the main process sharing a unified path with scenario 1. **The current subprocess entry is a standalone script `quant/dopt_wrapper.py`** (`python dopt_wrapper.py ...`, system Python + torch_npu + NPU env).
 
 ```
 cann_lm_converter.py (CLI)
@@ -185,7 +185,7 @@ convert(hf_path, output_dir, dtype, ...)   # device hardwired to CPU, not expose
     │
     ▼
 (Optional) Scenario 2 pre-quantization: spawn lightweight tool subprocess      # ① GPTQ (see quant_design.md "Option C")
-    │   Scenario 2 (--quant-method gptq, main process does not pre-load cann_lm):
+    │   Scenario 2 (--quant-method gptq, main process does not pre-load cann_local_lm):
     │     auto_quant.run_auto_quant(hf_path) → returns dopt_out_dir
     │       └─ spawn 'python dopt_wrapper.py --model-path <hf> --optimize-config config.yaml --output-dir <temp disk> --hf-type-save' (system python + torch_npu + NPU)
     │            internal dopt_wrapper.main() runs (parse_args reads --model-path / --optimize-config / --output-dir / --hf-type-save from command line)
@@ -200,7 +200,7 @@ convert(hf_path, output_dir, dtype, ...)   # device hardwired to CPU, not expose
     │   No quantization: dopt_out_path = None
     │
     ▼
-loader.load_model(hf_path, dtype, device)            # ② Load cann_lm model (after subprocess in scenario 2)
+loader.load_model(hf_path, dtype, device)            # ② Load cann_local_lm model (after subprocess in scenario 2)
     │
     ├── Read config.json
     ├── model_registry.detect_model_type(hf_config)
@@ -240,7 +240,7 @@ Real LLM inference requires two stages: prefill (process prompt) + decode (per-t
 ### CLI Usage
 
 ```bash
-python cann_lm/converter/cann_lm_converter.py \
+python cann_local_lm/converter/cann_lm_converter.py \
     --hf-path /path/to/gemma-4-E2B \
     --output-dir /path/to/output \
     --mode prefill-decode \
@@ -252,7 +252,7 @@ python cann_lm/converter/cann_lm_converter.py \
 ### Interface (saver side, see export_design.md)
 
 ```python
-from cann_lm.converter.saver import save_epair_prefill_decode
+from cann_local_lm.converter.saver import save_epair_prefill_decode
 
 save_epair_prefill_decode(
     artifact, output_dir,
@@ -312,7 +312,7 @@ export TORCH_DEVICE_BACKEND_AUTOLOAD=0
 export TORCH_DELEGATE_ENABLE_FALLBACK_CODEGEN=0
 
 # Default: pure embeddings (use_embeddings=True default, dtype derived from --target-soc)
-python cann_lm/converter/cann_lm_converter.py \
+python cann_local_lm/converter/cann_lm_converter.py \
     --hf-path /path/to/qwen3.5-0.8B \
     --output-dir /path/to/output
 
@@ -325,7 +325,7 @@ python3 examples/test_converter/export_llm_model/om_npu_verify/run_qwen3_5_om.py
     output/ep_json_with_ascend_ir.json output/weight_info.json output
 
 # prefill/decode separation (for inference, prefill+decode two graphs + shared weights; default mode)
-python cann_lm/converter/cann_lm_converter.py \
+python cann_local_lm/converter/cann_lm_converter.py \
     --hf-path /path/to/gemma-4-E2B \
     --output-dir /path/to/output \
     --mode prefill-decode \
@@ -388,7 +388,7 @@ The converter has three full-pipeline stages: **Load** (torch CPU) → **Quantiz
 <a id="converter-and-torch_npu-relationship-design-decision-no-real-torch_npu-dependency"></a>
 ## converter and torch_npu Relationship (Design Decision: No Real torch_npu Dependency)
 
-> converter (① export epair) **does not depend on the real torch_npu python package**. It goes the stub path: converter venv does not install `torch_npu`; `cann_lm/models/fused_ops/_library.py` custom-defines `npu::` op schema+fake-meta (incl. `npu_chunk_gated_delta_rule`/`npu_dynamic_quant`/`npu_quant_matmul` etc.), so torch.export can trace; `cann_lm::` ops are already custom-defined by `_library.py`. Lib-layer stubs (`.so` in `LD_LIBRARY_PATH`) provide C symbols for the torchair GE engine.
+> converter (① export epair) **does not depend on the real torch_npu python package**. It goes the stub path: converter venv does not install `torch_npu`; `cann_local_lm/models/fused_ops/_library.py` custom-defines `npu::` op schema+fake-meta (incl. `npu_chunk_gated_delta_rule`/`npu_dynamic_quant`/`npu_quant_matmul` etc.), so torch.export can trace; `cann_local_lm::` ops are already custom-defined by `_library.py`. Lib-layer stubs (`.so` in `LD_LIBRARY_PATH`) provide C symbols for the torchair GE engine.
 
 ### Why No Real torch_npu Dependency (Background and Pitfalls)
 

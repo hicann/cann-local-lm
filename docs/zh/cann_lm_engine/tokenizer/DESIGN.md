@@ -269,7 +269,7 @@ status: draft
 <a id="1-范围与目标"></a>
 ## §1 范围与目标
 
-- **in scope**：`cann_lm/engine/core/component/tokenizer` 下 C++ tokenizer 抽象层——薄基类 TokenizerBase + 工厂 + 参数化自注册 + **BPETokenizer（手写 BPE，词表 HF tokenizer.json，服务 gemma4，完整）** + **QwenTokenizer（手写 ByteLevel BPE，词表 tokenizer.json，服务 Qwen3.5，完整）** + **SPMTokenizer（sentencepiece 依赖，占位桩）** + 共享 VocabStore/SpecialTokenHandler。内部模块，不对 Python 暴露；不产 attention mask；本期运行时第三方依赖仅 D-09 JSON 单头（无 sentencepiece/ICU）。
+- **in scope**：`cann_local_lm/engine/core/component/tokenizer` 下 C++ tokenizer 抽象层——薄基类 TokenizerBase + 工厂 + 参数化自注册 + **BPETokenizer（手写 BPE，词表 HF tokenizer.json，服务 gemma4，完整）** + **QwenTokenizer（手写 ByteLevel BPE，词表 tokenizer.json，服务 Qwen3.5，完整）** + **SPMTokenizer（sentencepiece 依赖，占位桩）** + 共享 VocabStore/SpecialTokenHandler。内部模块，不对 Python 暴露；不产 attention mask；本期运行时第三方依赖仅 D-09 JSON 单头（无 sentencepiece/ICU）。
 - **out of scope**（含理由）：
   - pybind11 对外暴露——spec §4.1.8 明确为内部模块边界，外层职责。
   - attention mask 生成——spec §4.1.4 明确不在本模块，由调用方构造。
@@ -407,7 +407,7 @@ graph TD
 ## §8 Code Plan Hints
 **给下游 plan/impl agent**：
 - 实现顺序（依赖拓扑）：M-01 base → M-05 vocab-store + M-06 special-handler（可并行）→ M-02 factory → M-04 qwen-tokenizer → M-03 bpe-tokenizer（手写 Metaspace/BPE）→ M-07 spm 占位桩。
-- **源码落点（L-1 统一）**：平铺 `cann_lm/engine/core/component/tokenizer.{h,cpp}` 保持既有 include 路径不变（3 个消费方 include 与既有 UT 不动）；实现文件可拆 `bpe_tokenizer.cpp`/`qwen_tokenizer.cpp`/`vocab_store.cpp`/`special_token_handler.cpp`，但 **REGISTER_TOKENIZER 注册宏调用必须与 `TokenizerFactory::create` 同在 tokenizer.cpp**（链接丢弃约束）。
+- **源码落点（L-1 统一）**：平铺 `cann_local_lm/engine/core/component/tokenizer.{h,cpp}` 保持既有 include 路径不变（3 个消费方 include 与既有 UT 不动）；实现文件可拆 `bpe_tokenizer.cpp`/`qwen_tokenizer.cpp`/`vocab_store.cpp`/`special_token_handler.cpp`，但 **REGISTER_TOKENIZER 注册宏调用必须与 `TokenizerFactory::create` 同在 tokenizer.cpp**（链接丢弃约束）。
 - **链接丢弃约束（外审 M2）**：注册宏与 create 同 TU（tokenizer.cpp），或对含注册宏的目标采用 whole-archive——防止静态库中未被引用的注册对象被链接器丢弃。
 - **既有代码迁移清单（外审 M3 + M-2）**：
   1. `api/cpp/engine_executor.cpp:63/75`：`std::make_unique<BpeTokenizer>()` 两处——改为 `std::make_unique<BPETokenizer>(LoadParams{}, nullptr)`（空参数构造，加载失败即 not-ready，encode 返回 FAILURE 保持 stub 时代行为）。
@@ -417,7 +417,7 @@ graph TD
 - **测试策略（M-8，A+B 分层，v0.6 用户拍板）**：
   - **A（默认 UT）**：脚本裁剪生成小型 tokenizer.json + 预生成 golden ids JSON 入库；各阶段（AddedToken 提取/预切分正则各分支（D-10 实测锚点样例）/字节→Unicode 映射/BPE 合并/special 注入剥离）精确断言；运行时零 Python 依赖。
   - **B（`tokenizer_realdata` 目标）**：CMake 注册、**检测 `tmp/qwen/tokenizer.json` 与 `tmp/gemma/tokenizer.json`（本地放置，gitignore）存在才编译/运行**；真实规模（Qwen 248044+26 词）一致性 + TC_205b 内存实测；golden ids 由 Python oracle 预生成（脚本入 `scripts/`）；**gemma4 tokenizer.json 待放置**（`tmp/gemma/` 当前为空，BPE 路径 B 层测试阻塞；落地后须校验 model.type==BPE，若为 Unigram 型回议 M-03 路线）。
-- **构建接入（v0.7 简化）**：本期**无 sentencepiece**（SPM 为占位，U-5 推迟至其实现期：源码构建 + 版本 pin + OHOS musl 交叉 + protobuf 处置届时闭合）；仅 `third_party/nlohmann/json.hpp` vendor 入库（D-09）。CMake target 注册于 `cann_lm/engine/CMakeLists.txt` + `ohos/CMakeLists.txt`（过渡期复制源码清单同步）。
+- **构建接入（v0.7 简化）**：本期**无 sentencepiece**（SPM 为占位，U-5 推迟至其实现期：源码构建 + 版本 pin + OHOS musl 交叉 + protobuf 处置届时闭合）；仅 `third_party/nlohmann/json.hpp` vendor 入库（D-09）。CMake target 注册于 `cann_local_lm/engine/CMakeLists.txt` + `ohos/CMakeLists.txt`（过渡期复制源码清单同步）。
 - 集成里程碑：①M-01+M-02+M-05+M-06+M-07 占位编译过 + factory create 用例（含 SPM 占位 FAILURE）+ 迁移清单落地；②M-04 Qwen 全流水线（含 AddedToken 提取）+ A 层 TC_203 一致 + B 层真实产物一致；③M-03 BPETokenizer 手写全流水线 + A 层 fixture 一致（B 层待 gemma4 实物）。
 - 模块最小读取集：M-01 → M-01.md + C-01；M-02 → M-02.md + C-02 + C-05；M-03 → M-03.md + C-03 + C-04 + F-05 + D-03；M-04 → M-04.md + C-03 + C-04 + F-02 + F-03 + **D-10**；M-05 → M-05.md + C-03 + D-09 + nfr/performance.md §2；M-07 → M-07.md + D-04。
 
@@ -550,7 +550,7 @@ class TokenizerBase {
 - 无下层 HAL/SDK 依赖。纯 C++17 标准库（std::optional/std::variant/std::string_view/std::byte/std::vector）。不使用 std::span（C++20，超出 C++17 约束，见 D-08）。
 - 无跨处理器同步点；无 DMA。
 - 内部模块边界（REQ-08）：仅头文件对 engine 内部暴露，不导出跨语言绑定符号。
-- 源码落点：`cann_lm/engine/core/component/tokenizer.{h,cpp}`（v0.4 路径修正，与既有桩一致）。
+- 源码落点：`cann_local_lm/engine/core/component/tokenizer.{h,cpp}`（v0.4 路径修正，与既有桩一致）。
 
 <a id="5-性能预算"></a>
 #### §5 性能预算
@@ -616,9 +616,9 @@ class Registrar {
 };
 #define REGISTER_TOKENIZER(algo, Class) \
   static const bool _reg_##Class = []{                  \
-    ::cann_lm::engine::Registrar::register_(algo,       \
+    ::cann_local_lm::engine::Registrar::register_(algo,       \
       [](const LoadParams& p, Status* st)               \
-        ->std::unique_ptr<::cann_lm::engine::TokenizerBase>{ \
+        ->std::unique_ptr<::cann_local_lm::engine::TokenizerBase>{ \
         return std::make_unique<Class>(p, st); });     \
     return true; }();
 ```

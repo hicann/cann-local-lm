@@ -2,7 +2,7 @@
 #
 # 提供: source build.conf (版本 + 路径默认) + 校验 ASCEND_HOME_PATH (外部预置, 不自动 source) +
 #        TORCH_DEVICE_BACKEND_AUTOLOAD=0 + DOPT_PYTHON (export)
-# PYTHONPATH 不在此设: set_env.sh 反查 cann_lm 装位置注入 (自定位, 不硬编码 repo 根)
+# PYTHONPATH 不在此设: set_env.sh 反查 cann_local_lm 装位置注入 (自定位, 不硬编码 repo 根)
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

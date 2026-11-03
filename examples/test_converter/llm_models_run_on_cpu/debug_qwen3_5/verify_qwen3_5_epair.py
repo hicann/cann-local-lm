@@ -2,7 +2,7 @@
 """验证 qwen3.5 epair/ep 推理: ep.module prefill + wrapper decode 回环 vs wrapper direct (+ vs HF)
 
 qwen3.5 混合架构 (full_attention + linear_attention/GatedDeltaNet) 的 epair 验证.
-linear attention 用 cann_lm::chunk_gated_delta_rule 融合算子 (单 GE 节点, 避免
+linear attention 用 cann_local_lm::chunk_gated_delta_rule 融合算子 (单 GE 节点, 避免
 torch.export 展开纯 torch for 循环 -> 19418 节点 -> GE segfault, 遗留任务 3 已解决).
 
 模式:
@@ -39,18 +39,18 @@ os.environ.setdefault("TORCH_DEVICE_BACKEND_AUTOLOAD", "0")
 import torch
 
 _PROJECT_ROOT = next(
-    p for p in Path(__file__).resolve().parents if (p / "cann_lm").is_dir()
+    p for p in Path(__file__).resolve().parents if (p / "cann_local_lm").is_dir()
 )
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-from cann_lm.models.qwen3_5 import (
+from cann_local_lm.models.qwen3_5 import (
     Qwen3_5ForCausalLM,
     Qwen3_5TextConfig,
     load_qwen3_5_weights,
 )
-from cann_lm.models.qwen3_5.export_wrapper import Qwen3_5ExportWrapper
-from cann_lm.converter.export.ge_converters import register_ge_converters
+from cann_local_lm.models.qwen3_5.export_wrapper import Qwen3_5ExportWrapper
+from cann_local_lm.converter.export.ge_converters import register_ge_converters
 from transformers import AutoTokenizer
 
 HF_PATH = os.environ["QWEN3_5_HF_PATH"]

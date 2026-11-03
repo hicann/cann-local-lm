@@ -1,8 +1,8 @@
 """验证 converter W4A8 matmul 算子链 (dynamic_quant + quant_matmul + QuantLinear) 对齐 Tier 0。
 
 被测对象 (under test):
-  cann_lm::dynamic_quant (dynamic_quant.py:57 CPU impl) — 激活 int8 量化
-  cann_lm::quant_matmul  (quant_matmul.py:81 CPU impl) — W4A8 s8s4 matmul
+  cann_local_lm::dynamic_quant (dynamic_quant.py:57 CPU impl) — 激活 int8 量化
+  cann_local_lm::quant_matmul  (quant_matmul.py:81 CPU impl) — W4A8 s8s4 matmul
   QuantLinear.forward    (quant_linear.py:66) — dynamic_quant → quant_matmul 链
 标准: Tier 0 ref_w4a8 (ref_dynamic_quant / ref_quant_matmul / ref_w4a8_linear)
 
@@ -20,11 +20,11 @@ import torch
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, SCRIPT_DIR)
 
-import cann_lm.models.fused_ops.ops as _fo  # noqa: F401  # register cann_lm:: ops
-from cann_lm.converter.export.quant_swap.materialize import (
+import cann_local_lm.models.fused_ops.ops as _fo  # noqa: F401  # register cann_local_lm:: ops
+from cann_local_lm.converter.export.quant_swap.materialize import (
     materialize_int4_per_group_symmetric,
 )
-from cann_lm.converter.export.quant_swap.quant_linear import QuantLinear
+from cann_local_lm.converter.export.quant_swap.quant_linear import QuantLinear
 from ref_w4a8 import (
     ref_dynamic_quant,
     ref_quant_weight_int4,
@@ -49,7 +49,9 @@ def cos_sim(a: torch.Tensor, b: torch.Tensor) -> float:
 
 
 def partA_dynamic_quant():
-    print("=== A: cann_lm::dynamic_quant vs ref_dynamic_quant [⚠️仅一致+✅wiring] ===")
+    print(
+        "=== A: cann_local_lm::dynamic_quant vs ref_dynamic_quant [⚠️仅一致+✅wiring] ==="
+    )
     cases = [
         ("synthetic_A1", _t([[1.0, 2.0, -1.0, 0.5]])),
     ]
@@ -65,7 +67,7 @@ def partA_dynamic_quant():
         cases.append(("real_qproj_input", d["inputs"][0].float()))
     npass = 0
     for name, x in cases:
-        xq_op, sc_op = torch.ops.cann_lm.dynamic_quant(x)
+        xq_op, sc_op = torch.ops.cann_local_lm.dynamic_quant(x)
         xq_ref, sc_ref = ref_dynamic_quant(x)
         ok = torch.equal(xq_op, xq_ref) and torch.allclose(sc_op, sc_ref)
         npass += ok
@@ -77,7 +79,7 @@ def partA_dynamic_quant():
 
 def partB_quant_matmul():
     print(
-        "\n=== B: cann_lm::quant_matmul (unpacked int4) vs ref_quant_matmul [⚠️仅一致+✅wiring] ==="
+        "\n=== B: cann_local_lm::quant_matmul (unpacked int4) vs ref_quant_matmul [⚠️仅一致+✅wiring] ==="
     )
     # 合成: M1 夹具
     w, scale, gs = _t([[2.0, -3.0, 1.5, 0.7]]), _t([[1.0]]), 4
@@ -85,8 +87,8 @@ def partB_quant_matmul():
     xq, xsc = ref_dynamic_quant(x)
     wq, _ = ref_quant_weight_int4(w, scale, gs)  # [N,K] int8
     out_ref = ref_quant_matmul(xq, wq, scale, gs, pertoken_scale=xsc, bias=None)
-    # cann_lm CPU impl 约定: x2 = unpacked int4 [K,N] (transpose_x2=False), scale [K//g, N]
-    out_op = torch.ops.cann_lm.quant_matmul(
+    # cann_local_lm CPU impl 约定: x2 = unpacked int4 [K,N] (transpose_x2=False), scale [K//g, N]
+    out_op = torch.ops.cann_local_lm.quant_matmul(
         xq,
         wq.t().contiguous(),
         scale.t().contiguous(),
@@ -130,7 +132,7 @@ def partB_quant_matmul():
         xq, xsc = ref_dynamic_quant(x)
         wq, _ = ref_quant_weight_int4(w, scale2d, gs)
         out_ref = ref_quant_matmul(xq, wq, scale2d, gs, pertoken_scale=xsc, bias=None)
-        out_op = torch.ops.cann_lm.quant_matmul(
+        out_op = torch.ops.cann_local_lm.quant_matmul(
             xq,
             wq.t().contiguous(),
             scale2d.t().contiguous(),
@@ -180,7 +182,7 @@ def partC_quantlinear_packed():
             f"  [FINDING] QuantLinear(packed) eager 崩: {type(e).__name__}: {str(e)[:120]}"
         )
         print(
-            "           原因: QuantLinear 存 packed weight_q [K//2,N] (swap/export 用), 但 cann_lm::quant_matmul"
+            "           原因: QuantLinear 存 packed weight_q [K//2,N] (swap/export 用), 但 cann_local_lm::quant_matmul"
         )
         print(
             "           CPU impl 期望 unpacked [K,N] (w=x2.float()*sc_exp). → QuantLinear eager CPU 路径断裂,"

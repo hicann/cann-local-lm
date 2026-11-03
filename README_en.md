@@ -31,7 +31,7 @@ git clone -b 2026_09_22 https://gitcode.com/cann/cann-local-lm.git
 
 ```
 cann-local-lm/
-├── cann_lm/                  # Core source code
+├── cann_local_lm/                  # Core source code
 │   ├── converter/            # Export toolchain (HF model → epair → omc compilation)
 │   ├── engine/               # Inference engine (omc loading + inference execution)
 │   └── models/               # Model definitions (gemma4 + fused_ops operators)
@@ -55,9 +55,9 @@ cann-local-lm/
 
 | Directory                     | Responsibility                        | Key Files                                                                                                                                                              |
 | ------------------------------| --------------------------------------| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| **cann_lm/converter/**        | HF model → epair → omc export toolchain | `cann_lm_converter.py`(CLI entry) / `loader.py`(loading) / `saver.py`(saving) / `quant/`(quantization:swap/materialize/auto_quant/dopt_wrapper) / `export/`(ge_converter + C++ csrc) |
-| **cann_lm/engine/**           | omc inference engine                   | `api/`(Python interface) / `core/`(core logic) / `backend/`(C++ backend) / `pipeline/`(inference pipeline)                                                              |
-| **cann_lm/models/**           | Model definitions + custom operators   | `gemma4/`(Gemma4ForCausalLM + export_wrapper) / `fused_ops/`(cann_lm:: + npu:: operator schema+fake-meta)                                                              |
+| **cann_local_lm/converter/**        | HF model → epair → omc export toolchain | `cann_lm_converter.py`(CLI entry) / `loader.py`(loading) / `saver.py`(saving) / `quant/`(quantization:swap/materialize/auto_quant/dopt_wrapper) / `export/`(ge_converter + C++ csrc) |
+| **cann_local_lm/engine/**           | omc inference engine                   | `api/`(Python interface) / `core/`(core logic) / `backend/`(C++ backend) / `pipeline/`(inference pipeline)                                                              |
+| **cann_local_lm/models/**           | Model definitions + custom operators   | `gemma4/`(Gemma4ForCausalLM + export_wrapper) / `fused_ops/`(cann_local_lm:: + npu:: operator schema+fake-meta)                                                              |
 | **torch_delegate/**           | epair serialization/loading + C++ backend | `csrc/backend/`(EpairModelLoader → GE Graph → OM) / `torch_delegate/`(api.py + converter + epair + core) / `build.sh`(one-click build) / `examples/`(examples)        |
 | **docs/cann_lm_converter/**   | converter design docs                  | `cli/cli_design.md` / `export/export_design.md` / `quant/quant_design.md` / `README.md`(overview) / `version_evolution.md`(version evolution)                        |
 | **examples/test_converter/**  | End-to-end test cases                  | `export_llm_model/`(C++ omc compilation + om_npu_verify inference verification) / `cann_lm_cli_export/run_pd6_cases.sh`(6 cases)                                      |

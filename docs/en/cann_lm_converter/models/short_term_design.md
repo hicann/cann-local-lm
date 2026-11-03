@@ -24,7 +24,7 @@ The two models (gemma4, qwen3_5) share the same skeleton but have inconsistent i
 ## Directory Structure
 
 ```
-cann_lm/
+cann_local_lm/
 ├── models/                          # Not modified
 │   ├── gemma4/
 │   └── qwen3_5/

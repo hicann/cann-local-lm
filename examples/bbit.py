@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
 """bbit — Python mirror of examples/test_engine/bbit/bbit.cpp (Black-Box Integration Test).
 
-A real user of the engine via the **cann_lm** Python bindings module: it calls
+A real user of the engine via the **cann_local_lm** Python bindings module: it calls
 every lifecycle step in sequence. Mirrors the LATEST bbit.cpp (split weight
 fields, fail-fast/degraded-run contract, async block commented out), check
 counters, and exit codes (0=all pass, 1=a check failed, 2=config/usage/
 unsupported).
 
 Two requirements vs the raw-ctypes approach:
-  1. USE the cann_lm Python module (Engine/Context/Result + build_* helpers;
-     --check NULL defense + the degraded ContextCreate(NULL) use cann_lm._ffi,
+  1. USE the cann_local_lm Python module (Engine/Context/Result + build_* helpers;
+     --check NULL defense + the degraded ContextCreate(NULL) use cann_local_lm._ffi,
      the loaded-lib submodule).
-  2. FEATURE-CHECK the module before use ("判断头文件支不支持"): verify cann_lm
+  2. FEATURE-CHECK the module before use ("判断头文件支不支持"): verify cann_local_lm
      exposes the needed public API; if not, report unsupported and exit 2.
 
 Flow contract (mirrors bbit.cpp run_flow, 2026-09-22 fail-fast):
@@ -32,12 +32,12 @@ Usage:
 import os
 import sys
 
-# Make `import cann_lm` resolve from this file's sibling package dir.
+# Make `import cann_local_lm` resolve from this file's sibling package dir.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import ctypes as ct  # noqa: E402  (after sys.path setup)
 
-import cann_lm
+import cann_local_lm
 
 
 # ────────────────────────── feature-check ("判断头文件支不支持") ──────────────────────────
@@ -71,11 +71,15 @@ def supports_bbit_flow(module):
 
 
 def is_generate_status_ok(status):
-    s = status if isinstance(status, cann_lm.Status) else cann_lm.Status(int(status))
+    s = (
+        status
+        if isinstance(status, cann_local_lm.Status)
+        else cann_local_lm.Status(int(status))
+    )
     return s in (
-        cann_lm.Status.SUCCESS,
-        cann_lm.Status.FAILURE,
-        cann_lm.Status.INVALID_STATE,
+        cann_local_lm.Status.SUCCESS,
+        cann_local_lm.Status.FAILURE,
+        cann_local_lm.Status.INVALID_STATE,
     )
 
 
@@ -108,27 +112,27 @@ def _reset_counters():
     _g_total = _g_pass = 0
 
 
-# Config loader + file_exists + is_degraded_run live in cann_lm.config (shared
-# with the cann_lm.generate CLI; pip-installed as a package module). Re-exported
+# Config loader + file_exists + is_degraded_run live in cann_local_lm.config (shared
+# with the cann_local_lm.generate CLI; pip-installed as a package module). Re-exported
 # here so `from bbit import load_config` keeps working (run_check/run_flow/main
 # are byte-identical — only the loader's source changed, not bbit's logic).
-from cann_lm.config import file_exists, is_degraded_run, load_config  # noqa: F401
+from cann_local_lm.config import file_exists, is_degraded_run, load_config  # noqa: F401
 
 
 # ────────────────────────── --check: NULL defense (C ABI contract) ──────────────────────────
-# Uses cann_lm._ffi (the loaded-lib submodule) to call the C functions directly
+# Uses cann_local_lm._ffi (the loaded-lib submodule) to call the C functions directly
 # with NULL, mirroring bbit.cpp run_check.
 
 
 def run_check():
     _reset_counters()
     try:
-        lib = cann_lm.get_library()
-    except cann_lm.CannLmError as e:
+        lib = cann_local_lm.get_library()
+    except cann_local_lm.CannLmError as e:
         print(f"bbit --check: no engine library: {e}", file=sys.stderr)
         return 2
 
-    INVALID = int(cann_lm.Status.INVALID_ARGUMENT)
+    INVALID = int(cann_local_lm.Status.INVALID_ARGUMENT)
     # Executor-level: NULL inputs → INVALID_ARGUMENT
     check(
         lib.CANN_LMEngine_ExecutorCreate(None, None, None) == INVALID,
@@ -153,12 +157,13 @@ def run_check():
 
     # Request-level: NULL inputs → safe defaults (not INVALID_ARGUMENT)
     check(
-        lib.CANN_LMEngine_RequestGetStatus(None) == int(cann_lm.RequestStatus.QUEUED),
+        lib.CANN_LMEngine_RequestGetStatus(None)
+        == int(cann_local_lm.RequestStatus.QUEUED),
         "RequestGetStatus NULL → QUEUED",
     )
     check(lib.CANN_LMEngine_RequestIsDone(None) == 0, "RequestIsDone NULL → 0")
     check(
-        lib.CANN_LMEngine_RequestCancel(None) == int(cann_lm.Status.SUCCESS),
+        lib.CANN_LMEngine_RequestCancel(None) == int(cann_local_lm.Status.SUCCESS),
         "RequestCancel NULL → SUCCESS",
     )
     check(
@@ -182,7 +187,7 @@ def run_check():
     return 0 if _g_pass == _g_total else 1
 
 
-# ────────────────────────── --config: full flow via cann_lm wrappers ──────────────────────────
+# ────────────────────────── --config: full flow via cann_local_lm wrappers ──────────────────────────
 
 
 def _try(ok_msg, fn, err_msg=None):
@@ -191,7 +196,7 @@ def _try(ok_msg, fn, err_msg=None):
         r = fn()
         check(True, ok_msg)
         return r
-    except (cann_lm.CannLmError, cann_lm.CannLmStatusError) as e:
+    except (cann_local_lm.CannLmError, cann_local_lm.CannLmStatusError) as e:
         check(False, f"{err_msg or ok_msg} ({getattr(e, 'status', '?')})")
         return None
 
@@ -211,22 +216,22 @@ def run_flow(cfg):
     )
 
     # 1. ExecutorCreate — build artifact (split weights) + EngineOptions
-    artifact = cann_lm.build_model_artifact(
+    artifact = cann_local_lm.build_model_artifact(
         prefill_omc_path=cfg["prefill_omc_path"],
         decode_omc_path=cfg["decode_omc_path"],
         meta_json_path=cfg["meta_json_path"],
         prefill_weight=cfg["prefill_weight"],
         decode_weight=cfg["decode_weight"],
     )
-    opts = cann_lm.build_engine_options(
+    opts = cann_local_lm.build_engine_options(
         default_chunk_size=1024,
         max_concurrent_prefill=1,
         tokenizer_type=cfg["tokenizer_type"],
         tokenizer_path=cfg["tokenizer_path"],
     )
     try:
-        eng = cann_lm.Engine(artifact=artifact, options=opts)
-    except (cann_lm.CannLmError, cann_lm.CannLmStatusError):
+        eng = cann_local_lm.Engine(artifact=artifact, options=opts)
+    except (cann_local_lm.CannLmError, cann_local_lm.CannLmStatusError):
         eng = None
 
     # 2026-09-22 fail-fast / degraded-run contract:
@@ -243,11 +248,11 @@ def run_flow(cfg):
             "failed ExecutorCreate → null executor (no half-initialized engine)",
         )
         # ContextCreate(NULL executor) → INVALID_ARGUMENT (raw lib, like --check)
-        lib = cann_lm.get_library()
+        lib = cann_local_lm.get_library()
         no_cid = ct.c_uint64(0)
         check(
             lib.CANN_LMEngine_ContextCreate(None, ct.byref(no_cid))
-            == int(cann_lm.Status.INVALID_ARGUMENT),
+            == int(cann_local_lm.Status.INVALID_ARGUMENT),
             "ContextCreate(NULL executor) rejected",
         )
         print(f"bbit flow (degraded, no model): {_g_pass}/{_g_total} passed")
@@ -269,7 +274,7 @@ def run_flow(cfg):
 
         # 3. Generate (sync) — one per sentence (SUCCESS/FAILURE/INVALID_STATE ok)
         for i, s in enumerate(cfg["sentences"]):
-            sp = cann_lm.build_sampling_params(
+            sp = cann_local_lm.build_sampling_params(
                 temperature=s["temperature"],
                 top_k=s["top_k"],
                 top_p=s["top_p"],
@@ -286,12 +291,12 @@ def run_flow(cfg):
                 )
                 print(f'bbit: sentence[{i}] prompt="{s["prompt"]}" -> status SUCCESS')
                 check_generate_status(
-                    cann_lm.Status.SUCCESS,
+                    cann_local_lm.Status.SUCCESS,
                     "Generate sync (SUCCESS/FAILURE/INVALID_STATE)",
                 )
                 check(len(r.token_ids) > 0, "Generate sync produced tokens")
                 print(f"bbit: sentence[{i}] generated: {r.text}")
-            except cann_lm.CannLmStatusError as e:
+            except cann_local_lm.CannLmStatusError as e:
                 print(
                     f'bbit: sentence[{i}] prompt="{s["prompt"]}" '
                     f"-> status {e.status.name}"
@@ -352,11 +357,11 @@ def _default_config_path(argv0):
 
 
 def main(argv):
-    # Feature-check: does the cann_lm module support the bbit flow?
-    if not supports_bbit_flow(cann_lm):
-        missing = [n for n in REQUIRED_API if not hasattr(cann_lm, n)]
+    # Feature-check: does the cann_local_lm module support the bbit flow?
+    if not supports_bbit_flow(cann_local_lm):
+        missing = [n for n in REQUIRED_API if not hasattr(cann_local_lm, n)]
         print(
-            f"bbit: cann_lm module does not support bbit flow "
+            f"bbit: cann_local_lm module does not support bbit flow "
             f"(missing: {', '.join(missing)})",
             file=sys.stderr,
         )
@@ -396,7 +401,7 @@ def main(argv):
         return 2
 
     # .so gate for the flow (module API supported, but need the engine lib)
-    if not cann_lm.is_library_available():
+    if not cann_local_lm.is_library_available():
         print(
             "bbit: no loadable libcann_lm_engine.so "
             "(set CANN_LM_LIB or run on a device with a matching-arch .so)",

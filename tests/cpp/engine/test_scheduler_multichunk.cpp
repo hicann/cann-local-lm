@@ -174,11 +174,11 @@ void ResetMocks() { MockModelManager::run_status = 0; }
 constexpr const char* kWeight = "/mock/weights";
 
 // 合法 omc buffer 源（buffer 态优先，D-15）
-cann_lm::engine::ArtifactSource MakeOmc()
+cann_local_lm::engine::ArtifactSource MakeOmc()
 {
     static char omc_buf[8];
-    cann_lm::engine::ArtifactSource s;
-    s.data = cann_lm::engine::Buffer{omc_buf, sizeof(omc_buf)};
+    cann_local_lm::engine::ArtifactSource s;
+    s.data = cann_local_lm::engine::Buffer{omc_buf, sizeof(omc_buf)};
     return s;
 }
 
@@ -251,9 +251,9 @@ bool g_use_gemma_mask_model = false;
 // 容量域合法配置（TC_106 前置）。batch_num=1：decode 执行器 Load（seq_len=1）
 // 时 batch_size 取 cc.batch_num，须为正（0 会把 position_ids 修正成 0 维）。
 // hidden_size/vocab_align_size 留 0：input_embed/输出侧特征修正跳过。
-cann_lm::engine::ModelConfig MakeConfig()
+cann_local_lm::engine::ModelConfig MakeConfig()
 {
-    cann_lm::engine::ModelConfig c;
+    cann_local_lm::engine::ModelConfig c;
     c.kv_cache_max_len = 16;
     c.num_hidden_layers = 2;
     c.batch_num = 1;
@@ -262,7 +262,10 @@ cann_lm::engine::ModelConfig MakeConfig()
 
 // chunk token 载荷（值不参与语义：mock Run 不读输入，token_ids 由 pipeline
 // 侧采样产生，Scheduler 只消费块长）
-std::vector<cann_lm::engine::TokenId> MakeIds(std::size_t n) { return std::vector<cann_lm::engine::TokenId>(n, 7); }
+std::vector<cann_local_lm::engine::TokenId> MakeIds(std::size_t n)
+{
+    return std::vector<cann_local_lm::engine::TokenId>(n, 7);
+}
 
 } // namespace mc_sched_mock
 
@@ -283,7 +286,7 @@ std::shared_ptr<INDTensorBuffer> CreateNDTensorBuffer(const NDTensorDesc& tensor
 }
 } // namespace hiai
 
-namespace cann_lm::engine {
+namespace cann_local_lm::engine {
 namespace {
 
 // 就绪管线 fixture：真实 KvCachePool(1,16,2,4,8) + InputAssembler + 双
@@ -533,7 +536,7 @@ TEST(GemmaMaskCorrectDescsTest, MaskSlidingWidthDims_U1)
                                                   /*layers=*/2, /*heads=*/4, /*dims=*/8);
         auto asm_ = std::make_shared<InputAssembler>(pool, /*max_batch=*/1, sw);
         ModelExecutor exec(pool, asm_, nullptr);
-        cann_lm::engine::ModelConfig cfg = mc_sched_mock::MakeConfig();
+        cann_local_lm::engine::ModelConfig cfg = mc_sched_mock::MakeConfig();
         cfg.sliding_window = sw;
         ASSERT_TRUE(exec.Load(mc_sched_mock::MakeOmc(), mc_sched_mock::kWeight, cfg, /*seq_len=*/8).ok())
             << "sw=" << sw;
@@ -567,7 +570,7 @@ TEST(GemmaMaskCorrectDescsTest, MaskSlidingWidthDims_U1)
                                                   /*layers=*/2, /*heads=*/4, /*dims=*/8);
         auto asm_ = std::make_shared<InputAssembler>(pool, /*max_batch=*/1, sw, P, /*sw_hd=*/64);
         ModelExecutor exec(pool, asm_, nullptr);
-        cann_lm::engine::ModelConfig cfg = mc_sched_mock::MakeConfig();
+        cann_local_lm::engine::ModelConfig cfg = mc_sched_mock::MakeConfig();
         cfg.sliding_window = sw;
         cfg.prefill_len = {P};
         cfg.sliding_window_head_dim = 64;
@@ -591,4 +594,4 @@ TEST(GemmaMaskCorrectDescsTest, MaskSlidingWidthDims_U1)
 }
 
 } // namespace
-} // namespace cann_lm::engine
+} // namespace cann_local_lm::engine

@@ -44,8 +44,8 @@ pytest tests/python/llm_models/test_gemma4.py
 python verify_gemma4_chunk.py --logits-diff --num-steps 4
 ```
 
-验证 cann_lm/wrapper 逐 step logits 与 HF (model.language_model + lm_head + softcap 拆解) 的数值精度。
-token match 即 PASS；logits max_diff 是 bfloat16 数值差异预期（cann_lm `nn.Linear` vs HF `Gemma4ClippableLinear`，详见 README.md 精度差异分析）。
+验证 cann_local_lm/wrapper 逐 step logits 与 HF (model.language_model + lm_head + softcap 拆解) 的数值精度。
+token match 即 PASS；logits max_diff 是 bfloat16 数值差异预期（cann_local_lm `nn.Linear` vs HF `Gemma4ClippableLinear`，详见 README.md 精度差异分析）。
 
 ### 第 3 层：chunk 推理 (verify_gemma4_chunk.py)
 
@@ -55,7 +55,7 @@ python verify_gemma4_chunk.py --mode wrapper           # wrapper 模式
 python verify_gemma4_chunk.py --vs-hf                  # 加 HF 三方对比
 ```
 
-验证 cann_lm/wrapper 的分 chunk prefill + decode 与一次性 prefill 生成文本完全一致。
+验证 cann_local_lm/wrapper 的分 chunk prefill + decode 与一次性 prefill 生成文本完全一致。
 
 ### 第 4 层：epair 导出 + 回环 (verify_gemma4_epair.py)
 
@@ -210,7 +210,7 @@ def make_causal_mask_with_padding(q_len, k_len, real_q_len, real_k_len, dtype):
 
 ### 16. sliding_window mask 4D decode 用错 q 位置基准 (根因)
 
-**现象**：EP(wrapper scatter)decode 退化重复("my name is my name is" / "人工智能人工智能")，但 CLM(cann_lm model.generate cat)== HF 正确
+**现象**：EP(wrapper scatter)decode 退化重复("my name is my name is" / "人工智能人工智能")，但 CLM(cann_local_lm model.generate cat)== HF 正确
 
 **根因**：`_prepare_causal_mask` 4D 路径对 sliding_attention 层套 window 时用 `q_range=arange(q_len)` 算 q 位置。decode 时 `q_len=1` → `arange(1)=[0]`，但 decode token 在序列中真实位置是 6(非 0)，window 算出"只 k_pos=0 可见"，屏蔽所有其他 K → sliding 层只看第一个 prefill token → 退化
 
@@ -239,7 +239,7 @@ def make_causal_mask_with_padding(q_len, k_len, real_q_len, real_k_len, dtype):
 | 方 | 实现 | KV 模式 | 用途 |
 |----|------|---------|------|
 | HF | transformers 原生 `model.generate` | - | ground truth |
-| CLM | cann_lm `model.generate`(eager, torch.cat 累积) | cat (K=step 数) | 验证模型逻辑+权重 |
+| CLM | cann_local_lm `model.generate`(eager, torch.cat 累积) | cat (K=step 数) | 验证模型逻辑+权重 |
 | EP | wrapper export(`ep.module` prefill + wrapper decode) | scatter (K=kv_max buffer) | 验证 export + scatter |
 
 **定位流程**：

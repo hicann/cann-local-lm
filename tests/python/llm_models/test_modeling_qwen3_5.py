@@ -4,12 +4,12 @@ import sys
 import json
 import torch
 
-from cann_lm.models.qwen3_5.configuration_qwen3_5 import (
+from cann_local_lm.models.qwen3_5.configuration_qwen3_5 import (
     Qwen3_5TextConfig,
     Qwen3_5Config,
     Qwen3_5VisionConfig,
 )
-from cann_lm.models.qwen3_5.modeling_qwen3_5 import (
+from cann_local_lm.models.qwen3_5.modeling_qwen3_5 import (
     Qwen3_5RMSNorm,
     Qwen3_5RMSNormGated,
     Qwen3_5TextRotaryEmbedding,
@@ -33,7 +33,7 @@ from cann_lm.models.qwen3_5.modeling_qwen3_5 import (
     scatter_kv_to_cache,
     _create_causal_mask,
 )
-from cann_lm.models.qwen3_5.export_wrapper import Qwen3_5ExportWrapper
+from cann_local_lm.models.qwen3_5.export_wrapper import Qwen3_5ExportWrapper
 
 
 def make_small_config() -> Qwen3_5TextConfig:

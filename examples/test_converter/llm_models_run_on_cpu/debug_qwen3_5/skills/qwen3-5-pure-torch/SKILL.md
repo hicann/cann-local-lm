@@ -65,13 +65,13 @@ Qwen3.5 将 Qwen3Next 的合并投影拆分为 4 个独立投影：
 查阅 HuggingFace transformers 仓库和 CANN-LM 中的源文件：
 
 ```
-CANN-LM/cann_lm/models/qwen3_5/
+CANN-LM/cann_local_lm/models/qwen3_5/
 ├── configuration_qwen3_5.py   # Qwen3_5Config, Qwen3_5TextConfig, Qwen3_5VisionConfig
 ├── modeling_qwen3_5.py        # 完整模型实现（自动生成，约 2100 行）
 ├── modular_qwen3_5.py         # 模块化定义（手动维护）
 ├── tokenization_qwen3_5.py    # Tokenizer
 
-CANN-LM/cann_lm/models/qwen3_next/
+CANN-LM/cann_local_lm/models/qwen3_next/
 ├── configuration_qwen3_next.py   # Qwen3NextConfig（Qwen3_5TextConfig 的基类）
 ├── modeling_qwen3_next.py        # GatedDeltaNet, MoE 等核心组件
 ```
@@ -80,16 +80,16 @@ CANN-LM/cann_lm/models/qwen3_next/
 
 ### 第 2 步：创建目录结构
 
-在 `CANN-LM/cann_lm/models/qwen3_5/` 下创建实现文件，仿照 gemma4 的标准 Python 包结构：
+在 `CANN-LM/cann_local_lm/models/qwen3_5/` 下创建实现文件，仿照 gemma4 的标准 Python 包结构：
 
 ```
-CANN-LM/cann_lm/models/qwen3_5/
+CANN-LM/cann_local_lm/models/qwen3_5/
 ├── __init__.py                    # 包导出
 ├── configuration_qwen3_5.py       # 模型配置（纯 dataclass，不继承 PreTrainedConfig）
 ├── modeling_qwen3_5.py            # 纯 PyTorch 模型实现（文本 CausalLM）
 # 单元测试在 tests/python/llm_models/test_modeling_qwen3_5.py（按 tests/python/ 约定）
 
-CANN-LM/cann_lm/models/skills/qwen3-5-pure-torch/
+CANN-LM/cann_local_lm/models/skills/qwen3-5-pure-torch/
 ├── SKILL.md                       # 本文件（技能描述，不含 Python 代码）
 ```
 
@@ -710,12 +710,12 @@ else:
 
 | 脚本 | 用途 |
 |------|------|
-| `cann_lm/models/qwen3_5/verify_qwen3_5_vs_hf.py` | 与 HF `Qwen3_5ForCausalLM` 逐 token 对拍（float32 + eager） |
-| `cann_lm/hf_cpu.py` | 禁用 transformers 的 torch_npu probe（本环境必做，先于 `from transformers import`） |
+| `cann_local_lm/models/qwen3_5/verify_qwen3_5_vs_hf.py` | 与 HF `Qwen3_5ForCausalLM` 逐 token 对拍（float32 + eager） |
+| `cann_local_lm/hf_cpu.py` | 禁用 transformers 的 torch_npu probe（本环境必做，先于 `from transformers import`） |
 
 ```bash
 # 对拍 (含 greedy 出字)
-cd cann_lm/models/qwen3_5 && TORCH_DEVICE_BACKEND_AUTOLOAD=0 python3 verify_qwen3_5_vs_hf.py \
+cd cann_local_lm/models/qwen3_5 && TORCH_DEVICE_BACKEND_AUTOLOAD=0 python3 verify_qwen3_5_vs_hf.py \
     --model /path/to/qwen3.5-0.8B
 ```
 
@@ -770,5 +770,5 @@ cd cann_lm/models/qwen3_5 && TORCH_DEVICE_BACKEND_AUTOLOAD=0 python3 verify_qwen
 - conv_state 用于 causal conv1d 的左上下文缓存
 
 ### 本环境用 transformers 必须先禁用 torch_npu probe
-- `import cann_lm.hf_cpu`（在 `from transformers import ...` 之前），否则 transformers 的 `is_torch_npu_available()` 会因 `libhccl_compat.so` 缺失而 `import torch_npu` 致命报错。
+- `import cann_local_lm.hf_cpu`（在 `from transformers import ...` 之前），否则 transformers 的 `is_torch_npu_available()` 会因 `libhccl_compat.so` 缺失而 `import torch_npu` 致命报错。
 - 跑脚本统一加 `TORCH_DEVICE_BACKEND_AUTOLOAD=0`。

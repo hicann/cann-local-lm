@@ -8,7 +8,7 @@
 
 ### 提交 Issue
 
-- 使用 GitCode [Issues](https://gitcode.com/cann/cann-lm/issues) 提交问题
+- 使用 GitCode [Issues](https://gitcode.com/cann/cann-local-lm/issues) 提交问题
 - 请描述清楚问题现象、复现步骤、环境信息（CANN 版本 / torch 版本 / 芯片型号）
 - Bug 报告请附上错误日志和最小复现用例
 
@@ -33,10 +33,10 @@
 
 ## 开发规范
 
-### cann_lm/ 代码修改
+### cann_local_lm/ 代码修改
 
 - **bug 修复必须给推导与修改逻辑**：提供根因证据链（代码行号 / spec 文档 / 测试输出 / NPU 实测），禁止凭印象猜测
-- **测试时禁改 cann_lm/**：跑测试用例时不要修改 `cann_lm/` 下任何代码，优先改测试代码，无法通过再确认改主仓
+- **测试时禁改 cann_local_lm/**：跑测试用例时不要修改 `cann_local_lm/` 下任何代码，优先改测试代码，无法通过再确认改主仓
 - **环境前置**：任何依赖 torchair 的脚本运行前须先 `source scripts/set_env.sh`，C++ 编译须 `source scripts/set_env_cann.sh`
 
 ### 测试代码通用性
@@ -55,10 +55,10 @@
 
 | 修改范围 | 须更新文档 |
 |----------|-----------|
-| `cann_lm/converter/` | `docs/cann_lm_converter/` 下对应设计文档 |
-| `cann_lm/models/fused_ops/` | `docs/zh/cann_lm_converter/models/fused_ops/fused_ops.md` |
-| `cann_lm/converter/export/` | `docs/zh/cann_lm_converter/export/export_design.md` |
-| `cann_lm/converter/quant/` | `docs/zh/cann_lm_converter/quant/quant_design.md` |
+| `cann_local_lm/converter/` | `docs/cann_lm_converter/` 下对应设计文档 |
+| `cann_local_lm/models/fused_ops/` | `docs/zh/cann_lm_converter/models/fused_ops/fused_ops.md` |
+| `cann_local_lm/converter/export/` | `docs/zh/cann_lm_converter/export/export_design.md` |
+| `cann_local_lm/converter/quant/` | `docs/zh/cann_lm_converter/quant/quant_design.md` |
 | CLI 命令行参数 | `docs/zh/cann_lm_converter/cli/cli_design.md` |
 
 ## 版本配套

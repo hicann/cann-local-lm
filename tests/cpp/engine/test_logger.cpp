@@ -6,7 +6,7 @@
 
 #include <string>
 
-namespace cann_lm::engine {
+namespace cann_local_lm::engine {
 namespace {
 
 TEST(LoggerLogfTest, FormatsIntAndString)
@@ -60,4 +60,4 @@ TEST(LoggerLogTest, ExistingLogBehaviorUnchanged)
 }
 
 } // namespace
-} // namespace cann_lm::engine
+} // namespace cann_local_lm::engine

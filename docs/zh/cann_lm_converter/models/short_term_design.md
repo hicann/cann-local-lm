@@ -24,7 +24,7 @@
 ## 目录结构
 
 ```
-cann_lm/
+cann_local_lm/
 ├── models/                          # 不修改
 │   ├── gemma4/
 │   └── qwen3_5/

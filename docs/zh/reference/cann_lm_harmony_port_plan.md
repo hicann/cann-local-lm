@@ -4,7 +4,7 @@
 
 > 配套参考:`docs/reference/harmony_acl_build_analysis.md`(harmony_acl 构建分析)
 > 编制日期:2026-08-24
-> 目标:把 `cann_lm/engine/` 在鸿蒙 PC 上编译为 **.so** 或 **可执行 UT** 并能运行。
+> 目标:把 `cann_local_lm/engine/` 在鸿蒙 PC 上编译为 **.so** 或 **可执行 UT** 并能运行。
 > 本文档为 Phase 3 PLAN 产出(base.DESIGN + chip-adaptation.COMPATIBILITY-MAP)。
 
 ---
@@ -69,10 +69,10 @@ engine 是**纯标准 C++17**、**零 POSIX 专有依赖**、**零外部库依�
 6. 宿主机 ubuntu 24.04+ + build-essential(跑主机 UT 对照用)。
 
 ### Step A — 引入 OHOS toolchain(不改源码)
-- 在 `cann_lm/engine/` 旁新增 `scripts/ohos.toolchain.cmake`(参照 harmony_acl,或直接用 SDK 官方那个)。
+- 在 `cann_local_lm/engine/` 旁新增 `scripts/ohos.toolchain.cmake`(参照 harmony_acl,或直接用 SDK 官方那个)。
 - 新增 `scripts/build_ohos.sh`:设 `CMD_LINE_TOOLS_DIR`/`OHOS_SDK` 等变量 → `cmake -G Ninja -DCMAKE_TOOLCHAIN_FILE=... -DOHOS_PLATFORM=OHOS -DOHOS_ARCH=arm64-v8a -DOHOS_STL=c++_shared ..` → `cmake --build`。
 
-### Step B — CMake 加 OHOS 分支(改 `cann_lm/engine/CMakeLists.txt`)
+### Step B — CMake 加 OHOS 分支(改 `cann_local_lm/engine/CMakeLists.txt`)
 现状是单分支。改为:
 ```cmake
 if(OHOS_PLATFORM STREQUAL "OHOS")

@@ -4,7 +4,7 @@ set -euo pipefail
 # build_cpp.sh — CANN-LM C++ 统一构建入口 (顶层 CMakeLists, 单 build 树)
 #
 # 产物 (默认: backend + compile tool, 不含测试):
-#   - libtorch_delegate_backend.so   (cann_lm/converter/export/csrc, backend lib)
+#   - libtorch_delegate_backend.so   (cann_local_lm/converter/export/csrc, backend lib)
 #   - cann_lm_compile                (csrc/tools/compile_main.cc, epair→OM 编译工具)
 # 测试构建独立: bash scripts/cann_lm_compile/build_test.sh (ASAN, 独立 build_tests 树 + ctest)
 #

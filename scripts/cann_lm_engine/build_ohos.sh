@@ -7,8 +7,8 @@
 #   B) 精简 SDK(OpenHarmony 镜像提取,无 llvm/bin):回退本机 clang-18 + 手动补 builtins
 #   - SDK 路径从环境变量 OHOS_SDK_NATIVE 取;否则自动探测(cli_native > ohos_native/native)
 #   - 构建器用 Unix Makefiles(本机 make;完整 SDK 的 build-tools 仅含 cmake,无 ninja)
-#   - 直接配 cann_lm/engine/ohos(SHARED .so + 部署产物),不走仓库根 CMakeLists
-#     (根 CMakeLists 仅 add_subdirectory(cann_lm/engine) host 版,无 OHOS 分支)
+#   - 直接配 cann_local_lm/engine/ohos(SHARED .so + 部署产物),不走仓库根 CMakeLists
+#     (根 CMakeLists 仅 add_subdirectory(cann_local_lm/engine) host 版,无 OHOS 分支)
 set -euo pipefail
 
 THIS_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -60,7 +60,7 @@ else
 fi
 
 # ── 3) 工具链文件 + engine/ohos 源目录 ──
-ENGINE_OHOS_DIR="${REPO_ROOT}/cann_lm/engine/ohos"
+ENGINE_OHOS_DIR="${REPO_ROOT}/cann_local_lm/engine/ohos"
 TOOLCHAIN="${ENGINE_OHOS_DIR}/ohos.toolchain.cmake"
 if [ ! -f "${TOOLCHAIN}" ]; then
     echo "ERROR: 工具链文件不存在: ${TOOLCHAIN}" >&2

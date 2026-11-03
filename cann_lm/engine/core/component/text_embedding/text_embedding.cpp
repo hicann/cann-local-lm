@@ -181,11 +181,12 @@ public:
 /// 页内残量由 map_head_ 吸收（RowPtr = map + map_head_ + id*row_bytes）。
 class MmapTableSource final : public TableSource {
 public:
-    /// 段几何校验 + 建映射：fstat size ≥ file_offset + 段长（require_exact
-    /// 时取 ==）→ mmap(PROT_READ|MAP_PRIVATE，页对齐下界)。
+    /// 段几何校验 + 建映射：fstat size ≥ file_offset + 段长（require_exact 时
+    /// 取 ==；file_size_expect 非 0 时以它为全文件总长判等，段尾仅作映射边界）→
+    /// mmap(PROT_READ|MAP_PRIVATE，页对齐下界)。
     /// 截断拒绝在 map 前完成（无 SIGBUS 窗口；运行中截断部署期不存在，R-2）。
     static Status Create(const std::string& path, uint64_t file_offset, size_t row_bytes, size_t rows,
-                         bool require_exact, std::unique_ptr<TableSource>* out)
+                         bool require_exact, std::unique_ptr<TableSource>* out, uint64_t file_size_expect = 0)
     {
         if (out == nullptr || row_bytes == 0 || rows == 0) {
             return Status(Status::INVALID_ARGUMENT);
@@ -201,7 +202,8 @@ public:
             return Status(Status::INVALID_ARGUMENT);
         struct stat sb {};
         const uint64_t fsize = (::fstat(fd, &sb) == 0) ? static_cast<uint64_t>(sb.st_size) : 0;
-        const bool size_ok = require_exact ? (fsize == seg_end) : (fsize >= seg_end);
+        const bool size_ok = require_exact ? (fsize == (file_size_expect != 0 ? file_size_expect : seg_end)) :
+                                             (fsize >= seg_end);
         if (::fstat(fd, &sb) != 0 || !size_ok) {
             ::close(fd);
             return Status(Status::INVALID_ARGUMENT); // 截断/超长：map 前拒绝
@@ -340,8 +342,7 @@ TextEmbedding& TextEmbedding::operator=(TextEmbedding&& other) noexcept
     return *this;
 }
 
-Status EmbeddingConfig::FromSection(const std::string& weights, const std::string& dequant_scale,
-                                    const std::string& type, const std::string& scale_type,
+Status EmbeddingConfig::FromSection(const std::string& weights, const std::string& type, const std::string& scale_type,
                                     const std::string& quant_mode, const std::string& load_mode,
                                     const std::string& identity_type, const std::string& identity_scale_type,
                                     size_t vocab_size, size_t hidden_dim, EmbeddingConfig* out)
@@ -352,15 +353,14 @@ Status EmbeddingConfig::FromSection(const std::string& weights, const std::strin
     out->vocab_size = vocab_size;
     out->hidden_dim = hidden_dim;
 
-    // ── 主表（embedding_weights）：空 = "不加载"信号（tokenId 部署形态），
-    //    主表字段不解析；identity 读取类型仍须解析（配置层独立——合并布局下
-    //    identity 数据与主表同一文件，启用由图工位判定，Q12；TokenId 形态下
-    //    仅为可解析，host 查表/加载由 pipeline 按 Loaded() 门控跳过，Q11）──
+    // ── 主表（embedding_weights 单文件）：空 = "不加载"信号（tokenId 部署形态），
+    //    主表字段不解析；identity 读取类型仍须解析（配置层独立——identity 数据
+    //    与主表同一文件，启用由图工位判定；TokenId 形态下 host 查表/加载由
+    //    pipeline 按 Loaded() 门控跳过）──
     if (weights.empty()) {
-        // 主表空但 dequant_scale 非空：沿旧口径静默忽略（保持既有行为）
+        // 主表空：identity 读取类型仍解析（上方注释），其余主表字段保持缺省
     } else {
         out->table_path = weights;
-        out->scale_path = dequant_scale;
 
         // table_type：table_path 非空时必填（"int4" 可解析，Load 期拒绝——U-3）
         if (type == "fp32") {
@@ -407,12 +407,10 @@ Status EmbeddingConfig::FromSection(const std::string& weights, const std::strin
         out->group_size = 0; // schema 无组大小组段（per_group 恒在 Load 期拒绝，TC_209）
     }
 
-    // ── per_layer_token_identity 读取类型（合并文件布局——Q12：
-    //    identity 数据并入 embedding_weights 文件主表段之后、scale 段并入
-    //    embedding_dequant_scale 文件主 scale 段之后；"是否读取"由 pipeline
-    //    依图工位判定（以图为准，B-10），本节只解析读取类型；与主表启用与否
-    //    互相独立）──
-    // identity_type：缺省 fp16（Q10；"int4" 可解析，LoadTokenIdentity 期拒绝——U-3）
+    // ── per_layer_token_identity 读取类型（identity 表/identity scale 段均取自
+    //    embedding_weights 单文件；"是否读取"由 pipeline 依图工位判定（以图为准），
+    //    本节只解析读取类型；与主表启用与否互相独立）──
+    // identity_type：缺省 fp16（"int4" 可解析，LoadTokenIdentity 期拒绝——U-3）
     if (identity_type.empty() || identity_type == "fp16") {
         out->token_identity_type = EmbeddingType::Fp16;
     } else if (identity_type == "fp32") {
@@ -425,10 +423,9 @@ Status EmbeddingConfig::FromSection(const std::string& weights, const std::strin
         return Status(Status::INVALID_ARGUMENT);
     }
 
-    // identity_scale_type：scale 段读取类型（正拼键，meta 仅此一拼写）；缺省 fp16。
-    // 仅图带 scale 工位时被消费（pipeline 依图回填 None = 不读——图缺工位
-    // 属正常形态不数值化报错）；"none" 不再表达"不启用"（启用信号已随独立
-    // 路径键一并删除）→ 非法值（段降级）
+    // identity_scale_type：identity scale 段读取类型（正拼键，meta 仅此一拼写）；
+    // 缺省 fp16。仅图带 scale 工位时被消费（pipeline 依图回填 None = 不读——
+    // 图缺工位属正常形态不数值化报错）；"none" 为非法值（段降级）
     if (identity_scale_type.empty() || identity_scale_type == "fp16") {
         out->token_identity_scale_type = EmbeddingScaleType::Fp16;
     } else if (identity_scale_type == "fp32") {
@@ -456,10 +453,6 @@ Status TextEmbedding::Load(const EmbeddingConfig& config)
     if (config.table_type == EmbeddingType::Int4) {
         CANN_LLM_LOGE("embedding.load: Int4 not supported (U-3)");
         return Status(Status::INVALID_ARGUMENT); // U-3
-    }
-    if (config.scale_type == EmbeddingScaleType::None && !config.scale_path.empty()) {
-        CANN_LLM_LOGE("embedding.load: scale_type=None but scale_path='%s' is set", config.scale_path.c_str());
-        return Status(Status::INVALID_ARGUMENT); // TC_104
     }
     const size_t elem = detail::StorageElemSize(config.table_type);
     // C1: overflow guard — hidden_dim * elem must not wrap (external ModelConfig input)
@@ -493,13 +486,39 @@ Status TextEmbedding::Load(const EmbeddingConfig& config)
                                      static_cast<uint64_t>(config.vocab_size) * groups;
     const uint64_t expected_scale = scale_count * scale_elem;
 
-    CANN_LLM_LOGI("embedding.load: expected_table=%lu bytes, expected_scale=%lu bytes",
-                  static_cast<unsigned long>(expected_table), static_cast<unsigned long>(expected_scale));
+    // 单文件四段布局：主 scale 段位于主表段与 identity 表段之后，
+    // 偏移 = vocab×hidden×elem + vocab×W×identity_elem（identity 未启用 → W=0）
+    const size_t identity_elem = detail::StorageElemSize(config.token_identity_type);
+    // identity 段存在（W>0）时其类型参与偏移计算：Int4 不支持（U-3，与 LoadTokenIdentity 同口径）
+    if (config.token_identity_row_width > 0 && config.token_identity_type == EmbeddingType::Int4) {
+        CANN_LLM_LOGE("embedding.load: identity Int4 not supported (row_width=%zu)", config.token_identity_row_width);
+        return Status(Status::INVALID_ARGUMENT);
+    }
+    // C1: overflow guard — W × identity_elem、vocab × W、L1 + L2 不得回绕
+    if (identity_elem != 0 &&
+        config.token_identity_row_width > std::numeric_limits<std::size_t>::max() / identity_elem) {
+        CANN_LLM_LOGE("embedding.load: overflow row_width=%zu * elem=%zu", config.token_identity_row_width,
+                      identity_elem);
+        return Status(Status::INVALID_ARGUMENT);
+    }
+    const uint64_t identity_table = static_cast<uint64_t>(config.vocab_size) * config.token_identity_row_width *
+                                    identity_elem;
+    if (identity_table > std::numeric_limits<std::uint64_t>::max() - expected_table) {
+        CANN_LLM_LOGE("embedding.load: overflow table=%lu + identity=%lu", static_cast<unsigned long>(expected_table),
+                      static_cast<unsigned long>(identity_table));
+        return Status(Status::INVALID_ARGUMENT);
+    }
+    const uint64_t scale_offset = expected_table + identity_table;
 
-    // ── 表（InMemory mmap 只读映射 / InFlash open+fstat 校验）──
+    CANN_LLM_LOGI("embedding.load: expected_table=%lu bytes, identity_table=%lu bytes, scale_offset=%lu, "
+                  "expected_scale=%lu bytes",
+                  static_cast<unsigned long>(expected_table), static_cast<unsigned long>(identity_table),
+                  static_cast<unsigned long>(scale_offset), static_cast<unsigned long>(expected_scale));
+
+    // ── 主表段（InMemory mmap 只读映射 / InFlash open+fstat 校验；单文件 base=0）──
     std::unique_ptr<detail::TableSource> source;
     if (config.load_mode == EmbeddingLoadMode::InMemory) {
-        // mmap 段源（L2）：fstat "≥ 主表段" 放行（Q12 identity 段后随——超长
+        // mmap 段源（L2）：fstat "≥ 主表段" 放行（identity/scale 段可后随——超长
         // 放行）/ 短文件 map 前拒绝；identity 段完整性与精确总长由
         // LoadTokenIdentity 期校验兜底。RowPtr 直指映射页，FillInputs 免 staging。
         Status st = detail::MmapTableSource::Create(config.table_path, /*file_offset=*/0, row_bytes, config.vocab_size,
@@ -516,8 +535,8 @@ Status TextEmbedding::Load(const EmbeddingConfig& config)
             return Status(Status::INVALID_ARGUMENT); // TC_101
         }
         struct stat sb {};
-        // 合并文件布局（Q12）：" ≥ 主表段" 即放行（identity 段可后随；行偏移自文件头
-        // 起，base=0，后段不触碰）；总长精确校验移至 LoadTokenIdentity 期
+        // "≥ 主表段" 即放行（identity/scale 段可后随；行偏移自文件头起，base=0，
+        // 后段不触碰）；总长精确校验在 LoadTokenIdentity 期
         if (::fstat(fd, &sb) != 0 || static_cast<uint64_t>(sb.st_size) < expected_table) {
             CANN_LLM_LOGE("embedding.load: table file size mismatch fstat_size=%lu, expected=%lu, path='%s'",
                           static_cast<unsigned long>(sb.st_size), static_cast<unsigned long>(expected_table),
@@ -529,12 +548,18 @@ Status TextEmbedding::Load(const EmbeddingConfig& config)
         source = std::make_unique<detail::FlashTableSource>(fd, row_bytes);
     }
 
-    // ── scale（恒内存态，D-09；堆内存非 TensorBuffer）──
+    // ── 主 scale 段（单文件 scale_offset 处；恒内存态 D-09，堆内存非 TensorBuffer）──
     std::unique_ptr<char[]> scale_data;
     if (config.scale_type != EmbeddingScaleType::None) {
-        std::ifstream f(config.scale_path, std::ios::binary);
+        std::ifstream f(config.table_path, std::ios::binary);
         if (!f) {
-            CANN_LLM_LOGE("embedding.load: cannot open scale file '%s'", config.scale_path.c_str());
+            CANN_LLM_LOGE("embedding.load: cannot open file '%s'", config.table_path.c_str());
+            return Status(Status::INVALID_ARGUMENT);
+        }
+        f.seekg(static_cast<std::streamoff>(scale_offset));
+        if (!f) {
+            CANN_LLM_LOGE("embedding.load: cannot seek to scale segment offset=%lu, path='%s'",
+                          static_cast<unsigned long>(scale_offset), config.table_path.c_str());
             return Status(Status::INVALID_ARGUMENT);
         }
         scale_data.reset(new (std::nothrow) char[static_cast<size_t>(expected_scale)]);
@@ -544,13 +569,13 @@ Status TextEmbedding::Load(const EmbeddingConfig& config)
             return Status(Status::FAILURE);
         }
         f.read(scale_data.get(), static_cast<std::streamsize>(expected_scale));
-        // 合并文件布局（Q12）：主 scale 段之后可跟随 identity scale 段
-        // （per_layer_token_identity_scale）—— 不以 EOF 取整；仅校验主段完整
+        // 主 scale 段之后可跟随 identity scale 段——不以 EOF 取整；仅校验主段完整
         if (static_cast<uint64_t>(f.gcount()) != expected_scale) {
-            CANN_LLM_LOGE("embedding.load: scale file size mismatch read=%lu, expected=%lu, path='%s'",
+            CANN_LLM_LOGE("embedding.load: scale segment size mismatch read=%lu, expected=%lu, offset=%lu, "
+                          "path='%s'",
                           static_cast<unsigned long>(f.gcount()), static_cast<unsigned long>(expected_scale),
-                          config.scale_path.c_str());
-            return Status(Status::INVALID_ARGUMENT); // TC_102（过短）
+                          static_cast<unsigned long>(scale_offset), config.table_path.c_str());
+            return Status(Status::INVALID_ARGUMENT); // 段过短
         }
     }
 
@@ -565,21 +590,22 @@ Status TextEmbedding::Load(const EmbeddingConfig& config)
     return Status();
 }
 
-Status TextEmbedding::LoadTokenIdentity(const EmbeddingConfig& config, size_t row_width)
+Status TextEmbedding::LoadTokenIdentity(const EmbeddingConfig& config)
 {
     CANN_LLM_LOGI("embedding.load_identity: start path=%s, vocab_size=%zu, row_width=%zu, "
                   "load_mode=%s, identity_type=%d",
-                  config.table_path.c_str(), config.vocab_size, row_width,
+                  config.table_path.c_str(), config.vocab_size, config.token_identity_row_width,
                   config.load_mode == EmbeddingLoadMode::InMemory ? "InMemory" : "InFlash",
                   static_cast<int>(config.token_identity_type));
 
     // ── 参数校验（全部先于任何资源获取；失败保持 identity 未加载态）──
-    // 合并文件布局（Q12）：identity 数据位于 config.table_path 主表段之后，
-    // segment 偏移与段大小均须主表几何（hidden_dim / table_type）参与计算
-    if (config.vocab_size == 0 || config.hidden_dim == 0 || row_width == 0 || config.table_path.empty()) {
+    // 单文件四段布局：identity 表位于主表段之后，行宽 W 取
+    // config.token_identity_row_width（pipeline 依图回填）
+    if (config.vocab_size == 0 || config.hidden_dim == 0 || config.token_identity_row_width == 0 ||
+        config.table_path.empty()) {
         CANN_LLM_LOGE("embedding.load_identity: invalid args vocab_size=%zu, hidden_dim=%zu, "
                       "row_width=%zu, table_path='%s'",
-                      config.vocab_size, config.hidden_dim, row_width, config.table_path.c_str());
+                      config.vocab_size, config.hidden_dim, config.token_identity_row_width, config.table_path.c_str());
         return Status(Status::INVALID_ARGUMENT);
     }
     if (config.token_identity_type == EmbeddingType::Int4) {
@@ -587,16 +613,16 @@ Status TextEmbedding::LoadTokenIdentity(const EmbeddingConfig& config, size_t ro
         return Status(Status::INVALID_ARGUMENT);
     }
     const bool want_scale = config.token_identity_scale_type != EmbeddingScaleType::None;
-    if (want_scale && (config.scale_type == EmbeddingScaleType::None || config.scale_path.empty())) {
-        // 图带 scale 工位但主表无 scale 文件 → 无处读取（调用方 InitEmbedding_ 依图
-        // 校验应已致命；此处防御 UT/其他调用方误用，对齐 TC_104 口径）
+    if (want_scale && config.scale_type == EmbeddingScaleType::None) {
+        // 图带 scale 工位但主表无 scale 段 → identity scale 段无从定位（调用方
+        // InitEmbedding_ 依图校验应已致命；此处防御 UT/其他调用方误用）
         CANN_LLM_LOGE("embedding.load_identity: identity scale requested but main scale "
-                      "absent (scale_type=%d, scale_path='%s')",
-                      static_cast<int>(config.scale_type), config.scale_path.c_str());
+                      "absent (scale_type=%d)",
+                      static_cast<int>(config.scale_type));
         return Status(Status::INVALID_ARGUMENT);
     }
 
-    // ── 段几何（Q12：offset/size 全部可计算，无文件头）──
+    // ── 段几何（四段偏移/大小全部可计算，无文件头）──
     const size_t main_elem = detail::StorageElemSize(config.table_type);
     // C1: overflow guard — 主表段 hidden × elem、vocab × 主行字节数
     if (main_elem != 0 && config.hidden_dim > std::numeric_limits<std::size_t>::max() / main_elem) {
@@ -606,12 +632,13 @@ Status TextEmbedding::LoadTokenIdentity(const EmbeddingConfig& config, size_t ro
     const uint64_t main_table = static_cast<uint64_t>(config.vocab_size) * config.hidden_dim * main_elem;
 
     const size_t elem = detail::StorageElemSize(config.token_identity_type);
-    // C1: overflow guard — row_width * elem 不得回绕（row_width 来自工位 desc，外部输入）
-    if (elem != 0 && row_width > std::numeric_limits<std::size_t>::max() / elem) {
-        CANN_LLM_LOGE("embedding.load_identity: overflow row_width=%zu * elem=%zu", row_width, elem);
+    // C1: overflow guard — W * elem 不得回绕（W 来自工位 desc，外部输入）
+    if (elem != 0 && config.token_identity_row_width > std::numeric_limits<std::size_t>::max() / elem) {
+        CANN_LLM_LOGE("embedding.load_identity: overflow row_width=%zu * elem=%zu", config.token_identity_row_width,
+                      elem);
         return Status(Status::INVALID_ARGUMENT);
     }
-    const size_t identity_row_bytes = row_width * elem;
+    const size_t identity_row_bytes = config.token_identity_row_width * elem;
     // C1: overflow guard — vocab_size * row_bytes 不得回绕
     if (identity_row_bytes != 0 &&
         static_cast<uint64_t>(config.vocab_size) > std::numeric_limits<std::uint64_t>::max() / identity_row_bytes) {
@@ -620,42 +647,51 @@ Status TextEmbedding::LoadTokenIdentity(const EmbeddingConfig& config, size_t ro
         return Status(Status::INVALID_ARGUMENT);
     }
     const uint64_t identity_table = static_cast<uint64_t>(config.vocab_size) * identity_row_bytes;
-    // C1: overflow guard — 主表段 + identity 段不得回绕
+    // C1: overflow guard — 四段和不得回绕
     if (identity_table > std::numeric_limits<std::uint64_t>::max() - main_table) {
         CANN_LLM_LOGE("embedding.load_identity: overflow main=%lu + identity=%lu",
                       static_cast<unsigned long>(main_table), static_cast<unsigned long>(identity_table));
         return Status(Status::INVALID_ARGUMENT);
     }
-    const uint64_t expected_table = main_table + identity_table;
     const uint64_t identity_offset = main_table;
 
-    // scale PerToken（Q4）：每词表项 1 个系数，无组概念。主 scale 段大小按 PerToken
-    // 计算（vocab 项；PerGroup 主表在 Load 期已拒——TC_209，不可达此处）
+    // 主 scale 段（PerToken 口径：vocab 项；PerGroup 主表在 Load 期已拒，不可达）
     const size_t main_scale_elem = detail::ScaleElemSize(config.scale_type);
-    const uint64_t main_scale = want_scale ? static_cast<uint64_t>(config.vocab_size) * main_scale_elem : 0;
+    const uint64_t main_scale = config.scale_type != EmbeddingScaleType::None ?
+                                    static_cast<uint64_t>(config.vocab_size) * main_scale_elem :
+                                    0;
+    // identity scale 段（PerToken：每词表项 1 个系数）
     const size_t scale_elem = detail::ScaleElemSize(config.token_identity_scale_type);
     const uint64_t expected_scale = want_scale ? static_cast<uint64_t>(config.vocab_size) * scale_elem : 0;
-    const uint64_t scale_total = main_scale + expected_scale;
+    if (main_scale > std::numeric_limits<std::uint64_t>::max() - (main_table + identity_table) ||
+        expected_scale > std::numeric_limits<std::uint64_t>::max() - (main_table + identity_table + main_scale)) {
+        CANN_LLM_LOGE("embedding.load_identity: overflow total main=%lu + identity=%lu + scale=%lu + iscale=%lu",
+                      static_cast<unsigned long>(main_table), static_cast<unsigned long>(identity_table),
+                      static_cast<unsigned long>(main_scale), static_cast<unsigned long>(expected_scale));
+        return Status(Status::INVALID_ARGUMENT);
+    }
+    const uint64_t identity_scale_offset = main_table + identity_table + main_scale;
+    const uint64_t expected_total = identity_scale_offset + expected_scale;
 
-    CANN_LLM_LOGI("embedding.load_identity: identity_offset=%lu bytes, identity_table=%lu "
-                  "bytes, expected_scale=%lu bytes (total_file=%lu)",
+    CANN_LLM_LOGI("embedding.load_identity: identity_offset=%lu bytes, identity_table=%lu bytes, "
+                  "identity_scale_offset=%lu, expected_scale=%lu bytes (total_file=%lu)",
                   static_cast<unsigned long>(identity_offset), static_cast<unsigned long>(identity_table),
-                  static_cast<unsigned long>(expected_scale), static_cast<unsigned long>(expected_table));
+                  static_cast<unsigned long>(identity_scale_offset), static_cast<unsigned long>(expected_scale),
+                  static_cast<unsigned long>(expected_total));
 
-    // ── 表（InMemory 自偏移 mmap 只读映射 / InFlash open+fstat 校验；同主表二态）──
+    // ── identity 表段（InMemory 自偏移 mmap 只读映射 / InFlash open+fstat 校验；同主表二态）──
     std::unique_ptr<detail::TableSource> source;
     if (config.load_mode == EmbeddingLoadMode::InMemory) {
-        // mmap 段源（L2）：总长精确校验前移到 map 前（require_exact——
-        // 原串行版"读毕须恰为文件尾"（短/超长均拒，B-10 致命）语义逐字保留）；
-        // require_exact=false ident 段不存在后段，超长即文件与图不匹配。
+        // mmap 段源（L2）：全文件总长精确校验前移到 map 前（require_exact，
+        // 判等目标 expected_total；短/超长均拒 = 文件与图不匹配）
         Status st = detail::MmapTableSource::Create(config.table_path, identity_offset, identity_row_bytes,
-                                                    config.vocab_size, /*require_exact=*/true, &source);
+                                                    config.vocab_size, /*require_exact=*/true, &source, expected_total);
         if (!st.ok()) {
             CANN_LLM_LOGE("embedding.load_identity: mmap identity source failed st=%d "
                           "(expected=%lu, main=%lu, identity=%lu, path='%s')",
-                          st.code, static_cast<unsigned long>(expected_table), static_cast<unsigned long>(main_table),
+                          st.code, static_cast<unsigned long>(expected_total), static_cast<unsigned long>(main_table),
                           static_cast<unsigned long>(identity_table), config.table_path.c_str());
-            return st; // 短/超长均拒绝（B-10 致命）
+            return st; // 短/超长均拒绝（致命）
         }
     } else {
         int fd = ::open(config.table_path.c_str(), O_RDONLY);
@@ -664,35 +700,35 @@ Status TextEmbedding::LoadTokenIdentity(const EmbeddingConfig& config, size_t ro
             return Status(Status::INVALID_ARGUMENT);
         }
         struct stat sb {};
-        // 总长精确校验：主表段 + identity 段（identity 启用时图有填充需求，
-        // 多/缺一字节均说明文件与图不匹配）
-        if (::fstat(fd, &sb) != 0 || static_cast<uint64_t>(sb.st_size) != expected_table) {
+        // 全文件总长精确校验（identity 启用时图有填充需求，多/缺一字节均说明文件与图不匹配）
+        if (::fstat(fd, &sb) != 0 || static_cast<uint64_t>(sb.st_size) != expected_total) {
             CANN_LLM_LOGE("embedding.load_identity: table file size mismatch fstat_size=%lu, "
-                          "expected=%lu (main=%lu + identity=%lu), path='%s'",
-                          static_cast<unsigned long>(sb.st_size), static_cast<unsigned long>(expected_table),
+                          "expected=%lu (main=%lu + identity=%lu + scale=%lu + iscale=%lu), path='%s'",
+                          static_cast<unsigned long>(sb.st_size), static_cast<unsigned long>(expected_total),
                           static_cast<unsigned long>(main_table), static_cast<unsigned long>(identity_table),
+                          static_cast<unsigned long>(main_scale), static_cast<unsigned long>(expected_scale),
                           config.table_path.c_str());
             ::close(fd);
             return Status(Status::INVALID_ARGUMENT);
         }
-        // 行偏移基数 = 主表段大小（合并文件内 identity 段从主表段之后起）
+        // 行偏移基数 = 主表段大小（identity 段从主表段之后起）
         source = std::make_unique<detail::FlashTableSource>(fd, identity_row_bytes, identity_offset);
     }
 
-    // ── scale 段（PerToken，恒内存态——D-09；堆内存非 TensorBuffer；主 scale 段之后偏移读取）──
+    // ── identity scale 段（单文件 identity_scale_offset 处；PerToken 恒内存态
+    //    D-09，堆内存非 TensorBuffer；物理末段，读毕须恰为文件尾）──
     std::unique_ptr<char[]> scale_data;
     if (want_scale) {
-        std::ifstream f(config.scale_path, std::ios::binary);
+        std::ifstream f(config.table_path, std::ios::binary);
         if (!f) {
-            CANN_LLM_LOGE("embedding.load_identity: cannot open scale file '%s'", config.scale_path.c_str());
+            CANN_LLM_LOGE("embedding.load_identity: cannot open file '%s'", config.table_path.c_str());
             return Status(Status::INVALID_ARGUMENT);
         }
-        // 主 scale 段之后即 identity scale 段；读毕须恰为文件尾
-        f.seekg(static_cast<std::streamoff>(main_scale));
+        f.seekg(static_cast<std::streamoff>(identity_scale_offset));
         if (!f) {
             CANN_LLM_LOGE("embedding.load_identity: cannot seek to identity scale segment "
                           "(offset=%lu, path='%s')",
-                          static_cast<unsigned long>(main_scale), config.scale_path.c_str());
+                          static_cast<unsigned long>(identity_scale_offset), config.table_path.c_str());
             return Status(Status::INVALID_ARGUMENT);
         }
         scale_data.reset(new (std::nothrow) char[static_cast<size_t>(expected_scale)]);
@@ -706,7 +742,7 @@ Status TextEmbedding::LoadTokenIdentity(const EmbeddingConfig& config, size_t ro
             CANN_LLM_LOGE("embedding.load_identity: identity scale segment size mismatch "
                           "(read=%lu, expected=%lu, file_expected=%lu, path='%s')",
                           static_cast<unsigned long>(f.gcount()), static_cast<unsigned long>(expected_scale),
-                          static_cast<unsigned long>(scale_total), config.scale_path.c_str());
+                          static_cast<unsigned long>(expected_total), config.table_path.c_str());
             return Status(Status::INVALID_ARGUMENT);
         }
     }
@@ -716,7 +752,6 @@ Status TextEmbedding::LoadTokenIdentity(const EmbeddingConfig& config, size_t ro
     identity_source_ = std::move(source);
     identity_scale_data_ = std::move(scale_data);
     identity_cfg_ = config;
-    identity_cfg_.token_identity_row_width = row_width; // 加载期回填（非 meta 字段）
     identity_row_bytes_ = identity_row_bytes;
     identity_loaded_ = true;
     return Status();

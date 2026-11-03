@@ -19,7 +19,7 @@ In one sentence: **It is the "embedding porter" in the inference engine — load
 
 It sits between `pipelineExecutor` (upper-level scheduler) and the om graph input slots (`input_embed` / `embed_scales`), doing three things:
 
-1. **Load**: Read embedding table files and scale files. The table can be read entirely into memory (InMemory), or not loaded into memory, keeping a file handle and reading on demand each time (InFlash).
+1. **Load**: Read the embedding_weights single file (four-segment layout: main table → per_layer table → main scale → per_layer scale). The table can be mapped read-only into memory (InMemory), or not loaded into memory, keeping a file handle and reading on demand each time (InFlash).
 2. **Gather**: Given a set of token ids, copy the corresponding low-precision rows from the table by row offset, and simultaneously collect each token's dequantization parameters (scale).
 3. **FillInputs**: Type-convert the gathered rows and write them into the `input_embed` slot, and write scales into the `embed_scales` slot — the write type is determined by the slot's own `TensorDesc`, not by the file storage type.
 
@@ -44,7 +44,7 @@ The `EmbeddingType` (Fp32/Fp16/Int8) specified by the user at Load time describe
 
 ### 4. Quantization Granularity: PerToken vs PerGroup
 
-The shape of the scale file is determined by the initialization parameter `quantMode`:
+The shape of the scale segment (third segment of the single file) is determined by the initialization parameter `quantMode`:
 
 - **PerToken**: One scale per vocabulary entry (one row of the table), so the file has `[vocab]` values.
 - **PerGroup**: One row of embedding is sliced into several groups along the hidden dimension (group size = `GroupSize`, required and must evenly divide hidden_dim), **each group has its own scale** — one tokenId corresponds to multiple dequantization parameters. File shape `[vocab × (hidden/group_size)]`, token v's g-th group scale is at index `v×groups+g`.
@@ -67,7 +67,7 @@ All three land in the `core/component/text_embedding.{h,cpp}` single file pair. 
 
 | | InMemory (default) | InFlash |
 |---|---|---|
-| Table resident in memory | ≈ table file bytes | 0 (only scale + one fd) |
+| Table resident in memory | ≈ total single-file length (mmap read-only mapped pages) + scale heap memory | 0 (only scale + one fd) |
 | gather cost | memcpy | one pread syscall per row |
 | Suitable for | throughput-first (server ACL side) | memory-constrained (device-side OHOS) |
 
@@ -80,6 +80,8 @@ InFlash's cost is file lifecycle: after Load, the table file must always be ther
 ```cpp
 Status Load(const EmbeddingConfig& config);
 
+Status LoadTokenIdentity(const EmbeddingConfig& config);  // per_layer table/scale segments (same single file)
+
 Status Gather(const TokenId* ids, size_t count,
               std::shared_ptr<ITensorBuffer> out_embed,
               std::shared_ptr<ITensorBuffer> out_scales) const;   // concurrent-safe
@@ -89,10 +91,10 @@ Status FillInputs(const std::vector<std::shared_ptr<ITensorBuffer>>& inputs,
                   EmbeddingPath path,
                   const TokenId* ids, size_t count);
 
-// Accessors: Table() / Scale() / TableType() / LoadMode() / Loaded()
+// Accessors: TableType() / LoadMode() / Loaded() / IdentityLoaded() (no Table()/Scale() storage exposure)
 ```
 
-`EmbeddingConfig`: two paths, two types, quantization granularity + group_size, vocab/hidden (from ModelConfig), load_mode.
+`EmbeddingConfig`: single-file path, main-table/main-scale types, quantization granularity + group_size, vocab/hidden (from ModelConfig), load_mode, plus three token_identity keys (row width W backfilled by pipeline from graph slots).
 
 About `FillInputs` parameters — it takes model_executor's input slot array (`input_tensors_`) and name→index mapping (`input_name_index_`). For this, `ModelExecutor` adds two **read-only** accessors (`InputTensors()` / `InputNameIndex()`), an additive change that doesn't touch existing interfaces. This module only writes to slots named `input_embed` and `embed_scales`; out-of-bounds writes are defects — it doesn't interfere with the other three slots written by InputAssembler (position_ids / new_kv_cache_pos / attention_mask).
 
@@ -100,9 +102,9 @@ About `FillInputs` parameters — it takes model_executor's input slot array (`i
 
 ```
 init phase:   pipeline gets ModelConfig (meta_json deserialization, existing plan owned by ModelConfig)
-               → EmbeddingConfig::FromModelConfig(mc, &config)   ← U-8 resolved: route b
+               → EmbeddingConfig::FromSection(meta embedding_config section) ← SR20260903001 D-12
                → only if table_path non-empty: text_embedding_.Load(config)
-              (InMemory: entire table+scale read into memory; InFlash: open+fstat verify+keep fd)
+              (InMemory: table segment mmap read-only + scale segment read into heap memory; InFlash: open+fstat verify+keep fd)
               (table_path empty = tokenId deployment form, skip Load — before meta_json deserialization lands
                ModelConfig fields default to empty, compatible with current behavior)
 
@@ -130,7 +132,7 @@ After Load, all the module's members (table buffer or fd, scale buffer, config s
 
 All go through `infra/status.h`'s six coarse codes, no exceptions thrown:
 
-- **INVALID_ARGUMENT**: file missing/wrong size, PerGroup parameters illegal, scale config self-contradictory (type=None but path given), token id out of bounds (reject entire batch, no partial output), output capacity insufficient, NULL input, unsupported type conversion combination.
+- **INVALID_ARGUMENT**: file missing/wrong size (with identity enabled, total length must exactly equal the four-segment sum), PerGroup parameters illegal, token id out of bounds (reject entire batch, no partial output), output capacity insufficient, NULL input, unsupported type conversion combination.
 - **INVALID_STATE**: embedding path Gather/FillInputs called without Load (tokenId path exempt).
 - **NOT_FOUND**: name→index doesn't have `input_embed` (or `embed_scales` when scale is expected).
 - **FAILURE**: InFlash runtime file corruption (pread short-read / I/O error); TensorManager buffer allocation failure.
@@ -161,4 +163,3 @@ One existing issue to fix along the way: `INPUT_INFO.md` (the source of truth fo
 - **U-6**: Models without scale, `embed_scales` slot skipped (current approach); confirm when first no-scale model is integrated.
 - **U-7**: InFlash files don't support hot update, corruption goes to FAILURE.
 - ~~**U-8** (added 2026-08-29 external review)~~: `EmbeddingConfig` channel from user config to pipeline — **resolved (2026-08-29 user decision) route b**: meta_json → `ModelConfig` extends embedding section (plain string/integer fields, serialization-friendly) → `EmbeddingConfig::FromModelConfig` assembles (string→enum parsing and validation in this module, dependency direction is legal). L1 `EngineOptions`/C ABI untouched. vocab/hidden also placed in ModelConfig (U-2 source is thus settled).
-- New implementation-phase review item: table/scale buffer allocated via `TensorManager::CreateTensor` with `modelId=0` sentinel semantics, confirm at real backend implementation that host buffer is not affected by modelId binding.

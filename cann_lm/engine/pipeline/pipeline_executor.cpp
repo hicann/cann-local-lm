@@ -327,23 +327,22 @@ bool ParseEmbeddingSection(const nlohmann::json& sec, size_t vocab, size_t hidde
         return it->get<std::string>();
     };
     const auto weights = get_str("embedding_weights");
-    const auto scale = get_str("embedding_dequant_scale");
     const auto type = get_str("embedding_type");
     const auto stype = get_str("embedding_scale_type");
     const auto qmode = get_str("embedding_quant_mode");
     const auto lmode = get_str("embedding_load_mode");
-    // per_layer_token_identity 读取类型（gemma4，docs/gemma4_token_identity.md §4）：
-    // 合并文件布局（Q12）下数据并入主表/scale 文件，启用由图工位判定。
+    // per_layer_token_identity 读取类型（gemma4）：identity 表/identity scale 段
+    // 均在 embedding_weights 单文件后段，启用由图工位判定。
     // identity scale 类型键仅规范拼写 token_identity_scale_type；缺键 →
-    // FromSection 缺省 fp16，类型不符 → 段降级）
+    // FromSection 缺省 fp16，类型不符 → 段降级
     const auto identity_type = get_str("token_identity_type");
     const auto identity_stype = get_str("token_identity_scale_type");
-    if (!weights || !scale || !type || !stype || !qmode || !lmode)
+    if (!weights || !type || !stype || !qmode || !lmode)
         return false;
     if (!identity_type || !identity_stype)
         return false;
-    return EmbeddingConfig::FromSection(*weights, *scale, *type, *stype, *qmode, *lmode, *identity_type,
-                                        *identity_stype, vocab, hidden, out)
+    return EmbeddingConfig::FromSection(*weights, *type, *stype, *qmode, *lmode, *identity_type, *identity_stype, vocab,
+                                        hidden, out)
         .ok();
 }
 
@@ -427,6 +426,13 @@ ParseOutcome ParseConfigs(const ModelArtifact& artifact, const EngineOptions& op
     if (eit != doc.end() && eit->is_object() && !eit->empty()) {
         const size_t vocab = po.model_parsed ? po.model.vocab_size : 0;
         const size_t hidden = po.model_parsed ? static_cast<size_t>(po.model.hidden_size) : 0;
+        // embedding_dequant_scale 键已废弃（embedding_weights 单文件含全部
+        // scale 段）；残留非空 → WARN（仅诊断，不降段）
+        auto stale = eit->find("embedding_dequant_scale");
+        if (stale != eit->end() && stale->is_string() && !stale->get<std::string>().empty()) {
+            po.warnings.push_back("embedding_config: embedding_dequant_scale 已废弃"
+                                  "(embedding_weights 单文件含全部 scale 段)，该键被忽略");
+        }
         if (!ParseEmbeddingSection(*eit, vocab, hidden, &po.embedding)) {
             po.warnings.push_back("embedding_config: 字段类型非法或枚举未知/配置矛盾");
             po.embedding = EmbeddingConfig{}; // tokenId 路径
@@ -744,7 +750,6 @@ void LogParsedConfigs(const ModelConfig& model, const TokenizerConfig& tokenizer
     // EmbeddingConfig
     CANN_LLM_LOGI("  --- EmbeddingConfig ---");
     CANN_LLM_LOGI("    table_path   = %s", embedding.table_path.c_str());
-    CANN_LLM_LOGI("    scale_path   = %s", embedding.scale_path.c_str());
     CANN_LLM_LOGI("    table_type   = %s", EmbeddingTypeName(embedding.table_type));
     CANN_LLM_LOGI("    scale_type   = %s", EmbeddingScaleTypeName(embedding.scale_type));
     CANN_LLM_LOGI("    quant_mode   = %s", EmbeddingQuantModeName(embedding.quant_mode));
@@ -752,8 +757,8 @@ void LogParsedConfigs(const ModelConfig& model, const TokenizerConfig& tokenizer
     CANN_LLM_LOGI("    vocab_size   = %zu", embedding.vocab_size);
     CANN_LLM_LOGI("    hidden_dim   = %zu", embedding.hidden_dim);
     CANN_LLM_LOGI("    load_mode    = %s", EmbeddingLoadModeName(embedding.load_mode));
-    // per_layer_token_identity（gemma4；合并文件布局 Q12——数据在主表/scale 文件
-    // 后段，读取类型两项；启用与否依图工位，InitEmbedding_ 加载期观测）
+    // per_layer_token_identity（gemma4；embedding_weights 单文件后段，
+    // 读取类型两项；启用与否依图工位，InitEmbedding_ 加载期观测）
     CANN_LLM_LOGI("    identity_type        = %s", EmbeddingTypeName(embedding.token_identity_type));
     CANN_LLM_LOGI("    identity_scale_type  = %s", EmbeddingScaleTypeName(embedding.token_identity_scale_type));
     CANN_LLM_LOGI("=== End ParsedConfigs ===");
@@ -1025,15 +1030,15 @@ Status AutoregressivePipelineExecutor::InitEmbedding_(const EmbeddingConfig& con
     // Load 之前，identity 经 std::async 发起与主表段（958ms）并行，join 收口
     // 后按原语义逐字判定。收益 = max(958, 2395) ≈ 2.4s 替代串行 3.35s。
     //
-    // ── per_layer_token_identity（gemma4，docs/gemma4_token_identity.md §5.2）──
+    // ── per_layer_token_identity（gemma4）──
     // identity host 查表只服务 Embedding 部署形态（主表 Loaded ⇒ Scheduler 选
     // Embedding 路径，scheduler.cpp:143/257）。TokenId 形态 identity 由图内
     // 自理：host 不加载、不落位、零行为变化；主表 Load 失败降级 tokenId 时同
     // 连带跳过（同一文件已不可信，段完整性无从校验）。
     //
     // 启用判定以图为准（B-10 裁定）：prefill 图带 per_layer_token_identity
-    // 工位 ⇒ 从 embedding_weights 文件
-    // 主表段之后偏移加载 identity 段（scale 段同理并入 scale 文件）。图未声明
+    // 工位 ⇒ 从 embedding_weights 单文件主表段之后偏移加载 identity 段
+    // （identity scale 段位于主 scale 段之后）。图未声明
     // 工位的情形不致命（无填充需求）；图声明了工位而供给/供给段缺失 ⇒ 构造致命。
     //   - prefill 未命中 identity 工位 ⇒ 跳过整流（「executor 未加载」与「图缺
     //     工位」不可区分，stub/host 靠此放行；prefill 权威设计不变）。
@@ -1049,9 +1054,13 @@ Status AutoregressivePipelineExecutor::InitEmbedding_(const EmbeddingConfig& con
     const bool scale_slot_pre = ProbeInputSlot(prefill_executor_, kTokenIdentityScaleSlotName).found;
 
     // ── 纯内存校验前移（decode 交叉/scale 工位组合；只读图工位 desc，<1ms；
-    //    主表读零依赖——校验致命路径不碰 I/O，判据与消息与原串行版逐字一致）──
+    //    主表读零依赖——校验致命路径不碰 I/O）──
+    // 单源配置副本：identity 启用则回填行宽 W，Load 与 LoadTokenIdentity 用
+    // 同一副本计算段偏移（几何恒一致；identity 未启用 W 保持 0 ⇒ scale 段
+    // 紧随主表段）
     std::future<Status> identity_async; // valid = identity 已并行发起
     Status identity_status = Status::SUCCESS;
+    EmbeddingConfig cfg = config;
     if (pre.found && !config.table_path.empty()) {
         // decode 交叉校验（Q9：decode 图同带工位）：两图同源导出应当一致；不一致 ⇒
         // 必有一图会被填入错宽数据 ⇒ 构造致命
@@ -1062,7 +1071,7 @@ Status AutoregressivePipelineExecutor::InitEmbedding_(const EmbeddingConfig& con
                           dec.width, pre.width);
             return Status::INVALID_STATE;
         }
-        // scale 工位（以图定读取与否；scale 段已并入 embedding_dequant_scale 文件）。
+        // scale 工位（以图定读取与否；identity scale 段在 embedding_weights 单文件）。
         // 工位名 per_layer_token_identity_scale（c42 新转换器实名正拼；老转换器
         // …sacle 拼写工位不再探测，其图须重导出）
         const bool scale_slot_dec = ProbeInputSlot(decode_executor_, kTokenIdentityScaleSlotName).found;
@@ -1077,33 +1086,31 @@ Status AutoregressivePipelineExecutor::InitEmbedding_(const EmbeddingConfig& con
                           "slot but decode does not — graphs not aligned (prefill fills, decode needs "
                           "none; harmless but worth checking graph export)");
         }
-        // prefill 带 scale 工位而主表无 scale 文件（scale_type=None）⇒ scale 段无
-        // 承载文件 ⇒ 构造致命（工位无法正确填充）
+        // prefill 带 scale 工位而主表无 scale 段（scale_type=None）⇒ identity scale
+        // 段无从定位 ⇒ 构造致命（工位无法正确填充）
         if (scale_slot_pre && config.scale_type == EmbeddingScaleType::None) {
             CANN_LLM_LOGE("loader.load.token_identity: graph has per_layer_token_identity_scale slot "
-                          "but embedding scale file is absent (embedding_scale_type=none) — scale "
+                          "but embedding scale segment is absent (embedding_scale_type=none) — scale "
                           "slot cannot be filled, init aborted");
             return Status::INVALID_STATE;
         }
 
-        // 依图回填 scale 读取意图（LoadTokenIdentity 单信号：scale_type ≠ None）：
-        // 图缺 scale 工位 ⇒ 不读 scale 段（静默，第 4 象限——正常形态）
-        EmbeddingConfig icfg = config;
+        // 依图回填读取意图（LoadTokenIdentity 单信号：token_identity_scale_type ≠
+        // None）：图缺 scale 工位 ⇒ 不读 identity scale 段（静默——正常形态）
         if (!scale_slot_pre) {
-            icfg.token_identity_scale_type = EmbeddingScaleType::None;
+            cfg.token_identity_scale_type = EmbeddingScaleType::None;
         }
-        // identity 段并行发起（T-1）：两段读同一文件不相交偏移，成员集不相交
-        const size_t row_width = pre.width;
+        cfg.token_identity_row_width = pre.width;
+        // identity 段并行发起：两段读同一文件不相交偏移，成员集不相交
         CANN_LLM_LOGI("loader.load.token_identity: identity segment load launched in "
                       "parallel with main table (L1)");
-        identity_async = std::async(std::launch::async, [this, icfg, row_width]() {
-            return text_embedding_.LoadTokenIdentity(icfg, row_width);
-        });
+        identity_async = std::async(std::launch::async,
+                                    [this, cfg]() { return text_embedding_.LoadTokenIdentity(cfg); });
     }
 
-    // ── 主表段（原语义：失败保持未加载态，不阻断 init——D-11）──
+    // ── 主表段（失败保持未加载态，不阻断 init——D-11）──
     if (!config.table_path.empty()) {
-        Status st = text_embedding_.Load(config);
+        Status st = text_embedding_.Load(cfg);
         if (!st.ok()) {
             CANN_LLM_LOGW("loader.load.embedding: table load failed (st=%d, path=%s), "
                           "degraded to tokenId path",

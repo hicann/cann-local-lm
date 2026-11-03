@@ -4,6 +4,12 @@
 
 > 本文档记录各版本的重要变更，版本按时间倒序排列。
 
+## 2026.11
+
+- embedding 权重与 scale 合并为 `embedding_weights` 单文件（四段布局：主表 → per_layer 表 → 主 scale → per_layer scale；无文件头、无段间 padding），引擎读端改为单文件加载；表/scale 同文件原子替换，消除"只更新其一"的静默错配，部署产物少一个文件
+- `embedding_dequant_scale` 配置键废弃：残留非空值仅产生 WARN，不影响解析；存量双文件产物需按新四段布局重导出后方可加载
+- identity（per_layer 段）启用时全文件总长须精确等于四段和（加载期校验，防行宽 W 与文件/图失配）
+
 ## 2026.10
 
 - converter 当前能力：HuggingFace 模型 → epair 导出（torch.export + FX→GE 转换 + 权重分离），支持 W4A8 量化

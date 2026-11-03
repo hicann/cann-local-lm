@@ -3,8 +3,8 @@
 // host 侧三件事：加载（两模式/两粒度）、查表（行 + scale）、填工位（两路径）。
 // NPU 侧反量化不在 UT 范围（后端依赖）。
 // mock 工位 bundle 经 CreateTensorBuffer 按 desc 构造（桩后端无副作用，走真实单例）。
-// gemma4 identity 用例（TC_401~TC_405 + TC_406）按 Q12 合并文件布局
-// （docs/gemma4_token_identity.md：identity 段后随主表段、同文件同 load_mode）。
+// gemma4 identity 用例（TC_401~TC_405 + TC_406）：embedding_weights 单文件
+// 四段布局（主表 → identity 表 → 主 scale → identity scale，无 header/padding）。
 // 2026-10-09 设备事故修正适配：InMemory 表/scale 一律堆内存（unique_ptr<char[]>），
 // TensorBuffer 仅用于模型输入/输出工位（本文件无"NNTensor 存表"截获 stub）；
 // 随契约删除的 Table()/Scale() 访问器断言改为行为级——装载形态以
@@ -91,10 +91,10 @@ std::shared_ptr<ITensorBuffer> MakeBuf(const std::string& name, DataType dt, std
     return st.ok() ? out : nullptr;
 }
 
-/// INT8 主表 [16,8] + Fp32 PerToken 主 scale [16] 的 Q12 合并文件 fixture
-/// （docs/gemma4_token_identity.md §3）：identity 段 INT8 [16,4] 紧随主表段
-/// （表文件 192B = 128 + 64，identity 段偏移 = vocab×hidden×主表元素），identity
-/// scale 段 Fp32 [16] 紧随主 scale 段（scale 文件 128B = 64 + 64）。
+/// 单文件四段布局 fixture：INT8 主表 [16,8] + INT8 identity 表 [16,4] +
+/// Fp32 PerToken 主 scale [16] + Fp32 PerToken identity scale [16]，
+/// 四段紧排一行文件（320B = 128 + 64 + 64 + 64，段内行优先、无 padding）。
+/// 主 scale 段偏移 O3 = L1 + L2，identity scale 段 O4 = L1 + L2 + L3。
 class TextEmbeddingTest : public ::testing::Test {
 protected:
     void SetUp() override
@@ -106,7 +106,6 @@ protected:
         for (size_t v = 0; v < kVocab; ++v)
             scale_[v] = 0.5f + static_cast<float>(v);
 
-        // identity 段数据（并入主表文件后段——Q12；裸 dump 行优先）
         identity_.resize(kVocab * kWidth);
         for (size_t v = 0; v < kVocab; ++v)
             for (size_t w = 0; w < kWidth; ++w)
@@ -114,43 +113,41 @@ protected:
         for (size_t v = 0; v < kVocab; ++v)
             identity_scale_[v] = IdentityScale(v);
 
-        merged_table_.reserve(table_.size() + identity_.size());
-        merged_table_.insert(merged_table_.end(), table_.begin(), table_.end());
-        merged_table_.insert(merged_table_.end(), identity_.begin(), identity_.end());
-        merged_scale_.reserve(scale_.size() + identity_scale_.size());
-        merged_scale_.insert(merged_scale_.end(), scale_.begin(), scale_.end());
-        merged_scale_.insert(merged_scale_.end(), identity_scale_.begin(), identity_scale_.end());
+        // 磁盘布局：主表 ‖ identity 表 ‖ 主 scale ‖ identity scale（行优先紧排）
+        file_.reserve(table_.size() + identity_.size() + scale_.size() * sizeof(float) +
+                      identity_scale_.size() * sizeof(float));
+        file_.insert(file_.end(), table_.begin(), table_.end());
+        file_.insert(file_.end(), identity_.begin(), identity_.end());
+        const auto* sc = reinterpret_cast<const int8_t*>(scale_.data());
+        file_.insert(file_.end(), sc, sc + scale_.size() * sizeof(float));
+        const auto* isc = reinterpret_cast<const int8_t*>(identity_scale_.data());
+        file_.insert(file_.end(), isc, isc + identity_scale_.size() * sizeof(float));
 
         table_path_ = TempPath("table");
-        scale_path_ = TempPath("scale");
-        ASSERT_TRUE(WriteFile(table_path_, merged_table_.data(), merged_table_.size()));
-        ASSERT_TRUE(WriteFile(scale_path_, merged_scale_.data(), merged_scale_.size() * sizeof(float)));
+        ASSERT_TRUE(WriteFile(table_path_, file_.data(), file_.size()));
     }
 
-    void TearDown() override
-    {
-        RemoveFile(table_path_);
-        RemoveFile(scale_path_);
-    }
+    void TearDown() override { RemoveFile(table_path_); }
 
+    /// 主表加载配置（四段全量文件同构：W 回填 kWidth，Load 依 W 计算
+    /// 主 scale 段偏移 O3 = L1 + L2；identity 段本身不由 Load 消费）
     EmbeddingConfig Int8PerTokenConfig(EmbeddingLoadMode mode) const
     {
         EmbeddingConfig c;
         c.table_path = table_path_;
-        c.scale_path = scale_path_;
         c.table_type = EmbeddingType::Int8;
         c.scale_type = EmbeddingScaleType::Fp32;
         c.quant_mode = EmbeddingQuantMode::PerToken;
         c.vocab_size = kVocab;
         c.hidden_dim = kHidden;
         c.load_mode = mode;
+        c.token_identity_type = EmbeddingType::Int8;
+        c.token_identity_row_width = kWidth;
         return c;
     }
 
-    /// gemma4 per_layer_token_identity 配置（Q12 合并布局）：identity 段位于
-    /// table_path_ 主表段之后（偏移 = vocab×hidden×主表元素——主表字段必填，
-    /// 经 Int8PerTokenConfig 继承），scale 段位于 scale 文件主 scale 段之后；
-    /// load_mode 同时管辖主表与 identity 源（同文件两种模式的组合不复存在）。
+    /// gemma4 per_layer_token_identity 配置：与 Int8PerTokenConfig 同一文件
+    /// 同一 W（pipeline 单副本两方法的同构形态）；load_mode 管辖两段源。
     EmbeddingConfig IdentityConfig(EmbeddingLoadMode mode) const
     {
         EmbeddingConfig c = Int8PerTokenConfig(mode);
@@ -192,13 +189,12 @@ protected:
             EXPECT_FLOAT_EQ(sc[i], IdentityScale(idx[i]));
     }
 
-    std::vector<int8_t> table_ = std::vector<int8_t>(kVocab * kHidden);
-    std::vector<float> scale_ = std::vector<float>(kVocab);
-    std::vector<int8_t> identity_ = std::vector<int8_t>(kVocab * kWidth);
-    std::vector<float> identity_scale_ = std::vector<float>(kVocab);
-    std::vector<int8_t> merged_table_; // 主表段 + identity 段（即磁盘布局）
-    std::vector<float> merged_scale_;  // 主 scale 段 + identity scale 段
-    std::string table_path_, scale_path_;
+    std::vector<int8_t> table_ = std::vector<int8_t>(kVocab * kHidden);   // seg1
+    std::vector<float> scale_ = std::vector<float>(kVocab);               // seg3
+    std::vector<int8_t> identity_ = std::vector<int8_t>(kVocab * kWidth); // seg2
+    std::vector<float> identity_scale_ = std::vector<float>(kVocab);      // seg4
+    std::vector<int8_t> file_;                                            // 四段拼接（磁盘布局）
+    std::string table_path_;
     TextEmbedding emb_;
 };
 
@@ -238,17 +234,22 @@ TEST_F(TextEmbeddingTest, LoadPerTokenInMemorySuccess_TC001)
 // TC_002：PerGroup（group_size=2，groups=4）加载成功。2026-10-09 契约变化：
 // 原 Scale()->GetSize()==vocab*groups*4B（256B 全量消费）断言以行为级等价替——
 // Gather 末词表项收取末 4 组 scale + 末行 8B，均与 fixture 末段逐字节一致
-// （末段取到即 scale 文件全量读入堆内存；PerGroup 查表口径另见 TC_004）。
+// （末段取到即 scale 段全量读入堆内存；PerGroup 查表口径另见 TC_004）。
 TEST_F(TextEmbeddingTest, LoadPerGroupSuccess_TC002)
 {
     std::vector<float> gs(kVocab * 4);
     for (size_t i = 0; i < gs.size(); ++i)
         gs[i] = 0.25f * static_cast<float>(i);
-    const std::string spath = TempPath("gscale");
-    ASSERT_TRUE(WriteFile(spath, gs.data(), gs.size() * 4));
+    // 自建两段文件 [主表 ‖ PerGroup 主 scale]（无 identity 段 → W=0，O3=L1）
+    const std::string gpath = TempPath("gscale");
+    std::vector<int8_t> two_seg(table_.begin(), table_.end());
+    const auto* gsb = reinterpret_cast<const int8_t*>(gs.data());
+    two_seg.insert(two_seg.end(), gsb, gsb + gs.size() * sizeof(float));
+    ASSERT_TRUE(WriteFile(gpath, two_seg.data(), two_seg.size()));
 
     EmbeddingConfig c = Int8PerTokenConfig(EmbeddingLoadMode::InMemory);
-    c.scale_path = spath;
+    c.table_path = gpath;
+    c.token_identity_row_width = 0;
     c.quant_mode = EmbeddingQuantMode::PerGroup;
     c.group_size = 2;
     auto s = emb_.Load(c);
@@ -265,7 +266,7 @@ TEST_F(TextEmbeddingTest, LoadPerGroupSuccess_TC002)
     const auto* row = static_cast<const int8_t*>(out_e->GetData());
     for (size_t h = 0; h < kHidden; ++h)
         EXPECT_EQ(row[h], TableValue(kVocab - 1, h)) << "h=" << h;
-    RemoveFile(spath);
+    RemoveFile(gpath);
 }
 
 // TC_003：PerToken gather 逐字节正确 + scale 收集正确
@@ -292,10 +293,15 @@ TEST_F(TextEmbeddingTest, GatherPerGroupScales_TC004)
     std::vector<float> gs(kVocab * 4);
     for (size_t i = 0; i < gs.size(); ++i)
         gs[i] = 0.25f * static_cast<float>(i);
-    const std::string spath = TempPath("gscale");
-    ASSERT_TRUE(WriteFile(spath, gs.data(), gs.size() * 4));
+    // 自建两段文件 [主表 ‖ PerGroup 主 scale]（W=0 → O3=L1）
+    const std::string gpath = TempPath("gscale");
+    std::vector<int8_t> two_seg(table_.begin(), table_.end());
+    const auto* gsb = reinterpret_cast<const int8_t*>(gs.data());
+    two_seg.insert(two_seg.end(), gsb, gsb + gs.size() * sizeof(float));
+    ASSERT_TRUE(WriteFile(gpath, two_seg.data(), two_seg.size()));
     EmbeddingConfig c = Int8PerTokenConfig(EmbeddingLoadMode::InMemory);
-    c.scale_path = spath;
+    c.table_path = gpath;
+    c.token_identity_row_width = 0;
     c.quant_mode = EmbeddingQuantMode::PerGroup;
     c.group_size = 2;
     ASSERT_TRUE(emb_.Load(c).ok());
@@ -307,7 +313,7 @@ TEST_F(TextEmbeddingTest, GatherPerGroupScales_TC004)
     const auto* sc = static_cast<const float*>(out_s->GetData());
     for (size_t g = 0; g < 4; ++g)
         EXPECT_FLOAT_EQ(sc[g], gs[5 * 4 + g]);
-    RemoveFile(spath);
+    RemoveFile(gpath);
 }
 
 // TC_005：Embedding 路径 FillInputs（INT8 存储 → FLOAT16 工位展开 + scale → FLOAT32）
@@ -373,7 +379,7 @@ TEST_F(TextEmbeddingTest, SameTypeDirectCopy_TC007)
     c.table_path = tpath;
     c.table_type = EmbeddingType::Fp16;
     c.scale_type = EmbeddingScaleType::None;
-    c.scale_path.clear();
+    c.token_identity_row_width = 0; // 纯表文件（无 scale/identity 段）
     ASSERT_TRUE(emb_.Load(c).ok());
 
     const TokenId ids[kCount] = {3, 0, 15};
@@ -399,15 +405,20 @@ TEST_F(TextEmbeddingTest, Fp32TableAndScaleConversions_TC007b)
     std::vector<float> s(kVocab);
     for (size_t v = 0; v < kVocab; ++v)
         s[v] = 0.25f + 0.125f * static_cast<float>(v);
+    // 单文件 [Fp32 主表 ‖ Fp32 主 scale]（W=0 → O3=L1）
     const std::string tpath = TempPath("fp32table");
-    const std::string spath = TempPath("fp32scale");
-    ASSERT_TRUE(WriteFile(tpath, t.data(), t.size() * 4));
-    ASSERT_TRUE(WriteFile(spath, s.data(), s.size() * 4));
+    {
+        const auto* tb = reinterpret_cast<const int8_t*>(t.data());
+        const auto* sb = reinterpret_cast<const int8_t*>(s.data());
+        std::vector<int8_t> seg(tb, tb + t.size() * sizeof(float));
+        seg.insert(seg.end(), sb, sb + s.size() * sizeof(float));
+        ASSERT_TRUE(WriteFile(tpath, seg.data(), seg.size()));
+    }
 
     EmbeddingConfig c = Int8PerTokenConfig(EmbeddingLoadMode::InMemory);
     c.table_path = tpath;
-    c.scale_path = spath;
     c.table_type = EmbeddingType::Fp32; // scale_type 已是 Fp32，quant PerToken
+    c.token_identity_row_width = 0;
     ASSERT_TRUE(emb_.Load(c).ok());
     EXPECT_EQ(emb_.TableType(), EmbeddingType::Fp32);
 
@@ -427,7 +438,6 @@ TEST_F(TextEmbeddingTest, Fp32TableAndScaleConversions_TC007b)
     for (size_t i = 0; i < kCount; ++i)
         EXPECT_EQ(sc[i].bits_, fp16_t(s[idx[i]]).bits_) << "i=" << i;
     RemoveFile(tpath);
-    RemoveFile(spath);
 }
 
 // TC_007c：Fp16 主表 → FLOAT32 工位值展开 + Fp16 scale 双工位类型（FLOAT32
@@ -440,16 +450,21 @@ TEST_F(TextEmbeddingTest, Fp16TableAndScaleConversions_TC007c)
     std::vector<fp16_t> s(kVocab);
     for (size_t v = 0; v < kVocab; ++v)
         s[v] = fp16_t(0.25f + 0.125f * static_cast<float>(v));
+    // 单文件 [Fp16 主表 ‖ Fp16 主 scale]（W=0 → O3=L1）
     const std::string tpath = TempPath("fp16table2");
-    const std::string spath = TempPath("fp16scale");
-    ASSERT_TRUE(WriteFile(tpath, t.data(), t.size() * 2));
-    ASSERT_TRUE(WriteFile(spath, s.data(), s.size() * 2));
+    {
+        const auto* tb = reinterpret_cast<const int8_t*>(t.data());
+        const auto* sb = reinterpret_cast<const int8_t*>(s.data());
+        std::vector<int8_t> seg(tb, tb + t.size() * sizeof(fp16_t));
+        seg.insert(seg.end(), sb, sb + s.size() * sizeof(fp16_t));
+        ASSERT_TRUE(WriteFile(tpath, seg.data(), seg.size()));
+    }
 
     EmbeddingConfig c = Int8PerTokenConfig(EmbeddingLoadMode::InMemory);
     c.table_path = tpath;
-    c.scale_path = spath;
     c.table_type = EmbeddingType::Fp16;
     c.scale_type = EmbeddingScaleType::Fp16;
+    c.token_identity_row_width = 0;
     ASSERT_TRUE(emb_.Load(c).ok());
 
     const TokenId ids[kCount] = {3, 0, 15};
@@ -486,14 +501,13 @@ TEST_F(TextEmbeddingTest, Fp16TableAndScaleConversions_TC007c)
             EXPECT_EQ(sc[i].bits_, s[idx[i]].bits_) << "i=" << i;
     }
     RemoveFile(tpath);
-    RemoveFile(spath);
 }
 
 // TC_008：InFlash 加载与 gather（与 InMemory 逐字节一致）。2026-10-09 契约变化：
 // 原 Table()==nullptr（无整表内存映像）/Scale()!=nullptr（scale 恒内存态）断言
 // 以行为级等价替——前者由 LoadMode()==InFlash 表达 + TC_111（装载后截断表文件
-// Gather → FAILURE）承担直读证据；后者以"表文件完好、仅截断 scale 文件后
-// Gather 仍成功且 scale 逐值正确"证明 D-09（scale 于 Load 期读入堆内存）。
+// Gather → FAILURE）承担直读证据；后者以"截断文件至主表段末（scale/identity
+// 段尽废）后 Gather 仍成功且 scale 逐值正确"证明 D-09（scale 于 Load 期读入堆内存）。
 TEST_F(TextEmbeddingTest, InFlashLoadGather_TC008)
 {
     ASSERT_TRUE(emb_.Load(Int8PerTokenConfig(EmbeddingLoadMode::InFlash)).ok());
@@ -513,9 +527,10 @@ TEST_F(TextEmbeddingTest, InFlashLoadGather_TC008)
     for (size_t i = 0; i < kCount; ++i)
         EXPECT_FLOAT_EQ(sc[i], 0.5f + idx[i]);
 
-    // 行为级（替原 Scale()!=nullptr）：仅废掉盘上 scale 文件，表行仍走 fd pread，
-    // Gather 照常成功且行/scale 均逐值正确
-    ASSERT_EQ(0, ::truncate(scale_path_.c_str(), 0));
+    // 行为级（替原 Scale()!=nullptr）：截断盘上文件至主表段末（废掉
+    // scale/identity 段），表行仍走 fd pread（行偏移均在 [0,L1) 内），Gather
+    // 照常成功且行/scale 均逐值正确——scale 于 Load 期已读入堆内存（D-09）
+    ASSERT_EQ(0, ::truncate(table_path_.c_str(), static_cast<off_t>(table_.size())));
     auto out_e2 = MakeBuf("out_embed", DataType::INT8, {kCount, kHidden});
     auto out_s2 = MakeBuf("out_scales", DataType::FLOAT32, {kCount});
     ASSERT_TRUE(emb_.Gather(ids, kCount, out_e2, out_s2).ok());
@@ -583,37 +598,44 @@ TEST_F(TextEmbeddingTest, InvalidArgsAndMissingFiles_TC101b)
     flash_missing.table_path = "/nonexistent/dir/table.bin";
     EXPECT_EQ(emb_.Load(flash_missing).code, Status::INVALID_ARGUMENT);
 
-    // 主 scale 文件缺失（表文件本身合法）→ 拒且保持未加载态
+    // 主 scale 段缺失（文件仅剩主表段，scale_type≠None）→ 拒且保持未加载态
+    const std::string l1_only = TempPath("l1only");
+    ASSERT_TRUE(WriteFile(l1_only, table_.data(), table_.size()));
     auto no_scale = c;
-    no_scale.scale_path = "/nonexistent/dir/scale.bin";
+    no_scale.table_path = l1_only;
     EXPECT_EQ(emb_.Load(no_scale).code, Status::INVALID_ARGUMENT);
     EXPECT_FALSE(emb_.Loaded());
 
-    // LoadTokenIdentity：主 scale 文件缺失（scale 段无处读取）
+    // LoadTokenIdentity：同截断文件（总长 ≠ 四段和）→ 拒
     auto ident_ns = IdentityConfig(EmbeddingLoadMode::InMemory);
-    ident_ns.scale_path = "/nonexistent/dir/iscale.bin";
-    EXPECT_EQ(emb_.LoadTokenIdentity(ident_ns, kWidth).code, Status::INVALID_ARGUMENT);
+    ident_ns.table_path = l1_only;
+    EXPECT_EQ(emb_.LoadTokenIdentity(ident_ns).code, Status::INVALID_ARGUMENT);
     EXPECT_FALSE(emb_.IdentityLoaded());
+    RemoveFile(l1_only);
 }
 
-// TC_102：主表段过短 → INVALID_ARGUMENT；超长放行（Q12 合并文件布局——
-// identity 段后随主表段属常态，不再以整文件长校验，"主段完整即可"）
+// TC_102：主表段过短 → INVALID_ARGUMENT；超长放行（单文件四段布局——
+// identity/scale 段后随主表段属常态，Load 只管主表段完整与主 scale 段读足，
+// 总长精确校验归 LoadTokenIdentity）
 TEST_F(TextEmbeddingTest, FileSizeMismatch_TC102)
 {
+    const size_t l1 = table_.size();                    // 主表段 128B
+    const size_t l3 = kVocab * sizeof(float);           // 主 scale 段 64B
+    const size_t seg3_end = l1 + identity_.size() + l3; // O4 = 256
     // 过短：主表段差 1 字节（128B - 1）
     const std::string short_path = TempPath("short");
-    ASSERT_TRUE(WriteFile(short_path, merged_table_.data(), table_.size() - 1));
+    ASSERT_TRUE(WriteFile(short_path, file_.data(), l1 - 1));
     EmbeddingConfig c = Int8PerTokenConfig(EmbeddingLoadMode::InMemory);
     c.table_path = short_path;
     EXPECT_EQ(emb_.Load(c).code, Status::INVALID_ARGUMENT);
 
-    // 超长一：合并文件本体（identity 段 64B 后随）→ 放行
+    // 超长一：四段全量文件本体（identity/scale 段后随）→ 放行
     ASSERT_TRUE(emb_.Load(Int8PerTokenConfig(EmbeddingLoadMode::InMemory)).ok());
     EXPECT_TRUE(emb_.Loaded());
 
-    // 超长二：尾字节另加 → 仍放行
+    // 超长二：尾字节另加 → 仍放行（主 scale 段读取以 gcount 为准，尾部容忍）
     const std::string long_path = TempPath("long");
-    std::vector<int8_t> extra = merged_table_;
+    std::vector<int8_t> extra = file_;
     extra.push_back(0);
     ASSERT_TRUE(WriteFile(long_path, extra.data(), extra.size()));
     c.table_path = long_path;
@@ -635,11 +657,11 @@ TEST_F(TextEmbeddingTest, FileSizeMismatch_TC102)
     EXPECT_EQ(emb_.Load(c).code, Status::INVALID_ARGUMENT);
     c.table_path = long_path;
     EXPECT_TRUE(emb_.Load(c).ok());
-    // 主 scale 文件同口径（超长 = scale 段后随，放行——TC_001 已隐式覆盖；短读拒换路径验一次）
+    // 主 scale 段短 1 字节（文件截断于 O3+L3-1）→ 短读拒
     EmbeddingConfig cs = Int8PerTokenConfig(EmbeddingLoadMode::InMemory);
     const std::string short_scale = TempPath("shortscale");
-    ASSERT_TRUE(WriteFile(short_scale, merged_scale_.data(), scale_.size() * sizeof(float) - 1));
-    cs.scale_path = short_scale;
+    ASSERT_TRUE(WriteFile(short_scale, file_.data(), seg3_end - 1));
+    cs.table_path = short_scale;
     EXPECT_EQ(emb_.Load(cs).code, Status::INVALID_ARGUMENT);
 
     RemoveFile(short_path);
@@ -657,15 +679,6 @@ TEST_F(TextEmbeddingTest, PerGroupInvalidParams_TC103)
     c.group_size = 3; // 8 % 3 != 0
     EXPECT_EQ(emb_.Load(c).code, Status::INVALID_ARGUMENT);
     c.group_size = kHidden + 1;
-    EXPECT_EQ(emb_.Load(c).code, Status::INVALID_ARGUMENT);
-}
-
-// TC_104：scale 配置自相矛盾（None 且 path 非空）
-TEST_F(TextEmbeddingTest, ScaleConfigContradiction_TC104)
-{
-    EmbeddingConfig c = Int8PerTokenConfig(EmbeddingLoadMode::InMemory);
-    c.scale_type = EmbeddingScaleType::None;
-    // scale_path 非空 → INVALID_ARGUMENT
     EXPECT_EQ(emb_.Load(c).code, Status::INVALID_ARGUMENT);
 }
 
@@ -840,13 +853,13 @@ TEST(FromSectionTest, UnknownStringAndEmptyWeights_TC113)
 {
     EmbeddingConfig out;
     // 空 weights → SUCCESS + 不加载信号
-    EXPECT_TRUE(EmbeddingConfig::FromSection("", "", "", "", "", "", "", "", 16, 8, &out).ok());
+    EXPECT_TRUE(EmbeddingConfig::FromSection("", "", "", "", "", "", "", 16, 8, &out).ok());
     EXPECT_TRUE(out.table_path.empty());
     // 未知 table_type → INVALID_ARGUMENT
-    EXPECT_EQ(EmbeddingConfig::FromSection("/tmp/table.bin", "", "fp8", "", "", "", "", "", 16, 8, &out).code,
+    EXPECT_EQ(EmbeddingConfig::FromSection("/tmp/table.bin", "fp8", "", "", "", "", "", 16, 8, &out).code,
               Status::INVALID_ARGUMENT);
     // nullptr out → INVALID_ARGUMENT
-    EXPECT_EQ(EmbeddingConfig::FromSection("/tmp/table.bin", "", "fp8", "", "", "", "", "", 16, 8, nullptr).code,
+    EXPECT_EQ(EmbeddingConfig::FromSection("/tmp/table.bin", "fp8", "", "", "", "", "", 16, 8, nullptr).code,
               Status::INVALID_ARGUMENT);
 }
 
@@ -858,27 +871,26 @@ TEST(FromSectionTest, ParsesVariantsAndRejectsUnknownEnums_TC113b)
     EmbeddingConfig out;
     // 合法变体一：fp32 / fp32 scale / per_group / in_memory
     ASSERT_TRUE(
-        EmbeddingConfig::FromSection("t.bin", "s.bin", "fp32", "fp32", "per_group", "in_memory", "", "", 8, 4, &out)
-            .ok());
+        EmbeddingConfig::FromSection("t.bin", "fp32", "fp32", "per_group", "in_memory", "", "", 8, 4, &out).ok());
     EXPECT_EQ(out.table_type, EmbeddingType::Fp32);
     EXPECT_EQ(out.scale_type, EmbeddingScaleType::Fp32);
     EXPECT_EQ(out.quant_mode, EmbeddingQuantMode::PerGroup);
     EXPECT_EQ(out.load_mode, EmbeddingLoadMode::InMemory);
     EXPECT_EQ(out.group_size, 0u);
     // 合法变体二：fp16 / scale 空缺省 None / quant 空缺省 PerToken
-    ASSERT_TRUE(EmbeddingConfig::FromSection("t2.bin", "", "fp16", "", "", "", "", "", 2, 2, &out).ok());
+    ASSERT_TRUE(EmbeddingConfig::FromSection("t2.bin", "fp16", "", "", "", "", "", 2, 2, &out).ok());
     EXPECT_EQ(out.table_type, EmbeddingType::Fp16);
     EXPECT_EQ(out.scale_type, EmbeddingScaleType::None);
     EXPECT_EQ(out.quant_mode, EmbeddingQuantMode::PerToken);
     // int4 可解析（Load 期拒绝——U-3 口径）
-    ASSERT_TRUE(EmbeddingConfig::FromSection("t3.bin", "", "int4", "", "", "", "", "", 2, 2, &out).ok());
+    ASSERT_TRUE(EmbeddingConfig::FromSection("t3.bin", "int4", "", "", "", "", "", 2, 2, &out).ok());
     EXPECT_EQ(out.table_type, EmbeddingType::Int4);
     // 未知枚举：scale_type / quant_mode / load_mode → INVALID_ARGUMENT（段降级）
-    EXPECT_EQ(EmbeddingConfig::FromSection("t.bin", "s.bin", "fp32", "fp64", "", "", "", "", 8, 4, &out).code,
+    EXPECT_EQ(EmbeddingConfig::FromSection("t.bin", "fp32", "fp64", "", "", "", "", 8, 4, &out).code,
               Status::INVALID_ARGUMENT);
-    EXPECT_EQ(EmbeddingConfig::FromSection("t.bin", "s.bin", "fp32", "fp32", "per_x", "", "", "", 8, 4, &out).code,
+    EXPECT_EQ(EmbeddingConfig::FromSection("t.bin", "fp32", "fp32", "per_x", "", "", "", 8, 4, &out).code,
               Status::INVALID_ARGUMENT);
-    EXPECT_EQ(EmbeddingConfig::FromSection("t.bin", "s.bin", "fp32", "fp32", "", "fast", "", "", 8, 4, &out).code,
+    EXPECT_EQ(EmbeddingConfig::FromSection("t.bin", "fp32", "fp32", "", "fast", "", "", 8, 4, &out).code,
               Status::INVALID_ARGUMENT);
 }
 
@@ -886,9 +898,9 @@ TEST(FromSectionTest, ParsesVariantsAndRejectsUnknownEnums_TC113b)
 TEST(FromSectionTest, ParsesAllFields)
 {
     EmbeddingConfig out;
-    ASSERT_TRUE(EmbeddingConfig::FromSection("t.bin", "s.bin", "int8", "fp16", "per_token", "in_flash", "fp32", "fp16",
-                                             100, 64, &out)
-                    .ok());
+    ASSERT_TRUE(
+        EmbeddingConfig::FromSection("t.bin", "int8", "fp16", "per_token", "in_flash", "fp32", "fp16", 100, 64, &out)
+            .ok());
     EXPECT_EQ(out.table_type, EmbeddingType::Int8);
     EXPECT_EQ(out.scale_type, EmbeddingScaleType::Fp16);
     EXPECT_EQ(out.quant_mode, EmbeddingQuantMode::PerToken);
@@ -898,42 +910,42 @@ TEST(FromSectionTest, ParsesAllFields)
 }
 
 // TC_406：FromSection identity 读取类型键解析（gemma4，docs/gemma4_token_identity.md §7；
-// Q12 合并布局——仅解析读取类型，路径随独立文件删除）
+// 单文件四段布局——仅解析读取类型，数据随 embedding_weights 单文件）
 TEST(FromSectionTest, TokenIdentityFields_TC406)
 {
     EmbeddingConfig out;
     // 未配置（两类型直参空）→ 结构缺省（Q10：type 缺省 fp16，scale_type 缺省 fp16）
-    ASSERT_TRUE(EmbeddingConfig::FromSection("", "", "", "", "", "", "", "", 16, 8, &out).ok());
+    ASSERT_TRUE(EmbeddingConfig::FromSection("", "", "", "", "", "", "", 16, 8, &out).ok());
     EXPECT_EQ(out.token_identity_type, EmbeddingType::Fp16);
     EXPECT_EQ(out.token_identity_scale_type, EmbeddingScaleType::Fp16);
 
     // 核心语义：主表空（TokenId 部署形态）+ identity 类型键显式 → 读取类型照常解析
     // （配置层独立；host 加载/查表由 pipeline 按 Loaded() 门控跳过——Q11/Q12）
-    ASSERT_TRUE(EmbeddingConfig::FromSection("", "", "", "", "", "", "int8", "fp32", 16, 8, &out).ok());
+    ASSERT_TRUE(EmbeddingConfig::FromSection("", "", "", "", "", "int8", "fp32", 16, 8, &out).ok());
     EXPECT_TRUE(out.table_path.empty());
     EXPECT_EQ(out.token_identity_type, EmbeddingType::Int8);
     EXPECT_EQ(out.token_identity_scale_type, EmbeddingScaleType::Fp32);
 
     // 全键显式（int8 identity + fp32 scale）；主表不受 identity 键影响
-    ASSERT_TRUE(EmbeddingConfig::FromSection("t.bin", "s.bin", "int8", "fp32", "per_token", "in_memory", "int8", "fp32",
-                                             100, 64, &out)
-                    .ok());
+    ASSERT_TRUE(
+        EmbeddingConfig::FromSection("t.bin", "int8", "fp32", "per_token", "in_memory", "int8", "fp32", 100, 64, &out)
+            .ok());
     EXPECT_EQ(out.token_identity_type, EmbeddingType::Int8);
     EXPECT_EQ(out.token_identity_scale_type, EmbeddingScaleType::Fp32);
     EXPECT_EQ(out.table_path, "t.bin");
 
-    // scale_type "none" → 非法（Q12："none" 不再表达"不启用"——启用信号已随
-    // 独立路径键删除，改为图工位判定 + pipeline 依图回填 None）
-    EXPECT_EQ(EmbeddingConfig::FromSection("t.bin", "", "int8", "", "", "", "", "none", 16, 8, &out).code,
+    // scale_type "none" → 非法（Q12："none" 不再表达"不启用"——启用信号由图工位
+    // 判定 + pipeline 依图回填 None）
+    EXPECT_EQ(EmbeddingConfig::FromSection("t.bin", "int8", "", "", "", "", "none", 16, 8, &out).code,
               Status::INVALID_ARGUMENT);
     // 未知 identity type → INVALID_ARGUMENT（段降级）
-    EXPECT_EQ(EmbeddingConfig::FromSection("t.bin", "", "int8", "", "", "", "fp8", "", 16, 8, &out).code,
+    EXPECT_EQ(EmbeddingConfig::FromSection("t.bin", "int8", "", "", "", "fp8", "", 16, 8, &out).code,
               Status::INVALID_ARGUMENT);
     // 未知 identity scale_type → INVALID_ARGUMENT
-    EXPECT_EQ(EmbeddingConfig::FromSection("t.bin", "", "int8", "", "", "", "", "fp64", 16, 8, &out).code,
+    EXPECT_EQ(EmbeddingConfig::FromSection("t.bin", "int8", "", "", "", "", "fp64", 16, 8, &out).code,
               Status::INVALID_ARGUMENT);
     // "int4" 可解析（LoadTokenIdentity 期拒绝——U-3 口径）
-    ASSERT_TRUE(EmbeddingConfig::FromSection("t.bin", "", "int8", "", "", "", "int4", "", 16, 8, &out).ok());
+    ASSERT_TRUE(EmbeddingConfig::FromSection("t.bin", "int8", "", "", "", "int4", "", 16, 8, &out).ok());
     EXPECT_EQ(out.token_identity_type, EmbeddingType::Int4);
 }
 
@@ -952,7 +964,7 @@ TEST_F(TextEmbeddingTest, CountZeroWritesNothing_TC201)
         EXPECT_EQ(p[i], 0xCD);
 }
 
-// TC_202：scale_type=None（无 scale 文件；Gather 跳过 out_scales；FillInputs
+// TC_202：scale_type=None（无主 scale 段；Gather 跳过 out_scales；FillInputs
 // 跳过 embed_scales）。2026-10-09 契约变化：原 Scale()==nullptr 断言以行为级
 // 等价替——"None = 无 scale 数据"双证：①非空 out_scales 照常成功且哨兵一字节
 // 不变（跳过写入，非清零）；②out_scales=nullptr 亦成功（None 豁免容量校验）。
@@ -960,7 +972,6 @@ TEST_F(TextEmbeddingTest, ScaleNoneSkipsScales_TC202)
 {
     EmbeddingConfig c = Int8PerTokenConfig(EmbeddingLoadMode::InMemory);
     c.scale_type = EmbeddingScaleType::None;
-    c.scale_path.clear();
     ASSERT_TRUE(emb_.Load(c).ok());
 
     const TokenId ids[kCount] = {1, 2, 3};
@@ -1016,7 +1027,7 @@ TEST_F(TextEmbeddingTest, ReloadAfterFailure_TC204)
 TEST_F(TextEmbeddingTest, MoveCtorTransfersLoadedState_TC205)
 {
     ASSERT_TRUE(emb_.Load(Int8PerTokenConfig(EmbeddingLoadMode::InMemory)).ok());
-    ASSERT_TRUE(emb_.LoadTokenIdentity(IdentityConfig(EmbeddingLoadMode::InMemory), kWidth).ok());
+    ASSERT_TRUE(emb_.LoadTokenIdentity(IdentityConfig(EmbeddingLoadMode::InMemory)).ok());
     TextEmbedding moved(std::move(emb_)); // 移动构造
     EXPECT_FALSE(emb_.Loaded());          // 原对象置未加载态
     EXPECT_FALSE(emb_.IdentityLoaded());
@@ -1045,7 +1056,7 @@ TEST_F(TextEmbeddingTest, MoveCtorTransfersLoadedState_TC205)
 TEST_F(TextEmbeddingTest, MoveAssignTransfersFdBackedState_TC206)
 {
     ASSERT_TRUE(emb_.Load(Int8PerTokenConfig(EmbeddingLoadMode::InFlash)).ok());
-    ASSERT_TRUE(emb_.LoadTokenIdentity(IdentityConfig(EmbeddingLoadMode::InFlash), kWidth).ok());
+    ASSERT_TRUE(emb_.LoadTokenIdentity(IdentityConfig(EmbeddingLoadMode::InFlash)).ok());
     TextEmbedding assigned;
     EXPECT_FALSE(assigned.Loaded());
     assigned = std::move(emb_); // 移动赋值（fd 所有权随源移交）
@@ -1130,7 +1141,7 @@ TEST_F(TextEmbeddingTest, ConcurrentGatherInFlash_TC302)
 }
 
 // ── gemma4 per_layer_token_identity TC_401~TC_405（docs/gemma4_token_identity.md §7；
-//    Q12 合并文件布局：identity 段后随主表段、scale 段后随主 scale 段）──
+//    单文件四段布局：identity 表段随主表段、identity scale 段为物理末段）──
 
 /// 预置 identity 已加载态 + 四工位输入 bundle（ids 槽类型 int32）。
 struct IdentitySlots {
@@ -1149,72 +1160,65 @@ IdentitySlots MakeIdentitySlots(DataType ids_type, DataType ident_type, DataType
     return s;
 }
 
-// TC_401：LoadTokenIdentity 参数/合并文件段校验（Q12——identity 段偏移可计算、
-// 启用时表文件总长须精确 = 主表段 + identity 段，短/超长均拒；scale 段同法）；
+// TC_401：LoadTokenIdentity 参数/单文件四段校验——段偏移可计算，启用时
+// 全文件总长须精确 = 四段和（320B），短/超长均拒（防文件与图不匹配）；
 // 失败保持 identity 未加载态
 TEST_F(TextEmbeddingTest, TokenIdentityLoadValidation_TC401)
 {
     const auto c = IdentityConfig(EmbeddingLoadMode::InMemory);
 
-    // 参数校验：row_width=0 / vocab=0 / hidden_dim=0（偏移计算需要）/ 表文件缺失
-    EXPECT_EQ(emb_.LoadTokenIdentity(c, 0).code, Status::INVALID_ARGUMENT);
+    // 参数校验：W=0 / vocab=0 / hidden_dim=0（偏移计算需要）/ 表文件缺失
+    auto w0 = c;
+    w0.token_identity_row_width = 0;
+    EXPECT_EQ(emb_.LoadTokenIdentity(w0).code, Status::INVALID_ARGUMENT);
     auto bad_vocab = c;
     bad_vocab.vocab_size = 0;
-    EXPECT_EQ(emb_.LoadTokenIdentity(bad_vocab, kWidth).code, Status::INVALID_ARGUMENT);
+    EXPECT_EQ(emb_.LoadTokenIdentity(bad_vocab).code, Status::INVALID_ARGUMENT);
     auto bad_hidden = c;
     bad_hidden.hidden_dim = 0;
-    EXPECT_EQ(emb_.LoadTokenIdentity(bad_hidden, kWidth).code, Status::INVALID_ARGUMENT);
+    EXPECT_EQ(emb_.LoadTokenIdentity(bad_hidden).code, Status::INVALID_ARGUMENT);
     EXPECT_FALSE(emb_.IdentityLoaded());
     auto missing = c;
     missing.table_path = "/nonexistent/dir/merged.bin";
-    EXPECT_EQ(emb_.LoadTokenIdentity(missing, kWidth).code, Status::INVALID_ARGUMENT);
+    EXPECT_EQ(emb_.LoadTokenIdentity(missing).code, Status::INVALID_ARGUMENT);
 
-    // 合并文件 identity 段短 1 字节（192-1）：InMemory 段短读拒绝
+    // 总长短 1 字节（320-1）→ 拒
     const std::string short_path = TempPath("merged_short");
-    ASSERT_TRUE(WriteFile(short_path, merged_table_.data(), merged_table_.size() - 1));
+    ASSERT_TRUE(WriteFile(short_path, file_.data(), file_.size() - 1));
     auto shortc = c;
     shortc.table_path = short_path;
-    EXPECT_EQ(emb_.LoadTokenIdentity(shortc, kWidth).code, Status::INVALID_ARGUMENT);
+    EXPECT_EQ(emb_.LoadTokenIdentity(shortc).code, Status::INVALID_ARGUMENT);
 
-    // 合并文件尾多 1 字节（192+1）→ 总长超长拒绝
+    // 总长超长 1 字节（320+1）→ 拒
     const std::string long_path = TempPath("merged_long");
-    std::vector<int8_t> tailed = merged_table_;
+    std::vector<int8_t> tailed = file_;
     tailed.push_back(0);
     ASSERT_TRUE(WriteFile(long_path, tailed.data(), tailed.size()));
     auto longc = c;
     longc.table_path = long_path;
-    EXPECT_EQ(emb_.LoadTokenIdentity(longc, kWidth).code, Status::INVALID_ARGUMENT);
+    EXPECT_EQ(emb_.LoadTokenIdentity(longc).code, Status::INVALID_ARGUMENT);
+
+    // W 与文件不符（W=kWidth+1 → identity 段长 80B，总长 336≠320）→ 拒
+    // （W 唯一来源是工位 probe 回填；错 W 天然导致总长判等失败，非静默错位）
+    auto w_mismatch = c;
+    w_mismatch.token_identity_row_width = kWidth + 1;
+    EXPECT_EQ(emb_.LoadTokenIdentity(w_mismatch).code, Status::INVALID_ARGUMENT);
 
     // Int4（U-3）
     auto int4 = c;
     int4.token_identity_type = EmbeddingType::Int4;
-    EXPECT_EQ(emb_.LoadTokenIdentity(int4, kWidth).code, Status::INVALID_ARGUMENT);
+    EXPECT_EQ(emb_.LoadTokenIdentity(int4).code, Status::INVALID_ARGUMENT);
 
-    // 图带 scale 工位（want_scale）而主 scale 缺失 → 无处读取（防御；
-    // pipeline InitEmbedding_ 依图校验应已致命——对齐 TC_104 口径）
+    // 图带 scale 工位（want_scale）而主 scale 缺失 → 无处定位 identity scale 段
+    // （防御；pipeline InitEmbedding_ 依图校验应已致命）
     auto no_scale = c;
     no_scale.scale_type = EmbeddingScaleType::None;
-    no_scale.scale_path.clear();
-    EXPECT_EQ(emb_.LoadTokenIdentity(no_scale, kWidth).code, Status::INVALID_ARGUMENT);
-
-    // scale 段短 1 字节（scale 文件 128-1）/ 超长 1 字节（128+1）→ 均拒
-    const std::string scale_short_path = TempPath("iscale_short");
-    ASSERT_TRUE(WriteFile(scale_short_path, merged_scale_.data(), merged_scale_.size() * sizeof(float) - 1));
-    auto sc_short = c;
-    sc_short.scale_path = scale_short_path;
-    EXPECT_EQ(emb_.LoadTokenIdentity(sc_short, kWidth).code, Status::INVALID_ARGUMENT);
-    const std::string scale_long_path = TempPath("iscale_long");
-    std::vector<float> scale_tailed = merged_scale_;
-    scale_tailed.push_back(0.f);
-    ASSERT_TRUE(WriteFile(scale_long_path, scale_tailed.data(), scale_tailed.size() * sizeof(float)));
-    auto sc_long = c;
-    sc_long.scale_path = scale_long_path;
-    EXPECT_EQ(emb_.LoadTokenIdentity(sc_long, kWidth).code, Status::INVALID_ARGUMENT);
+    EXPECT_EQ(emb_.LoadTokenIdentity(no_scale).code, Status::INVALID_ARGUMENT);
 
     EXPECT_FALSE(emb_.IdentityLoaded()); // 此前所有失败均保持未加载态
 
-    // 成功（fixture 正身 = 精确合并布局）+ IdentityLoaded；主表状态不受影响（第二表源独立）
-    ASSERT_TRUE(emb_.LoadTokenIdentity(c, kWidth).ok());
+    // 成功（fixture 正身 = 精确四段布局）+ IdentityLoaded；主表状态不受影响（第二表源独立）
+    ASSERT_TRUE(emb_.LoadTokenIdentity(c).ok());
     EXPECT_TRUE(emb_.IdentityLoaded());
     EXPECT_FALSE(emb_.Loaded());
 
@@ -1222,21 +1226,19 @@ TEST_F(TextEmbeddingTest, TokenIdentityLoadValidation_TC401)
     const auto flash = IdentityConfig(EmbeddingLoadMode::InFlash);
     auto flash_short = flash;
     flash_short.table_path = short_path;
-    EXPECT_EQ(emb_.LoadTokenIdentity(flash_short, kWidth).code, Status::INVALID_ARGUMENT);
+    EXPECT_EQ(emb_.LoadTokenIdentity(flash_short).code, Status::INVALID_ARGUMENT);
     auto flash_long = flash;
     flash_long.table_path = long_path;
-    EXPECT_EQ(emb_.LoadTokenIdentity(flash_long, kWidth).code, Status::INVALID_ARGUMENT);
+    EXPECT_EQ(emb_.LoadTokenIdentity(flash_long).code, Status::INVALID_ARGUMENT);
 
     RemoveFile(short_path);
     RemoveFile(long_path);
-    RemoveFile(scale_short_path);
-    RemoveFile(scale_long_path);
 }
 
 // TC_402：TokenId 部署形态不查表（2026-09-22 变更）——identity 已加载也零触碰
 TEST_F(TextEmbeddingTest, TokenIdentitySkippedOnTokenIdPath_TC402)
 {
-    ASSERT_TRUE(emb_.LoadTokenIdentity(IdentityConfig(EmbeddingLoadMode::InMemory), kWidth).ok());
+    ASSERT_TRUE(emb_.LoadTokenIdentity(IdentityConfig(EmbeddingLoadMode::InMemory)).ok());
     EXPECT_FALSE(emb_.Loaded()); // TokenId 路径分派（表在模型权重中）
 
     const TokenId ids[kCount] = {3, 0, 15};
@@ -1259,17 +1261,17 @@ TEST_F(TextEmbeddingTest, TokenIdentitySkippedOnTokenIdPath_TC402)
 }
 
 // TC_403：Embedding 路径既有工位照填 + identity 两工位同时落位（identity 唯一执行路径；
-// Q12 后主表与 identity 同文件同 load_mode——InMemory 全链）
+// 主表与 identity 同一单文件同一 W——InMemory 全链）
 TEST_F(TextEmbeddingTest, TokenIdentityFilledOnEmbeddingPath_TC403)
 {
     ASSERT_TRUE(emb_.Load(Int8PerTokenConfig(EmbeddingLoadMode::InMemory)).ok());
-    ASSERT_TRUE(emb_.LoadTokenIdentity(IdentityConfig(EmbeddingLoadMode::InMemory), kWidth).ok());
+    ASSERT_TRUE(emb_.LoadTokenIdentity(IdentityConfig(EmbeddingLoadMode::InMemory)).ok());
     EXPECT_TRUE(emb_.Loaded());
     EXPECT_TRUE(emb_.IdentityLoaded());
     FillEmbeddingPathAndExpectAllSlots(emb_);
 }
 
-// TC_403b：identity 源 InFlash（Q12 文件内段偏移——行读取基数 = 主表段 128B，
+// TC_403b：identity 源 InFlash（文件内段偏移——行读取基数 = 主表段 128B，
 // 不从文件头起）；主表 InFlash 同批成立，两 FlashTableSource 各按段基址读行，
 // 落位值与 InMemory（TC_403）逐字节一致。2026-10-09 契约变化：原 Table()==nullptr
 // 断言删——主表侧"留文件直读"加载形态以 LoadMode()==InFlash 表达，数据正确性由
@@ -1277,7 +1279,7 @@ TEST_F(TextEmbeddingTest, TokenIdentityFilledOnEmbeddingPath_TC403)
 TEST_F(TextEmbeddingTest, TokenIdentityInFlashSegmentBase_TC403b)
 {
     ASSERT_TRUE(emb_.Load(Int8PerTokenConfig(EmbeddingLoadMode::InFlash)).ok());
-    ASSERT_TRUE(emb_.LoadTokenIdentity(IdentityConfig(EmbeddingLoadMode::InFlash), kWidth).ok());
+    ASSERT_TRUE(emb_.LoadTokenIdentity(IdentityConfig(EmbeddingLoadMode::InFlash)).ok());
     EXPECT_TRUE(emb_.Loaded());
     EXPECT_TRUE(emb_.IdentityLoaded());
     EXPECT_EQ(emb_.LoadMode(), EmbeddingLoadMode::InFlash);
@@ -1289,7 +1291,7 @@ TEST_F(TextEmbeddingTest, TokenIdentityInFlashSegmentBase_TC403b)
 TEST_F(TextEmbeddingTest, TokenIdentityOutOfRangeRejectsBatch_TC404)
 {
     ASSERT_TRUE(emb_.Load(Int8PerTokenConfig(EmbeddingLoadMode::InMemory)).ok());
-    ASSERT_TRUE(emb_.LoadTokenIdentity(IdentityConfig(EmbeddingLoadMode::InMemory), kWidth).ok());
+    ASSERT_TRUE(emb_.LoadTokenIdentity(IdentityConfig(EmbeddingLoadMode::InMemory)).ok());
     const TokenId ids[kCount] = {3, 16, 1}; // 16 ≥ vocab
     auto slot_e = MakeBuf("input_embed", DataType::INT8, {kCount, kHidden});
     auto slot_s = MakeBuf("embed_scales", DataType::FLOAT32, {kCount});
@@ -1328,7 +1330,7 @@ TEST_F(TextEmbeddingTest, TokenIdentitySlotMissing_TC405)
     // 启用（含主表，Embedding 形态）但图缺 per_layer_token_identity 工位 → NOT_FOUND；
     // TokenId 路径不触碰 identity（TC_402 已覆盖），此口径只在 Embedding 路径可达
     ASSERT_TRUE(emb_.Load(Int8PerTokenConfig(EmbeddingLoadMode::InMemory)).ok());
-    ASSERT_TRUE(emb_.LoadTokenIdentity(IdentityConfig(EmbeddingLoadMode::InMemory), kWidth).ok());
+    ASSERT_TRUE(emb_.LoadTokenIdentity(IdentityConfig(EmbeddingLoadMode::InMemory)).ok());
     {
         const TokenId ids[kCount] = {1, 2, 3};
         auto slot_e = MakeBuf("input_embed", DataType::INT8, {kCount, kHidden});
@@ -1347,7 +1349,7 @@ TEST_F(TextEmbeddingTest, IdentitySlotCapacityAndMissing_TC405b)
 {
     const TokenId ids[kCount] = {1, 2, 3};
     ASSERT_TRUE(emb_.Load(Int8PerTokenConfig(EmbeddingLoadMode::InMemory)).ok());
-    ASSERT_TRUE(emb_.LoadTokenIdentity(IdentityConfig(EmbeddingLoadMode::InMemory), kWidth).ok());
+    ASSERT_TRUE(emb_.LoadTokenIdentity(IdentityConfig(EmbeddingLoadMode::InMemory)).ok());
     const std::unordered_map<std::string, size_t> ni_all{
         {"input_embed", 0}, {"embed_scales", 1}, {kTokenIdentitySlotName, 2}, {kTokenIdentityScaleSlotName, 3}};
 
@@ -1637,7 +1639,7 @@ TEST_F(TextEmbeddingTest, IsEmbedScaleSlotNameMatchesCanonicalAndAlias_TC510)
 TEST_F(TextEmbeddingTest, FillInputsEmbeddingViaScaleAlias_TC511)
 {
     ASSERT_TRUE(emb_.Load(Int8PerTokenConfig(EmbeddingLoadMode::InMemory)).ok());
-    ASSERT_TRUE(emb_.LoadTokenIdentity(IdentityConfig(EmbeddingLoadMode::InMemory), kWidth).ok());
+    ASSERT_TRUE(emb_.LoadTokenIdentity(IdentityConfig(EmbeddingLoadMode::InMemory)).ok());
     const TokenId ids[kCount] = {3, 0, 15};
     const size_t idx[kCount] = {3, 0, 15};
     // c42 图实名四工位：embed INT8 直拷；identity INT8 → FLOAT32 展开；两 scale
@@ -1669,12 +1671,11 @@ TEST_F(TextEmbeddingTest, FillInputsEmbeddingViaScaleAlias_TC511)
 
 // ── L2 mmap 段源组（perf_optimize.md §3.2/§5：InMemory 载体 mmap 化对账）─────
 // 2026-10-28 实施：InMemory 表源由 new[]+f.read 堆载体换 mmap 只读映射
-// （detail::MmapTableSource；主表段 require_exact=false 超长放行沿用 Q12、
-// identity 段 require_exact=true 短/超长均拒——原"读毕恰为文件尾"语义逐字
-// 保留，B-10 几何闭环）。本组锁四契约：行等价（全词表 ReadRow/RowPtr 双
-// 通道逐字节命中）、截断拒绝（map 前拒，无 SIGBUS 窗口）、非 0 段偏映射的
-// 行地址算（identity 段 offset=128）、Load 端到端（InMemory 全链
-// Loaded/FillInputs 不回退）。
+// （detail::MmapTableSource；主表段 require_exact=false 超长放行、identity 段
+// require_exact=true 以全文件四段总长判等——短/超长均拒，B-10 几何闭环）。
+// 本组锁四契约：行等价（全词表 ReadRow/RowPtr 双通道逐字节命中）、截断拒绝
+// （map 前拒，无 SIGBUS 窗口）、非 0 段偏映射的行地址算（identity 段
+// offset=128）、Load 端到端（InMemory 全链 Loaded/FillInputs 不回退）。
 
 // TC_L2_1：行等价——InMemory mmap 载体全词表 Gather 逐字节命中
 // （ReadRow=memcpy 通道；映射建立即数据就绪）。
@@ -1697,20 +1698,20 @@ TEST_F(TextEmbeddingTest, MmapRowEquivalenceTC_L2_1)
 }
 
 // TC_L2_2：段长不足 ⇒ INVALID_ARGUMENT（map 前拒——无 SIGBUS 窗口）；
-// 主表段 require_exact=false：超长（identity 段后随）放行，文件尾多字节放行。
+// 主表段 require_exact=false：超长（identity/scale 段后随）放行，文件尾多字节放行。
 TEST_F(TextEmbeddingTest, MmapTruncatedRejectsBeforeMapTC_L2_2)
 {
     // 主表段差 1 字节
     const std::string short_path = TempPath("l2_short");
-    ASSERT_TRUE(WriteFile(short_path, merged_table_.data(), table_.size() - 1));
+    ASSERT_TRUE(WriteFile(short_path, file_.data(), table_.size() - 1));
     EmbeddingConfig c = Int8PerTokenConfig(EmbeddingLoadMode::InMemory);
     c.table_path = short_path;
     EXPECT_EQ(emb_.Load(c).code, Status::INVALID_ARGUMENT);
     EXPECT_FALSE(emb_.Loaded());
 
-    // 合并布局本体（192B，identity 段后随）与尾多 1 字节均放行（Q12 超长）
+    // 四段全量本体（320B）与尾多 1 字节均放行（主表段超长容忍）
     const std::string long_path = TempPath("l2_long");
-    std::vector<int8_t> extra = merged_table_;
+    std::vector<int8_t> extra = file_;
     extra.push_back(0);
     ASSERT_TRUE(WriteFile(long_path, extra.data(), extra.size()));
     c.table_path = long_path;
@@ -1736,7 +1737,7 @@ TEST_F(TextEmbeddingTest, MmapTruncatedRejectsBeforeMapTC_L2_2)
 TEST_F(TextEmbeddingTest, MmapNonZeroSegmentOffsetTC_L2_3)
 {
     ASSERT_TRUE(emb_.Load(Int8PerTokenConfig(EmbeddingLoadMode::InMemory)).ok());
-    ASSERT_TRUE(emb_.LoadTokenIdentity(IdentityConfig(EmbeddingLoadMode::InMemory), kWidth).ok());
+    ASSERT_TRUE(emb_.LoadTokenIdentity(IdentityConfig(EmbeddingLoadMode::InMemory)).ok());
     ASSERT_TRUE(emb_.IdentityLoaded());
 
     const TokenId ids[kCount] = {3, 0, 15};
@@ -1773,10 +1774,83 @@ TEST_F(TextEmbeddingTest, MmapNonZeroSegmentOffsetTC_L2_3)
 TEST_F(TextEmbeddingTest, MmapLoadEndToEndTC_L2_4)
 {
     ASSERT_TRUE(emb_.Load(Int8PerTokenConfig(EmbeddingLoadMode::InMemory)).ok());
-    ASSERT_TRUE(emb_.LoadTokenIdentity(IdentityConfig(EmbeddingLoadMode::InMemory), kWidth).ok());
+    ASSERT_TRUE(emb_.LoadTokenIdentity(IdentityConfig(EmbeddingLoadMode::InMemory)).ok());
     EXPECT_TRUE(emb_.Loaded());
     EXPECT_TRUE(emb_.IdentityLoaded());
     FillEmbeddingPathAndExpectAllSlots(emb_);
+}
+
+// ── 单文件四段布局（weight/scale 合并）TC_A~TC_D ────────────────────────────
+// TC_A：四段全量文件双方法同 W 加载 + Gather 逐值（主表/主 scale 段命中）；
+// TC_B（总长 ±1 拒）与 W 失配拒由 TC_401 覆盖；TC_C/TC_D 见下。
+
+// TC_A：主 scale 段位于 identity 段之后（O3 = L1 + L2 = 192），Load 与
+// LoadTokenIdentity 共用同一 W（pipeline 单副本形态）后两段各按偏移命中。
+TEST_F(TextEmbeddingTest, FourSegmentFullChainValues_TC_A)
+{
+    ASSERT_TRUE(emb_.Load(Int8PerTokenConfig(EmbeddingLoadMode::InMemory)).ok());
+    ASSERT_TRUE(emb_.LoadTokenIdentity(IdentityConfig(EmbeddingLoadMode::InMemory)).ok());
+
+    // 主表/主 scale：Gather 通道逐值（seg3 自 O3 处命中）
+    const TokenId ids[kCount] = {3, 0, 15};
+    const size_t idx[kCount] = {3, 0, 15};
+    auto out_e = MakeBuf("out_embed", DataType::INT8, {kCount, kHidden});
+    auto out_s = MakeBuf("out_scales", DataType::FLOAT32, {kCount});
+    ASSERT_TRUE(emb_.Gather(ids, kCount, out_e, out_s).ok());
+    const auto* rows = static_cast<const int8_t*>(out_e->GetData());
+    const auto* sc = static_cast<const float*>(out_s->GetData());
+    for (size_t i = 0; i < kCount; ++i) {
+        for (size_t h = 0; h < kHidden; ++h)
+            EXPECT_EQ(rows[i * kHidden + h], TableValue(idx[i], h)) << "i=" << i << " h=" << h;
+        EXPECT_FLOAT_EQ(sc[i], 0.5f + idx[i]);
+    }
+    // identity/identity scale：四工位通道逐值（seg2/seg4 各按偏移命中）
+    FillEmbeddingPathAndExpectAllSlots(emb_);
+}
+
+// TC_C：非 gemma4 形态回归——identity 未启用（W=0），文件 [主表 ‖ 主 scale]
+// 两段（O3 = L1），Load 成功 + Gather 逐值。
+TEST_F(TextEmbeddingTest, TwoSegmentNoIdentityFile_TC_C)
+{
+    const std::string two = TempPath("twoseg");
+    std::vector<int8_t> seg(table_.begin(), table_.end());
+    const auto* sb = reinterpret_cast<const int8_t*>(scale_.data());
+    seg.insert(seg.end(), sb, sb + scale_.size() * sizeof(float));
+    ASSERT_TRUE(WriteFile(two, seg.data(), seg.size()));
+
+    EmbeddingConfig c = Int8PerTokenConfig(EmbeddingLoadMode::InMemory);
+    c.table_path = two;
+    c.token_identity_row_width = 0; // 图无 identity 工位 → 段长 0、O3 = L1
+    ASSERT_TRUE(emb_.Load(c).ok());
+    EXPECT_TRUE(emb_.Loaded());
+
+    const TokenId ids[kCount] = {3, 0, 15};
+    const size_t idx[kCount] = {3, 0, 15};
+    auto out_e = MakeBuf("out_embed", DataType::INT8, {kCount, kHidden});
+    auto out_s = MakeBuf("out_scales", DataType::FLOAT32, {kCount});
+    ASSERT_TRUE(emb_.Gather(ids, kCount, out_e, out_s).ok());
+    const auto* rows = static_cast<const int8_t*>(out_e->GetData());
+    const auto* sc = static_cast<const float*>(out_s->GetData());
+    for (size_t i = 0; i < kCount; ++i) {
+        for (size_t h = 0; h < kHidden; ++h)
+            EXPECT_EQ(rows[i * kHidden + h], TableValue(idx[i], h)) << "i=" << i << " h=" << h;
+        EXPECT_FLOAT_EQ(sc[i], 0.5f + idx[i]);
+    }
+    RemoveFile(two);
+}
+
+// TC_D：文件恰 L1（主表段后无任何段）且 scale_type≠None → 主 scale 段读不足
+// 拒（W=0 使 O3 = L1 = 文件尾，seek 后零字节可读）。
+TEST_F(TextEmbeddingTest, ScaleSegmentAbsentRejects_TC_D)
+{
+    const std::string l1 = TempPath("l1tail");
+    ASSERT_TRUE(WriteFile(l1, table_.data(), table_.size()));
+    EmbeddingConfig c = Int8PerTokenConfig(EmbeddingLoadMode::InMemory);
+    c.table_path = l1;
+    c.token_identity_row_width = 0;
+    EXPECT_EQ(emb_.Load(c).code, Status::INVALID_ARGUMENT);
+    EXPECT_FALSE(emb_.Loaded());
+    RemoveFile(l1);
 }
 
 } // namespace

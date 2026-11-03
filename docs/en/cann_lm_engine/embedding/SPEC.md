@@ -17,14 +17,14 @@ The reader should understand within 30 seconds: this spec defines a C++ embeddin
 | embedding table | 2D matrix of `[vocab_size, hidden_dim]`, row v is vocabulary entry v's embedding vector, stored in file system as low-precision type |
 | storage type | byte layout type of embedding / scale data in the **file system** (`EmbeddingType` / `EmbeddingScaleType`), specified by user at Load time |
 | fill type | actual data type written to model input slot, determined by om graph `TensorDesc.dataType`; when inconsistent with storage type, module **must** do type conversion before filling |
-| scale / dequantization parameter | coefficient needed to restore low-precision embedding to high precision; stored separately from embedding table |
+| scale / dequantization parameter | coefficient needed to restore low-precision embedding to high precision; stored in the same single file as the embedding table (third segment) |
 | PerToken | quantization granularity: each vocabulary entry (one row of table) corresponds to **one** scale |
 | PerGroup | quantization granularity: one row of embedding divided into groups by `group_size`, **each group** has its own scale; one tokenId corresponds to multiple dequantization parameters |
 | group_size | element count per group in PerGroup mode (hidden dimension direction); required in PerGroup mode |
 | gather / table lookup | operation of copying corresponding row from table by tokenId index; host-side gather is pure index-based copy (stride copy), no dequantization |
 | tokenId path | inference path where om graph has built-in embedding lookup: **embedding table already included in model weights loaded with graph**, graph does gather + dequant internally, input slot holds token id; table not passed through this module |
 | embedding path | inference path where om graph has no built-in embedding: host-side gather low-precision rows fill `input_embed`, NPU-side dequant |
-| InMemory / InFlash | table loading method: InMemory = entire table read into host memory at once; InFlash = table stays in file system, no resident memory, read directly from file by row offset during gather/fill |
+| InMemory / InFlash | table loading method: InMemory = entire table mmap read-only mapped; InFlash = table stays in file system, no resident memory, read directly from file by row offset during gather/fill |
 | slot / input slot | model om graph input tensor slot (`input_embed`, `embed_scales`, etc.), see `docs/model_executor/INPUT_INFO.md` |
 | name→index mapping | `TensorDesc.name` → `input_tensors_` index mapping table, established at model_executor Load |
 | ITensorBuffer | backend abstract tensor container (`backend/api/tensor_buffer.h`): `GetData()` / `GetSize()` / `GetDesc()` |
@@ -43,7 +43,7 @@ The reader should understand within 30 seconds: this spec defines a C++ embeddin
 ### 3.2 Problem
 
 - **No table loading capability**: models without om graph built-in embedding (embedding path) cannot obtain input embedding; `embed_scales` slot has no filler.
-- **Quantized deployment blocked**: low-precision (INT8, etc.) embedding table + scale separated storage deployment form lacks host-side loading and gather channel.
+- **Quantized deployment blocked**: low-precision (INT8, etc.) embedding table + scale quantized deployment form lacks host-side loading and gather channel.
 - **Contract missing**: `LoadAndBind()` stub signature doesn't match real requirements (path, type, quantization granularity, slot filling), no behavior spec to follow.
 
 ### 3.3 Expectations and Confirmed Design Decisions
@@ -54,9 +54,9 @@ Module responsibility determined via brainstorm (2026-08-27) and user three-roun
 |------|------|
 | Responsibility positioning | **Dual path**: tokenId path (om graph built-in embedding, table already in weights loaded with graph, module only fills token id) | embedding path (host gather low-precision rows, NPU dequant) |
 | Dequantization location | **Always NPU side**; host only reads low-precision table + scale and fills slots, host does not do dequantization math |
-| File format | embedding = raw 2D `[vocab, hidden]` row-major contiguous; scale = raw 1D (shape determined by quantization granularity, see 4.1.1) |
+| File format | **embedding_weights single file** four segments packed contiguously: main table raw 2D `[vocab, hidden]` → per_layer table → main scale → per_layer scale (no file header, no inter-segment padding); scale segment shape determined by quantization granularity (see 4.1.1) |
 | Quantization granularity | initialization input parameter `quantMode`: **PerToken** (one scale per vocabulary entry) or **PerGroup** (one tokenId's embedding corresponds to multiple dequantization parameters, `GroupSize` required) |
-| Table loading method | optional: **InMemory** (entire table read into host memory, default) or **InFlash** (table not read into memory, read directly from file by row offset during gather/fill) |
+| Table loading method | optional: **InMemory** (entire table mmap read-only mapped, default) or **InFlash** (table not read into memory, read directly from file by row offset during gather/fill) |
 | Structure approach | **Single class + type tag dispatch** (no polymorphic hierarchy; host gather type-agnostic); when some type has differentiated host logic (e.g. INT4 unpack) upgrade to strategy/polymorphic, interface shape unchanged |
 | Table delivery method | **No BindToModel**: table/scale not weight-bound. tokenId path no table needed (table in weights); embedding path table/scale as **input slot data** proactively filled by this module |
 | Slot filling attribution | **Module proactively fills** (approach B): `FillInputs(...)` depends on model_executor's input bundle + name→index mapping |
@@ -65,7 +65,7 @@ Module responsibility determined via brainstorm (2026-08-27) and user three-roun
 
 ### 3.4 Module Boundary
 
-- **This module does**: table/scale file loading (InMemory entire table into memory / InFlash keep in file read by row), host gather (including per-token scale collection), type conversion, input slot filling (including tokenId path's token id filling).
+- **This module does**: embedding_weights single-file four-segment loading (InMemory whole-table mmap / InFlash keep in file read by row), host gather (including per-token scale collection), type conversion, input slot filling (including tokenId path's token id filling).
 - **This module does not do**: dequantization (NPU), tokenId path table delivery (**table already included in model weights loaded with graph**, not through this module), other slot filling like attention_mask/position_ids (InputAssembler), multimodal placeholder replacement (Preprocessor, via `ModalityEntry`), table memory underlying allocation strategy (via ITensorBuffer abstraction), InFlash table file hot update.
 - **Upstream/downstream basically unchanged, except one wiring change**: `PipelineExecutorFactory::create` still passes `TextEmbedding` by value; `Preprocessor` still holds non-owning `TextEmbedding*`; **`Scheduler` constructor signature needs to add `TextEmbedding*` non-owning pointer** (`input_embed` slot's sole writer in current code is `Scheduler`'s two `SetInputData` call sites; embedding/tokenId both paths' slot filling connected via `FillInputs`, see DESIGN §2.2 wiring point); only `LoadAndBind()` stub replaced by new interface.
 
@@ -77,16 +77,15 @@ Module responsibility determined via brainstorm (2026-08-27) and user three-roun
 
 - **Preconditions**: caller (pipeline, M-02 at init phase) holds complete `EmbeddingConfig` (including table loading method `load_mode`). config passed via **meta_json `embedding_config` section → pipeline inline parsing step directly calls `EmbeddingConfig::FromSection`** channel (SR20260903001 supersedes U-8 route b — channel part superseded, parsing semantics maintained, 2026-09-04 user decision); assembly mapping see DESIGN C-01 §2.
 - **Processing logic**:
-  - Module **must** read embedding table from `table_path` in config, byte layout is raw 2D `[vocab_size, hidden_dim]` row-major contiguous. Reading method determined by `load_mode`:
-    - **InMemory** (default): entire table read into host-side `ITensorBuffer` at once.
+  - Module **must** read the main table from the first segment (offset 0) of the single file at config's `table_path`, byte layout is raw 2D `[vocab_size, hidden_dim]` row-major contiguous. Reading method determined by `load_mode`:
+    - **InMemory** (default): main-table segment mmap read-only (RAII munmap, row pointers point directly into mapped pages).
     - **InFlash**: table **not read into memory** — Load only validates file metadata (open file, validate byte size, record row stride = `hidden_dim × elem_size`), keeps file open; subsequent `Gather` / `FillInputs` read directly from file by row offset (`id × stride`) via positional read (`pread`-like semantics).
-  - Module **must** read scale file from `scale_path` into host-side `ITensorBuffer` when `scale_type ≠ None`. **scale is always in-memory** (InFlash not applicable — scale is `vocab` or `vocab × groups` scalars, much smaller than table, and randomly accessed by index on every gather). scale element count determined by quantization granularity:
-    - **PerToken**: `vocab_size` elements (v-th element is table's v-th row's scale), file byte size = `vocab_size × scale_elem_size`.
-    - **PerGroup**: `vocab_size × groups` elements row-major (token v's g-th group scale at index `v × groups + g`), where `groups = hidden_dim / group_size`; file byte size = `vocab_size × groups × scale_elem_size`.
+  - Module **must** read the main scale segment (third segment, offset = main table + identity table length) from the `table_path` single file into host-side heap memory when `scale_type ≠ None`. **scale is always in-memory** (InFlash not applicable — scale is `vocab` or `vocab × groups` scalars, much smaller than table, and randomly accessed by index on every gather). scale element count determined by quantization granularity:
+    - **PerToken**: `vocab_size` elements (v-th element is table's v-th row's scale), segment byte size = `vocab_size × scale_elem_size`.
+    - **PerGroup**: `vocab_size × groups` elements row-major (token v's g-th group scale at index `v × groups + g`), where `groups = hidden_dim / group_size`; segment byte size = `vocab_size × groups × scale_elem_size`.
   - Module **must** validate in PerGroup mode that `group_size` is provided, `group_size > 0`, `group_size ≤ hidden_dim` and `hidden_dim % group_size == 0`, any failure returns `INVALID_ARGUMENT`.
-  - Module **must** validate file byte size (InMemory actual read, InFlash `stat` metadata) matches expected value calculated by above rules, mismatch returns `INVALID_ARGUMENT`.
-  - Module **must** support `scale_type = None` (deployment form without scale file): `scale_path` empty, no scale loaded, subsequent `Gather`'s `out_scales` produces no data.
-  - Module **must** return `INVALID_ARGUMENT` when `scale_type = None` and `scale_path` non-empty (fool-proof: config self-contradictory).
+  - Module **must** validate file byte size (InMemory actual mapping, InFlash `stat` metadata) satisfies the main-table-segment expectation (≥ passes, later segments may follow), and the main scale segment reads in full (short read returns `INVALID_ARGUMENT`); exact validation of the whole-file four-segment total is performed by LoadTokenIdentity (when identity is enabled).
+  - Module **must** support `scale_type = None` (deployment form without the main scale segment): no scale loaded, subsequent `Gather`'s `out_scales` produces no data.
   - Module **must** return `INVALID_ARGUMENT` when file missing / unreadable, no exception thrown.
   - Module **should** record table scale (vocab_size / hidden_dim / type / quantization granularity / loading method) after successful load for accessor query.
 - **vocab_size / hidden_dim source**: provided as Load config input parameter by caller (expected from ModelConfig; see open item U-2).
@@ -152,15 +151,14 @@ Module responsibility determined via brainstorm (2026-08-27) and user three-roun
 
 ```cpp
 // —— Types (engine internal, subset mapping of non-backend DataType) ——
-enum class EmbeddingType     { Fp32, Fp16, Int8, Int4 };   // table file storage type
-enum class EmbeddingScaleType{ None, Fp32, Fp16 };         // scale file storage type
+enum class EmbeddingType     { Fp32, Fp16, Int8, Int4 };   // main table segment storage type
+enum class EmbeddingScaleType{ None, Fp32, Fp16 };         // main scale segment storage type
 enum class EmbeddingQuantMode{ PerToken, PerGroup };       // scale granularity
 enum class EmbeddingPath     { TokenId, Embedding };       // FillInputs path selection
 enum class EmbeddingLoadMode { InMemory, InFlash };        // table loading method: entire table into memory / stay in file read by row
 
 struct EmbeddingConfig {
-    std::string           table_path;   // embedding table file (raw [vocab, hidden] row-major)
-    std::string           scale_path;   // scale file; must be empty when scale_type=None
+    std::string           table_path;   // embedding_weights single file (four segments: main table → identity table → main scale → identity scale)
     EmbeddingType         table_type;
     EmbeddingScaleType    scale_type;
     EmbeddingQuantMode    quant_mode;
@@ -169,12 +167,19 @@ struct EmbeddingConfig {
     size_t                hidden_dim;   // hidden dimension length (source ModelConfig, see U-2)
     EmbeddingLoadMode     load_mode = EmbeddingLoadMode::InMemory;  // table loading method (scale always in-memory)
 
+    // per_layer_token_identity (gemma4): read types come from meta keys; row
+    // width W is backfilled by pipeline from graph slot dims (not a meta field)
+    EmbeddingType         token_identity_type = EmbeddingType::Fp16;
+    EmbeddingScaleType    token_identity_scale_type = EmbeddingScaleType::Fp16;
+    size_t                token_identity_row_width = 0;
+
     /// Assembly entry (SR20260903001: supersedes U-8 route b's FromModelConfig — D-12 direct parameterization):
-    /// embedding_config section 6 strings + cross-section vocab/hidden → EmbeddingConfig (string→enum parse validation).
+    /// embedding_config section 7 strings + cross-section vocab/hidden → EmbeddingConfig (string→enum parse validation).
     /// weights empty → SUCCESS and table_path empty (caller doesn't Load based on this, tokenId deployment form).
-    static Status FromSection(const std::string& weights, const std::string& dequant_scale,
+    static Status FromSection(const std::string& weights,
                               const std::string& type, const std::string& scale_type,
                               const std::string& quant_mode, const std::string& load_mode,
+                              const std::string& identity_type, const std::string& identity_scale_type,
                               size_t vocab_size, size_t hidden_dim, EmbeddingConfig* out);
 };
 
@@ -182,9 +187,15 @@ class TextEmbedding {
 public:
     TextEmbedding() = default;
 
-    /// 4.1.1: load low-precision table + (optional) scale. InMemory entire table into host memory;
-    /// InFlash only validates file metadata and keeps file open, gather reads file directly by row offset.
+    /// 4.1.1: load main-table segment + (optional) main scale segment (single-file four-segment layout).
+    /// InMemory whole-table mmap into mapped pages; InFlash only validates file metadata and keeps file
+    /// open, gather reads file directly by row offset; scale always in-memory.
     Status Load(const EmbeddingConfig& config);
+
+    /// gemma4 per_layer_token_identity: second table source isomorphic to Load (identity table
+    /// segment + identity scale segment, same single file); whole-file total length exact-equality
+    /// against the four-segment sum.
+    Status LoadTokenIdentity(const EmbeddingConfig& config);
 
     /// 4.1.2: embedding path host table lookup (copy low-precision rows by index + collect scale, no dequantization).
     /// InMemory copy from memory; InFlash pread by row offset.
@@ -200,11 +211,10 @@ public:
                       const TokenId* ids, size_t count);
 
     /// Accessors (pipeline / UT use).
-    std::shared_ptr<ITensorBuffer> Table() const;       // unloaded or InFlash returns nullptr (InFlash no entire table memory image)
-    std::shared_ptr<ITensorBuffer> Scale() const;       // unloaded or None returns nullptr (always in-memory)
-    EmbeddingType                  TableType() const;
-    EmbeddingLoadMode              LoadMode() const;
+    EmbeddingType                  TableType() const;   // unloaded → Fp32 (sentinel) + Loaded() discriminates
+    EmbeddingLoadMode              LoadMode() const;    // unloaded → InMemory (sentinel)
     bool                           Loaded() const;
+    bool                           IdentityLoaded() const;
 };
 ```
 
@@ -216,7 +226,8 @@ public:
 ```
 pipeline init (M-02, only embedding path needs):
   TextEmbedding emb;
-  emb.Load(config)                     ← table (InMemory entire table into memory / InFlash only open file+validate) + scale (always in-memory)
+  emb.Load(config)                     ← table segment (InMemory whole-table mmap / InFlash only open file+validate) + main scale segment (always in-memory)
+  emb.LoadTokenIdentity(config)        ← identity table/scale segments (when graph carries per_layer slots; same single file, total length exact-equality)
 
 each forward step (input preparation phase, actual caller is Scheduler's prefill/decode two input preparation points; before/parallel with InputAssembler filling other slots):
   emb.FillInputs(input_tensors_, input_name_index_, path, ids, count)
@@ -235,7 +246,7 @@ Timing constraints: `Load` before all `Gather` / `FillInputs` in embedding path;
 |------|------|----------|----------|
 | gather throughput | InMemory host gather reaches reasonable proportion of contiguous memcpy bandwidth (budget target, no measured baseline, open U-5) | aarch64, INT8 table `[65536, 4096]`, batch gather timing | budget target |
 | InFlash gather latency | single batch gather (≤ max_seqLen rows) file read latency acceptable (budget target, no measured baseline, open U-5; batch random reads can do offset sorting optimization, see 4.1.2) | aarch64, same table scale InFlash mode, vs InMemory baseline | budget target |
-| table load memory | InMemory resident ≈ table + scale file byte size (one host buffer each, no extra copy); **InFlash resident ≈ scale bytes + file descriptor** (table zero resident) | RSS measurement after load | design constraint (single resident / zero resident) |
+| table load memory | InMemory resident ≈ total single-file length (mmap read-only mapped pages; with identity enabled covers all four segments) + scale heap memory; **InFlash resident ≈ scale bytes + file descriptor** (table zero resident) | RSS measurement after load | design constraint (single resident / zero resident) |
 | thread safety | same instance `Gather` (const) can be concurrent (InFlash via `pread`-like positional read, shared fd also concurrent); `Load` not concurrent, `Load` not concurrent with `Gather`/`FillInputs` | concurrency test cases TC_3xx | design constraint |
 | error observability | all failure paths return error codes, no silent swallowing, no exception escape | exception TC_1xx | behavior contract |
 | portability | g++ 13 / C++17, aarch64 (Ascend host) passes | CI compile + GoogleTest | environmental fact |
@@ -267,14 +278,14 @@ Self-check: each item measurable, verifiable; no N/A items; open items registere
 ### Normal Paths (TC_0xx)
 
 **TC_001 PerToken load success** (related 4.1.1; category: normal path)
-- Given INT8 table file `[vocab=16, hidden=8]` + Fp32 scale file `[16]` + PerToken config
+- Given INT8 table segment `[vocab=16, hidden=8]` + Fp32 main scale segment `[16]` (single file) + PerToken config
 - When `Load(config)`
-- Then returns SUCCESS; `Table()` byte size = 16×8×1; `Scale()` byte size = 16×4; `Loaded()` true
+- Then returns SUCCESS; `Loaded()` true, `TableType()` Int8; full 16-row gather and main scale segment byte-for-byte hit (behavior-level equivalent, replacing former Table()/Scale() size assertions)
 
 **TC_002 PerGroup load success** (related 4.1.1; category: normal path)
-- Given INT8 table `[16, 8]` + Fp32 scale `[16 × 4]` (group_size=2, groups=4) + PerGroup config
+- Given INT8 table segment `[16, 8]` + Fp32 main scale segment `[16 × 4]` (own two-segment file, W=0; group_size=2, groups=4) + PerGroup config
 - When `Load(config)`
-- Then returns SUCCESS; `Scale()` byte size = 16×4×4
+- Then returns SUCCESS; Gather of last vocab entry collects last 4 group scales + last row, byte-for-byte matching the fixture tail (behavior-level equivalent)
 
 **TC_003 PerToken gather correctness** (related 4.1.2; category: normal path)
 - Given TC_001 loaded, ids = {3, 0, 15}
@@ -284,7 +295,7 @@ Self-check: each item measurable, verifiable; no N/A items; open items registere
 **TC_004 PerGroup gather scale collection** (related 4.1.2; category: normal path)
 - Given TC_002 loaded, ids = {5}
 - When `Gather(&id, 1, out_embed, out_scales)`
-- Then `out_scales`'s 4 elements sequentially equal scale file indices `5×4+0..3` values
+- Then `out_scales`'s 4 elements sequentially equal scale segment indices `5×4+0..3` values
 
 **TC_005 Embedding path FillInputs fills correct slots** (related 4.1.3; category: normal path)
 - Given loaded (INT8 storage), mock input bundle contains `input_embed` (desc FLOAT16 `[3, 8]`) and `embed_scales` (desc FLOAT32 `[3]`), name→index mapping
@@ -309,7 +320,7 @@ Self-check: each item measurable, verifiable; no N/A items; open items registere
 **TC_008 InFlash load and gather correctness** (related 4.1.1/4.1.2; category: normal path)
 - Given TC_001 same table file and config, but `load_mode = InFlash`
 - When `Load(config)` then `Gather(ids={3,0,15}, 3, out_embed, out_scales)`
-- Then returns SUCCESS; `Table()` is nullptr, `LoadMode()` is InFlash, `Loaded()` true; `out_embed`/`out_scales` byte-for-byte identical to TC_003 (InMemory)
+- Then returns SUCCESS; `LoadMode()` is InFlash, `Loaded()` true; `out_embed`/`out_scales` byte-for-byte identical to TC_003 (InMemory); after load, truncating the table file to the main-table-segment end, Gather still succeeds (rows go through fd pread, scale already read into heap memory at Load time)
 
 **TC_009 InFlash mode FillInputs (Embedding path)** (related 4.1.3; category: normal path)
 - Given InFlash loaded (INT8 storage), mock `input_embed` desc FLOAT16 + `embed_scales` desc FLOAT32
@@ -319,9 +330,8 @@ Self-check: each item measurable, verifiable; no N/A items; open items registere
 ### Exception Paths (TC_1xx)
 
 **TC_101 table file missing** (related 4.1.1) → `Load` returns `INVALID_ARGUMENT`, `Loaded()` false, can re-Load successfully.
-**TC_102 file size mismatch** (related 4.1.1) → table or scale byte count mismatch with expected, `INVALID_ARGUMENT`.
-**TC_103 PerGroup params illegal** (related 4.1.1) → group_size=0 / not provided / not divisible by hidden / scale_path empty, each returns `INVALID_ARGUMENT`.
-**TC_104 scale config self-contradictory** (related 4.1.1) → `scale_type=None` and `scale_path` non-empty → `INVALID_ARGUMENT`.
+**TC_102 file size mismatch** (related 4.1.1) → main table segment short (rejected before mapping) or main scale segment short read, `INVALID_ARGUMENT`; trailing bytes beyond later segments pass.
+**TC_103 PerGroup params illegal** (related 4.1.1) → group_size=0 / not provided / not divisible by hidden, each returns `INVALID_ARGUMENT`.
 **TC_105 tokenId out of bounds** (related 4.1.2) → any id ≥ vocab → `INVALID_ARGUMENT`, `out_embed` not partially written.
 **TC_106 query before load** (related 4.1.2/4.1.3) → `Gather` and `FillInputs(Embedding, ...)` return `INVALID_STATE`; `FillInputs(TokenId, ...)` unaffected (see TC_006).
 **TC_107 slot missing** (related 4.1.3) → name→index no `input_embed` or (Embedding path and scale_type≠None) no `embed_scales` → `NOT_FOUND`.
@@ -330,12 +340,12 @@ Self-check: each item measurable, verifiable; no N/A items; open items registere
 **TC_110 NULL input** (related 4.1.6) → `ids=nullptr, count>0` → `INVALID_ARGUMENT`.
 **TC_111 InFlash runtime file corruption** (related 4.1.6) → InFlash loaded then truncate table file, `Gather` / `FillInputs` (Embedding path) returns `FAILURE`.
 **TC_112 empty buffer input** (related 4.1.6) → `Gather` passes empty `shared_ptr` `out_embed`/`out_scales`; `FillInputs` passes slot bundle with empty buffer → `INVALID_ARGUMENT`, no dereference crash.
-**TC_113 FromModelConfig unknown enum string** (related 4.1.1/4.2, U-8 route b) → `ModelConfig.embedding_table_type = "fp8"` etc. unknown value → `INVALID_ARGUMENT`; `embedding_table_path` empty → SUCCESS and `table_path` empty (no-load signal).
+**TC_113 FromSection unknown enum string** (related 4.1.1/4.2, SR20260903001 D-12) → `embedding_config` section's type key = `"fp8"` etc. unknown value → `INVALID_ARGUMENT`; `weights` empty → SUCCESS and `table_path` empty (no-load signal).
 
 ### Boundary (TC_2xx)
 
 **TC_201 count=0** (related 4.1.2) → `Gather(ids, 0, ...)` returns SUCCESS, writes no bytes.
-**TC_202 scale_type=None** (related 4.1.1/4.1.2) → no scale file load success; Gather skips `out_scales` returns SUCCESS; FillInputs skips `embed_scales` (handling see U-6).
+**TC_202 scale_type=None** (related 4.1.1/4.1.2) → no main scale segment load success; Gather skips `out_scales` returns SUCCESS; FillInputs skips `embed_scales` (handling see U-6).
 **TC_203 vocab boundary id** (related 4.1.2) → id = vocab-1 success, id = vocab rejected.
 **TC_204 load failure recoverable** (related 4.1.6) → failed Load then fix config and Load successfully.
 

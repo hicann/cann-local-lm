@@ -391,7 +391,6 @@ TEST(ConfigParseTest, ThreeSectionsParsed_TC001)
                          "kv_cache_max_len": 16384, "kv_cache_format": "nd",
                          "init_token_len": 256},
         "embedding_config": {"embedding_weights": "t.bin",
-                             "embedding_dequant_scale": "s.bin",
                              "embedding_quant_mode": "per_token",
                              "embedding_load_mode": "in_memory",
                              "embedding_type": "fp16",
@@ -416,7 +415,6 @@ TEST(ConfigParseTest, ThreeSectionsParsed_TC001)
     EXPECT_EQ(pipe.ParsedTokenizerConfig().special_tokens.at("[unused9]"), 45887);
     // embedding 段（vocab/hidden 跨段）
     EXPECT_EQ(pipe.ParsedEmbeddingConfig().table_path, "t.bin");
-    EXPECT_EQ(pipe.ParsedEmbeddingConfig().scale_path, "s.bin");
     EXPECT_EQ(pipe.ParsedEmbeddingConfig().vocab_size, 153376u);
     EXPECT_EQ(pipe.ParsedEmbeddingConfig().hidden_dim, 2048u);
 }
@@ -1187,10 +1185,10 @@ TEST(ConfigParseTest, AddBosAddEosParsed_TC216)
 }
 
 // ── gemma4 per_layer_token_identity meta_json 键（docs/gemma4_token_identity.md §4/§7.2；
-//    Q12 合并布局：仅余两个读取类型键，路径键已删除；meta 多余旧键静默忽略）──
+//    单文件四段布局：仅余两个读取类型键；embedding_dequant_scale 键已废弃）──
 
 // TC_217：embedding_config 段 identity 两类型键全解析（显式 int8/fp32）；
-// 主表六键齐备 → 主表与 identity 读取类型并存（合并文件布局的完整配置形态）
+// 主表键齐备 → 主表与 identity 读取类型并存（单文件四段布局的完整配置形态）
 TEST(ConfigParseTest, TokenIdentityKeysParsed_TC217)
 {
     ModelArtifact a;
@@ -1198,7 +1196,6 @@ TEST(ConfigParseTest, TokenIdentityKeysParsed_TC217)
         "model_config": {"hidden_size": 2048, "vocab_size": 153376,
                          "kv_cache_max_len": 512, "num_hidden_layers": 4},
         "embedding_config": {"embedding_weights": "t.bin",
-                             "embedding_dequant_scale": "s.bin",
                              "embedding_type": "fp16",
                              "embedding_scale_type": "fp16",
                              "token_identity_type": "int8",
@@ -1209,8 +1206,7 @@ TEST(ConfigParseTest, TokenIdentityKeysParsed_TC217)
     EXPECT_EQ(ec.token_identity_scale_type, EmbeddingScaleType::Fp32);
     EXPECT_EQ(ec.token_identity_row_width, 0u); // 加载期自工位回填，非 meta 来源
     EXPECT_EQ(ec.table_path, "t.bin");          // 主表照常（identity 与主表同一文件）
-    EXPECT_EQ(ec.scale_path, "s.bin");
-    EXPECT_EQ(ec.vocab_size, 153376u); // vocab/hidden 跨段
+    EXPECT_EQ(ec.vocab_size, 153376u);          // vocab/hidden 跨段
     EXPECT_EQ(ec.hidden_dim, 2048u);
 }
 
@@ -1222,7 +1218,6 @@ TEST(ConfigParseTest, TokenIdentityUnconfiguredDefaults_TC218)
         "model_config": {"hidden_size": 2048, "vocab_size": 153376,
                          "kv_cache_max_len": 512, "num_hidden_layers": 4},
         "embedding_config": {"embedding_weights": "t.bin",
-                             "embedding_dequant_scale": "s.bin",
                              "embedding_type": "fp16"}})");
     AutoregressivePipelineExecutor pipe(a, EngineOptions{});
     const auto& ec = pipe.ParsedEmbeddingConfig();
@@ -1240,7 +1235,6 @@ TEST(ConfigParseTest, TokenIdentityBadTypeDegradesSectionOnly_TC219)
     a.meta_json.data = Buf(R"({
         "model_config": {"kv_cache_max_len": 512, "num_hidden_layers": 4},
         "embedding_config": {"embedding_weights": "t.bin",
-                             "embedding_dequant_scale": "s.bin",
                              "embedding_type": "fp16",
                              "token_identity_type": "fp8"}})");
     AutoregressivePipelineExecutor pipe(a, EngineOptions{});
@@ -1260,7 +1254,6 @@ TEST(ConfigParseTest, TokenIdentityBadTypeDegradesSectionOnly_TC219)
     b.meta_json.data = Buf(R"({
         "model_config": {"kv_cache_max_len": 512, "num_hidden_layers": 4},
         "embedding_config": {"embedding_weights": "t.bin",
-                             "embedding_dequant_scale": "s.bin",
                              "embedding_type": "fp16",
                              "token_identity_scale_type": "none"}})");
     AutoregressivePipelineExecutor pipe2(b, EngineOptions{});
@@ -1298,7 +1291,6 @@ TEST(ConfigParseTest, IdentityScaleRegularKeyAloneParses_TC221)
         "model_config": {"hidden_size": 2048, "vocab_size": 153376,
                          "kv_cache_max_len": 512, "num_hidden_layers": 4},
         "embedding_config": {"embedding_weights": "t.bin",
-                             "embedding_dequant_scale": "s.bin",
                              "embedding_type": "fp16",
                              "token_identity_type": "int8",
                              "token_identity_scale_type": "fp32"}})");
@@ -1322,7 +1314,6 @@ TEST(ConfigParseTest, IdentityScaleRegularKeyBadTypeDegradesSectionOnly_TC223)
     a.meta_json.data = Buf(R"({
         "model_config": {"kv_cache_max_len": 512, "num_hidden_layers": 4},
         "embedding_config": {"embedding_weights": "t.bin",
-                             "embedding_dequant_scale": "s.bin",
                              "embedding_type": "fp16",
                              "token_identity_scale_type": 16}})");
     AutoregressivePipelineExecutor pipe(a, EngineOptions{});
@@ -1344,7 +1335,6 @@ TEST(ConfigParseTest, IdentityScaleLegacyKeyIgnoredNotParsed_TC224)
         "model_config": {"hidden_size": 2048, "vocab_size": 153376,
                          "kv_cache_max_len": 512, "num_hidden_layers": 4},
         "embedding_config": {"embedding_weights": "t.bin",
-                             "embedding_dequant_scale": "s.bin",
                              "embedding_type": "fp16",
                              "token_identity_sacle_type": "fp32"}})");
     AutoregressivePipelineExecutor pipe(a, EngineOptions{});
@@ -1353,6 +1343,27 @@ TEST(ConfigParseTest, IdentityScaleLegacyKeyIgnoredNotParsed_TC224)
     EXPECT_EQ(ec.token_identity_scale_type, EmbeddingScaleType::Fp16); // 旧键不生效 → 缺省
     EXPECT_EQ(ec.vocab_size, 153376u);                                 // 跨段照常
     EXPECT_EQ(pipe.ParsedModelConfig().kv_cache_max_len, 512);         // model 段隔离
+}
+
+// TC_225：embedding_dequant_scale 残留键（老双文件 meta）→ WARN 可见但不降段：
+// 解析照常成功、table_path 不受影响（老产物部署须重导出，警告仅诊断）
+TEST(ConfigParseTest, StaleDequantScaleKeyWarnsOnly_TC225)
+{
+    ModelArtifact a;
+    a.meta_json.data = Buf(R"({
+        "model_config": {"hidden_size": 2048, "vocab_size": 153376,
+                         "kv_cache_max_len": 512, "num_hidden_layers": 4},
+        "embedding_config": {"embedding_weights": "t.bin",
+                             "embedding_dequant_scale": "s.bin",
+                             "embedding_type": "fp16",
+                             "embedding_scale_type": "fp16"}})");
+    test_util::StderrCapture cap; // 捕获构造期 WARN 日志
+    AutoregressivePipelineExecutor pipe(a, EngineOptions{});
+    const std::string logs = cap.Stop();
+    const auto& ec = pipe.ParsedEmbeddingConfig();
+    EXPECT_EQ(ec.table_path, "t.bin");                                  // 段不降级（残留键忽略，仅告警）
+    EXPECT_EQ(ec.vocab_size, 153376u);                                  // 跨段照常
+    EXPECT_NE(logs.find("embedding_dequant_scale"), std::string::npos); // WARN 可见
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

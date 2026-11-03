@@ -72,7 +72,7 @@ status: draft
 <a id="1-范围与目标"></a>
 ## §1 范围与目标
 
-- **in scope**：`cann_lm/engine/core/component/text_embedding` 下 C++ embedding 模块——embedding 表与 scale 文件的加载（InMemory 整表入内存 / InFlash 留在文件按行读）、host 侧 gather（行拷贝 + per-token scale 收集）、存储类型→工位类型转换、输入工位填充（embedding 路径填 `input_embed`+`embed_scales`；tokenId 路径填 token id）。原地重写现有 `TextEmbedding` 桩；`ModalityEntry` 保留原位不动。内部模块，不对 Python/外部暴露。
+- **in scope**：`cann_lm/engine/core/component/text_embedding` 下 C++ embedding 模块——embedding_weights 单文件（四段布局：主表 → per_layer 表 → 主 scale → per_layer scale）的加载（InMemory 整表入内存 / InFlash 留在文件按行读）、host 侧 gather（行拷贝 + per-token scale 收集）、存储类型→工位类型转换、输入工位填充（embedding 路径填 `input_embed`+`embed_scales`；tokenId 路径填 token id）。原地重写现有 `TextEmbedding` 桩；`ModalityEntry` 保留原位不动。内部模块，不对 Python/外部暴露。
 - **out of scope**（含理由）：
   - 反量化（乘 scale）——spec §4.1.4/§4.1.5 归 NPU/om 图内；host 永不做。
   - tokenId 路径的表交付——**表已包含在模型权重中随图加载**（U-1 已解决），本模块不经手。
@@ -97,7 +97,7 @@ graph TD
   TE -->|逐元素值展开| CVT[M-03 type-converter 纯函数]
   TE -->|表/scale buffer 申请| TM[TensorManager 单例 C-03]
   SRC -->|InMemory: 内存拷贝| BUF[(host ITensorBuffer)]
-  SRC -->|InFlash: pread 按行偏移| FLASH[(表文件)]
+  SRC -->|InFlash: pread 按行偏移| FLASH[(embedding_weights 单文件)]
   TE -->|读写工位| ME[ModelExecutor input_tensors_ + name_index<br/>C-02 只读暴露]
   ME -->|input_embed / embed_scales 工位| OM[(om 图)]
   OM -->|NPU 侧 dequant| NPU[(NPU)]
@@ -111,7 +111,7 @@ graph TD
 
 两类运行形态，均由 pipeline 驱动：
 
-- **init 期（仅 embedding 路径需要）**：`AutoregressivePipelineExecutor` 构造后、首次 Forward 前，以 `EmbeddingConfig` 调 `text_embedding_.Load(config)`（F-01）。config 组装通道（U-8 路线 b，2026-08-29 拍板；**SR20260903001 部分取代，2026-09-04 拍板**）：**meta_json `embedding_config` 段 → pipeline 内联解析步骤直调 `EmbeddingConfig::FromSection(weights, dequant_scale, type, scale_type, quant_mode, load_mode, vocab, hidden, out)`**（D-12 直接参数化，原 `FromModelConfig(ModelConfig)` 移除；ModelConfig 迁至 model_executor.h 且不再承载 embedding 扩展字段；vocab/hidden 跨段取自 model_config 段）——L1 `EngineOptions`/C ABI 不动。字段集与映射见 C-01 §2。表 buffer 经 `TensorManager::Instance().CreateTensor` 申请（C-03）；InFlash 模式不申请表 buffer、只持 fd + stride。`ModelConfig` 的 embedding 字段全空/缺省（如 tokenId 部署形态）→ 不调 Load。
+- **init 期（仅 embedding 路径需要）**：`AutoregressivePipelineExecutor` 构造后、首次 Forward 前，以 `EmbeddingConfig` 调 `text_embedding_.Load(config)`（F-01）；图带 per_layer 工位时另调 `text_embedding_.LoadTokenIdentity(config)`（同一单文件读 identity 表/scale 段，总长精确判等）。config 组装通道（**SR20260903001 D-12**）：**meta_json `embedding_config` 段 → pipeline 内联解析步骤直调 `EmbeddingConfig::FromSection(weights, type, scale_type, quant_mode, load_mode, identity_type, identity_scale_type, vocab, hidden, out)`**（7 字符串直接参数化；vocab/hidden 跨段取自 model_config 段）——L1 `EngineOptions`/C ABI 不动。字段集与映射见 C-01 §2。表 buffer 经 `TensorManager::Instance().CreateTensor` 申请（C-03）；InFlash 模式不申请表 buffer、只持 fd + stride。`embedding_config` 段缺省/`weights` 为空（如 tokenId 部署形态）→ 不调 Load。
 - **每步前向的输入准备期**：实际调用组件是 **`Scheduler`**（不是 RunLoop 本体——RunLoop 只调 `scheduler_.Step()`，输入准备发生在 `Step` 内部，见下方"接线点"）。`Scheduler` 在 prefill / decode 两个输入准备点对目标 executor 调 `text_embedding_->FillInputs(executor.InputTensors(), executor.InputNameIndex(), path, ids, count)`（F-03/F-04），随后 `executor.Forward(opts)`。工位数据由本模块写入 `input_embed`（及 embedding 路径的 `embed_scales`）；其余工位仍由 InputAssembler 填。
 
 与现行 `SetInputData` 的关系：embedding 路径下工位填充职责从"调用方备好 buffer → SetInputData memcpy"转移给本模块（`embed_scales` 从搁置变为本模块填，落地 INPUT_INFO 既定填充者）；`SetInputData` 保留（外部直填通道，C-01 兼容性不变）。
@@ -210,7 +210,7 @@ graph TD
 ## §8 Code Plan Hints
 
 **给下游 plan/impl agent**：
-- 实现顺序（依赖拓扑）：C-04（仅确认 include 面，无代码）→ M-03 type-converter（纯函数，零依赖）→ M-02 table-source（依赖 C-04 类型）→ M-01 text-embedding façade（聚合 + C-03 + `FromModelConfig`）→ C-02 ModelExecutor accessor（两行加法）→ **Scheduler 接线**（§2.2 接线点：构造签名增 `TextEmbedding*`、`pipeline_executor.cpp:42/67` 传 `&text_embedding_`、prefill/decode 两输入准备点以 FillInputs 取代 SetInputData 填 input_embed）→ `AutoregressivePipelineExecutor` init 期 Load 接线（通道已定 U-8 路线 b：`ModelConfig` 扩展 embedding 段 + `FromModelConfig` 组装，`pipeline_executor.cpp:45/70` 组装点）。
+- 实现顺序（依赖拓扑）：C-04（仅确认 include 面，无代码）→ M-03 type-converter（纯函数，零依赖）→ M-02 table-source（依赖 C-04 类型）→ M-01 text-embedding façade（聚合 + C-03 + `FromSection`）→ C-02 ModelExecutor accessor（两行加法）→ **Scheduler 接线**（§2.2 接线点：构造签名增 `TextEmbedding*`、`pipeline_executor.cpp:42/67` 传 `&text_embedding_`、prefill/decode 两输入准备点以 FillInputs 取代 SetInputData 填 input_embed）→ `AutoregressivePipelineExecutor` init 期 Load 接线（通道已定 SR20260903001 D-12：meta `embedding_config` 段 7 键 + `FromSection` 组装，ParseConfigs 组装点）。
 - 可并行：M-02/M-03 互不依赖可并行。
 - 实现某模块最小读取集：
   - M-01 → 本节 + C-01/C-02/C-03 + F-01/F-02/F-03/F-04
@@ -248,6 +248,7 @@ graph TD
 | 0.1 | 2026-08-28 | 初稿：10 章 SDD 设计 + 3 模块 + 4 契约 + 4 流程 + 11 决策。落地 SPEC SR20260828001 全部行为（含 U-1 已解决：TokenId 路径表在权重中）。 | SR20260828001 全 |
 | 0.2 | 2026-08-29 | 外部审查（+2）放行条件修订：①§2.2/C-01/§8 新增 Scheduler 接线点设计（H-1：input_embed 唯一写入方是 scheduler.cpp:127/191 的 SetInputData，构造签名增 TextEmbedding*，让位规则按调用点+路径）；②§9 登记 U-8 EmbeddingConfig 传递通道（M-1）；③§8 补 OHOS CMakeLists 同步注册（M-2）与动态 shape 风险（M-3）；④L 级修订：M-02 工厂签名补 table_buf/flash_fd 入参（L-1）、F-03 先全量校验再写入（L-2）、空 buffer 入参归 INVALID_ARGUMENT + TC_112（L-3）、InFlash staging 明确栈上局部（L-4）、转换矩阵 Int8/Int4 同型列对齐 SPEC、C-03 错误表可恢复口径、C-02 注释消歧（L-5）。 | 外部审查报告（2026-08-29） |
 | 0.3 | 2026-08-29 | U-8 决议落地（用户拍板路线 b）：C-01 §2 新增 EmbeddingConfig 组装通道设计（ModelConfig embedding 段 plain 字段 + `EmbeddingConfig::FromModelConfig` 静态工厂，依赖方向 text_embedding→tensor_manager 合法）；F-01 补组装步骤；§2.2 init 期补通道与空路径不 Load；U-2 来源随之定为 ModelConfig。全部未决项不再阻塞实现。 | SPEC U-8 决议 |
+| 0.4 | 2026-11-02 | embedding_weights 单文件四段合并（主表 → per_layer 表 → 主 scale → per_layer scale，取代表+scale 双文件）：M-01 §2 结构体去 scale_path、补 token_identity 三键与 FromSection 7 字符串；C-01 §2/F-01 同步单文件口径；`embedding_dequant_scale` 键废弃（残留仅 WARN）；identity 启用时全文件总长精确判等（M-01 §6）。 | 单文件布局变更 |
 
 ---
 
@@ -259,7 +260,7 @@ graph TD
 #### §1 职责
 
 单类 façade（spec §4.1.1/4.1.2/4.1.3/4.1.6）。对外是唯一公开类 `TextEmbedding`，聚合三件事：
-- **Load(EmbeddingConfig)**：配置校验（路径/类型/量化粒度/尺寸）→ 委托 M-02 建表源（InMemory/InFlash）→ scale 整体加载（恒内存态，D-09）→ 表 buffer 经 C-03 申请。失败保持未加载态。
+- **Load(EmbeddingConfig)**：配置校验（路径/类型/量化粒度/尺寸）→ 委托 M-02 建表源（InMemory/InFlash）→ 主 scale 段自单文件第三段读入（恒内存态，D-09）→ 表 buffer 经 C-03 申请。失败保持未加载态。
 - **Gather(ids, count, out_embed, out_scales)**：逐 id 行读（M-02）+ per-token scale 收集（内存下标），纯字节搬运。
 - **FillInputs(inputs, name_index, path, ids, count)**：embedding 路径 = 内联 gather → M-03 转换 → 写 `input_embed` + `embed_scales`；tokenId 路径 = ids 值转换写 `input_embed`（无需 Load，D-02）。
 
@@ -270,27 +271,35 @@ graph TD
 ```cpp
 // core/component/text_embedding/text_embedding.h（engine 内部组件，仅 pipeline/model_executor/UT 消费）
 
-enum class EmbeddingType     { Fp32, Fp16, Int8, Int4 };   // 表的文件存储类型（Int4 占位，U-3 不支持）
-enum class EmbeddingScaleType{ None, Fp32, Fp16 };         // scale 的文件存储类型
+enum class EmbeddingType     { Fp32, Fp16, Int8, Int4 };   // 主表段存储类型（Int4 占位，U-3 不支持）
+enum class EmbeddingScaleType{ None, Fp32, Fp16 };         // 主 scale 段存储类型
 enum class EmbeddingQuantMode{ PerToken, PerGroup };       // scale 粒度（D-07）
 enum class EmbeddingPath     { TokenId, Embedding };       // FillInputs 路径选择（选择权归 model_executor）
 enum class EmbeddingLoadMode { InMemory, InFlash };        // 表加载方式（D-08）
 
 struct EmbeddingConfig {
-    std::string           table_path;   // raw [vocab, hidden] row-major
-    std::string           scale_path;   // scale_type=None 时须为空
+    std::string           table_path;   // embedding_weights 单文件（四段：主表→identity 表→主 scale→identity scale）
     EmbeddingType         table_type;
     EmbeddingScaleType    scale_type;
     EmbeddingQuantMode    quant_mode;
     size_t                group_size = 0;   // PerGroup 必填；PerToken 忽略
-    size_t                vocab_size = 0;   // 来源 ModelConfig（U-2）
-    size_t                hidden_dim = 0;   // 来源 ModelConfig（U-2）
+    size_t                vocab_size = 0;   // 来源 meta model_config 段（U-2）
+    size_t                hidden_dim = 0;   // 来源 meta model_config 段（U-2）
     EmbeddingLoadMode     load_mode = EmbeddingLoadMode::InMemory;
 
-    /// U-8 路线 b 组装入口：ModelConfig（tensor_manager.h，plain 字段）→ EmbeddingConfig。
-    /// 字符串→枚举解析与校验在此（未知值 → INVALID_ARGUMENT）；
-    /// mc.embedding_table_path 为空 → SUCCESS 且 out->table_path 为空（调用方据此不 Load）。
-    static Status FromModelConfig(const ModelConfig& mc, EmbeddingConfig* out);
+    // per_layer_token_identity（gemma4）：读取类型来自 meta 键；行宽 W 由 pipeline 依图工位回填
+    EmbeddingType         token_identity_type = EmbeddingType::Fp16;
+    EmbeddingScaleType    token_identity_scale_type = EmbeddingScaleType::Fp16;
+    size_t                token_identity_row_width = 0;
+
+    /// 组装入口（SR20260903001 D-12）：embedding_config 段 7 字符串 + 跨段 vocab/hidden
+    /// → EmbeddingConfig。字符串→枚举解析与校验在此（未知值 → INVALID_ARGUMENT）；
+    /// weights 为空 → SUCCESS 且 out->table_path 为空（调用方据此不 Load）。
+    static Status FromSection(const std::string& weights,
+                              const std::string& type, const std::string& scale_type,
+                              const std::string& quant_mode, const std::string& load_mode,
+                              const std::string& identity_type, const std::string& identity_scale_type,
+                              size_t vocab_size, size_t hidden_dim, EmbeddingConfig* out);
 };
 
 class TextEmbedding {
@@ -300,8 +309,12 @@ public:
 
     // 语义: 同步；调用方保证不并发、不与 Gather/FillInputs 并发（§2.4）。
     //       失败保持未加载态（可重 Load）。
-    // 错误: 文件缺失/尺寸不符/PerGroup 参数非法/scale 配置矛盾 → INVALID_ARGUMENT
+    // 错误: 文件缺失/尺寸不符/PerGroup 参数非法 → INVALID_ARGUMENT
     Status Load(const EmbeddingConfig& config);
+
+    // 语义: 同步；读同一单文件的 identity 表段 + identity scale 段（图带 per_layer 工位时）。
+    //       全文件总长须精确等于四段和（W 失配/文件-图失配防线），否则 INVALID_ARGUMENT。
+    Status LoadTokenIdentity(const EmbeddingConfig& config);
 
     // 语义: const 只读、线程安全（可并发）。纯字节搬运 + scale 下标收集，不反量化。
     //       scale_type=None 时跳过 out_scales 写入。
@@ -335,7 +348,8 @@ public:
 
 #### §3 内部结构
 - 成员（Load 后全部只读，无锁，§2.4）：`std::unique_ptr<TableSource> source_`（M-02，InMemory/InFlash 二态）；`std::shared_ptr<ITensorBuffer> scale_buf_`（恒内存态）；`EmbeddingConfig cfg_`（加载成功的配置快照）；`size_t row_bytes_` / `groups_`（PerGroup 时 = hidden/group_size，PerToken 恒 1）；`bool loaded_`。
-- Load 流程（F-01）：参数校验 →（InMemory）C-03 申请表 buffer + 读文件；（InFlash）open + fstat 校验 + 记 stride →（scale_type≠None）C-03 申请 scale buffer + 读文件 → 置 loaded_。
+- Load 流程（F-01）：参数校验 →（InMemory）C-03 申请表 buffer + 读文件；（InFlash）open + fstat 校验 + 记 stride →（scale_type≠None）C-03 申请 scale buffer + 自单文件第三段读入 → 置 loaded_。
+- LoadTokenIdentity 流程：同构第二表源（identity 表段 + identity scale 段，同一单文件；全文件总长精确判等）。
 - Gather 内部：`for i: source_->ReadRow(ids[i], out_embed + i*row_bytes_)` + `for i: memcpy out_scales + i*scales_per_token*elem ← scale_buf_ + ids[i]*...`（PerGroup 拷 `groups_` 个连续元素）。
 - FillInputs 内部（Embedding 路径）：逐行流式——InFlash 用一行 staging（**栈上局部 buffer，`row_bytes_` 大小，随调用栈帧分配释放，非成员**——维持 §2.4"无 mutable 状态"声明成立）经 M-03 转换写入工位；InMemory 直接从表 buffer 逐行转换写入。scale 收集后经 M-03（Fp16→FLOAT32 时）写 `embed_scales`。
 - 不可复制（含 unique_ptr fd 所有权的语义清晰性）；可移动（移动后原对象置未加载态）。
@@ -357,10 +371,9 @@ public:
 
 | 失效 | 触发 | 检测 | 处理 |
 |------|------|------|------|
-| 表/scale 文件缺失 | open 失败 | Load 期 | INVALID_ARGUMENT（TC_101），保持未加载 |
-| 尺寸不符 | 字节数 ≠ 期望 | Load 期（InMemory 实读 / InFlash fstat） | INVALID_ARGUMENT（TC_102） |
+| 单文件缺失 | open 失败 | Load 期 | INVALID_ARGUMENT（TC_101），保持未加载 |
+| 尺寸不符 | 主表段 < 期望 / 主 scale 段读不足；identity 启用时总长 ≠ 四段和 | Load 期（InMemory 实映射 / InFlash fstat / LoadTokenIdentity 总长判等） | INVALID_ARGUMENT（TC_102/TC_401） |
 | PerGroup 参数非法 | group_size 非正/不整除/缺失 | Load 期 | INVALID_ARGUMENT（TC_103） |
-| scale 配置矛盾 | None 且 path 非空 | Load 期 | INVALID_ARGUMENT（TC_104） |
 | tokenId 越界 | ids[i] ≥ vocab | Gather/FillInputs 期 | INVALID_ARGUMENT，整批拒绝不部分产出（TC_105） |
 | 未加载先查 | loaded_=false | 入口校验 | INVALID_STATE（TC_106）；TokenId 路径 FillInputs 豁免（D-02） |
 | 工位缺名 | name_index 无 input_embed / embed_scales | FillInputs 期 | NOT_FOUND（TC_107） |
@@ -512,34 +525,16 @@ bool ConversionSupported(EmbeddingType src_type, DataType dst_type);
 ### C-01-pipeline-loader
 
 #### §1 契约一句话
-"`AutoregressivePipelineExecutor` 于 init 期以 EmbeddingConfig 调 `Load`（仅 embedding 路径需要，经其持有的 `text_embedding_` 成员；config 由 `ModelConfig` 经 `EmbeddingConfig::FromModelConfig` 组装——U-8 已决议路线 b）；于每步前向的输入准备期由 **`Scheduler`**（其持有的非拥有 `TextEmbedding*`，构造注入）在 prefill/decode 两个输入准备点调 `FillInputs`（目标 executor 的 bundle + name_index）；运行期可调 `Gather`（UT/调试直查）。"
+"`AutoregressivePipelineExecutor` 于 init 期以 EmbeddingConfig 调 `Load`（仅 embedding 路径需要，经其持有的 `text_embedding_` 成员；图带 per_layer 工位时另调 `LoadTokenIdentity`；config 由 meta `embedding_config` 段经 `EmbeddingConfig::FromSection` 组装——SR20260903001 D-12）；于每步前向的输入准备期由 **`Scheduler`**（其持有的非拥有 `TextEmbedding*`，构造注入）在 prefill/decode 两个输入准备点调 `FillInputs`（目标 executor 的 bundle + name_index）；运行期可调 `Gather`（UT/调试直查）。"
 
 #### §2 数据 schema
 见 M-01 §2：`EmbeddingConfig`（含 load_mode）、`EmbeddingPath`、`TokenId*`、`Status`。工位 bundle 与 name_index 见 C-02。`Scheduler` 构造签名追加 `TextEmbedding*`（非拥有，与 `Preprocessor*` 同型；§2.2 接线点）。
 
-**EmbeddingConfig 组装通道（U-8 路线 b 落点）**：
-- `ModelConfig`（`core/tensor_manager.h`，属主 model_executor/tensor_manager 侧）新增 embedding 段——**plain 序列化友好类型**（meta_json 来源，无 C++ 枚举依赖）：
-
-```cpp
-struct ModelConfig {
-    int max_batch_size = 0;
-    int max_seq_len    = 0;
-    // ── embedding 扩展（U-8 路线 b；meta_json 反序列化由 ModelConfig 属主落地）──
-    size_t      vocab_size            = 0;          // U-2 一并落
-    size_t      hidden_dim            = 0;
-    std::string embedding_table_path;               // 空 = tokenId 路径（不 Load）
-    std::string embedding_scale_path;               // scale_type=None 时须为空
-    std::string embedding_table_type;               // "fp32"|"fp16"|"int8"|"int4"
-    std::string embedding_scale_type;               // "none"|"fp32"|"fp16"
-    std::string embedding_quant_mode;               // "per_token"|"per_group"
-    size_t      embedding_group_size  = 0;          // per_group 必填
-    std::string embedding_load_mode;                // "in_memory"|"in_flash"（缺省 in_memory）
-};
-```
-
-- 字符串→枚举的解析与校验归 **M-01 侧静态工厂** `EmbeddingConfig::FromModelConfig(const ModelConfig&, EmbeddingConfig* out)`（落 `text_embedding.h`；依赖方向 text_embedding → tensor_manager 合法，C-04）。未知字符串 → `INVALID_ARGUMENT`；`embedding_table_path` 为空 → 返回"不加载"信号（调用方不调 Load，tokenId 部署形态）。
-- pipeline init 组装点：现行 `pipeline_executor.cpp:45/70` 构造 `ModelConfig` 处（meta_json 反序列化落地前字段缺省 = 空 = 不 Load，行为与现状兼容）。
-- **边界**：ModelConfig 字段集是其属主的演进面（§5 同规则）；本模块只消费上述字段、不做 json 解析。
+**EmbeddingConfig 组装通道（SR20260903001 D-12 落点）**：
+- meta_json `embedding_config` 段 7 键（plain 字符串，序列化友好）：`embedding_weights`（单文件路径，空 = tokenId 路径不 Load）、`embedding_type`、`embedding_scale_type`（"none"|"fp32"|"fp16"）、`embedding_quant_mode`（"per_token"|"per_group"）、`embedding_load_mode`（"in_memory"|"in_flash"，缺省 in_memory）、`token_identity_type`、`token_identity_scale_type`；vocab/hidden 跨段取自 model_config 段（U-2）。`embedding_dequant_scale` 残留键仅 WARN 不降段。键集详见 embedding_config.md。
+- 字符串→枚举的解析与校验归 **M-01 侧静态工厂** `EmbeddingConfig::FromSection(7 字符串, vocab, hidden, out)`（落 `text_embedding.h`）。未知字符串 → `INVALID_ARGUMENT`；`weights` 为空 → 返回"不加载"信号（调用方不调 Load，tokenId 部署形态）。
+- pipeline init 组装点：`pipeline_executor.cpp` ParseConfigs 内联解析步骤直调 FromSection。
+- **边界**：本模块不做 json 解析，只消费已解析的 plain 字符串。
 
 #### §3 时序与同步语义
 - 同步函数调用。
@@ -650,7 +645,7 @@ TensorDesc scale_desc{.name="embedding_scale", .dataType=MapToBackendType(cfg.sc
 ### F-01-load
 
 #### §1 触发与前置条件
-- 触发：pipeline init（M-02，仅 embedding 路径部署形态）调 `Load(config)`；config 先经 `EmbeddingConfig::FromModelConfig(ModelConfig, &config)` 组装（U-8 路线 b；`ModelConfig.embedding_table_path` 为空则跳过 Load）。
+- 触发：pipeline init（M-02，仅 embedding 路径部署形态）调 `Load(config)`；config 先经 `EmbeddingConfig::FromSection(embedding_config 段 7 键, …, &config)` 组装（SR20260903001 D-12；`weights` 为空则跳过 Load）；图带 per_layer 工位时另调 `LoadTokenIdentity`。
 - 前置：config 完整（vocab/hidden 来自 ModelConfig，U-2 已定来源）；表文件存在（InFlash 下后续仍须存在，U-7）。
 
 #### §2 时序图
@@ -660,7 +655,7 @@ sequenceDiagram
   participant TE as M-01 text-embedding
   participant TM as TensorManager(C-03)
   participant SRC as M-02 source
-  PE->>TE: EmbeddingConfig::FromModelConfig(ModelConfig)
+  PE->>TE: EmbeddingConfig::FromSection(meta embedding_config 段 7 键)
   TE-->>PE: EmbeddingConfig（含字符串→枚举校验）
   opt table_path 非空（embedding 路径）
   PE->>TE: Load(EmbeddingConfig)
@@ -676,7 +671,7 @@ sequenceDiagram
   opt scale_type ≠ None
     TE->>TM: CreateTensor(scale_desc, 0)
     TM-->>TE: scale_buf
-    TE->>TE: 读 scale 文件 → scale_buf
+    TE->>TE: 读单文件主 scale 段 → scale_buf
   end
   TE-->>PE: SUCCESS（loaded_=true）
   end
@@ -686,7 +681,7 @@ sequenceDiagram
 一次性（构造期）；InFlash Load 本身仅 open+fstat（O(1)）。
 
 #### §4 异常分支
-见 M-01 §6 前 4 行（TC_101–TC_104）；任一失败点：已申请 buffer 释放（RAII）、fd 关闭、loaded_ 保持 false。
+见 M-01 §6 加载期各失效行（TC_101–TC_103）；任一失败点：已申请 buffer 释放（RAII）、fd 关闭、loaded_ 保持 false。
 
 #### §5 与其他流程的交互
 - 成功后 F-02/F-03（Embedding 路径）可用；TokenId 路径（F-04）不依赖本流程。

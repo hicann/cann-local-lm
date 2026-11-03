@@ -71,7 +71,7 @@ status: draft
 <a id="1-scope-and-objectives"></a>
 ## §1 Scope and Objectives
 
-- **in scope**: C++ embedding module under `cann_lm/engine/core/component/text_embedding` — embedding table and scale file loading (InMemory entire table into memory / InFlash keep in file read by row), host-side gather (row copy + per-token scale collection), storage type→slot type conversion, input slot filling (embedding path fills `input_embed`+`embed_scales`; tokenId path fills token id). In-place rewrite of existing `TextEmbedding` stub; `ModalityEntry` kept in place unchanged. Internal module, no Python/external exposure.
+- **in scope**: C++ embedding module under `cann_lm/engine/core/component/text_embedding` — embedding_weights single-file loading (four-segment layout: main table → per_layer table → main scale → per_layer scale; InMemory entire table into memory / InFlash keep in file read by row), host-side gather (row copy + per-token scale collection), storage type→slot type conversion, input slot filling (embedding path fills `input_embed`+`embed_scales`; tokenId path fills token id). In-place rewrite of existing `TextEmbedding` stub; `ModalityEntry` kept in place unchanged. Internal module, no Python/external exposure.
 - **out of scope** (with rationale):
   - Dequantization (multiply scale) — spec §4.1.4/§4.1.5 belongs to NPU/in om graph; host never does.
   - TokenId path table delivery — **table already included in model weights loaded with graph** (U-1 resolved), this module does not handle.
@@ -96,7 +96,7 @@ graph TD
   TE -->|element-wise value expansion| CVT[M-03 type-converter pure function]
   TE -->|table/scale buffer allocation| TM[TensorManager singleton C-03]
   SRC -->|InMemory: memory copy| BUF[(host ITensorBuffer)]
-  SRC -->|InFlash: pread by row offset| FLASH[(table file)]
+  SRC -->|InFlash: pread by row offset| FLASH[(embedding_weights single file)]
   TE -->|read/write slots| ME[ModelExecutor input_tensors_ + name_index<br/>C-02 read-only exposure]
   ME -->|input_embed / embed_scales slots| OM[(om graph)]
   OM -->|NPU-side dequant| NPU[(NPU)]
@@ -110,7 +110,7 @@ Style declaration (≤100 chars): **Single-class façade + dual data source stra
 
 Two runtime forms, both driven by pipeline:
 
-- **init phase (only embedding path needs it)**: After `AutoregressivePipelineExecutor` construction, before first Forward, call `text_embedding_.Load(config)` with `EmbeddingConfig` (F-01). config assembly channel (U-8 route b, 2026-08-29 decided; **SR20260903001 partially supersedes, 2026-09-04 decided**): **meta_json `embedding_config` section → pipeline inline parsing step directly calls `EmbeddingConfig::FromSection(weights, dequant_scale, type, scale_type, quant_mode, load_mode, vocab, hidden, out)`** (D-12 direct parameterization, original `FromModelConfig(ModelConfig)` removed; ModelConfig migrated to model_executor.h and no longer carries embedding extension fields; vocab/hidden taken from model_config section across sections) — L1 `EngineOptions`/C ABI untouched. Field set and mapping see C-01 §2. Table buffer allocated via `TensorManager::Instance().CreateTensor` (C-03); InFlash mode does not allocate table buffer, only holds fd + stride. `ModelConfig` embedding fields all empty/default (e.g. tokenId deployment form) → don't call Load.
+- **init phase (only embedding path needs it)**: After `AutoregressivePipelineExecutor` construction, before first Forward, call `text_embedding_.Load(config)` with `EmbeddingConfig` (F-01); when the graph carries per_layer slots, additionally call `text_embedding_.LoadTokenIdentity(config)` (same single file, identity table/scale segments, total length exact-equality). config assembly channel (**SR20260903001 D-12**): **meta_json `embedding_config` section → pipeline inline parsing step directly calls `EmbeddingConfig::FromSection(weights, type, scale_type, quant_mode, load_mode, identity_type, identity_scale_type, vocab, hidden, out)`** (7 strings direct parameterization; vocab/hidden taken from model_config section across sections) — L1 `EngineOptions`/C ABI untouched. Field set and mapping see C-01 §2. Table buffer allocated via `TensorManager::Instance().CreateTensor` (C-03); InFlash mode does not allocate table buffer, only holds fd + stride. `embedding_config` section default/`weights` empty (e.g. tokenId deployment form) → don't call Load.
 - **input preparation phase per forward step**: Actual calling component is **`Scheduler`** (not RunLoop itself — RunLoop only calls `scheduler_.Step()`, input preparation happens inside `Step`, see "wiring point" below). `Scheduler` calls `text_embedding_->FillInputs(executor.InputTensors(), executor.InputNameIndex(), path, ids, count)` (F-03/F-04) on target executor at prefill / decode two input preparation points, then `executor.Forward(opts)`. Slot data written by this module into `input_embed` (and embedding path's `embed_scales`); other slots still filled by InputAssembler.
 
 Relationship with current `SetInputData`: under embedding path, slot filling responsibility shifts from "caller prepares buffer → SetInputData memcpy" to this module (`embed_scales` goes from pending to filled by this module, landing INPUT_INFO's designated filler); `SetInputData` retained (external direct-fill channel, C-01 compatibility unchanged).
@@ -208,7 +208,7 @@ Dependency graph acyclic check: M-03 no dependencies; M-02 ← {C-04}; M-01 ← 
 ## §8 Code Plan Hints
 
 **For downstream plan/impl agent**:
-- Implementation order (dependency topology): C-04 (only confirm include surface, no code) → M-03 type-converter (pure function, zero dependencies) → M-02 table-source (depends on C-04 types) → M-01 text-embedding façade (aggregate + C-03 + `FromModelConfig`) → C-02 ModelExecutor accessor (two-line addition) → **Scheduler wiring** (§2.2 wiring point: constructor signature add `TextEmbedding*`, `pipeline_executor.cpp:42/67` pass `&text_embedding_`, prefill/decode two input preparation points replace SetInputData with FillInputs for input_embed) → `AutoregressivePipelineExecutor` init phase Load wiring (channel already decided U-8 route b: `ModelConfig` extend embedding section + `FromModelConfig` assemble, `pipeline_executor.cpp:45/70` assembly points).
+- Implementation order (dependency topology): C-04 (only confirm include surface, no code) → M-03 type-converter (pure function, zero dependencies) → M-02 table-source (depends on C-04 types) → M-01 text-embedding façade (aggregate + C-03 + `FromSection`) → C-02 ModelExecutor accessor (two-line addition) → **Scheduler wiring** (§2.2 wiring point: constructor signature add `TextEmbedding*`, `pipeline_executor.cpp:42/67` pass `&text_embedding_`, prefill/decode two input preparation points replace SetInputData with FillInputs for input_embed) → `AutoregressivePipelineExecutor` init phase Load wiring (channel already decided SR20260903001 D-12: meta `embedding_config` section 7 keys + `FromSection` assemble, ParseConfigs assembly point).
 - Parallelizable: M-02/M-03 mutually independent, can be parallel.
 - Minimum reading set for implementing a module:
   - M-01 → this section + C-01/C-02/C-03 + F-01/F-02/F-03/F-04
@@ -246,6 +246,7 @@ Dependency graph acyclic check: M-03 no dependencies; M-02 ← {C-04}; M-01 ← 
 | 0.1 | 2026-08-28 | Initial draft: 10-chapter SDD design + 3 modules + 4 contracts + 4 processes + 11 decisions. Lands all behaviors of SPEC SR20260828001 (including U-1 resolved: TokenId path table in weights). | SR20260828001 all |
 | 0.2 | 2026-08-29 | External review (+2) release condition revisions: ①§2.2/C-01/§8 add Scheduler wiring point design (H-1: input_embed sole writer is scheduler.cpp:127/191's SetInputData, constructor signature add TextEmbedding*, yield rule by call site+path); ②§9 register U-8 EmbeddingConfig transfer channel (M-1); ③§8 add OHOS CMakeLists sync registration (M-2) and dynamic shape risk (M-3); ④L-level revisions: M-02 factory signature add table_buf/flash_fd params (L-1), F-03 validate all before writing (L-2), empty buffer input to INVALID_ARGUMENT + TC_112 (L-3), InFlash staging explicitly stack-local (L-4), conversion matrix Int8/Int4 same-type column align with SPEC, C-03 error table recoverable scope, C-02 comment disambiguation (L-5). | external review report (2026-08-29) |
 | 0.3 | 2026-08-29 | U-8 decision landing (user decided route b): C-01 §2 add EmbeddingConfig assembly channel design (ModelConfig embedding section plain fields + `EmbeddingConfig::FromModelConfig` static factory, dependency direction text_embedding→tensor_manager legal); F-01 add assembly step; §2.2 init phase add channel and empty path no Load; U-2 source thus decided as ModelConfig. All open items no longer block implementation. | SPEC U-8 decision |
+| 0.4 | 2026-11-02 | embedding_weights single-file four-segment merge (main table → per_layer table → main scale → per_layer scale, replacing table+scale dual files): M-01 §2 struct drops scale_path, adds token_identity three keys and FromSection 7 strings; C-01 §2/F-01 synchronized to single-file wording; `embedding_dequant_scale` key deprecated (leftover only WARN); with identity enabled whole-file total length exact-equality (M-01 §6). | single-file layout change |
 
 ---
 
@@ -258,7 +259,7 @@ Dependency graph acyclic check: M-03 no dependencies; M-02 ← {C-04}; M-01 ← 
 #### §1 Responsibility
 
 Single-class façade (spec §4.1.1/4.1.2/4.1.3/4.1.6). Externally the sole public class `TextEmbedding`, aggregating three things:
-- **Load(EmbeddingConfig)**: config validation (path/type/quantization granularity/size) → delegate M-02 to build table source (InMemory/InFlash) → scale integral load (always in-memory, D-09) → table buffer allocated via C-03. Failure stays unloaded.
+- **Load(EmbeddingConfig)**: config validation (path/type/quantization granularity/size) → delegate M-02 to build table source (InMemory/InFlash) → main scale segment read from the single file's third segment (always in-memory, D-09) → table buffer allocated via C-03. Failure stays unloaded.
 - **Gather(ids, count, out_embed, out_scales)**: per-id row read (M-02) + per-token scale collection (memory index), pure byte moving.
 - **FillInputs(inputs, name_index, path, ids, count)**: embedding path = inline gather → M-03 convert → write `input_embed` + `embed_scales`; tokenId path = ids value convert write `input_embed` (no Load needed, D-02).
 
@@ -269,27 +270,36 @@ Does not do: dequantization, table delivery (in weights), other slots, multimoda
 ```cpp
 // core/component/text_embedding/text_embedding.h (engine internal component, only pipeline/model_executor/UT consume)
 
-enum class EmbeddingType     { Fp32, Fp16, Int8, Int4 };   // table file storage type (Int4 placeholder, U-3 not supported)
-enum class EmbeddingScaleType{ None, Fp32, Fp16 };         // scale file storage type
+enum class EmbeddingType     { Fp32, Fp16, Int8, Int4 };   // main table segment storage type (Int4 placeholder, U-3 not supported)
+enum class EmbeddingScaleType{ None, Fp32, Fp16 };         // main scale segment storage type
 enum class EmbeddingQuantMode{ PerToken, PerGroup };       // scale granularity (D-07)
 enum class EmbeddingPath     { TokenId, Embedding };       // FillInputs path selection (selection right belongs to model_executor)
 enum class EmbeddingLoadMode { InMemory, InFlash };        // table loading method (D-08)
 
 struct EmbeddingConfig {
-    std::string           table_path;   // raw [vocab, hidden] row-major
-    std::string           scale_path;   // must be empty when scale_type=None
+    std::string           table_path;   // embedding_weights single file (four segments: main table → identity table → main scale → identity scale)
     EmbeddingType         table_type;
     EmbeddingScaleType    scale_type;
     EmbeddingQuantMode    quant_mode;
     size_t                group_size = 0;   // PerGroup required; PerToken ignored
-    size_t                vocab_size = 0;   // source ModelConfig (U-2)
-    size_t                hidden_dim = 0;   // source ModelConfig (U-2)
+    size_t                vocab_size = 0;   // source meta model_config section (U-2)
+    size_t                hidden_dim = 0;   // source meta model_config section (U-2)
     EmbeddingLoadMode     load_mode = EmbeddingLoadMode::InMemory;
 
-    /// U-8 route b assembly entry: ModelConfig (tensor_manager.h, plain fields) → EmbeddingConfig.
-    /// string→enum parsing and validation here (unknown value → INVALID_ARGUMENT);
-    /// mc.embedding_table_path empty → SUCCESS and out->table_path empty (caller doesn't Load based on this).
-    static Status FromModelConfig(const ModelConfig& mc, EmbeddingConfig* out);
+    // per_layer_token_identity (gemma4): read types come from meta keys; row width W
+    // backfilled by pipeline from graph slot dims
+    EmbeddingType         token_identity_type = EmbeddingType::Fp16;
+    EmbeddingScaleType    token_identity_scale_type = EmbeddingScaleType::Fp16;
+    size_t                token_identity_row_width = 0;
+
+    /// Assembly entry (SR20260903001 D-12): embedding_config section 7 strings + cross-section
+    /// vocab/hidden → EmbeddingConfig. string→enum parsing and validation here (unknown value →
+    /// INVALID_ARGUMENT); weights empty → SUCCESS and out->table_path empty (caller doesn't Load based on this).
+    static Status FromSection(const std::string& weights,
+                              const std::string& type, const std::string& scale_type,
+                              const std::string& quant_mode, const std::string& load_mode,
+                              const std::string& identity_type, const std::string& identity_scale_type,
+                              size_t vocab_size, size_t hidden_dim, EmbeddingConfig* out);
 };
 
 class TextEmbedding {
@@ -299,8 +309,13 @@ public:
 
     // Semantics: synchronous; caller guarantees not concurrent, not concurrent with Gather/FillInputs (§2.4).
     //       Failure stays unloaded (can re-Load).
-    // Errors: file missing/size mismatch/PerGroup params illegal/scale config contradictory → INVALID_ARGUMENT
+    // Errors: file missing/size mismatch/PerGroup params illegal → INVALID_ARGUMENT
     Status Load(const EmbeddingConfig& config);
+
+    // Semantics: synchronous; reads identity table segment + identity scale segment from the same
+    //       single file (when graph carries per_layer slots). Whole-file total length must exactly
+    //       equal the four-segment sum (W mismatch / file-graph mismatch defense), else INVALID_ARGUMENT.
+    Status LoadTokenIdentity(const EmbeddingConfig& config);
 
     // Semantics: const read-only, thread-safe (can be concurrent). Pure byte moving + scale index collection, no dequantization.
     //       scale_type=None skips out_scales write.
@@ -334,7 +349,8 @@ public:
 
 #### §3 Internal Structure
 - Members (all read-only after Load, lock-free, §2.4): `std::unique_ptr<TableSource> source_` (M-02, InMemory/InFlash two-state); `std::shared_ptr<ITensorBuffer> scale_buf_` (always in-memory); `EmbeddingConfig cfg_` (loaded config snapshot); `size_t row_bytes_` / `groups_` (PerGroup = hidden/group_size, PerToken always 1); `bool loaded_`.
-- Load flow (F-01): param validation → (InMemory) C-03 allocate table buffer + read file; (InFlash) open + fstat validate + record stride → (scale_type≠None) C-03 allocate scale buffer + read file → set loaded_.
+- Load flow (F-01): param validation → (InMemory) C-03 allocate table buffer + read file; (InFlash) open + fstat validate + record stride → (scale_type≠None) C-03 allocate scale buffer + read from single file's third segment → set loaded_.
+- LoadTokenIdentity flow: second table source isomorphic to Load (identity table segment + identity scale segment, same single file; whole-file total length exact-equality).
 - Gather internal: `for i: source_->ReadRow(ids[i], out_embed + i*row_bytes_)` + `for i: memcpy out_scales + i*scales_per_token*elem ← scale_buf_ + ids[i]*...` (PerGroup copies `groups_` consecutive elements).
 - FillInputs internal (Embedding path): per-row streaming — InFlash uses one-row staging (**stack-local buffer, `row_bytes_` size, allocated/freed with call stack frame, not a member** — maintains §2.4 "no mutable state" declaration) via M-03 conversion write to slot; InMemory directly from table buffer per-row conversion write. scale collected then via M-03 (Fp16→FLOAT32) write `embed_scales`.
 - Non-copyable (includes unique_ptr fd ownership semantic clarity); movable (moved-from object set to unloaded).
@@ -358,10 +374,9 @@ public:
 
 | Failure | Trigger | Detection | Handling |
 |------|------|------|------|
-| Table/scale file missing | open fails | Load phase | INVALID_ARGUMENT (TC_101), stays unloaded |
-| Size mismatch | byte count ≠ expected | Load phase (InMemory actual read / InFlash fstat) | INVALID_ARGUMENT (TC_102) |
+| Single file missing | open fails | Load phase | INVALID_ARGUMENT (TC_101), stays unloaded |
+| Size mismatch | main table segment < expected / main scale segment short read; with identity enabled total ≠ four-segment sum | Load phase (InMemory actual mapping / InFlash fstat / LoadTokenIdentity total exact-equality) | INVALID_ARGUMENT (TC_102/TC_401) |
 | PerGroup params illegal | group_size non-positive/not divisible/missing | Load phase | INVALID_ARGUMENT (TC_103) |
-| scale config contradictory | None and path non-empty | Load phase | INVALID_ARGUMENT (TC_104) |
 | tokenId out of bounds | ids[i] ≥ vocab | Gather/FillInputs phase | INVALID_ARGUMENT, reject entire batch no partial output (TC_105) |
 | Query before load | loaded_=false | entry validation | INVALID_STATE (TC_106); TokenId path FillInputs exempt (D-02) |
 | Slot missing name | name_index no input_embed / embed_scales | FillInputs phase | NOT_FOUND (TC_107) |
@@ -514,34 +529,16 @@ Support matrix (1:1 with SPEC §4.1.4):
 
 #### §1 Contract One-liner
 
-"`AutoregressivePipelineExecutor` calls `Load` with EmbeddingConfig at init phase (only embedding path needs it, via its held `text_embedding_` member; config assembled by `ModelConfig` via `EmbeddingConfig::FromModelConfig` — U-8 decided route b); at each forward step's input preparation phase, **`Scheduler`** (its held non-owning `TextEmbedding*`, constructor-injected) calls `FillInputs` at prefill/decode two input preparation points (target executor's bundle + name_index); runtime can call `Gather` (UT/debug direct query)."
+"`AutoregressivePipelineExecutor` calls `Load` with EmbeddingConfig at init phase (only embedding path needs it, via its held `text_embedding_` member; with per_layer graph slots, additionally `LoadTokenIdentity`; config assembled from meta `embedding_config` section via `EmbeddingConfig::FromSection` — SR20260903001 D-12); at each forward step's input preparation phase, **`Scheduler`** (its held non-owning `TextEmbedding*`, constructor-injected) calls `FillInputs` at prefill/decode two input preparation points (target executor's bundle + name_index); runtime can call `Gather` (UT/debug direct query)."
 
 #### §2 Data Schema
 See M-01 §2: `EmbeddingConfig` (including load_mode), `EmbeddingPath`, `TokenId*`, `Status`. Slot bundle and name_index see C-02. `Scheduler` constructor signature appends `TextEmbedding*` (non-owning, same type as `Preprocessor*`; §2.2 wiring point).
 
-**EmbeddingConfig assembly channel (U-8 route b landing point)**:
-- `ModelConfig` (`core/tensor_manager.h`, owned by model_executor/tensor_manager side) adds embedding section — **plain serialization-friendly types** (meta_json source, no C++ enum dependency):
-
-```cpp
-struct ModelConfig {
-    int max_batch_size = 0;
-    int max_seq_len    = 0;
-    // ── embedding extension (U-8 route b; meta_json deserialization landed by ModelConfig owner) ──
-    size_t      vocab_size            = 0;          // U-2 landed together
-    size_t      hidden_dim            = 0;
-    std::string embedding_table_path;               // empty = tokenId path (no Load)
-    std::string embedding_scale_path;               // must be empty when scale_type=None
-    std::string embedding_table_type;               // "fp32"|"fp16"|"int8"|"int4"
-    std::string embedding_scale_type;               // "none"|"fp32"|"fp16"
-    std::string embedding_quant_mode;               // "per_token"|"per_group"
-    size_t      embedding_group_size  = 0;          // per_group required
-    std::string embedding_load_mode;                // "in_memory"|"in_flash" (default in_memory)
-};
-```
-
-- string→enum parsing and validation belongs to **M-01 side static factory** `EmbeddingConfig::FromModelConfig(const ModelConfig&, EmbeddingConfig* out)` (in `text_embedding.h`; dependency direction text_embedding → tensor_manager legal, C-04). Unknown string → `INVALID_ARGUMENT`; `embedding_table_path` empty → return "don't load" signal (caller doesn't call Load, tokenId deployment form).
-- pipeline init assembly point: current `pipeline_executor.cpp:45/70` where `ModelConfig` is constructed (before meta_json deserialization lands, fields default = empty = no Load, behavior compatible with current state).
-- **Boundary**: ModelConfig field set is its owner's evolution surface (§5 same rule); this module only consumes the above fields, does not do json parsing.
+**EmbeddingConfig assembly channel (SR20260903001 D-12 landing point)**:
+- meta_json `embedding_config` section 7 keys (plain strings, serialization-friendly): `embedding_weights` (single-file path, empty = tokenId path, no Load), `embedding_type`, `embedding_scale_type` ("none"|"fp32"|"fp16"), `embedding_quant_mode` ("per_token"|"per_group"), `embedding_load_mode` ("in_memory"|"in_flash", default in_memory), `token_identity_type`, `token_identity_scale_type`; vocab/hidden taken from model_config section across sections (U-2). A leftover non-empty `embedding_dequant_scale` key only produces WARN, no section downgrade. Key set detailed in embedding_config.md.
+- string→enum parsing and validation belongs to **M-01 side static factory** `EmbeddingConfig::FromSection(7 strings, vocab, hidden, out)` (in `text_embedding.h`). Unknown string → `INVALID_ARGUMENT`; `weights` empty → return "don't load" signal (caller doesn't call Load, tokenId deployment form).
+- pipeline init assembly point: `pipeline_executor.cpp` ParseConfigs inline parsing step directly calls FromSection.
+- **Boundary**: this module does not do json parsing, only consumes already-parsed plain strings.
 
 #### §3 Timing and Synchronization Semantics
 - Synchronous function call.
@@ -656,7 +653,7 @@ TensorDesc scale_desc{.name="embedding_scale", .dataType=MapToBackendType(cfg.sc
 ### F-01-load
 
 #### §1 Trigger and Preconditions
-- Trigger: pipeline init (M-02, only embedding path deployment form) calls `Load(config)`; config first assembled via `EmbeddingConfig::FromModelConfig(ModelConfig, &config)` (U-8 route b; `ModelConfig.embedding_table_path` empty then skip Load).
+- Trigger: pipeline init (M-02, only embedding path deployment form) calls `Load(config)`; config first assembled via `EmbeddingConfig::FromSection(embedding_config section 7 keys, …, &config)` (SR20260903001 D-12; `weights` empty then skip Load); with per_layer graph slots, additionally `LoadTokenIdentity`.
 - Preconditions: config complete (vocab/hidden from ModelConfig, U-2 source decided); table file exists (InFlash must continue to exist after, U-7).
 
 #### §2 Sequence Diagram
@@ -666,7 +663,7 @@ sequenceDiagram
   participant TE as M-01 text-embedding
   participant TM as TensorManager(C-03)
   participant SRC as M-02 source
-  PE->>TE: EmbeddingConfig::FromModelConfig(ModelConfig)
+  PE->>TE: EmbeddingConfig::FromSection(meta embedding_config section 7 keys)
   TE-->>PE: EmbeddingConfig (including string→enum validation)
   opt table_path non-empty (embedding path)
   PE->>TE: Load(EmbeddingConfig)
@@ -682,7 +679,7 @@ sequenceDiagram
   opt scale_type ≠ None
     TE->>TM: CreateTensor(scale_desc, 0)
     TM-->>TE: scale_buf
-    TE->>TE: read scale file → scale_buf
+    TE->>TE: read single-file main scale segment → scale_buf
   end
   TE-->>PE: SUCCESS (loaded_=true)
   end
@@ -692,7 +689,7 @@ sequenceDiagram
 One-time (construction phase); InFlash Load itself only open+fstat (O(1)).
 
 #### §4 Exception Branches
-See M-01 §6 first 4 rows (TC_101–TC_104); any failure point: already-allocated buffer released (RAII), fd closed, loaded_ stays false.
+See M-01 §6 load-phase failure rows (TC_101–TC_103); any failure point: already-allocated buffer released (RAII), fd closed, loaded_ stays false.
 
 #### §5 Interaction with Other Processes
 - After success F-02/F-03 (Embedding path) available; TokenId path (F-04) does not depend on this process.

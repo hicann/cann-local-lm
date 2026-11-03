@@ -17,14 +17,14 @@
 | embedding 表 | `[vocab_size, hidden_dim]` 的二维矩阵，第 v 行是词表项 v 的 embedding 向量，以低精度类型存储于文件系统 |
 | 存储类型 | embedding / scale 数据在**文件系统中的字节布局类型**（`EmbeddingType` / `EmbeddingScaleType`），由用户在 Load 时指定 |
 | 填充类型 | 实际写入模型输入工位的数据类型，由 om 图 `TensorDesc.dataType` 决定；与存储类型不一致时模块**必须**在填充前做类型转换 |
-| scale / 反量化参数 | 低精度 embedding 还原为高精度所需的系数；与 embedding 表分离存放 |
+| scale / 反量化参数 | 低精度 embedding 还原为高精度所需的系数；与 embedding 表同单文件存放（第三段） |
 | PerToken | 量化粒度：每个词表项（表的一行）对应**一个** scale |
 | PerGroup | 量化粒度：一行 embedding 按 `group_size` 分组，**每组**各一个 scale；一个 tokenId 对应多个反量化参数 |
 | group_size | PerGroup 模式下每组的元素个数（hidden 维方向）；PerGroup 模式必填 |
 | gather / 查表 | 按 tokenId 下标从表中拷贝对应行的操作；host 侧 gather 为纯按下标拷贝（stride 拷贝），不反量化 |
 | tokenId 路径 | om 图内置 embedding 查表的推理路径：**embedding 表已包含在模型权重中随图加载**，图内完成 gather + dequant，输入工位装 token id；不经本模块传表 |
 | embedding 路径 | om 图不含内置 embedding 的推理路径：host 侧 gather 低精度行填 `input_embed`，NPU 侧 dequant |
-| InMemory / InFlash | 表加载方式：InMemory = 整表一次性读入 host 内存；InFlash = 表留在文件系统、不占常驻内存，gather/填充时按行偏移直接从文件读取 |
+| InMemory / InFlash | 表加载方式：InMemory = 整表 mmap 只读映射；InFlash = 表留在文件系统、不占常驻内存，gather/填充时按行偏移直接从文件读取 |
 | 工位 / 输入工位 | 模型 om 图的输入 tensor 槽位（`input_embed`、`embed_scales` 等），见 `docs/model_executor/INPUT_INFO.md` |
 | name→index 映射 | `TensorDesc.name` → `input_tensors_` 下标的映射表，model_executor Load 时建立 |
 | ITensorBuffer | backend 抽象张量容器（`backend/api/tensor_buffer.h`）：`GetData()` / `GetSize()` / `GetDesc()` |
@@ -43,7 +43,7 @@
 ### 3.2 问题
 
 - **无表加载能力**：om 图不含内置 embedding 的模型（embedding 路径）无法获得输入 embedding；`embed_scales` 工位无人填充。
-- **量化部署受阻**：低精度（INT8 等）embedding 表 + scale 分离存放的部署形态，缺少 host 侧加载与 gather 通道。
+- **量化部署受阻**：低精度（INT8 等）embedding 表 + scale 的量化部署形态，缺少 host 侧加载与 gather 通道。
 - **契约缺失**：`LoadAndBind()` 桩签名与真实需求（路径、类型、量化粒度、工位填充）不匹配，无行为规格可依。
 
 ### 3.3 期望与已确认设计决策
@@ -54,9 +54,9 @@
 |------|------|
 | 职责定位 | **双路径**：tokenId 路径（om 图内置 embedding，表已包含在权重中随图加载，模块仅填 token id）｜embedding 路径（host gather 低精度行，NPU dequant） |
 | 反量化位置 | **永远 NPU 侧**；host 只读低精度表 + scale 并填工位，host 不做反量化数学 |
-| 文件格式 | embedding = raw 2D `[vocab, hidden]` row-major 连续；scale = raw 1D（形状由量化粒度决定，见 4.1.1） |
+| 文件格式 | **embedding_weights 单文件**四段紧排：主表 raw 2D `[vocab, hidden]` → per_layer 表 → 主 scale → per_layer scale（无文件头、无段间 padding）；scale 段形状由量化粒度决定（见 4.1.1） |
 | 量化粒度 | 初始化输入参数 `quantMode`：**PerToken**（每词表项一个 scale）或 **PerGroup**（一个 tokenId 的 embedding 对应多个反量化参数，必填 `GroupSize`） |
-| 表加载方式 | 可选：**InMemory**（整表读入 host 内存，默认）或 **InFlash**（表不读入内存，gather/填充时按行偏移直接从文件读取） |
+| 表加载方式 | 可选：**InMemory**（整表 mmap 只读映射，默认）或 **InFlash**（表不读入内存，gather/填充时按行偏移直接从文件读取） |
 | 结构方案 | **单类 + 类型标签分派**（不做多态层次；host gather 类型无关）；将来某类型出现差异 host 逻辑（如 INT4 解包）时再升级为策略化/多态，接口形状不变 |
 | 表的交付方式 | **无 BindToModel**：表/scale 不作权重绑定。tokenId 路径无需传表（表在权重中）；embedding 路径表/scale 作为**输入工位数据**由本模块主动填入 |
 | 填工位归属 | **模块主动填**（方案 B）：`FillInputs(...)` 依赖 model_executor 的 input bundle + name→index 映射 |
@@ -65,7 +65,7 @@
 
 ### 3.4 模块边界
 
-- **本模块做**：表/scale 文件加载（InMemory 整表入内存 / InFlash 留在文件按行读）、host gather（含 per-token scale 收集）、类型转换、输入工位填充（含 tokenId 路径的 token id 填充）。
+- **本模块做**：embedding_weights 单文件四段加载（InMemory 整表 mmap / InFlash 留在文件按行读）、host gather（含 per-token scale 收集）、类型转换、输入工位填充（含 tokenId 路径的 token id 填充）。
 - **本模块不做**：反量化（NPU）、tokenId 路径的表交付（**表已包含在模型权重中随图加载**，不经本模块）、attention_mask/position_ids 等其他工位填充（InputAssembler）、多模态占位符替换（Preprocessor，经 `ModalityEntry`）、表内存的底层申请策略（经 ITensorBuffer 抽象）、InFlash 表文件的热更新。
 - **上下游基本不动，除一处接线变更**：`PipelineExecutorFactory::create` 仍按值传 `TextEmbedding`；`Preprocessor` 仍持非拥有 `TextEmbedding*`；**`Scheduler` 构造签名需新增 `TextEmbedding*` 非拥有指针**（`input_embed` 工位在现行代码中的唯一写入方是 `Scheduler` 内两个 `SetInputData` 调用点；embedding/tokenId 两路径的工位填充均由此接入 `FillInputs`，详见 DESIGN §2.2 接线点）；仅 `LoadAndBind()` 桩被新接口取代。
 
@@ -77,16 +77,15 @@
 
 - **前置条件**：调用方（pipeline，M-02 于 init 期）持有完整 `EmbeddingConfig`（含表加载方式 `load_mode`）。config 经 **meta_json `embedding_config` 段 → pipeline 内联解析步骤直调 `EmbeddingConfig::FromSection`** 通道传入（SR20260903001 取代 U-8 路线 b——通道部分取代、解析语义维持，2026-09-04 用户拍板）；组装映射见 DESIGN C-01 §2。
 - **处理逻辑**：
-  - 模块**必须**以配置中的 `table_path` 读取 embedding 表，字节布局为 raw 2D `[vocab_size, hidden_dim]` row-major 连续。读取方式由 `load_mode` 决定：
-    - **InMemory**（默认）：整表一次性读入 host 侧 `ITensorBuffer`。
+  - 模块**必须**自配置 `table_path` 指向的单文件首段（偏移 0）读取主表，字节布局为 raw 2D `[vocab_size, hidden_dim]` row-major 连续。读取方式由 `load_mode` 决定：
+    - **InMemory**（默认）：主表段 mmap 只读映射（RAII munmap，行指针直指映射页）。
     - **InFlash**：表**不读入内存**——Load 仅以文件元数据校验（打开文件、校验字节大小、记录行 stride = `hidden_dim × elem_size`），保持文件打开状态；后续 `Gather` / `FillInputs` 按行偏移（`id × stride`）直接从文件做位置读取（`pread` 类语义）。
-  - 模块**必须**按 `scale_type ≠ None` 时以 `scale_path` 读取 scale 文件至 host 侧 `ITensorBuffer`。**scale 恒为内存态**（不适用 InFlash——scale 体量为 `vocab` 或 `vocab × groups` 个标量，远小于表，且每次 gather 均需按下标随机访问）。scale 元素个数由量化粒度决定：
-    - **PerToken**：`vocab_size` 个元素（第 v 个元素是表第 v 行的 scale），文件字节大小 = `vocab_size × scale_elem_size`。
-    - **PerGroup**：`vocab_size × groups` 个元素 row-major（token v 的第 g 组 scale 位于下标 `v × groups + g`），其中 `groups = hidden_dim / group_size`；文件字节大小 = `vocab_size × groups × scale_elem_size`。
+  - 模块**必须**按 `scale_type ≠ None` 时自 `table_path` 单文件的主 scale 段（第三段，偏移 = 主表段 + identity 表段长度）读取 scale 至 host 侧堆内存。**scale 恒为内存态**（不适用 InFlash——scale 体量为 `vocab` 或 `vocab × groups` 个标量，远小于表，且每次 gather 均需按下标随机访问）。scale 元素个数由量化粒度决定：
+    - **PerToken**：`vocab_size` 个元素（第 v 个元素是表第 v 行的 scale），段字节大小 = `vocab_size × scale_elem_size`。
+    - **PerGroup**：`vocab_size × groups` 个元素 row-major（token v 的第 g 组 scale 位于下标 `v × groups + g`），其中 `groups = hidden_dim / group_size`；段字节大小 = `vocab_size × groups × scale_elem_size`。
   - 模块**必须**在 PerGroup 模式校验 `group_size` 已提供、`group_size > 0`、`group_size ≤ hidden_dim` 且 `hidden_dim % group_size == 0`，任一不满足返回 `INVALID_ARGUMENT`。
-  - 模块**必须**校验文件字节大小（InMemory 实读、InFlash `stat` 元数据）与按上述规则计算的期望值一致，不一致返回 `INVALID_ARGUMENT`。
-  - 模块**必须**支持 `scale_type = None`（scale 文件不存在的部署形态）：`scale_path` 为空、不加载 scale、后续 `Gather` 的 `out_scales` 不产出数据。
-  - 模块**必须**在 `scale_type = None` 且 `scale_path` 非空时返回 `INVALID_ARGUMENT`（防呆：配置自相矛盾）。
+  - 模块**必须**校验文件字节大小（InMemory 实映射、InFlash `stat` 元数据）满足主表段期望（≥ 放行，后段可后随），且主 scale 段读取足额（读不足返回 `INVALID_ARGUMENT`）；全文件四段总长的精确校验由 LoadTokenIdentity 承担（identity 启用时）。
+  - 模块**必须**支持 `scale_type = None`（主 scale 段不存在的部署形态）：不加载 scale、后续 `Gather` 的 `out_scales` 不产出数据。
   - 模块**必须**在文件缺失 / 不可读时返回 `INVALID_ARGUMENT`，不抛异常。
   - 模块**应该**在加载成功后记录表规模（vocab_size / hidden_dim / 类型 / 量化粒度 / 加载方式）供访问器查询。
 - **vocab_size / hidden_dim 来源**：作为 Load 配置入参由调用方提供（预期来自 ModelConfig；见未决项 U-2）。
@@ -152,15 +151,14 @@
 
 ```cpp
 // —— 类型（engine 内部，非 backend DataType 的子集映射）——
-enum class EmbeddingType     { Fp32, Fp16, Int8, Int4 };   // 表的文件存储类型
-enum class EmbeddingScaleType{ None, Fp32, Fp16 };         // scale 的文件存储类型
+enum class EmbeddingType     { Fp32, Fp16, Int8, Int4 };   // 主表段存储类型
+enum class EmbeddingScaleType{ None, Fp32, Fp16 };         // 主 scale 段存储类型
 enum class EmbeddingQuantMode{ PerToken, PerGroup };       // scale 粒度
 enum class EmbeddingPath     { TokenId, Embedding };       // FillInputs 路径选择
 enum class EmbeddingLoadMode { InMemory, InFlash };        // 表加载方式：整表入内存 / 留在文件按行读
 
 struct EmbeddingConfig {
-    std::string           table_path;   // embedding 表文件（raw [vocab, hidden] row-major）
-    std::string           scale_path;   // scale 文件；scale_type=None 时须为空
+    std::string           table_path;   // embedding_weights 单文件（四段布局：主表→identity 表→主 scale→identity scale）
     EmbeddingType         table_type;
     EmbeddingScaleType    scale_type;
     EmbeddingQuantMode    quant_mode;
@@ -169,12 +167,19 @@ struct EmbeddingConfig {
     size_t                hidden_dim;   // hidden 维长度（来源 ModelConfig，见 U-2）
     EmbeddingLoadMode     load_mode = EmbeddingLoadMode::InMemory;  // 表加载方式（scale 恒为内存态）
 
+    // per_layer_token_identity（gemma4）：读取类型来自 meta 键；行宽 W 由
+    // pipeline 依图工位 dims 回填（非 meta 字段）
+    EmbeddingType         token_identity_type = EmbeddingType::Fp16;
+    EmbeddingScaleType    token_identity_scale_type = EmbeddingScaleType::Fp16;
+    size_t                token_identity_row_width = 0;
+
     /// 组装入口（SR20260903001：取代 U-8 路线 b 的 FromModelConfig——D-12 直接参数化）：
-    /// embedding_config 段 6 字符串 + 跨段 vocab/hidden → EmbeddingConfig（字符串→枚举解析校验）。
+    /// embedding_config 段 7 字符串 + 跨段 vocab/hidden → EmbeddingConfig（字符串→枚举解析校验）。
     /// weights 为空 → SUCCESS 且 table_path 为空（调用方据此不 Load，tokenId 部署形态）。
-    static Status FromSection(const std::string& weights, const std::string& dequant_scale,
+    static Status FromSection(const std::string& weights,
                               const std::string& type, const std::string& scale_type,
                               const std::string& quant_mode, const std::string& load_mode,
+                              const std::string& identity_type, const std::string& identity_scale_type,
                               size_t vocab_size, size_t hidden_dim, EmbeddingConfig* out);
 };
 
@@ -182,9 +187,14 @@ class TextEmbedding {
 public:
     TextEmbedding() = default;
 
-    /// 4.1.1：加载低精度表 +（可选）scale。InMemory 整表入 host 内存；
-    /// InFlash 仅校验文件元数据并保持文件打开，gather 时按行偏移直读文件。
+    /// 4.1.1：加载主表段 +（可选）主 scale 段（单文件四段布局）。InMemory 整表
+    /// mmap 入映射页；InFlash 仅校验文件元数据并保持文件打开，gather 时按行
+    /// 偏移直读文件；scale 恒为内存态。
     Status Load(const EmbeddingConfig& config);
+
+    /// gemma4 per_layer_token_identity：与 Load 同构的第二表源（identity 表段
+    /// + identity scale 段，同一单文件）；全文件总长按四段和精确判等。
+    Status LoadTokenIdentity(const EmbeddingConfig& config);
 
     /// 4.1.2：embedding 路径 host 查表（按下标拷贝低精度行 + 收集 scale，不反量化）。
     /// InMemory 从内存拷贝；InFlash 按行偏移 pread。
@@ -200,11 +210,10 @@ public:
                       const TokenId* ids, size_t count);
 
     /// 访问器（pipeline / UT 用）。
-    std::shared_ptr<ITensorBuffer> Table() const;       // 未加载或 InFlash 返回 nullptr（InFlash 无整表内存映像）
-    std::shared_ptr<ITensorBuffer> Scale() const;       // 未加载或 None 返回 nullptr（恒内存态）
-    EmbeddingType                  TableType() const;
-    EmbeddingLoadMode              LoadMode() const;
+    EmbeddingType                  TableType() const;   // 未加载 → Fp32（哨兵）+ Loaded() 判别
+    EmbeddingLoadMode              LoadMode() const;    // 未加载 → InMemory（哨兵）
     bool                           Loaded() const;
+    bool                           IdentityLoaded() const;
 };
 ```
 
@@ -216,7 +225,8 @@ public:
 ```
 pipeline init (M-02, 仅 embedding 路径需要):
   TextEmbedding emb;
-  emb.Load(config)                     ← 表(InMemory 整表入内存 / InFlash 仅开文件+校验) + scale(恒内存态)
+  emb.Load(config)                     ← 表段(InMemory 整表 mmap / InFlash 仅开文件+校验) + 主 scale 段(恒内存态)
+  emb.LoadTokenIdentity(config)        ← identity 表/scale 段（图带 per_layer 工位时；同一单文件，总长精确判等）
 
 每步前向（输入准备期，实际调用方为 Scheduler 的 prefill/decode 两个输入准备点；InputAssembler 填其余工位之前/并行）:
   emb.FillInputs(input_tensors_, input_name_index_, path, ids, count)
@@ -235,7 +245,7 @@ UT / 调试直查:
 |------|------|----------|----------|
 | gather 吞吐 | InMemory host gather 达到连续 memcpy 带宽的合理比例（预算目标，无实测基线，未决 U-5） | aarch64，INT8 表 `[65536, 4096]`，batch gather 测时 | 预算目标 |
 | InFlash gather 延迟 | 单批 gather（≤ max_seqLen 行）文件读取延迟可接受（预算目标，无实测基线，未决 U-5；批量随机读可做偏移排序优化，见 4.1.2） | aarch64，同表规模 InFlash 模式，对比 InMemory 基线 | 预算目标 |
-| 表加载内存 | InMemory 常驻 ≈ 表 + scale 文件字节大小（各一份 host buffer，无额外拷贝）；**InFlash 常驻 ≈ scale 字节 + 文件描述符**（表零常驻） | 加载后 RSS 测量 | 设计约束（单份常驻 / 零常驻） |
+| 表加载内存 | InMemory 常驻 ≈ 单文件总长（mmap 只读映射页；identity 启用时含四段）+ scale 堆内存；**InFlash 常驻 ≈ scale 字节 + 文件描述符**（表零常驻） | 加载后 RSS 测量 | 设计约束（单份常驻 / 零常驻） |
 | 线程安全 | 同一实例 `Gather`（const）可并发（InFlash 经 `pread` 类位置读，共享 fd 亦可并发）；`Load` 不可并发、`Load` 与 `Gather`/`FillInputs` 不并发 | 并发用例 TC_3xx | 设计约束 |
 | 错误可观测 | 全部失败路径返回错误码，无静默吞错、无异常逃逸 | 异常 TC_1xx | 行为契约 |
 | 可移植 | g++ 13 / C++17，aarch64（Ascend 宿主）通过 | CI 编译 + GoogleTest | 环境事实 |
@@ -267,14 +277,14 @@ UT / 调试直查:
 ### 正常路径（TC_0xx）
 
 **TC_001 PerToken 加载成功**（关联 4.1.1；类别：正常路径）
-- Given INT8 表文件 `[vocab=16, hidden=8]` + Fp32 scale 文件 `[16]` + PerToken 配置
+- Given INT8 表段 `[vocab=16, hidden=8]` + Fp32 主 scale 段 `[16]`（单文件）+ PerToken 配置
 - When `Load(config)`
-- Then 返回 SUCCESS；`Table()` 字节大小 = 16×8×1；`Scale()` 字节大小 = 16×4；`Loaded()` 为真
+- Then 返回 SUCCESS；`Loaded()` 为真、`TableType()` 为 Int8；全 16 行 gather 与主 scale 段逐字节命中（行为级等价，替原 Table()/Scale() 尺寸断言）
 
 **TC_002 PerGroup 加载成功**（关联 4.1.1；类别：正常路径）
-- Given INT8 表 `[16, 8]` + Fp32 scale `[16 × 4]`（group_size=2，groups=4）+ PerGroup 配置
+- Given INT8 表段 `[16, 8]` + Fp32 主 scale 段 `[16 × 4]`（自建两段文件，W=0；group_size=2，groups=4）+ PerGroup 配置
 - When `Load(config)`
-- Then 返回 SUCCESS；`Scale()` 字节大小 = 16×4×4
+- Then 返回 SUCCESS；Gather 末词表项收取末 4 组 scale + 末行，与 fixture 末段逐字节一致（行为级等价）
 
 **TC_003 PerToken gather 正确性**（关联 4.1.2；类别：正常路径）
 - Given TC_001 已加载，ids = {3, 0, 15}
@@ -284,7 +294,7 @@ UT / 调试直查:
 **TC_004 PerGroup gather 的 scale 收集**（关联 4.1.2；类别：正常路径）
 - Given TC_002 已加载，ids = {5}
 - When `Gather(&id, 1, out_embed, out_scales)`
-- Then `out_scales` 的 4 个元素依次等于 scale 文件中下标 `5×4+0..3` 的值
+- Then `out_scales` 的 4 个元素依次等于 scale 段中下标 `5×4+0..3` 的值
 
 **TC_005 Embedding 路径 FillInputs 填对工位**（关联 4.1.3；类别：正常路径）
 - Given 已加载（INT8 存储），mock input bundle 含 `input_embed`（desc FLOAT16 `[3, 8]`）与 `embed_scales`（desc FLOAT32 `[3]`），name→index 映射
@@ -309,7 +319,7 @@ UT / 调试直查:
 **TC_008 InFlash 加载与 gather 正确性**（关联 4.1.1/4.1.2；类别：正常路径）
 - Given TC_001 同一表文件与配置，但 `load_mode = InFlash`
 - When `Load(config)` 后 `Gather(ids={3,0,15}, 3, out_embed, out_scales)`
-- Then 返回 SUCCESS；`Table()` 为 nullptr、`LoadMode()` 为 InFlash、`Loaded()` 为真；`out_embed`/`out_scales` 与 TC_003（InMemory）逐字节一致
+- Then 返回 SUCCESS；`LoadMode()` 为 InFlash、`Loaded()` 为真；`out_embed`/`out_scales` 与 TC_003（InMemory）逐字节一致；装载后截断表文件至主表段末 Gather 仍成功（表行走 fd pread，scale 已于 Load 期读入堆内存）
 
 **TC_009 InFlash 模式 FillInputs（Embedding 路径）**（关联 4.1.3；类别：正常路径）
 - Given InFlash 已加载（INT8 存储），mock `input_embed` desc FLOAT16 + `embed_scales` desc FLOAT32
@@ -319,9 +329,8 @@ UT / 调试直查:
 ### 异常路径（TC_1xx）
 
 **TC_101 表文件缺失**（关联 4.1.1）→ `Load` 返回 `INVALID_ARGUMENT`，`Loaded()` 为假，可重新 Load 成功。
-**TC_102 文件尺寸不符**（关联 4.1.1）→ 表或 scale 字节数与期望不符，`INVALID_ARGUMENT`。
-**TC_103 PerGroup 参数非法**（关联 4.1.1）→ group_size=0 / 未提供 / 不整除 hidden / scale_path 空，各返回 `INVALID_ARGUMENT`。
-**TC_104 scale 配置自相矛盾**（关联 4.1.1）→ `scale_type=None` 且 `scale_path` 非空 → `INVALID_ARGUMENT`。
+**TC_102 文件尺寸不符**（关联 4.1.1）→ 主表段过短（映射前拒）或主 scale 段读不足，`INVALID_ARGUMENT`；后段后随/尾字节超长放行。
+**TC_103 PerGroup 参数非法**（关联 4.1.1）→ group_size=0 / 未提供 / 不整除 hidden，各返回 `INVALID_ARGUMENT`。
 **TC_105 tokenId 越界**（关联 4.1.2）→ 任一 id ≥ vocab → `INVALID_ARGUMENT`，`out_embed` 不被部分写入。
 **TC_106 未加载先查**（关联 4.1.2/4.1.3）→ `Gather` 与 `FillInputs(Embedding, ...)` 返回 `INVALID_STATE`；`FillInputs(TokenId, ...)` 不受影响（见 TC_006）。
 **TC_107 工位缺失**（关联 4.1.3）→ name→index 无 `input_embed` 或（Embedding 路径且 scale_type≠None 时）无 `embed_scales` → `NOT_FOUND`。
@@ -330,12 +339,12 @@ UT / 调试直查:
 **TC_110 NULL 入参**（关联 4.1.6）→ `ids=nullptr, count>0` → `INVALID_ARGUMENT`。
 **TC_111 InFlash 运行期文件损坏**（关联 4.1.6）→ InFlash 已加载后截断表文件，`Gather` / `FillInputs`（Embedding 路径）返回 `FAILURE`。
 **TC_112 空 buffer 入参**（关联 4.1.6）→ `Gather` 传空 `shared_ptr` 的 `out_embed`/`out_scales`；`FillInputs` 传含空 buffer 的工位 → `INVALID_ARGUMENT`，无解引用崩溃。
-**TC_113 FromModelConfig 未知枚举字符串**（关联 4.1.1/4.2，U-8 路线 b）→ `ModelConfig.embedding_table_type = "fp8"` 等未知值 → `INVALID_ARGUMENT`；`embedding_table_path` 为空 → SUCCESS 且 `table_path` 为空（不加载信号）。
+**TC_113 FromSection 未知枚举字符串**（关联 4.1.1/4.2，SR20260903001 D-12）→ `embedding_config` 段 type 键 = `"fp8"` 等未知值 → `INVALID_ARGUMENT`；`weights` 为空 → SUCCESS 且 `table_path` 为空（不加载信号）。
 
 ### 边界（TC_2xx）
 
 **TC_201 count=0**（关联 4.1.2）→ `Gather(ids, 0, ...)` 返回 SUCCESS，不写任何字节。
-**TC_202 scale_type=None**（关联 4.1.1/4.1.2）→ 无 scale 文件加载成功；Gather 跳过 `out_scales` 返回 SUCCESS；FillInputs 跳过 `embed_scales`（处置见 U-6）。
+**TC_202 scale_type=None**（关联 4.1.1/4.1.2）→ 无主 scale 段加载成功；Gather 跳过 `out_scales` 返回 SUCCESS；FillInputs 跳过 `embed_scales`（处置见 U-6）。
 **TC_203 vocab 边界 id**（关联 4.1.2）→ id = vocab-1 成功、id = vocab 拒绝。
 **TC_204 加载失败后可恢复**（关联 4.1.6）→ 失败 Load 后修正配置再 Load 成功。
 

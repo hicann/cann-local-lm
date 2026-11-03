@@ -109,8 +109,7 @@ enum class EmbeddingLoadMode { InMemory, InFlash };
 
 /// Load 配置（4.1.1）。来源：ModelConfig 经 FromModelConfig 组装（U-8 路线 b）。
 struct EmbeddingConfig {
-    std::string table_path; // raw [vocab, hidden] row-major
-    std::string scale_path; // scale_type=None 时须为空
+    std::string table_path; // 合并单文件（四段布局，见下）；空 = 不加载（tokenId 部署形态）
     EmbeddingType table_type = EmbeddingType::Fp32;
     EmbeddingScaleType scale_type = EmbeddingScaleType::None;
     EmbeddingQuantMode quant_mode = EmbeddingQuantMode::PerToken;
@@ -119,32 +118,30 @@ struct EmbeddingConfig {
     size_t hidden_dim = 0; // 来源 ModelConfig（U-2）
     EmbeddingLoadMode load_mode = EmbeddingLoadMode::InMemory;
 
-    // ── per_layer_token_identity（gemma4，docs/gemma4_token_identity.md）──
-    /// 合并文件布局：identity 表不独立成文件，而以
-    /// [vocab, W] 行优先紧排在 embedding_weights 主表段之后（段偏移 =
-    /// vocab × hidden × 主表元素大小）；scale 段同理以 [vocab] PerToken
-    /// 紧排在 embedding_dequant_scale 主 scale 段之后。是否读取由 pipeline
-    /// 依图工位判定（以图为准，B-10）：图带工位 ⇒ 从偏移处读取，本结构只携带读取类型。
-    /// meta 键 token_identity_type：identity 段读取类型；缺省 fp16（Q10）。
+    // ── per_layer_token_identity（gemma4）──
+    /// 单文件四段布局（段内行优先，无头部、无段间 padding）：
+    ///   [主表 vocab×hidden][identity 表 vocab×W][主 scale][identity scale]
+    /// 各段偏移/长度均由本结构字段计算；identity/identity scale 段是否读取由
+    /// pipeline 依图工位判定（以图为准）：图带工位 ⇒ 从对应偏移读取。
+    /// meta 键 token_identity_type：identity 表读取类型；缺省 fp16。
     EmbeddingType token_identity_type = EmbeddingType::Fp16;
-    /// meta 键 token_identity_scale_type：scale 段读取类型（仅规范拼写，无
-    /// 旧拼写兜底）。缺省 fp16；仅图带 scale 工位时被消费——
-    /// pipeline 依图回填 None = 不读。
+    /// meta 键 token_identity_scale_type：identity scale 读取类型；缺省 fp16；
+    /// 仅图带 scale 工位时被消费——pipeline 依图回填 None = 不读。
     EmbeddingScaleType token_identity_scale_type = EmbeddingScaleType::Fp16;
-    /// 非来自 meta_json：LoadTokenIdentity 自工位 dims 尾维连乘推导后回填。
+    /// 非来自 meta_json：pipeline 自工位 dims 尾维连乘推导后回填。Load 与
+    /// LoadTokenIdentity 均以本字段计算段偏移（唯一入口，两方法恒同源）。
     size_t token_identity_row_width = 0;
 
-    /// SR20260903001 组装入口（取代 FromModelConfig，U-8 决议取代；D-12 直接参数化，
-    /// 无中间结构）：embedding_config 段 8 字符串（解析步骤提取）+ model_config 跨段
-    /// vocab/hidden → EmbeddingConfig。字符串→枚举解析与校验在此（唯一必然转换）。
+    /// embedding_config 段 7 字符串（解析步骤提取）+ model_config 跨段
+    /// vocab/hidden → EmbeddingConfig。字符串→枚举解析与校验在此。
     /// weights 为空 → out->table_path 为空（"不加载"信号，tokenId 部署形态，
     /// 调用方据此不调 Load）。
-    /// 主表与 identity 解析互相独立：weights 空仍解析 identity 读取类型（合并布局下
-    /// identity 数据与主表同一文件，启用与否由图工位判定，Q12）；但 identity host
+    /// 主表与 identity 解析互相独立：weights 空仍解析 identity 读取类型
+    /// （identity 数据与主表同一文件，启用与否由图工位判定）；identity host
     /// 查表只服务 Embedding 部署形态（TokenId 形态 identity 由图内自理，
     /// pipeline InitEmbedding_ 门控）。
     /// 错误：未知枚举 → INVALID_ARGUMENT（解析步骤转段降级）。
-    static Status FromSection(const std::string& weights, const std::string& dequant_scale,
+    static Status FromSection(const std::string& weights,
                               const std::string& type,                // "fp32"|"fp16"|"int8"|"int4"
                               const std::string& scale_type,          // ""|"none"|"fp32"|"fp16"
                               const std::string& quant_mode,          // ""|"per_token"|"per_group"
@@ -166,11 +163,12 @@ public:
     TextEmbedding(TextEmbedding&&) noexcept;
     TextEmbedding& operator=(TextEmbedding&&) noexcept;
 
-    /// 4.1.1：加载低精度表 +（可选）scale。InMemory 整表入 host 内存；
-    /// InFlash 仅校验文件元数据并保持文件打开，gather 时按行偏移直读文件。
-    /// 语义：同步；调用方保证不并发、不与 Gather/FillInputs 并发（契约见 DESIGN §2.4）。
-    ///       失败保持未加载态（可重 Load）。
-    /// 错误：文件缺失/尺寸不符/PerGroup 参数非法/scale 配置矛盾 → INVALID_ARGUMENT
+    /// 4.1.1：加载主表 +（可选）主 scale 段（单文件四段布局：scale 段位于
+    /// 主表段与 identity 表段之后）。InMemory 整表 mmap 入映射页；
+    /// InFlash 仅校验文件元数据并保持文件打开，gather 时按行偏移直读文件；
+    /// scale 恒内存态（D-09）。语义：同步；调用方保证不并发、不与
+    /// Gather/FillInputs 并发（契约见 DESIGN §2.4）。失败保持未加载态（可重 Load）。
+    /// 错误：文件缺失/尺寸不符（含 scale 段读不足）/PerGroup 参数非法 → INVALID_ARGUMENT
     Status Load(const EmbeddingConfig& config);
 
     /// 4.1.2：embedding 路径 host 查表（按下标拷贝低精度行 + 收集 scale，不反量化）。
@@ -193,18 +191,15 @@ public:
                       const std::unordered_map<std::string, size_t>& name_index, EmbeddingPath path, const TokenId* ids,
                       size_t count);
 
-    /// gemma4 per_layer_token_identity 表加载（docs/gemma4_token_identity.md §5.2；
-    /// 合并文件布局——Q12）：与 Load 同构的第二个表源（独立状态，
-    /// 不混用 loaded_）。数据取自 config.table_path 的主表段之后（段偏移 =
-    /// vocab × hidden × 主表元素大小）；scale 段（token_identity_scale_type ≠ None 时）
-    /// 取自 config.scale_path 的主 scale 段之后（PerToken 恒 vocab 项，主表
-    /// PerGroup 在 Load 期已拒——TC_209，此处不再有组概念）。None 由 pipeline
-    /// InitEmbedding_ 依图回填（图缺 scale 工位 = 不读取）；row_width 由调用方
-    /// 自工位 dims 尾维连乘推导传入（Embedding 部署形态下调用，非 meta 字段）。
-    /// 失败保持 identity 未加载态。
-    /// 错误口径同 Load：文件缺失/identity 段尺寸不符（短/超长）/Int4（U-3）
-    /// → INVALID_ARGUMENT
-    Status LoadTokenIdentity(const EmbeddingConfig& config, size_t row_width);
+    /// gemma4 per_layer_token_identity 表加载：与 Load 同构的第二个表源
+    /// （独立状态，不混用 loaded_）。identity 表取自 config.table_path 主表段
+    /// 之后；identity scale（token_identity_scale_type ≠ None 时）取自主 scale
+    /// 段之后（PerToken 恒 vocab 项；None 由 pipeline 依图回填 = 不读取）。
+    /// 行宽 W 取 config.token_identity_row_width（pipeline 回填，非 meta 字段）。
+    /// 全文件总长按四段和精确判等（identity 表为末段时不含后段）。失败保持
+    /// identity 未加载态。
+    /// 错误：文件缺失/段尺寸不符（短/超长）/Int4（U-3）→ INVALID_ARGUMENT
+    Status LoadTokenIdentity(const EmbeddingConfig& config);
 
     // ── 访问器（pipeline / UT 用；均不抛异常）──
     // 无 Table()/Scale() 存储暴露接口：TensorBuffer 仅用于模型输入/输出工位，
@@ -233,8 +228,8 @@ private:
     // ── per_layer_token_identity：与主表并列的第二表源（generate 独立，不混用上方状态）──
     std::unique_ptr<detail::TableSource> identity_source_; // InMemory/InFlash 二态
     std::unique_ptr<char[]> identity_scale_data_;          // PerToken scale，恒内存态（D-09）；堆内存
-    EmbeddingConfig identity_cfg_{}; // LoadTokenIdentity 成功后的配置快照（含 row_width 回填）
-    size_t identity_row_bytes_ = 0;  // row_width × 存储元素大小
+    EmbeddingConfig identity_cfg_{}; // LoadTokenIdentity 成功后的配置快照（含行宽 W）
+    size_t identity_row_bytes_ = 0;  // 行宽 W × 存储元素大小
     bool identity_loaded_ = false;
 };
 

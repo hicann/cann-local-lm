@@ -19,7 +19,7 @@ v0.2: 外部审查（+2，2026-08-29）放行条件修订——Scheduler 接线�
 
 它夹在 `pipelineExecutor`（上层调度）和 om 图输入工位（`input_embed` / `embed_scales`）之间，干三件事：
 
-1. **加载（Load）**：读 embedding 表文件和 scale 文件。表可以整块读进内存（InMemory），也可以不进内存、留个文件句柄每次现读（InFlash）。
+1. **加载（Load）**：读 embedding_weights 单文件（四段布局：主表 → per_layer 表 → 主 scale → per_layer scale）。表可以整块映射进内存（InMemory），也可以不进内存、留个文件句柄每次现读（InFlash）。
 2. **查表（Gather）**：给一组 token id，按行偏移把表里对应的低精度行拷出来，同时把每个 token 的反量化参数（scale）也收集出来。
 3. **填工位（FillInputs）**：把查到的行做类型转换后写进 `input_embed` 工位，把 scale 写进 `embed_scales` 工位——写入类型以工位自己的 `TensorDesc` 为准，不是以文件存储类型为准。
 
@@ -44,7 +44,7 @@ v0.2: 外部审查（+2，2026-08-29）放行条件修订——Scheduler 接线�
 
 ### 4. 量化粒度：PerToken 与 PerGroup
 
-scale 文件的形状由初始化参数 `quantMode` 决定：
+scale 段（单文件第三段）的形状由初始化参数 `quantMode` 决定：
 
 - **PerToken**：每个词表项（表的一行）一个 scale，文件里就是 `[vocab]` 个数。
 - **PerGroup**：一行 embedding 按 hidden 维切成若干组（组大小 = `GroupSize`，必填且必须整除 hidden_dim），**每组各一个 scale**——一个 tokenId 对应多个反量化参数。文件形状 `[vocab × (hidden/group_size)]`，token v 的第 g 组 scale 在下标 `v×groups+g`。
@@ -67,7 +67,7 @@ scale 文件的形状由初始化参数 `quantMode` 决定：
 
 | | InMemory（默认） | InFlash |
 |---|---|---|
-| 表常驻内存 | ≈ 表文件字节 | 0（只有 scale + 一个 fd） |
+| 表常驻内存 | ≈ 单文件总长（mmap 只读映射页）+ scale 堆内存 | 0（只有 scale + 一个 fd） |
 | gather 成本 | memcpy | 每行一次 pread 系统调用 |
 | 适合 | 吞吐优先（服务器 ACL 侧） | 内存受限（端侧 OHOS） |
 
@@ -80,6 +80,8 @@ InFlash 的代价是文件生命周期：Load 之后表文件必须一直在那�
 ```cpp
 Status Load(const EmbeddingConfig& config);
 
+Status LoadTokenIdentity(const EmbeddingConfig& config);  // per_layer 表/Scale 段（同一单文件）
+
 Status Gather(const TokenId* ids, size_t count,
               std::shared_ptr<ITensorBuffer> out_embed,
               std::shared_ptr<ITensorBuffer> out_scales) const;   // 可并发
@@ -89,10 +91,10 @@ Status FillInputs(const std::vector<std::shared_ptr<ITensorBuffer>>& inputs,
                   EmbeddingPath path,
                   const TokenId* ids, size_t count);
 
-// 访问器：Table() / Scale() / TableType() / LoadMode() / Loaded()
+// 访问器：TableType() / LoadMode() / Loaded() / IdentityLoaded()（无 Table()/Scale() 存储暴露）
 ```
 
-`EmbeddingConfig`：两个路径、两种类型、量化粒度 + group_size、vocab/hidden（来自 ModelConfig）、load_mode。
+`EmbeddingConfig`：单文件路径、主表/主 scale 两类型、量化粒度 + group_size、vocab/hidden（来自 ModelConfig）、load_mode、token_identity 三键（行宽 W 由 pipeline 依图工位回填）。
 
 关于 `FillInputs` 的参数——它拿的是 model_executor 的输入工位数组（`input_tensors_`）和名字→下标映射（`input_name_index_`）。为此 `ModelExecutor` 新增两个**只读** accessor（`InputTensors()` / `InputNameIndex()`），是加法变更，不动既有接口。本模块只写名为 `input_embed` 和 `embed_scales` 的工位，越界即缺陷——跟 InputAssembler 写的另外三个工位（position_ids / new_kv_cache_pos / attention_mask）井水不犯河水。
 
@@ -100,9 +102,9 @@ Status FillInputs(const std::vector<std::shared_ptr<ITensorBuffer>>& inputs,
 
 ```
 init 期:   pipeline 拿 ModelConfig（meta_json 反序列化，属 ModelConfig 属主的既有规划）
-             → EmbeddingConfig::FromModelConfig(mc, &config)   ← U-8 已决议：路线 b
+             → EmbeddingConfig::FromSection(meta embedding_config 段) ← SR20260903001 D-12
              → table_path 非空才 text_embedding_.Load(config)
-           （InMemory：整表+scale 读入内存；InFlash：open+fstat 校验+留 fd）
+           （InMemory：表段 mmap 只读映射 + scale 段读入堆内存；InFlash：open+fstat 校验+留 fd）
            （table_path 为空 = tokenId 部署形态，跳过 Load——meta_json 反序列化落地前
              ModelConfig 字段缺省即为空，与现状行为兼容）
 
@@ -130,7 +132,7 @@ Load 之后，模块的所有成员（表 buffer 或 fd、scale buffer、配置�
 
 全部走 `infra/status.h` 六个粗码，不抛异常：
 
-- **INVALID_ARGUMENT**：文件缺失/尺寸不对、PerGroup 参数非法、scale 配置自相矛盾（type=None 却给了路径）、token id 越界（整批拒绝不部分产出）、输出容量不足、NULL 入参、不支持的类型转换组合。
+- **INVALID_ARGUMENT**：文件缺失/尺寸不符（identity 启用时总长须精确等于四段和）、PerGroup 参数非法、token id 越界（整批拒绝不部分产出）、输出容量不足、NULL 入参、不支持的类型转换组合。
 - **INVALID_STATE**：embedding 路径没 Load 就 Gather/FillInputs（tokenId 路径豁免）。
 - **NOT_FOUND**：name→index 里没有 `input_embed`（或该有 scale 时没有 `embed_scales`）。
 - **FAILURE**：InFlash 运行期文件损坏（pread 短读/I/O 错）；TensorManager 申请 buffer 失败。
@@ -161,4 +163,3 @@ GoogleTest，落 `tests/cpp/engine/`，UT target `ut_text_embedding`。核心思
 - **U-6**：没有 scale 的模型，`embed_scales` 工位跳过不填（当前取法）；首个无 scale 模型接入时再确认。
 - **U-7**：InFlash 文件不支持热更新，损坏走 FAILURE。
 - ~~**U-8**（2026-08-29 外审新增）~~：`EmbeddingConfig` 从用户配置到 pipeline 的通道——**已决议（2026-08-29 用户拍板）路线 b**：meta_json → `ModelConfig` 扩展 embedding 段（plain 字符串/整数字段，序列化友好）→ `EmbeddingConfig::FromModelConfig` 组装（字符串→枚举的解析校验在本模块，依赖方向合法）。L1 `EngineOptions`/C ABI 一动不动。vocab/hidden 也一并落 ModelConfig（U-2 的来源就此定了）。
-- 新增一条实现期复核项：表/scale buffer 经 `TensorManager::CreateTensor` 申请时 `modelId=0` 哨兵的语义，真实后端实装时确认 host buffer 不受 modelId 绑定影响。

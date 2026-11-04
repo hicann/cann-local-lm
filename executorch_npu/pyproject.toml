@@ -1,0 +1,61 @@
+[build-system]
+requires = ["setuptools>=68", "wheel>=0.40"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "executorch_npu"
+version = "0.1.0"
+description = "ExecuTorch AOT backend for Ascend CANN"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "CANN Open Software License Agreement Version 2.0"}
+# Torch is intentionally not declared here. Every export environment must
+# install a validated +cpu wheel from the PyTorch CPU index before this package.
+dependencies = [
+    "executorch==1.5.0",
+    "psutil>=5.9",
+    "pydantic>=2.0,<3",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=7", "jsonschema>=4"]
+
+[tool.setuptools]
+package-dir = {"" = "python"}
+
+[tool.setuptools.packages.find]
+where = ["python"]
+
+[tool.setuptools.package-data]
+executorch_npu = ["_sdk/**/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests/python"]
+addopts = "-ra"
+
+[tool.ruff]
+line-length = 88
+target-version = "py310"
+src = ["python", "tests"]
+
+[tool.ruff.lint]
+extend-select = ["I", "N801", "N802", "N803", "N805", "B904", "RUF013"]
+
+[tool.ruff.lint.isort]
+combine-as-imports = true
+order-by-type = false
+lines-after-imports = 2
+known-first-party = ["executorch_npu", "examples", "scripts"]
+
+[tool.ruff.lint.pep8-naming]
+# Preserve the upstream Transformers model/version names and checkpoint API.
+extend-ignore-names = ["Qwen3_5*", "_Qwen3_5*"]
+
+[tool.ruff.lint.per-file-ignores]
+# 示例脚本必须先 sys.path.insert(REPO_ROOT) 才能导入 examples / executorch_npu，
+# 因此模块级导入位于文件顶部之后是刻意设计，不是缺陷。
+"examples/**" = ["E402"]
+
+[tool.ruff.format]
+quote-style = "double"
+docstring-code-format = true

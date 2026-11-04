@@ -1,0 +1,458 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ascend.example/executorch_npu/manifest-v1.schema.json",
+  "$defs": {
+    "FileConstantBinding": {
+      "additionalProperties": false,
+      "properties": {
+        "binding_id": {
+          "description": "Unique identifier of the FileConstant binding.",
+          "minLength": 1,
+          "title": "Binding Id",
+          "type": "string"
+        },
+        "file_name": {
+          "description": "File name exposed to the OM and GE runtime.",
+          "minLength": 1,
+          "pattern": "^[^/\\\\]+$",
+          "title": "File Name",
+          "type": "string"
+        },
+        "weight_group_key": {
+          "description": "Key of the weight group that contains this binding.",
+          "pattern": "^ascend\\.weights\\.[0-9a-f]{64}$",
+          "title": "Weight Group Key",
+          "type": "string"
+        },
+        "offset": {
+          "description": "Byte offset of the binding within its weight group.",
+          "minimum": 0,
+          "multipleOf": 32,
+          "title": "Offset",
+          "type": "integer"
+        },
+        "nbytes": {
+          "description": "Length of the bound byte range.",
+          "exclusiveMinimum": 0,
+          "title": "Nbytes",
+          "type": "integer"
+        },
+        "shape": {
+          "description": "Logical shape of the bound byte range.",
+          "items": {
+            "exclusiveMinimum": 0,
+            "type": "integer"
+          },
+          "maxItems": 1,
+          "minItems": 1,
+          "title": "Shape",
+          "type": "array"
+        },
+        "alias_of": {
+          "description": "Optional identifier of an existing binding that shares this byte range.",
+          "title": "Alias Of",
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "binding_id",
+        "file_name",
+        "weight_group_key",
+        "offset",
+        "nbytes",
+        "shape"
+      ],
+      "title": "FileConstantBinding",
+      "type": "object"
+    },
+    "IoBinding": {
+      "additionalProperties": false,
+      "properties": {
+        "et_arg_index": {
+          "description": "ExecuTorch argument index associated with this tensor.",
+          "minimum": 0,
+          "title": "Et Arg Index",
+          "type": "integer"
+        },
+        "direction": {
+          "description": "Tensor direction: ``input`` or ``output``.",
+          "enum": [
+            "input",
+            "output"
+          ],
+          "title": "Direction",
+          "type": "string"
+        },
+        "ascend_name": {
+          "description": "Tensor name used by the Ascend graph.",
+          "minLength": 1,
+          "title": "Ascend Name",
+          "type": "string"
+        },
+        "dtype": {
+          "description": "Tensor data type.",
+          "enum": [
+            "bool",
+            "uint8",
+            "int8",
+            "int16",
+            "int32",
+            "int64",
+            "float16",
+            "bfloat16",
+            "float32",
+            "float64"
+          ],
+          "title": "Dtype",
+          "type": "string"
+        },
+        "shape": {
+          "description": "Tensor shape, using ``-1`` for a dynamic dimension.",
+          "items": {
+            "minimum": -1,
+            "type": "integer"
+          },
+          "title": "Shape",
+          "type": "array"
+        },
+        "semantic_role": {
+          "description": "Runtime role: data, current state, or next state.",
+          "enum": [
+            "data",
+            "state_current",
+            "state_next"
+          ],
+          "title": "Semantic Role",
+          "type": "string"
+        },
+        "shape_range": {
+          "description": "Optional minimum and maximum values for each dynamic dimension.",
+          "title": "Shape Range",
+          "items": {
+            "items": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "maxItems": 2,
+            "minItems": 2,
+            "type": "array"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "et_arg_index",
+        "direction",
+        "ascend_name",
+        "dtype",
+        "shape",
+        "semantic_role"
+      ],
+      "title": "IoBinding",
+      "type": "object"
+    },
+    "IoContract": {
+      "additionalProperties": false,
+      "properties": {
+        "inputs": {
+          "description": "Input tensor bindings.",
+          "items": {
+            "$ref": "#/$defs/IoBinding"
+          },
+          "title": "Inputs",
+          "type": "array"
+        },
+        "outputs": {
+          "description": "Output tensor bindings.",
+          "items": {
+            "$ref": "#/$defs/IoBinding"
+          },
+          "title": "Outputs",
+          "type": "array"
+        }
+      },
+      "required": [
+        "inputs",
+        "outputs"
+      ],
+      "title": "IoContract",
+      "type": "object"
+    },
+    "ModelArtifact": {
+      "additionalProperties": false,
+      "properties": {
+        "named_data_key": {
+          "description": "Key used to locate the OM in PTE named data.",
+          "minLength": 1,
+          "title": "Named Data Key",
+          "type": "string"
+        },
+        "sha256": {
+          "description": "SHA-256 digest of the OM contents.",
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Sha256",
+          "type": "string"
+        },
+        "nbytes": {
+          "description": "Logical size of the OM in bytes.",
+          "exclusiveMinimum": 0,
+          "title": "Nbytes",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "named_data_key",
+        "sha256",
+        "nbytes"
+      ],
+      "title": "ModelArtifact",
+      "type": "object"
+    },
+    "RuntimeProtocol": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "const": "AscendBackend",
+          "default": "AscendBackend",
+          "description": "Always ``AscendBackend``; identifies the backend protocol.",
+          "title": "Name",
+          "type": "string"
+        },
+        "version": {
+          "const": 1,
+          "default": 1,
+          "description": "Runtime protocol version; currently ``1``.",
+          "title": "Version",
+          "type": "integer"
+        },
+        "artifact_abi": {
+          "const": 1,
+          "default": 1,
+          "description": "Artifact ABI version; currently ``1``.",
+          "title": "Artifact Abi",
+          "type": "integer"
+        }
+      },
+      "title": "RuntimeProtocol",
+      "type": "object",
+      "required": [
+        "name",
+        "version",
+        "artifact_abi"
+      ]
+    },
+    "StateBinding": {
+      "additionalProperties": false,
+      "properties": {
+        "state_id": {
+          "description": "Stable identifier of the runtime state.",
+          "minLength": 1,
+          "title": "State Id",
+          "type": "string"
+        },
+        "current_input_arg": {
+          "description": "Argument index of the tensor containing the current state.",
+          "minimum": 0,
+          "title": "Current Input Arg",
+          "type": "integer"
+        },
+        "next_output_arg": {
+          "description": "Argument index of the next state, or ``-1`` when it is not updated.",
+          "minimum": -1,
+          "title": "Next Output Arg",
+          "type": "integer"
+        },
+        "dtype": {
+          "description": "State tensor data type.",
+          "enum": [
+            "bool",
+            "uint8",
+            "int8",
+            "int16",
+            "int32",
+            "int64",
+            "float16",
+            "bfloat16",
+            "float32",
+            "float64"
+          ],
+          "title": "Dtype",
+          "type": "string"
+        },
+        "shape": {
+          "description": "State tensor shape.",
+          "items": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "title": "Shape",
+          "type": "array"
+        },
+        "reset_policy": {
+          "description": "Policy controlling when the runtime resets this state.",
+          "enum": [
+            "on_prefill",
+            "explicit",
+            "never"
+          ],
+          "title": "Reset Policy",
+          "type": "string"
+        },
+        "reset_owner": {
+          "description": "Whether this delegate owns the reset operation for the state.",
+          "title": "Reset Owner",
+          "type": "boolean"
+        },
+        "host_visibility": {
+          "description": "Whether the state remains on device or is synchronized with the host.",
+          "enum": [
+            "device_only",
+            "synchronized"
+          ],
+          "title": "Host Visibility",
+          "type": "string"
+        }
+      },
+      "required": [
+        "state_id",
+        "current_input_arg",
+        "next_output_arg",
+        "dtype",
+        "shape",
+        "reset_policy",
+        "reset_owner",
+        "host_visibility"
+      ],
+      "title": "StateBinding",
+      "type": "object"
+    },
+    "StateContract": {
+      "additionalProperties": false,
+      "properties": {
+        "bindings": {
+          "description": "State bindings; empty for a stateless delegate.",
+          "items": {
+            "$ref": "#/$defs/StateBinding"
+          },
+          "title": "Bindings",
+          "type": "array"
+        }
+      },
+      "required": [
+        "bindings"
+      ],
+      "title": "StateContract",
+      "type": "object"
+    },
+    "WeightGroup": {
+      "additionalProperties": false,
+      "properties": {
+        "weight_group_key": {
+          "description": "Key used to locate the weight group in PTD named data.",
+          "pattern": "^ascend\\.weights\\.[0-9a-f]{64}$",
+          "title": "Weight Group Key",
+          "type": "string"
+        },
+        "sha256": {
+          "description": "SHA-256 digest of the weight-group contents.",
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Sha256",
+          "type": "string"
+        },
+        "total_nbytes": {
+          "description": "Logical size of the weight group in bytes.",
+          "exclusiveMinimum": 0,
+          "title": "Total Nbytes",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "weight_group_key",
+        "sha256",
+        "total_nbytes"
+      ],
+      "title": "WeightGroup",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "runtime_protocol": {
+      "$ref": "#/$defs/RuntimeProtocol",
+      "description": "Backend runtime protocol and artifact ABI compatibility information."
+    },
+    "method": {
+      "description": "ExecuTorch method name.",
+      "minLength": 1,
+      "title": "Method",
+      "type": "string"
+    },
+    "delegate_index": {
+      "description": "Index of this delegate within the ExecuTorch method.",
+      "minimum": 0,
+      "title": "Delegate Index",
+      "type": "integer"
+    },
+    "role": {
+      "description": "Delegate role: inference, prefill, or decode.",
+      "enum": [
+        "inference",
+        "prefill",
+        "decode"
+      ],
+      "title": "Role",
+      "type": "string"
+    },
+    "acl_soc_name": {
+      "description": "Validated device name used as both the GE target and runtime match.",
+      "minLength": 1,
+      "title": "Acl Soc Name",
+      "type": "string"
+    },
+    "model": {
+      "$ref": "#/$defs/ModelArtifact",
+      "description": "Metadata used to locate and verify the compiled OM."
+    },
+    "weight_groups": {
+      "description": "External weight groups referenced by this delegate.",
+      "items": {
+        "$ref": "#/$defs/WeightGroup"
+      },
+      "minItems": 1,
+      "title": "Weight Groups",
+      "type": "array"
+    },
+    "file_constant_bindings": {
+      "description": "FileConstant bindings into the external weight groups.",
+      "items": {
+        "$ref": "#/$defs/FileConstantBinding"
+      },
+      "minItems": 1,
+      "title": "File Constant Bindings",
+      "type": "array"
+    },
+    "io_contract": {
+      "$ref": "#/$defs/IoContract",
+      "description": "Input and output tensor contract for the delegate."
+    },
+    "state": {
+      "$ref": "#/$defs/StateContract",
+      "description": "Persistent runtime state contract for the delegate."
+    }
+  },
+  "required": [
+    "runtime_protocol",
+    "method",
+    "delegate_index",
+    "role",
+    "acl_soc_name",
+    "model",
+    "weight_groups",
+    "file_constant_bindings",
+    "io_contract",
+    "state"
+  ],
+  "title": "Manifest",
+  "type": "object"
+}

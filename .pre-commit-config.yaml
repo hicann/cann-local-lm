@@ -57,7 +57,7 @@ repos:
       - id: codespell
         args: [
             "-L",
-            "CANN,cann,NNAL,nnal,ASCEND,ascend,EnQue,CopyIn,ArchType,AND,ND,nd,tbe,te,copyin,alog,outWeight,weightIn",
+            "CANN,cann,NNAL,nnal,ASCEND,ascend,EnQue,CopyIn,ArchType,AND,ND,nd,tbe,te,copyin,alog,outWeight,weightIn,ptd,PTD",
             "--skip",
             "*.py,*.cpp,*.hpp,*.c,*.h,*.cc,*.md,*.jsonl,tests/cpp/engine/fixtures/*",
           ]

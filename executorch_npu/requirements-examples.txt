@@ -1,0 +1,18 @@
+# Aggregate model-level dependencies used by the examples.
+# This is a repository convenience profile, not the universal dependency set
+# for torch.export or for arbitrary user models.
+# Install the ExecuTorch/Torch export stack first. TorchAir, torch-delegate,
+# torch_npu and CANN are platform dependencies and are intentionally excluded.
+# torch-delegate ships in-repo at ../torch_delegate: build its whl with
+# `bash build.sh` there, or install a released torch_delegate whl directly.
+
+--extra-index-url https://download.pytorch.org/whl/cpu
+
+# Qwen and Gemma model definitions. Keep this aligned with the validated
+# version recorded in docs/supported_versions.md.
+transformers==5.17.0
+
+# MobileNetV2 model definition for the default Torch 2.11.0 profile. Other
+# supported Torch releases need the matching Torchvision version documented in
+# docs/supported_versions.md.
+torchvision==0.26.0+cpu

@@ -35,7 +35,7 @@ cann-local-lm/
 │   ├── converter/            # 导出工具链 (HF 模型 → epair → omc 编译)
 │   ├── engine/               # 推理引擎 (omc 加载 + 推理执行)
 │   └── models/               # 模型定义 (gemma4 + fused_ops 算子)
-├── torch_delegate/           # torch-delegate (已合入): epair 序列化/加载 + C++ backend + .venv 构建
+├── torch_delegate/           # torch-delegate: epair 序列化/加载 + C++ backend + .venv 构建
 │   ├── csrc/                 # C++ 后端 (epair archive 加载 → GE Graph → OM)
 │   ├── torch_delegate/       # Python 包 (api.py + converter/ + epair/ + core/)
 │   ├── cmake/                # torch-delegate 专用 CMake 模块
@@ -43,6 +43,15 @@ cann-local-lm/
 │   ├── tests/                # torch-delegate 单元测试 (C++ GTest + Python pytest)
 │   ├── build.sh              # 一站式构建 (deps → cpp → wheel → .run)
 │   └── examples/             # 示例 (导出加载/精度对比/异步执行)
+├── executorch_npu/           # ExecuTorch-NPU: ExecuTorch Ascend AOT Backend (PyTorch → PTE/PTD → NPU 执行)
+│   ├── python/executorch_npu/ # Python 包 (AscendPartitioner + compiler + passes + artifacts)
+│   ├── runtime/              # C++ Backend (AscendBackend 静态注册 + Manifest/SHA-256 + Stateful API)
+│   ├── tools/                # C++ 验证 Runner (普通/Stateful + GDN 算子注册)
+│   ├── examples/             # 示例 (mobilenet_v2 / qwen3_5 / gemma4 + MMLU 评测)
+│   ├── docs/                 # 中英文档 (构建/导出/运行时/设计/故障排查/支持版本)
+│   ├── tests/                # 单元测试 (C++ GTest + Python pytest)
+│   ├── third_party/          # nlohmann/json (vendored, MIT)
+│   └── build.sh              # 一站式构建 (C++ Backend → ctest → wheel)
 ├── docs/                     # 设计文档 (converter + engine + 构建 + 版本演进)
 ├── examples/                 # 端到端用例 (omc 编译 + NPU 出字验证)
 ├── scripts/                  # 构建脚本 (build.sh + build.conf + set_env*.sh + cann_lm_compile/)
@@ -59,6 +68,7 @@ cann-local-lm/
 | **cann_local_lm/engine/**　　　　　| omc推理引擎　　　　　　　| `api/`(Python接口) / `core/`(核心逻辑) / `backend/`(C++ 后端) / `pipeline/`(推理流水线)　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　 |
 | **cann_local_lm/models/**　　　　　|模型定义 + 自定义算子　| `gemma4/`(Gemma4ForCausalLM + export_wrapper)  / `fused_ops/`(cann_local_lm:: + npu:: 算子schema+fake-meta)　　　　　　　　　　　　　　　　　　　　　|
 | **torch_delegate/**　　　　　| epair序列化/加载 + C++ 后端 | `csrc/backend/`(EpairModelLoader → GE Graph → OM) / `torch_delegate/`(api.py + converter + epair + core) / `build.sh`(一键构建) / `examples/`(示例) |
+| **executorch_npu/**　　　　　| ExecuTorch Ascend AOT Backend | `python/executorch_npu/`(AscendPartitioner + AscendBackend.preprocess: EP→EPAIR→GE→OM→PTE/PTD) / `runtime/`(C++ Backend: PTE/PTD加载 + Manifest校验 + ACL执行) / `tools/`(C++ Runner) / `examples/`(mobilenet_v2/qwen3_5/gemma4) / `build.sh`(一键构建) |
 | **docs/cann_lm_converter/**　| converter设计文档　　　　 | `cli/cli_design.md` / `export/export_design.md` / `quant/quant_design.md` / `README.md`(总览) / `version_evolution.md`(版本演进)　　　　　　　　　　　　　　　　　　　　　　　　　　　|
 | **examples/test_converter/** | 端到端测试用例　　　　　　 | `export_llm_model/`(C++ omc编译 + om_npu_verify出字验证) / `cann_lm_cli_export/run_pd6_cases.sh`(6用例)　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　|
 | **scripts/**　　　　　　　　 | 构建脚本　　　　　　　　　 | `build.sh`(顶层check/deps/third_party/cpp/tests/wheel/package/all) / `build.conf`(版本+git源+自定位派生路径) / `set_env.sh`(converter+compile统一env, 真CANN无stubs) / `set_env_cann.sh`(③ NPU) / `_env_common.sh`(公共) / `cann_lm_compile/build_cpp.sh`(C++ .so+cann_lm_compile) / `build_test.sh`(ASAN测试) / `build_third_party.sh`(自建json/gtest/makeself) / `cann_lm_{converter,engine}/build_wheel.sh`(whl打包)　 |

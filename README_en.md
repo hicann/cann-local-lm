@@ -35,7 +35,7 @@ cann-local-lm/
 │   ├── converter/            # Export toolchain (HF model → epair → omc compilation)
 │   ├── engine/               # Inference engine (omc loading + inference execution)
 │   └── models/               # Model definitions (gemma4 + fused_ops operators)
-├── torch_delegate/           # torch-delegate (merged): epair serialization/loading + C++ backend + .venv build
+├── torch_delegate/           # torch-delegate: epair serialization/loading + C++ backend + .venv build
 │   ├── csrc/                 # C++ backend (epair archive loading → GE Graph → OM)
 │   ├── torch_delegate/       # Python package (api.py + converter/ + epair/ + core/)
 │   ├── cmake/                # torch-delegate dedicated CMake modules
@@ -43,6 +43,15 @@ cann-local-lm/
 │   ├── tests/                # torch-delegate unit tests (C++ GTest + Python pytest)
 │   ├── build.sh              # One-stop build (deps → cpp → wheel → .run)
 │   └── examples/             # Examples (export loading/accuracy comparison/async execution)
+├── executorch_npu/           # ExecuTorch-NPU: ExecuTorch Ascend AOT Backend (PyTorch → PTE/PTD → NPU execution)
+│   ├── python/executorch_npu/ # Python package (AscendPartitioner + compiler + passes + artifacts)
+│   ├── runtime/              # C++ backend (AscendBackend static registration + Manifest/SHA-256 + Stateful API)
+│   ├── tools/                # C++ validation runners (regular/stateful + GDN operator registration)
+│   ├── examples/             # Examples (mobilenet_v2 / qwen3_5 / gemma4 + MMLU evaluation)
+│   ├── docs/                 # Bilingual docs (build/export/runtime/design/troubleshooting/supported versions)
+│   ├── tests/                # Unit tests (C++ GTest + Python pytest)
+│   ├── third_party/          # nlohmann/json (vendored, MIT)
+│   └── build.sh              # One-stop build (C++ backend → ctest → wheel)
 ├── docs/                     # Design docs (converter + engine + build + version evolution)
 ├── examples/                 # End-to-end use cases (omc compilation + NPU inference verification)
 ├── scripts/                  # Build scripts (build.sh + build.conf + set_env*.sh + cann_lm_compile/)
@@ -59,6 +68,7 @@ cann-local-lm/
 | **cann_local_lm/engine/**           | omc inference engine                   | `api/`(Python interface) / `core/`(core logic) / `backend/`(C++ backend) / `pipeline/`(inference pipeline)                                                              |
 | **cann_local_lm/models/**           | Model definitions + custom operators   | `gemma4/`(Gemma4ForCausalLM + export_wrapper) / `fused_ops/`(cann_local_lm:: + npu:: operator schema+fake-meta)                                                              |
 | **torch_delegate/**           | epair serialization/loading + C++ backend | `csrc/backend/`(EpairModelLoader → GE Graph → OM) / `torch_delegate/`(api.py + converter + epair + core) / `build.sh`(one-click build) / `examples/`(examples)        |
+| **executorch_npu/**           | ExecuTorch Ascend AOT Backend      | `python/executorch_npu/`(AscendPartitioner + AscendBackend.preprocess: EP→EPAIR→GE→OM→PTE/PTD) / `runtime/`(C++ backend: PTE/PTD loading + Manifest validation + ACL execution) / `tools/`(C++ runners) / `examples/`(mobilenet_v2/qwen3_5/gemma4) / `build.sh`(one-click build) |
 | **docs/cann_lm_converter/**   | converter design docs                  | `cli/cli_design.md` / `export/export_design.md` / `quant/quant_design.md` / `README.md`(overview) / `version_evolution.md`(version evolution)                        |
 | **examples/test_converter/**  | End-to-end test cases                  | `export_llm_model/`(C++ omc compilation + om_npu_verify inference verification) / `cann_lm_cli_export/run_pd6_cases.sh`(6 cases)                                      |
 | **scripts/**                  | Build scripts                          | `build.sh`(top-level check/deps/third_party/cpp/tests/wheel/package/all) / `build.conf`(versions+git source+self-locating derived paths) / `set_env.sh`(converter+compile unified env, real CANN no stubs) / `set_env_cann.sh`(③ NPU) / `_env_common.sh`(common) / `cann_lm_compile/build_cpp.sh`(C++ .so+cann_lm_compile) / `build_test.sh`(ASAN tests) / `build_third_party.sh`(self-build json/gtest/makeself) / `cann_lm_{converter,engine}/build_wheel.sh`(whl packaging) |

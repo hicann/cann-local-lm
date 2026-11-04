@@ -24,6 +24,7 @@ repos:
       - id: check-yaml
         args: ["--allow-multiple-documents"]
       - id: check-added-large-files
+        exclude: ^executorch_npu/third_party/
       - id: check-merge-conflict
       - id: detect-private-key
       - id: check-json

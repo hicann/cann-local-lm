@@ -24,6 +24,27 @@ namespace {
 
 const std::string kAnnotated = std::string(FIXTURES_DIR) + "/annotated_mm_add.epair";
 const std::string kMissingGraphSource = std::string(FIXTURES_DIR) + "/missing_graph_source.epair";
+const std::string kSymIntInput = std::string(FIXTURES_DIR) + "/annotated_sym_int_input.epair";
+
+// 构造指定 placement 的 int64 标量 tensor；host 数据须由调用方保证生命周期。
+gert::Tensor MakeInt64ScalarTensor(int64_t &host_value, void *fake_device_addr, gert::TensorPlacement placement) {
+  gert::Tensor tensor;
+  tensor.SetDataType(ge::DT_INT64);
+  tensor.MutableFormat() = gert::StorageFormat(ge::FORMAT_ND, ge::FORMAT_ND, {});
+  void *addr = (placement == gert::kOnHost) ? static_cast<void *>(&host_value) : fake_device_addr;
+  gert::TensorData tensor_data(addr, nullptr, sizeof(int64_t), placement);
+  tensor.SetData(std::move(tensor_data));
+  return tensor;
+}
+
+gert::Tensor MakeFloatDeviceTensor(void *fake_device_addr) {
+  gert::Tensor tensor;
+  tensor.SetDataType(ge::DT_FLOAT);
+  tensor.MutableFormat() = gert::StorageFormat(ge::FORMAT_ND, ge::FORMAT_ND, {});
+  gert::TensorData tensor_data(fake_device_addr, nullptr, sizeof(float), gert::kOnDeviceHbm);
+  tensor.SetData(std::move(tensor_data));
+  return tensor;
+}
 
 }  // namespace
 
@@ -135,6 +156,53 @@ TEST_F(EpairModelLoaderTest, CompilePropagatesGeSessionAddGraphFailure) {
   EpairModelLoader loader(kAnnotated.c_str());
   std::map<ge::AscendString, ge::AscendString> options;
   EXPECT_EQ(loader.CompileAndLoad(options, nullptr), FAILED);
+}
+
+// fixture 用户输入: [x(Tensor, device), batch_size(SymInt, host)]，sym 输入传 device tensor 应被拒绝
+TEST_F(EpairModelLoaderTest, RunModelRejectsDeviceSymIntInput) {
+  EpairModelLoader loader(kSymIntInput.c_str());
+  std::map<ge::AscendString, ge::AscendString> options;
+  ASSERT_EQ(loader.CompileAndLoad(options, nullptr), SUCCESS);
+  int64_t host_value = 4;
+  std::vector<gert::Tensor> inputs;
+  inputs.push_back(MakeFloatDeviceTensor(reinterpret_cast<void *>(0x1000)));
+  inputs.push_back(MakeInt64ScalarTensor(host_value, reinterpret_cast<void *>(0x2000), gert::kOnDeviceHbm));
+  std::vector<gert::Tensor> outputs;
+  EXPECT_EQ(loader.RunModel(inputs, outputs), INVALID_PARAM);
+}
+
+TEST_F(EpairModelLoaderTest, RunModelAcceptsHostSymIntInput) {
+  EpairModelLoader loader(kSymIntInput.c_str());
+  std::map<ge::AscendString, ge::AscendString> options;
+  ASSERT_EQ(loader.CompileAndLoad(options, nullptr), SUCCESS);
+  int64_t host_value = 4;
+  std::vector<gert::Tensor> inputs;
+  inputs.push_back(MakeFloatDeviceTensor(reinterpret_cast<void *>(0x1000)));
+  inputs.push_back(MakeInt64ScalarTensor(host_value, nullptr, gert::kOnHost));
+  std::vector<gert::Tensor> outputs;
+  EXPECT_EQ(loader.RunModel(inputs, outputs), SUCCESS);
+}
+
+TEST_F(EpairModelLoaderTest, RunModelWithStreamAsyncRejectsDeviceSymIntInput) {
+  EpairModelLoader loader(kSymIntInput.c_str());
+  std::map<ge::AscendString, ge::AscendString> options;
+  ASSERT_EQ(loader.CompileAndLoad(options, nullptr), SUCCESS);
+  int64_t host_value = 4;
+  std::vector<gert::Tensor> inputs;
+  inputs.push_back(MakeFloatDeviceTensor(reinterpret_cast<void *>(0x1000)));
+  inputs.push_back(MakeInt64ScalarTensor(host_value, reinterpret_cast<void *>(0x2000), gert::kOnDeviceHbm));
+  std::vector<gert::Tensor> outputs;
+  EXPECT_EQ(loader.RunModelWithStreamAsync(nullptr, inputs, outputs), INVALID_PARAM);
+}
+
+TEST_F(EpairModelLoaderTest, RunModelRejectsMissingSymIntInput) {
+  EpairModelLoader loader(kSymIntInput.c_str());
+  std::map<ge::AscendString, ge::AscendString> options;
+  ASSERT_EQ(loader.CompileAndLoad(options, nullptr), SUCCESS);
+  std::vector<gert::Tensor> inputs;
+  inputs.push_back(MakeFloatDeviceTensor(reinterpret_cast<void *>(0x1000)));
+  std::vector<gert::Tensor> outputs;
+  EXPECT_EQ(loader.RunModel(inputs, outputs), INVALID_PARAM);
 }
 
 TEST_F(EpairModelLoaderTest, GetGEGraphReturnsValidGraph) {

@@ -60,7 +60,8 @@ class EpairModelLoader {
   /**
    * @brief 在指定流上异步运行模型。
    * @param stream ACL 流指针，指定图在哪个Stream上运行。
-   * @param inputs 输入张量列表, 数据位于 Device 侧。
+   * @param inputs 输入张量列表, tensor 输入数据位于 Device 侧；SymInt/SymFloat/SymBool
+   *               输入必须位于 Host 侧（否则返回 INVALID_PARAM）。
    * @param outputs 输出张量列表，用于存储计算结果，数据位于 Device 侧。
    * @return 成功返回 Status::SUCCESS，失败返回对应错误码。
    * @pre 必须先调用 CompileAndLoad 成功。
@@ -72,7 +73,8 @@ class EpairModelLoader {
 
   /**
    * @brief 同步运行模型，阻塞直到图执行完成后再返回。
-   * @param inputs 输入张量列表，数据可位于 Host 侧或 Device 侧。
+   * @param inputs 输入张量列表，tensor 输入数据可位于 Host 侧或 Device 侧；
+   *               SymInt/SymFloat/SymBool 输入必须位于 Host 侧（否则返回 INVALID_PARAM）。
    * @param outputs 输出张量列表，调用方无需分配内存，执行完成后由 GE 自动分配
    *                Host 内存赋值返回。
    * @return 成功返回 Status::SUCCESS，失败返回对应错误码。

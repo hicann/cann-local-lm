@@ -143,7 +143,9 @@ Status PrepareSymInput(GraphBuildContext &ctx, const ParsedModel &model, const s
   desc.SetFormat(ge::FORMAT_ND);
   desc.SetPlacement(ge::kPlacementHost);
   ge::AttrValue index_attr;
-  index_attr.SetAttrValue(user_input_index++);
+  index_attr.SetAttrValue(user_input_index);
+  ctx.sym_user_indices.push_back(user_input_index);
+  ++user_input_index;
   std::vector<std::pair<std::string, ge::TensorDesc>> data_inputs = {{"x", desc}};
   std::vector<std::pair<std::string, ge::TensorDesc>> data_outputs = {{"y", desc}};
   std::vector<std::pair<std::string, ge::AttrValue>> attrs = {{"index", index_attr}};
@@ -585,7 +587,7 @@ Status GeGraphBuilder::NormalizeGraph() {
   return SUCCESS;
 }
 
-std::shared_ptr<ge::Graph> GeGraphBuilder::Build(InputBindingMap &binding_map) {
+std::shared_ptr<ge::Graph> GeGraphBuilder::Build(InputBindingMap &binding_map, std::vector<int64_t> *sym_user_indices) {
   TDLOGI("Build enter: path=%s", archive_.Path());
   TD_ASSERT_TRUE(initialized_, "Build failed: builder not initialized");
 
@@ -608,6 +610,9 @@ std::shared_ptr<ge::Graph> GeGraphBuilder::Build(InputBindingMap &binding_map) {
 
   TD_ASSERT_TRUE(GeGraphOptimizer::Optimize(*ctx_.graph, binding_map) == SUCCESS, "Build failed at OptimizeGraph");
 
+  if (sym_user_indices != nullptr) {
+    *sym_user_indices = ctx_.sym_user_indices;
+  }
   TDLOGI("Build exit: success");
   return ctx_.graph;
 }

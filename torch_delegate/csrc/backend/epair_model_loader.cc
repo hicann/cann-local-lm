@@ -104,6 +104,26 @@ Status BuildGeInputs(const std::vector<gert::Tensor> &user_inputs, const InputBi
   return SUCCESS;
 }
 
+// sym 输入（SymInt/SymFloat/SymBool）在图中为 host placement 的 Data 节点，
+// 用户传入的对应 tensor 必须位于 Host 侧；device tensor 会导致 host 侧误读 device 指针。
+Status ValidateSymInputPlacements(const std::vector<gert::Tensor> &inputs,
+                                  const std::vector<int64_t> &sym_user_indices) {
+  for (int64_t index : sym_user_indices) {
+    if (index < 0 || static_cast<size_t>(index) >= inputs.size()) {
+      TDLOGE("ValidateSymInputPlacements failed: sym input index %ld out of range (user input count=%zu)",
+             static_cast<long>(index), inputs.size());
+      return INVALID_PARAM;
+    }
+    const gert::TensorPlacement placement = inputs[static_cast<size_t>(index)].GetTensorData().GetPlacement();
+    if (!gert::TensorPlacementUtils::IsOnHost(placement)) {
+      TDLOGE("ValidateSymInputPlacements failed: sym input index %ld requires a host tensor, actual placement=%d",
+             static_cast<long>(index), static_cast<int>(placement));
+      return INVALID_PARAM;
+    }
+  }
+  return SUCCESS;
+}
+
 }  // namespace
 
 class EpairModelLoader::Impl {
@@ -195,6 +215,8 @@ class EpairModelLoader::Impl {
       return FAILED;
     }
 
+    TD_CHK_STATUS(ValidateSymInputPlacements(inputs, sym_user_indices_));
+
     if (input_binding_map_.empty()) {
       const ge::Status ge_status = session_->RunGraphWithStreamAsync(graph_id_, stream, inputs, outputs);
       if (ge_status != ge::SUCCESS) {
@@ -234,6 +256,8 @@ class EpairModelLoader::Impl {
           "RunModelWithStreamAsync are mutually exclusive and cannot be mixed on the same model instance");
       return FAILED;
     }
+
+    TD_CHK_STATUS(ValidateSymInputPlacements(inputs, sym_user_indices_));
 
     if (input_binding_map_.empty()) {
       const ge::Status ge_status = session_->RunGraph(graph_id_, inputs, outputs);
@@ -315,7 +339,7 @@ class EpairModelLoader::Impl {
       return;
     }
 
-    graph_ = builder.Build(input_binding_map_);
+    graph_ = builder.Build(input_binding_map_, &sym_user_indices_);
     if (graph_ == nullptr) {
       TDLOGE("Initialize failed: graph build failed");
       init_status_ = FAILED;
@@ -334,6 +358,7 @@ class EpairModelLoader::Impl {
   bool loaded_flag_ = false;
   RunMode run_mode_ = RunMode::kIdle;
   InputBindingMap input_binding_map_;
+  std::vector<int64_t> sym_user_indices_;
   std::shared_ptr<ge::Graph> graph_;
   std::shared_ptr<ge::GeSession> session_;
 };

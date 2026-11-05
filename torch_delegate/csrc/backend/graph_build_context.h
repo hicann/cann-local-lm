@@ -51,6 +51,8 @@ struct GraphBuildContext {
   RegisteredIrCache ir_cache;
   std::vector<DeferredEdge> deferred_edges;
   std::vector<DeferredOutputBinding> deferred_outputs;
+  // sym 输入（host placement Data 节点）对应的用户输入索引，运行期用于校验用户 tensor 的 placement
+  std::vector<int64_t> sym_user_indices;
 };
 
 struct GraphPlanningDeps {

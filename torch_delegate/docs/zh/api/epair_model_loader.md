@@ -164,7 +164,7 @@ Status RunModel(const std::vector<gert::Tensor> &inputs, std::vector<gert::Tenso
 <a id="table_run_model_sync"></a>
 | 参数名 | 输入/输出 | 说明 |
 | --- | --- | --- |
-| inputs | 输入 | 输入张量列表，每个 `gert::Tensor` 需正确设置 `Shape`、`DataType`、`Format`，数据可位于Host侧或Device侧（Device侧通过 `aclrtMalloc` 分配）。若数据位于Host侧而图在Device上执行，输入进入数据队列时会对每个输入做一次内存申请和拷贝，输入较大或较多时可能存在性能瓶颈。 |
+| inputs | 输入 | 输入张量列表，每个 `gert::Tensor` 需正确设置 `Shape`、`DataType`、`Format`，数据可位于Host侧或Device侧（Device侧通过 `aclrtMalloc` 分配）；SymInt/SymFloat/SymBool 输入必须位于Host侧，否则返回 `INVALID_PARAM`。若数据位于Host侧而图在Device上执行，输入进入数据队列时会对每个输入做一次内存申请和拷贝，输入较大或较多时可能存在性能瓶颈。 |
 | outputs | 输出 | 输出张量列表。调用方无需分配内存空间，传入空vector即可，执行完成后由GE自动分配Host内存并赋值返回。 |
 
 #### 返回值说明<a id="section_run_model_sync_ret"></a>
@@ -172,7 +172,7 @@ Status RunModel(const std::vector<gert::Tensor> &inputs, std::vector<gert::Tenso
 <a id="table_run_model_sync_ret"></a>
 | 参数名 | 类型 | 说明 |
 | --- | --- | --- |
-| - | td::Status | `td::SUCCESS`：运行成功<br>`td::FAILED`：初始化失败（归档解析或Graph构建失败）/ 模型未加载（`CompileAndLoad` 未调用或失败） / `RunGraph` 失败 / 与 `RunModelWithStreamAsync` 混用（同一实例已调用过异步接口，直接报错拒绝）<br>`td::INVALID_PARAM`：构造函数传入null路径 |
+| - | td::Status | `td::SUCCESS`：运行成功<br>`td::FAILED`：初始化失败（归档解析或Graph构建失败）/ 模型未加载（`CompileAndLoad` 未调用或失败） / `RunGraph` 失败 / 与 `RunModelWithStreamAsync` 混用（同一实例已调用过异步接口，直接报错拒绝）<br>`td::INVALID_PARAM`：构造函数传入null路径 / SymInt/SymFloat/SymBool 输入传入Device侧tensor或输入个数不足 |
 
 #### 约束说明<a id="section_run_model_sync_constraints"></a>
 
@@ -180,6 +180,7 @@ Status RunModel(const std::vector<gert::Tensor> &inputs, std::vector<gert::Tenso
 - 接口同步执行，阻塞直到图执行完成后返回，返回后可直接读取输出，无需调用 `aclrtSynchronizeStream`
 - 本接口与 `RunModelWithStreamAsync` 互斥，同一模型不可混用同步与异步接口执行；若同一实例已调用过 `RunModelWithStreamAsync`，本接口将直接返回 `FAILED` 并打印明确日志提示互斥（GE层 `GeSession` 亦有执行模式检查，本接口在 `EpairModelLoader` 层提前拦截给出友好报错）
 - 同一实例不支持多线程并发调用，请勿在多个线程中并发使用同一实例
+- SymInt/SymFloat/SymBool 输入在图中为Host侧Data节点，对应的输入tensor必须位于Host侧，本接口在执行前校验placement，不满足时返回 `INVALID_PARAM` 并打印明确日志
 - 输入Tensor数据位于Device侧时，其Device侧存储地址须32字节对齐，否则可能出现未定义错误
 - 输入内存需在调用前由调用方申请，调用后由调用方负责释放
 - 输出内存由GE自动分配在Host侧并赋值返回，调用方无需预分配
@@ -210,7 +211,7 @@ Status RunModelWithStreamAsync(void *stream, const std::vector<gert::Tensor> &in
 | 参数名 | 输入/输出 | 说明 |
 | --- | --- | --- |
 | stream | 输入 | 指定图在哪个Stream上运行。 |
-| inputs | 输入 | 输入张量列表，每个 `gert::Tensor` 需正确设置 `Shape`、`DataType`、`Format`，数据位于Device侧（通过 `aclrtMalloc` 分配）。 |
+| inputs | 输入 | 输入张量列表，每个 `gert::Tensor` 需正确设置 `Shape`、`DataType`、`Format`，数据位于Device侧（通过 `aclrtMalloc` 分配）；SymInt/SymFloat/SymBool 输入必须位于Host侧，否则返回 `INVALID_PARAM`。 |
 | outputs | 输出 | 输出张量列表。调用方传入空vector即可，GE使用内置allocator分配Device内存，生命周期与图一致，需在图卸载前（析构 `EpairModelLoader` 前）通过 `outputs.clear()` 主动释放；若传入已分配内存的Tensor，则GE使用该内存存放输出，需要保证申请的输出内存足够写入模型输出数据。 |
 
 #### 返回值说明<a id="section_run_model_ret"></a>
@@ -218,12 +219,13 @@ Status RunModelWithStreamAsync(void *stream, const std::vector<gert::Tensor> &in
 <a id="table_run_model_ret"></a>
 | 参数名 | 类型 | 说明 |
 | --- | --- | --- |
-| - | td::Status | `td::SUCCESS`：运行成功<br>`td::FAILED`：初始化失败（归档解析或Graph构建失败）/ 模型未加载（`CompileAndLoad` 未调用或失败） / `RunGraphWithStreamAsync` 失败 / 与 `RunModel` 混用（同一实例已调用过同步接口，直接报错拒绝）<br>`td::INVALID_PARAM`：构造函数传入null路径 |
+| - | td::Status | `td::SUCCESS`：运行成功<br>`td::FAILED`：初始化失败（归档解析或Graph构建失败）/ 模型未加载（`CompileAndLoad` 未调用或失败） / `RunGraphWithStreamAsync` 失败 / 与 `RunModel` 混用（同一实例已调用过同步接口，直接报错拒绝）<br>`td::INVALID_PARAM`：构造函数传入null路径 / SymInt/SymFloat/SymBool 输入传入Device侧tensor或输入个数不足 |
 
 #### 约束说明<a id="section_run_model_constraints"></a>
 
 - 必须先调用 `CompileAndLoad` 成功，该接口不会自动完成加载
 - 输入和输出Tensor的Device侧存储地址均须32字节对齐，否则可能出现未定义错误
+- SymInt/SymFloat/SymBool 输入在图中为Host侧Data节点，对应的输入tensor必须位于Host侧，本接口在执行前校验placement，不满足时返回 `INVALID_PARAM` 并打印明确日志
 - 输入内存需在调用前申请，调用后由调用方负责释放
 - 若 `outputs` 传空，输出内存由GE内置allocator分配，生命周期与图一致，需在图卸载前通过 `outputs.clear()` 主动释放；当前不支持外置allocator
 - 接口异步返回，需通过 `aclrtSynchronizeStream` 对stream完成同步后再读取输出；若希望调用返回后即可直接读取输出（同步语义），可使用 [RunModel](#section_run_model_sync) 接口

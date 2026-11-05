@@ -164,7 +164,7 @@ Status RunModel(const std::vector<gert::Tensor> &inputs, std::vector<gert::Tenso
 <a id="table_run_model_sync"></a>
 | Parameter | Input/Output | Description |
 | --- | --- | --- |
-| inputs | Input | List of input tensors. Each `gert::Tensor` must have `Shape`, `DataType`, and `Format` set correctly. Data may reside on the Host or Device side (Device-side memory is allocated via `aclrtMalloc`). If the data is on the Host side while the graph executes on the Device, each input is allocated and copied once when it enters the data queue, which may become a performance bottleneck for large or numerous inputs. |
+| inputs | Input | List of input tensors. Each `gert::Tensor` must have `Shape`, `DataType`, and `Format` set correctly. Data may reside on the Host or Device side (Device-side memory is allocated via `aclrtMalloc`); SymInt/SymFloat/SymBool inputs must reside on the Host side, otherwise `INVALID_PARAM` is returned. If the data is on the Host side while the graph executes on the Device, each input is allocated and copied once when it enters the data queue, which may become a performance bottleneck for large or numerous inputs. |
 | outputs | Output | List of output tensors. The caller does not need to allocate memory; pass an empty vector, and GE allocates Host memory automatically after execution and returns the values. |
 
 #### Return value<a id="section_run_model_sync_ret"></a>
@@ -172,7 +172,7 @@ Status RunModel(const std::vector<gert::Tensor> &inputs, std::vector<gert::Tenso
 <a id="table_run_model_sync_ret"></a>
 | Parameter | Type | Description |
 | --- | --- | --- |
-| - | td::Status | `td::SUCCESS`: run succeeded<br>`td::FAILED`: initialization failed (archive parsing or Graph construction failed) / model not loaded (`CompileAndLoad` not called or failed) / `RunGraph` failed / mixed with `RunModelWithStreamAsync` (the same instance has already called the asynchronous interface, so the call is rejected with an error)<br>`td::INVALID_PARAM`: a null path was passed to the constructor |
+| - | td::Status | `td::SUCCESS`: run succeeded<br>`td::FAILED`: initialization failed (archive parsing or Graph construction failed) / model not loaded (`CompileAndLoad` not called or failed) / `RunGraph` failed / mixed with `RunModelWithStreamAsync` (the same instance has already called the asynchronous interface, so the call is rejected with an error)<br>`td::INVALID_PARAM`: a null path was passed to the constructor / a Device-side tensor was passed for a SymInt/SymFloat/SymBool input, or the input count is insufficient |
 
 #### Constraints<a id="section_run_model_sync_constraints"></a>
 
@@ -180,6 +180,7 @@ Status RunModel(const std::vector<gert::Tensor> &inputs, std::vector<gert::Tenso
 - The interface executes synchronously and blocks until graph execution completes; outputs can be read directly after return without calling `aclrtSynchronizeStream`
 - This interface is mutually exclusive with `RunModelWithStreamAsync`; synchronous and asynchronous execution must not be mixed for the same model. If `RunModelWithStreamAsync` has already been called on the same instance, this interface returns `FAILED` directly and logs a clear message about the exclusivity (the GE layer `GeSession` also checks the execution mode; this interface intercepts the call earlier in `EpairModelLoader` to produce a friendly error)
 - The same instance does not support concurrent calls from multiple threads; do not use the same instance concurrently across threads
+- SymInt/SymFloat/SymBool inputs are Host-side Data nodes in the graph; the corresponding input tensors must reside on the Host side. This interface validates the placement before execution and returns `INVALID_PARAM` with a clear log when the requirement is not met
 - When input tensor data resides on the Device side, its Device-side storage address must be 32-byte aligned, otherwise undefined errors may occur
 - Input memory must be allocated by the caller before the call and released by the caller afterwards
 - Output memory is allocated by GE on the Host side and returned with values; the caller does not need to preallocate it
@@ -210,7 +211,7 @@ Status RunModelWithStreamAsync(void *stream, const std::vector<gert::Tensor> &in
 | Parameter | Input/Output | Description |
 | --- | --- | --- |
 | stream | Input | Specifies the Stream on which the graph runs. |
-| inputs | Input | List of input tensors. Each `gert::Tensor` must have `Shape`, `DataType`, and `Format` set correctly, and the data resides on the Device side (allocated via `aclrtMalloc`). |
+| inputs | Input | List of input tensors. Each `gert::Tensor` must have `Shape`, `DataType`, and `Format` set correctly, and the data resides on the Device side (allocated via `aclrtMalloc`); SymInt/SymFloat/SymBool inputs must reside on the Host side, otherwise `INVALID_PARAM` is returned. |
 | outputs | Output | List of output tensors. Pass an empty vector; GE allocates Device memory with the built-in allocator, and the lifetime matches the graph. It must be released explicitly via `outputs.clear()` before the graph is unloaded (before `EpairModelLoader` is destroyed); if Tensors with allocated memory are passed in, GE uses that memory to store outputs, and the allocated output memory must be large enough to hold the model output data. |
 
 #### Return value<a id="section_run_model_ret"></a>
@@ -218,12 +219,13 @@ Status RunModelWithStreamAsync(void *stream, const std::vector<gert::Tensor> &in
 <a id="table_run_model_ret"></a>
 | Parameter | Type | Description |
 | --- | --- | --- |
-| - | td::Status | `td::SUCCESS`: run succeeded<br>`td::FAILED`: initialization failed (archive parsing or Graph construction failed) / model not loaded (`CompileAndLoad` not called or failed) / `RunGraphWithStreamAsync` failed / mixed with `RunModel` (the same instance has already called the synchronous interface, so the call is rejected with an error)<br>`td::INVALID_PARAM`: a null path was passed to the constructor |
+| - | td::Status | `td::SUCCESS`: run succeeded<br>`td::FAILED`: initialization failed (archive parsing or Graph construction failed) / model not loaded (`CompileAndLoad` not called or failed) / `RunGraphWithStreamAsync` failed / mixed with `RunModel` (the same instance has already called the synchronous interface, so the call is rejected with an error)<br>`td::INVALID_PARAM`: a null path was passed to the constructor / a Device-side tensor was passed for a SymInt/SymFloat/SymBool input, or the input count is insufficient |
 
 #### Constraints<a id="section_run_model_constraints"></a>
 
 - `CompileAndLoad` must have been called successfully first; this interface does not perform loading automatically
 - The Device-side storage addresses of both input and output Tensors must be 32-byte aligned, otherwise undefined errors may occur
+- SymInt/SymFloat/SymBool inputs are Host-side Data nodes in the graph; the corresponding input tensors must reside on the Host side. This interface validates the placement before execution and returns `INVALID_PARAM` with a clear log when the requirement is not met
 - Input memory must be allocated before the call and is released by the caller afterwards
 - If `outputs` is empty, output memory is allocated by GE's built-in allocator and its lifetime matches the graph; it must be released explicitly via `outputs.clear()` before the graph is unloaded. External allocators are not supported currently
 - The interface returns asynchronously; outputs can only be read after synchronizing the stream via `aclrtSynchronizeStream`. If you want to read outputs immediately after the call returns (synchronous semantics), use the [RunModel](#section_run_model_sync) interface

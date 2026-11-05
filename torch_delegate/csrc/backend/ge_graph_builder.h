@@ -10,6 +10,7 @@
 #pragma once
 
 #include <memory>
+#include <vector>
 
 #include <graph/graph.h>
 
@@ -30,7 +31,9 @@ class GeGraphBuilder {
  public:
   explicit GeGraphBuilder(const EpairArchive &archive, Status &status);
 
-  std::shared_ptr<ge::Graph> Build(InputBindingMap &binding_map);
+  // sym_user_indices（可选出参）：sym 输入（host placement Data 节点）对应的用户输入索引，
+  // 运行期用于校验用户传入的 tensor 必须位于 Host 侧
+  std::shared_ptr<ge::Graph> Build(InputBindingMap &binding_map, std::vector<int64_t> *sym_user_indices = nullptr);
   bool IsFullyOffloaded() const noexcept;
 
  private:

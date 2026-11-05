@@ -1,0 +1,75 @@
+name: executorch_npu_compile_action
+
+on:
+  workflow_call:
+    inputs:
+      task_name:
+        required: true
+        type: string
+      image_version:
+        required: true
+        type: string
+      arch:
+        required: false
+        type: string
+        default: 'arm64'
+    outputs:
+      whl_url:
+        value: ${{jobs.JOB_executorch_npu_compile.outputs.primary-url}}
+      whl_key:
+        value: ${{jobs.JOB_executorch_npu_compile.outputs.primary-key}}
+
+jobs:
+  JOB_executorch_npu_compile:
+    name: Compile
+    steps:
+      -
+        name: Checkout
+        identifier: process_checkout
+        uses: checkout
+        with:
+          ref: ${{ atomgit.event.pull_request.merge_commit_sha }}
+          allow-unsafe-pr-checkout: true
+          token: ${{secrets.GIT_TOKEN}}
+      -
+        name: download
+        uses: obs-download
+        with:
+          endpoint: "https://obs.cn-north-4.myhuaweicloud.com"
+          bucket: "ascend-ci"
+          access-key: ${{ secrets.AK }}
+          secret-key: ${{ secrets.SK }}
+          key: |
+            ${{ env.obs_path }}/pr_filelist.txt
+            ${{ env.obs_path }}/pr_filelist_mod.txt
+            ${{ env.obs_path }}/update_file_detail.txt
+            ${{ env.obs_path }}/executorch_npu_compile.sh
+          path: ${{ steps.process_checkout.outputs.path }}
+      -
+        name: executorch_npu_compile_acc
+        identifier: compile
+        uses: build-accelerate
+        # 兜底: 含运行时装依赖(pip ~5-10min)+build.sh(≤14min); BuildAccelerate 收尾停滞转确定性失败
+        timeout-minutes: 25
+        with:
+          command: |
+            export WORKSPACE=${{ steps.process_checkout.outputs.path }}
+            cd ${{ steps.process_checkout.outputs.path }}
+            export task_name=${{ inputs.task_name }}
+            export target_branch=${{ env.TARGET_BRANCH }}
+            BuildAccelerate bash executorch_npu_compile.sh
+          AC_SERVER_IP: ${{ vars.AC_SERVER_IP }}
+      -
+        name: upload
+        uses: obs-upload
+        with:
+          endpoint: "https://obs.cn-north-4.myhuaweicloud.com"
+          bucket: "ascend-ci"
+          access-key: ${{ secrets.AK }}
+          secret-key: ${{ secrets.SK }}
+          artifact-path: "${{ steps.process_checkout.outputs.path }}/build_out/*.whl"
+          object-prefix: ${{ env.obs_path }}/
+    if: "${{ default() }}"
+    runs-on: ['self-hosted', 'arch=${{ inputs.arch }}', 'spec=xlarge']
+    container:
+      image: swr.cn-north-4.myhuaweicloud.com/ci_cann/${{ inputs.image_version }}

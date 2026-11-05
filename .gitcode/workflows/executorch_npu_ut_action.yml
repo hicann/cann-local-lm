@@ -1,0 +1,60 @@
+name: executorch_npu_ut_action
+
+on:
+  workflow_call:
+    inputs:
+      ut_type:
+        required: true
+        type: string
+      image_version:
+        required: true
+        type: string
+
+jobs:
+  JOB_executorch_npu_ut:
+    name: ut
+    steps:
+      -
+        name: Checkout
+        identifier: process_checkout
+        uses: checkout
+        with:
+          ref: ${{ atomgit.event.pull_request.merge_commit_sha }}
+          allow-unsafe-pr-checkout: true
+      -
+        name: download
+        uses: obs-download
+        with:
+          endpoint: "https://obs.cn-north-4.myhuaweicloud.com"
+          bucket: "ascend-ci"
+          key: |
+            ${{ env.obs_path }}/pr_filelist.txt
+            ${{ env.obs_path }}/pr_filelist_mod.txt
+            ${{ env.obs_path }}/executorch_npu_ut.sh
+          path: ${{ steps.process_checkout.outputs.path }}
+      -
+        name: executorch_npu_ut_acc
+        identifier: ut
+        # 含运行时装依赖(pip ~5-10min) + pytest 预算≤8min(脚本内 timeout 480 兜底)
+        timeout-minutes: 20
+        run: |
+          export WORKSPACE=${{ steps.process_checkout.outputs.path }}
+          cd ${{ steps.process_checkout.outputs.path }}
+          export ut_type=${{ inputs.ut_type }}
+          export TARGET_BRANCH=${{ env.TARGET_BRANCH }}
+          bash executorch_npu_ut.sh
+      -
+        name: upload report
+        uses: obs-upload
+        if: ${{ always() }}
+        with:
+          endpoint: "https://obs.cn-north-4.myhuaweicloud.com"
+          bucket: "ascend-ci"
+          access-key: ${{ secrets.AK }}
+          secret-key: ${{ secrets.SK }}
+          artifact-path: "${{ steps.process_checkout.outputs.path }}/executorch_npu/report.xml"
+          object-prefix: ${{ env.obs_path }}/
+    if: "${{ default() }}"
+    runs-on: [self-hosted, arch=arm64, spec=xlarge]
+    container:
+      image: swr.cn-north-4.myhuaweicloud.com/ci_cann/${{ inputs.image_version }}

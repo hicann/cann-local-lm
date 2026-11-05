@@ -116,6 +116,15 @@ stages:
           task_name: 'Compile_TorchDelegate_ARM_ubuntu24'
           image_version: ${{ jobs.JOB_image.outputs.Compile_TorchDelegate_ARM }}
           arch: 'arm64'
+      # 镜像复用已注册的 Compile_TorchDelegate_ARM output (同一 ARM ndk 镜像,
+      # 不新增 image-conf 条目); python 依赖栈由脚本运行时安装
+      JOB_executorch_npu_arm_compile:
+        name: Compile_ExecuTorchNPU_ARM
+        uses: .gitcode/workflows/executorch_npu_compile_action.yml
+        with:
+          task_name: 'Compile_ExecuTorchNPU_ARM_ubuntu24'
+          image_version: ${{ jobs.JOB_image.outputs.Compile_TorchDelegate_ARM }}
+          arch: 'arm64'
     pre:
     - type: auto
     fail-fast: false
@@ -136,6 +145,13 @@ stages:
         with:
           ut_type: 'torch_delegate'
           image_version: ${{ jobs.JOB_image.outputs.UT_TorchDelegate }}
+      # 镜像复用已注册的 Compile_TorchDelegate_ARM output (ARM ndk, 同上)
+      JOB_executorch_npu_ut:
+        name: UT_ExecuTorchNPU
+        uses: .gitcode/workflows/executorch_npu_ut_action.yml
+        with:
+          ut_type: 'executorch_npu'
+          image_version: ${{ jobs.JOB_image.outputs.Compile_TorchDelegate_ARM }}
     pre:
     - type: auto
     fail-fast: false

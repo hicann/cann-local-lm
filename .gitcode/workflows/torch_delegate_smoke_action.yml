@@ -38,7 +38,7 @@ jobs:
       -
         name: smoke
         identifier: smoke
-        timeout-minutes: 40
+        timeout-minutes: 25
         run: |
           export WORKSPACE=${{ steps.process_checkout.outputs.path }}
           cd ${{ steps.process_checkout.outputs.path }}

@@ -17,7 +17,8 @@ namespace xllm_stub {
 void rope_in_place_kernel(at::Tensor &input, const at::Tensor &sin_cache, const at::Tensor &cos_cache) {
   // Stub implementation: no real computation
   // In real implementation, would modify input tensor in-place
-  std::cout << "============================================ thj enter in rope_in_place_kernel" << std::endl;
+  std::cout << "============================================ enter rope_in_place_kernel (stub implementation)"
+            << std::endl;
   c10::DeviceIndex device_id = input.device().index();
   c10_npu::NPUStream current_stream = c10_npu::getCurrentNPUStream(device_id);
   aclrtStream raw_stream = static_cast<aclrtStream>(current_stream);

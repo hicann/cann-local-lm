@@ -116,7 +116,7 @@ def _remove_assert_tensor_metadata(ep: torch.export.ExportedProgram) -> int:
     if removed > 0:
         graph.lint()
         ep.graph_module.recompile()
-        print(f"[Strip] 移除了 {removed} 个 _assert_tensor_metadata 节点")
+        print(f"[Strip] Removed {removed} _assert_tensor_metadata node(s)")
     return removed
 
 

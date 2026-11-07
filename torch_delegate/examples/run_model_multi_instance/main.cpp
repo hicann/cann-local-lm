@@ -141,21 +141,21 @@ void *BuildDeviceInput(const std::string &bin_path, int dim, std::vector<gert::T
 
   std::ifstream file(bin_path, std::ios::binary);
   if (!file) {
-    throw std::runtime_error("无法打开输入文件: " + bin_path);
+    throw std::runtime_error("Cannot open input file: " + bin_path);
   }
   std::vector<float> host(elems);
   file.read(reinterpret_cast<char *>(host.data()), static_cast<std::streamsize>(bytes));
   if (!file) {
-    throw std::runtime_error("读取输入文件失败: " + bin_path);
+    throw std::runtime_error("Failed to read input file: " + bin_path);
   }
 
   void *dev = nullptr;
   if (aclrtMalloc(&dev, bytes, ACL_MEM_MALLOC_HUGE_FIRST) != ACL_SUCCESS) {
-    throw std::runtime_error("aclrtMalloc 失败");
+    throw std::runtime_error("aclrtMalloc failed");
   }
   if (aclrtMemcpy(dev, bytes, host.data(), bytes, ACL_MEMCPY_HOST_TO_DEVICE) != ACL_SUCCESS) {
     (void)aclrtFree(dev);
-    throw std::runtime_error("输入 H2D 拷贝失败");
+    throw std::runtime_error("Input H2D copy failed");
   }
 
   gert::StorageShape shape({dim, dim}, {dim, dim});
@@ -221,16 +221,17 @@ void PrintReport(const ReportVals &v) {
   std::cout << " instances (loaders) : " << v.workers << std::endl;
   std::cout << " tasks               : " << v.tasks << std::endl;
   std::cout << " t_solo (median)     : " << v.t_solo << " ms" << std::endl;
-  std::cout << " wall            : " << v.wall << " ms（并行阶段）" << std::endl;
-  std::cout << " est serial wall : " << v.est_serial << " ms（并行任务数 x 单任务耗时）" << std::endl;
+  std::cout << " wall            : " << v.wall << " ms (parallel phase)" << std::endl;
+  std::cout << " est serial wall : " << v.est_serial << " ms (parallel task count x per-task elapsed time)"
+            << std::endl;
   std::cout << " sum task time   : " << v.sum_ms << " ms" << std::endl;
   std::cout << " success / fail  : " << v.success << " / " << v.fail << std::endl;
   std::cout << " checksum mismatch: " << v.mismatch << std::endl;
-  std::cout << " avg concurrency : " << avg_conc << "（接口占用时长/总时长，参考值）" << std::endl;
+  std::cout << " avg concurrency : " << avg_conc << " (interface busy time / total time, reference value)" << std::endl;
   std::cout << " host_max_inflight : " << v.inflight << " / " << v.workers
-            << "（RunModel 并发进入的线程数，>=2 即 host 侧并发下发）" << std::endl;
+            << " (threads concurrently inside RunModel; >=2 means host-side concurrent dispatch)" << std::endl;
   std::cout << " device_parallelism : " << v.device_parallelism << " / " << v.workers
-            << "（device 多流并行度估算：≈workers 并行充分，≈1 串行）" << std::endl;
+            << " (estimated device multi-stream parallelism: ~workers = fully parallel, ~1 = serial)" << std::endl;
   std::cout << "========================================" << std::endl;
 }
 
@@ -279,7 +280,7 @@ struct Args {
 
 bool ParseWorkerArgs(int argc, char *argv[], Args *a) {
   if (argc != 7) {
-    std::cerr << "worker 用法: --worker <id> <tasks> <epair> <dim> <go_file>" << std::endl;
+    std::cerr << "worker usage: --worker <id> <tasks> <epair> <dim> <go_file>" << std::endl;
     return false;
   }
   a->is_worker = true;
@@ -308,7 +309,9 @@ bool ParseArgs(int argc, char *argv[], Args *a) {
   a->tasks = (pos.size() > 2) ? std::atoi(pos[2].c_str()) : 48;
   a->dim = (pos.size() > 3) ? std::atoi(pos[3].c_str()) : 1024;
   if (a->workers <= 0 || a->tasks < 2 * a->workers || a->dim <= 0) {
-    std::cerr << "[FAIL] 需满足 workers>0 且 tasks>=2*workers（每实例各 1 个 SOLO + 至少 1 个并行任务）" << std::endl;
+    std::cerr << "[FAIL] Require workers>0 and tasks>=2*workers (1 SOLO task per instance + at least 1 "
+                 "parallel task)"
+              << std::endl;
     return false;
   }
   return true;
@@ -351,12 +354,12 @@ bool WaitForGo(const std::string &path, const std::string &expect, double deadli
 int RunWorker(const Args &a) {
   const double deadline = NowMs() + TimeoutMs();
   if (!InitDeviceAndGe()) {
-    std::printf("ERR|%d|初始化 Device/GE 失败\n", a.worker_id);
+    std::printf("ERR|%d|failed to initialize Device/GE\n", a.worker_id);
     return 2;
   }
   std::unique_ptr<td::EpairModelLoader> loader;
   if (!BuildLoader(a.epair, &loader)) {
-    std::printf("ERR|%d|CompileAndLoad 失败\n", a.worker_id);
+    std::printf("ERR|%d|CompileAndLoad failed\n", a.worker_id);
     Teardown(nullptr);
     return 2;
   }
@@ -375,7 +378,7 @@ int RunWorker(const Args &a) {
   std::fflush(stdout);
 
   if (!WaitForGo(a.go_path, "1", deadline)) {
-    std::printf("ERR|%d|等待 SOLO 栅栏超时\n", a.worker_id);
+    std::printf("ERR|%d|timeout waiting for SOLO barrier\n", a.worker_id);
     loader.reset();
     Teardown(dev_input);
     return 3;
@@ -387,7 +390,7 @@ int RunWorker(const Args &a) {
     std::fflush(stdout);
   }
   if (!WaitForGo(a.go_path, "2", deadline)) {
-    std::printf("ERR|%d|等待 RUN 栅栏超时\n", a.worker_id);
+    std::printf("ERR|%d|timeout waiting for RUN barrier\n", a.worker_id);
     loader.reset();
     Teardown(dev_input);
     return 3;
@@ -614,7 +617,7 @@ RunAgg AggregateResults(std::vector<WorkerStat> *ws) {
 
 void FillMpReport(const RunAgg &agg, const std::vector<double> &ok_solos, int solo_fails, int bad_exit, const Args &a,
                   int parallel_total, double wall, double t_solo, ReportVals *v) {
-  v->mode = "multi_process（" + std::to_string(a.workers) + " 进程 x 每进程 1 Loader + 生产/消费线程）";
+  v->mode = "multi_process (" + std::to_string(a.workers) + " processes x 1 Loader + producer/consumer threads each)";
   v->workers = a.workers;
   v->tasks = a.tasks;
   v->t_solo = t_solo;
@@ -635,7 +638,7 @@ int RunParent(const Args &a) {
   char tpl[] = "/tmp/td_run_model_multi_XXXXXX";
   const char *dir = mkdtemp(tpl);
   if (dir == nullptr) {
-    std::cerr << "[FAIL] mkdtemp 失败" << std::endl;
+    std::cerr << "[FAIL] mkdtemp failed" << std::endl;
     return 1;
   }
   const std::string work_dir(dir);
@@ -648,7 +651,7 @@ int RunParent(const Args &a) {
   char exe_buf[4096];
   const ssize_t exe_len = readlink("/proc/self/exe", exe_buf, sizeof(exe_buf) - 1);
   if (exe_len <= 0) {
-    std::cerr << "[FAIL] 无法获取自身可执行路径" << std::endl;
+    std::cerr << "[FAIL] Cannot resolve own executable path" << std::endl;
     return 1;
   }
   exe_buf[exe_len] = '\0';
@@ -661,7 +664,7 @@ int RunParent(const Args &a) {
     ws[static_cast<size_t>(i)].log_path = work_dir + "/worker_" + std::to_string(i) + ".log";
     ws[static_cast<size_t>(i)].pid = SpawnWorker(exe, i, per, wa, ws[static_cast<size_t>(i)].log_path);
     if (ws[static_cast<size_t>(i)].pid <= 0) {
-      std::cerr << "[FAIL] fork worker " << i << " 失败" << std::endl;
+      std::cerr << "[FAIL] fork worker " << i << " failed" << std::endl;
       KillWorkers(&ws);
       return 1;
     }
@@ -670,12 +673,12 @@ int RunParent(const Args &a) {
 
   while (!AllWorkersReady(ws)) {
     if (NowMs() > deadline) {
-      std::cerr << "[FAIL] 等待 worker READY 超时" << std::endl;
+      std::cerr << "[FAIL] Timeout waiting for worker READY" << std::endl;
       KillWorkers(&ws);
       return 1;
     }
     if (AnyWorkerExitedEarly(ws)) {
-      std::cerr << "[FAIL] 有 worker 提前退出，详见 " << work_dir << "/worker_*.log" << std::endl;
+      std::cerr << "[FAIL] Some worker exited early, see " << work_dir << "/worker_*.log" << std::endl;
       KillWorkers(&ws);
       return 1;
     }
@@ -685,12 +688,12 @@ int RunParent(const Args &a) {
   WriteGo(go_path, "1");
   while (!CollectSolo(&ws)) {
     if (NowMs() > deadline) {
-      std::cerr << "[FAIL] 等待 SOLO 超时" << std::endl;
+      std::cerr << "[FAIL] Timeout waiting for SOLO results" << std::endl;
       KillWorkers(&ws);
       return 1;
     }
     if (AnyWorkerExitedEarly(ws)) {
-      std::cerr << "[FAIL] 有 worker 在 SOLO 前后退出，详见 " << work_dir << "/worker_*.log" << std::endl;
+      std::cerr << "[FAIL] Some worker exited around the SOLO phase, see " << work_dir << "/worker_*.log" << std::endl;
       KillWorkers(&ws);
       return 1;
     }
@@ -731,20 +734,20 @@ int RunParent(const Args &a) {
   PrintReport(v);
 
   if (!agg.first_err.empty()) {
-    std::cout << "[hint] 首个失败记录: " << agg.first_err << std::endl;
-    std::cout << "[hint] worker 日志: " << work_dir << "/worker_*.log" << std::endl;
+    std::cout << "[hint] First failure record: " << agg.first_err << std::endl;
+    std::cout << "[hint] Worker logs: " << work_dir << "/worker_*.log" << std::endl;
   }
 
   if (v.fail > 0) {
-    std::cerr << "[FAIL] 存在执行失败的任务/进程: tasks_fail=" << agg.fail + solo_fails << " bad_exit=" << bad_exit
+    std::cerr << "[FAIL] Some tasks/processes failed: tasks_fail=" << agg.fail + solo_fails << " bad_exit=" << bad_exit
               << std::endl;
     return 1;
   }
   if (v.mismatch > 0) {
-    std::cerr << "[FAIL] 输出 checksum 不一致" << std::endl;
+    std::cerr << "[FAIL] Output checksum mismatch" << std::endl;
     return 1;
   }
-  std::cout << "[PASS] 全部 " << a.tasks << " 个任务执行成功，输出 checksum 一致" << std::endl;
+  std::cout << "[PASS] All " << a.tasks << " tasks succeeded, output checksums consistent" << std::endl;
   return 0;
 }
 

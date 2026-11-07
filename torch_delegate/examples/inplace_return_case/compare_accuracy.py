@@ -76,7 +76,7 @@ def compare_tensors(ref, test, rtol=1e-3, atol=1e-5):
     """比较两个张量"""
     if ref.shape != test.shape:
         print(
-            f"    [WARN] 形状不匹配: ref {list(ref.shape)} vs test {list(test.shape)}"
+            f"    [WARN] Shape mismatch: ref {list(ref.shape)} vs test {list(test.shape)}"
         )
         return False
 
@@ -93,20 +93,20 @@ def compare_tensors(ref, test, rtol=1e-3, atol=1e-5):
     mismatch_mask = (abs_diff > atol) & (rel_diff > rtol)
     mismatch_count = mismatch_mask.sum().item()
     print(
-        f"    FAIL: {mismatch_count}/{ref.numel()} 个元素超过容差 (max_abs={max_abs:.2e}, max_rel={max_rel:.2e})"
+        f"    FAIL: {mismatch_count}/{ref.numel()} elements exceed tolerance (max_abs={max_abs:.2e}, max_rel={max_rel:.2e})"
     )
     return False
 
 
 def main():
     print("=" * 60)
-    print("Inplace+Return 测试 - 精度对比")
+    print("Inplace+Return test - accuracy comparison")
     print("=" * 60)
 
     output_dir = Path(__file__).parent / "output"
 
     print("\n" + "=" * 60)
-    print("测试 model_inplace_return")
+    print("Testing model_inplace_return")
     print("=" * 60)
 
     model = InplaceReturnModel().eval()
@@ -119,7 +119,7 @@ def main():
     all_pass = True
 
     for i, (bs, scale) in enumerate(test_configs):
-        print(f"\n输入组 {i} (batch_size={bs}, scale={scale}):")
+        print(f"\nInput group {i} (batch_size={bs}, scale={scale}):")
 
         x, scale_val = load_input_group(output_dir, "inplace_return", i)
 
@@ -131,11 +131,11 @@ def main():
         # 查找所有 delegate 输出
         delegate_outputs = find_delegate_outputs(output_dir, "inplace_return", i)
         if not delegate_outputs:
-            print("    [SKIP] delegate 输出未找到")
+            print("    [SKIP] delegate output not found")
             all_pass = False
             continue
 
-        print(f"    delegate 输出数量: {len(delegate_outputs)}")
+        print(f"    delegate output count: {len(delegate_outputs)}")
         for idx, out in sorted(delegate_outputs.items()):
             print(
                 f"      output[{idx}]: shape={list(out.shape)}, "
@@ -146,25 +146,25 @@ def main():
         matched = False
         for idx in sorted(delegate_outputs.keys()):
             if delegate_outputs[idx].shape == ref_output.shape:
-                print(f"    比较 output[{idx}] 与 PyTorch 参考:")
+                print(f"    Comparing output[{idx}] with PyTorch reference:")
                 if compare_tensors(ref_output, delegate_outputs[idx]):
                     matched = True
                     break
         if not matched:
             print(
-                f"    [FAIL] 没有输出与 PyTorch 参考匹配 (ref shape={list(ref_output.shape)})"
+                f"    [FAIL] No output matches the PyTorch reference (ref shape={list(ref_output.shape)})"
             )
             all_pass = False
 
     print("\n" + "=" * 60)
-    print("测试总结")
+    print("Test summary")
     print("=" * 60)
 
     if all_pass:
-        print("✓ 所有测试通过!")
+        print("✓ All tests passed!")
         sys.exit(0)
     else:
-        print("✗ 部分测试失败")
+        print("✗ Some tests failed")
         sys.exit(1)
 
 

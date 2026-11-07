@@ -86,7 +86,7 @@ def compare_tensors(ref, test, rtol=1e-3, atol=1e-5):
     """比较两个张量"""
     if ref.shape != test.shape:
         print(
-            f"    [WARN] 形状不匹配: ref {list(ref.shape)} vs test {list(test.shape)}"
+            f"    [WARN] Shape mismatch: ref {list(ref.shape)} vs test {list(test.shape)}"
         )
         return False
 
@@ -103,14 +103,14 @@ def compare_tensors(ref, test, rtol=1e-3, atol=1e-5):
     mismatch_mask = (abs_diff > atol) & (rel_diff > rtol)
     mismatch_count = mismatch_mask.sum().item()
     print(
-        f"    FAIL: {mismatch_count}/{ref.numel()} 个元素超过容差 (max_abs={max_abs:.2e}, max_rel={max_rel:.2e})"
+        f"    FAIL: {mismatch_count}/{ref.numel()} elements exceed tolerance (max_abs={max_abs:.2e}, max_rel={max_rel:.2e})"
     )
     return False
 
 
 def main():
     print("=" * 60)
-    print("Fallback Inplace/Optional 测试 - 精度对比")
+    print("Fallback Inplace/Optional test - accuracy comparison")
     print("=" * 60)
 
     output_dir = Path(__file__).parent / "output"
@@ -119,7 +119,7 @@ def main():
     # InplaceOptionalModel
     # =========================================================
     print("\n" + "=" * 60)
-    print("测试 model_inplace_optional")
+    print("Testing model_inplace_optional")
     print("=" * 60)
 
     model = InplaceOptionalModel().eval()
@@ -133,7 +133,7 @@ def main():
     all_pass = True
 
     for i, (bs, alpha, gamma) in enumerate(test_configs):
-        print(f"\n输入组 {i} (batch_size={bs}, alpha={alpha}, gamma={gamma}):")
+        print(f"\nInput group {i} (batch_size={bs}, alpha={alpha}, gamma={gamma}):")
 
         # 加载输入
         x, y, alpha_val, gamma_val = load_input_group(output_dir, "inplace_optional", i)
@@ -147,7 +147,7 @@ def main():
         # 加载 delegate 输出
         delegate_output = load_delegate_output(output_dir, "inplace_optional", i)
         if delegate_output is None:
-            print("    [SKIP] delegate 输出未找到")
+            print("    [SKIP] delegate output not found")
             all_pass = False
             continue
 
@@ -159,14 +159,14 @@ def main():
     # 总结
     # =========================================================
     print("\n" + "=" * 60)
-    print("测试总结")
+    print("Test summary")
     print("=" * 60)
 
     if all_pass:
-        print("✓ 所有测试通过!")
+        print("✓ All tests passed!")
         sys.exit(0)
     else:
-        print("✗ 部分测试失败")
+        print("✗ Some tests failed")
         sys.exit(1)
 
 

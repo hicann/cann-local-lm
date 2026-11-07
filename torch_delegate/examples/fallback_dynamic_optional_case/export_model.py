@@ -37,29 +37,29 @@ except ImportError:
 
 def export_model(model_name, model, example_inputs, output_dir):
     print(f"\n{'=' * 60}")
-    print(f"导出 {model_name}")
+    print(f"Exporting {model_name}")
     print(f"{'=' * 60}")
 
-    print("[1/3] 导出 ExportedProgram...")
+    print("[1/3] Exporting ExportedProgram...")
     ep = torch.export.export(model, example_inputs)
     ep.graph_module.print_readable()
     ep_path = output_dir / f"{model_name}.pt2"
     torch.export.save(ep, ep_path)
-    print(f"  保存 EP: {ep_path}")
+    print(f"  Saved EP: {ep_path}")
 
-    print("[2/3] 导出 epair...")
+    print("[2/3] Exporting epair...")
     epair_content = td.export_to_epair(ep)
     epair_path = output_dir / f"{model_name}.epair"
     td.epair_save(epair_content, epair_path)
-    print(f"  保存 epair: {epair_path}")
+    print(f"  Saved epair: {epair_path}")
 
-    print("[3/3] 统计信息:")
+    print("[3/3] Statistics:")
     total = epair_content.manifest.total_nodes
     converted = epair_content.manifest.converted_nodes
     fallback = total - converted
-    print(f"  总节点数: {total}")
-    print(f"  转换节点数: {converted}")
-    print(f"  Fallback 节点数: {fallback}")
+    print(f"  Total nodes: {total}")
+    print(f"  Converted nodes: {converted}")
+    print(f"  Fallback nodes: {fallback}")
 
     fallback_ops = []
     for node in epair_content.ep_json["graph_module"]["graph"]["nodes"]:
@@ -67,7 +67,7 @@ def export_model(model_name, model, example_inputs, output_dir):
         if ascend_ir.get("source") == "":
             fallback_ops.append(node.get("target", ""))
     if fallback_ops:
-        print(f"  Fallback 算子 ({len(fallback_ops)}):")
+        print(f"  Fallback ops ({len(fallback_ops)}):")
         for op in fallback_ops:
             print(f"    - {op}")
 
@@ -80,12 +80,12 @@ def save_tensor(output_dir, prefix, name, tensor):
     tensor.cpu().float().detach().numpy().tofile(path)
     with open(shape_path, "w") as f:
         f.write(",".join(str(d) for d in tensor.shape))
-    print(f"  保存 {name}: shape={list(tensor.shape)} → {path.name}")
+    print(f"  Saved {name}: shape={list(tensor.shape)} → {path.name}")
 
 
 def main():
     print("=" * 60)
-    print("Fallback Dynamic/Optional 测试 - 模型导出")
+    print("Fallback Dynamic/Optional test - model export")
     print("=" * 60)
 
     output_dir = Path(__file__).parent / "output"
@@ -137,9 +137,9 @@ def main():
     save_tensor(output_dir, "addmm_with_bias", "mat2", mat2)
 
     print("\n" + "=" * 60)
-    print("导出完成!")
+    print("Export completed!")
     print("=" * 60)
-    print("\n输出文件:")
+    print("\nOutput files:")
     for f in sorted(output_dir.glob("*.epair")):
         print(f"  - {f.name}")
     for f in sorted(output_dir.glob("input_*.bin")):

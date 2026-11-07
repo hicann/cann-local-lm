@@ -4,12 +4,12 @@
 
 | Variable name | Read at | Default | Summary |
 |--------|---------|--------|------|
-| `TORCH_DELEGATE_ENABLE_FALLBACK_CODEGEN` | `csrc/backend/ge_graph_builder.cc:356` | `1` (enabled) | Whether to trigger Fallback Codegen during graph construction |
-| `TORCH_PKG_DIR` | `csrc/fallback_codegen/fallback_codegen.cc:412`; `cmake/third_party/modules/Findlibtorch_cpu.cmake` | — | Python torch package directory |
-| `TORCH_NPU_DIR` | `csrc/fallback_codegen/fallback_codegen.cc:413` | — | torch_npu library directory |
-| `TORCH_DELEGATE_OUTPUT_DIR` | `csrc/fallback_codegen/fallback_codegen.cc:413` | `./output_dir` | Directory for fallback build artifacts |
-| `TORCH_DELEGATE_KEEP_ARTIFACTS` | `csrc/fallback_codegen/fallback_codegen.cc:1445` | `0` (not kept) | Whether to keep `.cpp` / `CMakeLists.txt` / `.so` after compilation |
-| `TORCH_DELEGATE_DEBUG` | `torch_delegate/core/utils.py:45` | `0` (WARN) | Python-side log level switch |
+| `TORCH_DELEGATE_ENABLE_FALLBACK_CODEGEN` | `csrc/backend/ge_graph_builder.cc` (`GeGraphBuilder` constructor) | `1` (enabled) | Whether to trigger Fallback Codegen during graph construction |
+| `TORCH_PKG_DIR` | `csrc/fallback_codegen/fallback_codegen.cc` (`FallbackCodegen::GenerateFromModelJson()`); `cmake/third_party/modules/Findlibtorch_cpu.cmake` | — | Python torch package directory |
+| `TORCH_NPU_DIR` | `csrc/fallback_codegen/fallback_codegen.cc` (`FallbackCodegen::GenerateFromModelJson()`) | — | torch_npu library directory |
+| `TORCH_DELEGATE_OUTPUT_DIR` | `csrc/fallback_codegen/fallback_codegen.cc` (`FallbackCodegen::GenerateFromModelJson()`) | `./output_dir` | Directory for fallback build artifacts |
+| `TORCH_DELEGATE_KEEP_ARTIFACTS` | `csrc/fallback_codegen/fallback_codegen.cc` (`FallbackCodegen::GenerateFromTargets()`) | `0` (not kept) | Whether to keep `.cpp` / `CMakeLists.txt` / `.so` after compilation |
+| `TORCH_DELEGATE_DEBUG` | `torch_delegate/core/utils.py` (`_get_logger()`) | `0` (WARN) | Python-side log level switch |
 
 ---
 

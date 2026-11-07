@@ -43,7 +43,7 @@ def load_delegate_output(output_dir, prefix, idx=0):
 def compare_tensors(ref, test, rtol=1e-3, atol=1e-5):
     if ref.shape != test.shape:
         print(
-            f"    [WARN] 形状不匹配: ref {list(ref.shape)} vs test {list(test.shape)}"
+            f"    [WARN] Shape mismatch: ref {list(ref.shape)} vs test {list(test.shape)}"
         )
         return False
     abs_diff = (ref - test).abs()
@@ -56,27 +56,27 @@ def compare_tensors(ref, test, rtol=1e-3, atol=1e-5):
     mismatch_mask = (abs_diff > atol) & (rel_diff > rtol)
     mismatch_count = mismatch_mask.sum().item()
     print(
-        f"    FAIL: {mismatch_count}/{ref.numel()} 个元素超过容差 (max_abs={max_abs:.2e}, max_rel={max_rel:.2e})"
+        f"    FAIL: {mismatch_count}/{ref.numel()} elements exceed tolerance (max_abs={max_abs:.2e}, max_rel={max_rel:.2e})"
     )
     return False
 
 
 def main():
     print("=" * 60)
-    print("Fallback Dynamic/Optional 测试 - 精度对比")
+    print("Fallback Dynamic/Optional test - accuracy comparison")
     print("=" * 60)
 
     output_dir = Path(__file__).parent / "output"
     all_pass = True
 
-    print("\n测试 model_addn (Tensor[] dynamic input):")
+    print("\nTesting model_addn (Tensor[] dynamic input):")
     addn_x = load_tensor(output_dir, "addn", "x")
     addn_y = load_tensor(output_dir, "addn", "y")
     with torch.no_grad():
         addn_ref = torch.ops.my_ops.my_addn([addn_x, addn_y])
     addn_del = load_delegate_output(output_dir, "addn")
     if addn_del is None:
-        print("    [SKIP] delegate 输出未找到")
+        print("    [SKIP] model_addn: delegate output not found")
         all_pass = False
     else:
         print(
@@ -85,7 +85,7 @@ def main():
         if not compare_tensors(addn_ref, addn_del):
             all_pass = False
 
-    print("\n测试 model_addmm_no_bias (Tensor? = None, unoccupied):")
+    print("\nTesting model_addmm_no_bias (Tensor? = None, unoccupied):")
     mm_input = load_tensor(output_dir, "addmm_no_bias", "input")
     mm_mat1 = load_tensor(output_dir, "addmm_no_bias", "mat1")
     mm_mat2 = load_tensor(output_dir, "addmm_no_bias", "mat2")
@@ -95,7 +95,7 @@ def main():
         )
     mm_nobias_del = load_delegate_output(output_dir, "addmm_no_bias")
     if mm_nobias_del is None:
-        print("    [SKIP] delegate 输出未找到")
+        print("    [SKIP] model_addmm_no_bias: delegate output not found")
         all_pass = False
     else:
         print(
@@ -104,13 +104,13 @@ def main():
         if not compare_tensors(mm_nobias_ref, mm_nobias_del):
             all_pass = False
 
-    print("\n测试 model_addmm_with_bias (Tensor? = value, occupied):")
+    print("\nTesting model_addmm_with_bias (Tensor? = value, occupied):")
     mmwb_input = load_tensor(output_dir, "addmm_with_bias", "input")
     mmwb_mat1 = load_tensor(output_dir, "addmm_with_bias", "mat1")
     mmwb_mat2 = load_tensor(output_dir, "addmm_with_bias", "mat2")
     ep_path = output_dir / "model_addmm_with_bias.pt2"
     if not ep_path.exists():
-        print("    [SKIP] model_addmm_with_bias.pt2 不存在")
+        print("    [SKIP] model_addmm_with_bias.pt2 does not exist")
         all_pass = False
     else:
         ep = torch.export.load(ep_path)
@@ -118,7 +118,7 @@ def main():
             mmwb_ref = ep.module()(mmwb_input, mmwb_mat1, mmwb_mat2)
         mmwb_del = load_delegate_output(output_dir, "addmm_with_bias")
         if mmwb_del is None:
-            print("    [SKIP] delegate 输出未找到")
+            print("    [SKIP] model_addmm_with_bias: delegate output not found")
             all_pass = False
         else:
             print(
@@ -128,14 +128,14 @@ def main():
                 all_pass = False
 
     print("\n" + "=" * 60)
-    print("测试总结")
+    print("Test summary")
     print("=" * 60)
 
     if all_pass:
-        print("✓ 所有测试通过!")
+        print("✓ All tests passed!")
         sys.exit(0)
     else:
-        print("✗ 部分测试失败")
+        print("✗ Some tests failed")
         sys.exit(1)
 
 

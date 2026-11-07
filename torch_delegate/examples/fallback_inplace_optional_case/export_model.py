@@ -75,34 +75,34 @@ class InplaceOptionalModel(nn.Module):
 def export_model(model_name, model, example_inputs, output_dir, dynamic_shapes=None):
     """导出单个模型到 epair"""
     print(f"\n{'=' * 60}")
-    print(f"导出 {model_name}")
+    print(f"Exporting {model_name}")
     print(f"{'=' * 60}")
 
-    print("[1/3] 导出 ExportedProgram...")
+    print("[1/3] Exporting ExportedProgram...")
     if dynamic_shapes is not None:
         ep = torch.export.export(model, example_inputs, dynamic_shapes=dynamic_shapes)
-        print(f"  动态 shape: {dynamic_shapes}")
+        print(f"  Dynamic shape: {dynamic_shapes}")
     else:
         ep = torch.export.export(model, example_inputs)
 
     ep.graph_module.print_readable()
     ep_path = output_dir / f"{model_name}.pt2"
     torch.export.save(ep, ep_path)
-    print(f"  保存 EP: {ep_path}")
+    print(f"  Saved EP: {ep_path}")
 
-    print("[2/3] 导出 epair...")
+    print("[2/3] Exporting epair...")
     epair_content = td.export_to_epair(ep)
     epair_path = output_dir / f"{model_name}.epair"
     td.epair_save(epair_content, epair_path)
-    print(f"  保存 epair: {epair_path}")
+    print(f"  Saved epair: {epair_path}")
 
-    print("[3/3] 统计信息:")
+    print("[3/3] Statistics:")
     total = epair_content.manifest.total_nodes
     converted = epair_content.manifest.converted_nodes
     fallback = total - converted
-    print(f"  总节点数: {total}")
-    print(f"  转换节点数: {converted}")
-    print(f"  Fallback 节点数: {fallback}")
+    print(f"  Total nodes: {total}")
+    print(f"  Converted nodes: {converted}")
+    print(f"  Fallback nodes: {fallback}")
 
     fallback_ops = []
     for node in epair_content.ep_json["graph_module"]["graph"]["nodes"]:
@@ -110,7 +110,7 @@ def export_model(model_name, model, example_inputs, output_dir, dynamic_shapes=N
         if ascend_ir.get("source") == "":
             fallback_ops.append(node.get("target", ""))
     if fallback_ops:
-        print(f"  Fallback 算子 ({len(fallback_ops)}):")
+        print(f"  Fallback ops ({len(fallback_ops)}):")
         for op in fallback_ops:
             print(f"    - {op}")
 
@@ -125,7 +125,7 @@ def save_input_group(output_dir, prefix, group_idx, x, y, alpha_val, gamma_val):
     x.numpy().tofile(x_path)
     with open(x_shape_path, "w") as f:
         f.write(",".join(str(d) for d in x.shape))
-    print(f"  保存 x: shape={list(x.shape)} → {x_path.name}")
+    print(f"  Saved x: shape={list(x.shape)} → {x_path.name}")
 
     # 保存 y
     y_path = output_dir / f"input_{prefix}_{group_idx}_y.bin"
@@ -133,24 +133,24 @@ def save_input_group(output_dir, prefix, group_idx, x, y, alpha_val, gamma_val):
     y.numpy().tofile(y_path)
     with open(y_shape_path, "w") as f:
         f.write(",".join(str(d) for d in y.shape))
-    print(f"  保存 y: shape={list(y.shape)} → {y_path.name}")
+    print(f"  Saved y: shape={list(y.shape)} → {y_path.name}")
 
     # 保存 alpha_val
     alpha_path = output_dir / f"input_{prefix}_{group_idx}_alpha.txt"
     with open(alpha_path, "w") as f:
         f.write(str(alpha_val))
-    print(f"  保存 alpha: {alpha_val} → {alpha_path.name}")
+    print(f"  Saved alpha: {alpha_val} → {alpha_path.name}")
 
     # 保存 gamma_val
     gamma_path = output_dir / f"input_{prefix}_{group_idx}_gamma.txt"
     with open(gamma_path, "w") as f:
         f.write(str(gamma_val))
-    print(f"  保存 gamma: {gamma_val} → {gamma_path.name}")
+    print(f"  Saved gamma: {gamma_val} → {gamma_path.name}")
 
 
 def main():
     print("=" * 60)
-    print("Fallback Inplace/Optional 测试 - 模型导出")
+    print("Fallback Inplace/Optional test - model export")
     print("=" * 60)
 
     output_dir = Path(__file__).parent / "output"
@@ -184,7 +184,7 @@ def main():
         dynamic_shapes=dynamic_shapes,
     )
 
-    print("\n生成输入数据...")
+    print("\nGenerating input data...")
     # 3 组不同 batch size 的输入（固定 alpha=2.0, gamma=3.0）
     test_configs = [
         (4, 2.0, 3.0),
@@ -203,9 +203,9 @@ def main():
     # 总结
     # =========================================================
     print("\n" + "=" * 60)
-    print("导出完成!")
+    print("Export completed!")
     print("=" * 60)
-    print("\n输出文件:")
+    print("\nOutput files:")
     for f in sorted(output_dir.glob("*.epair")):
         print(f"  - {f.name}")
     for f in sorted(output_dir.glob("input_*.bin")):

@@ -129,13 +129,13 @@ bool RunEpairModel(const std::string &epair_path, const std::string &prefix) {
 
   auto input_groups = FindInputGroups(dir, prefix);
   if (input_groups.empty()) {
-    std::cerr << "[WARN] 未找到输入文件: " << dir << "/input_" << prefix << "_*_x.bin" << std::endl;
+    std::cerr << "[WARN] No input files found: " << dir << "/input_" << prefix << "_*_x.bin" << std::endl;
     return true;
   }
 
   std::cout << std::endl;
-  std::cout << "加载: " << epair_path << std::endl;
-  std::cout << "输入组数: " << input_groups.size() << std::endl;
+  std::cout << "Loading: " << epair_path << std::endl;
+  std::cout << "Input group count: " << input_groups.size() << std::endl;
   std::cout << std::string(60, '-') << std::endl;
 
   td::EpairModelLoader loader(epair_path.c_str());
@@ -143,27 +143,27 @@ bool RunEpairModel(const std::string &epair_path, const std::string &prefix) {
   ge::Graph test_graph("test");
   td::Status init_check = loader.GetGEGraph(&test_graph);
   if (init_check != td::SUCCESS) {
-    std::cerr << "[ERROR] EpairModelLoader 初始化失败, status code: " << init_check << std::endl;
+    std::cerr << "[ERROR] EpairModelLoader initialization failed, status code: " << init_check << std::endl;
     return false;
   }
-  std::cout << "  ✓ epair 加载成功" << std::endl;
+  std::cout << "  ✓ epair loaded successfully" << std::endl;
 
   aclrtStream stream = nullptr;
   aclError acl_ret = aclrtCreateStream(&stream);
   if (acl_ret != ACL_ERROR_NONE) {
-    std::cerr << "[ERROR] aclrtCreateStream 失败, error: " << acl_ret << std::endl;
+    std::cerr << "[ERROR] aclrtCreateStream failed, error: " << acl_ret << std::endl;
     return false;
   }
-  std::cout << "  ✓ ACL stream 创建成功" << std::endl;
+  std::cout << "  ✓ ACL stream created successfully" << std::endl;
 
   std::map<ge::AscendString, ge::AscendString> session_options = {};
   td::Status compile_status = loader.CompileAndLoad(session_options, stream);
   if (compile_status != td::SUCCESS) {
-    std::cerr << "[ERROR] CompileAndLoad 失败, status: " << compile_status << std::endl;
+    std::cerr << "[ERROR] CompileAndLoad failed, status: " << compile_status << std::endl;
     aclrtDestroyStream(stream);
     return false;
   }
-  std::cout << "  ✓ CompileAndLoad 成功" << std::endl;
+  std::cout << "  ✓ CompileAndLoad succeeded" << std::endl;
 
   for (size_t group_idx = 0; group_idx < input_groups.size(); ++group_idx) {
     int group = input_groups[group_idx];
@@ -195,7 +195,8 @@ bool RunEpairModel(const std::string &epair_path, const std::string &prefix) {
     }
 
     std::cout << "  [DEBUG] alpha: " << alpha_val << ", gamma: " << gamma_val << std::endl;
-    std::cout << "  [INFO] alpha 和 gamma 作为 Const 节点内嵌在 GE 图中，不作为运行时输入" << std::endl;
+    std::cout << "  [INFO] alpha and gamma are embedded in the GE graph as Const nodes, not used as runtime inputs"
+              << std::endl;
 
     // 构建输入列表（只传 x 和 y，alpha 和 gamma 是 Const 节点）
     std::vector<gert::Tensor> inputs;
@@ -208,18 +209,20 @@ bool RunEpairModel(const std::string &epair_path, const std::string &prefix) {
     // 异步接口，需同步 stream 后再读取输出
     aclError sync_ret = aclrtSynchronizeStream(stream);
     if (sync_ret != ACL_ERROR_NONE) {
-      std::cerr << "[ERROR] aclrtSynchronizeStream 失败 (group " << group << "), error: " << sync_ret << std::endl;
+      std::cerr << "[ERROR] aclrtSynchronizeStream failed (group " << group << "), error: " << sync_ret << std::endl;
       aclrtDestroyStream(stream);
       return false;
     }
 
     if (run_status != td::SUCCESS) {
-      std::cerr << "[ERROR] RunModelWithStreamAsync 失败 (group " << group << "), status: " << run_status << std::endl;
+      std::cerr << "[ERROR] RunModelWithStreamAsync failed (group " << group << "), status: " << run_status
+                << std::endl;
       aclrtDestroyStream(stream);
       return false;
     }
 
-    std::cout << "  ✓ 输入组 " << group << " 执行成功 (outputs=" << outputs.size() << ")" << std::endl;
+    std::cout << "  ✓ Input group " << group << " executed successfully (outputs=" << outputs.size() << ")"
+              << std::endl;
 
     // 保存输出
     for (size_t i = 0; i < outputs.size(); ++i) {
@@ -234,7 +237,8 @@ bool RunEpairModel(const std::string &epair_path, const std::string &prefix) {
       size_t data_size = data_cnt * sizeof(float);
 
       if (data_cnt == 0 || data_size > 1024ULL * 1024 * 1024) {
-        std::cerr << "[ERROR] Invalid output data_cnt: " << data_cnt << std::endl;
+        std::cerr << "[ERROR] Invalid output data_cnt: " << data_cnt
+                  << ", expected 1 <= data_cnt <= 268435456 (data size <= 1 GB)" << std::endl;
         aclrtDestroyStream(stream);
         return false;
       }
@@ -274,37 +278,37 @@ int main(int argc, char *argv[]) {
   }
 
   if (epair_paths.empty()) {
-    std::cerr << "[ERROR] 用法: " << argv[0] << " [--custom-ops <path>] <epair1> [<epair2> ...]" << std::endl;
+    std::cerr << "[ERROR] Usage: " << argv[0] << " [--custom-ops <path>] <epair1> [<epair2> ...]" << std::endl;
     return -1;
   }
 
   if (!custom_ops_path.empty()) {
-    std::cout << "加载自定义算子库: " << custom_ops_path << std::endl;
+    std::cout << "Loading custom op library: " << custom_ops_path << std::endl;
     void *handle = dlopen(custom_ops_path.c_str(), RTLD_NOW | RTLD_GLOBAL);
     if (!handle) {
-      std::cerr << "[ERROR] dlopen 失败: " << dlerror() << std::endl;
+      std::cerr << "[ERROR] dlopen failed: " << dlerror() << std::endl;
       return -1;
     }
-    std::cout << "  ✓ 自定义算子库加载成功" << std::endl;
+    std::cout << "  ✓ Custom op library loaded successfully" << std::endl;
   }
 
-  PrintStage(1, 2, "初始化 GE");
+  PrintStage(1, 2, "Initialize GE");
   std::map<ge::AscendString, ge::AscendString> ge_options = {
       {ge::AscendString("ge.exec.deviceId"), ge::AscendString("0")}};
   auto init_status = ge::GEInitializeV2(ge_options);
   if (init_status != ge::SUCCESS) {
-    std::cerr << "[ERROR] GEInitializeV2 失败, status: " << init_status << std::endl;
+    std::cerr << "[ERROR] GEInitializeV2 failed, status: " << init_status << std::endl;
     return -1;
   }
-  std::cout << "[PASS] GE 初始化成功" << std::endl;
+  std::cout << "[PASS] GE initialized successfully" << std::endl;
 
   aclError acl_ret = aclrtSetDevice(0);
   if (acl_ret != ACL_ERROR_NONE) {
-    std::cerr << "[ERROR] aclrtSetDevice 失败, error: " << acl_ret << std::endl;
+    std::cerr << "[ERROR] aclrtSetDevice failed, error: " << acl_ret << std::endl;
     return -1;
   }
 
-  PrintStage(2, 2, "执行模型");
+  PrintStage(2, 2, "Run models");
   bool all_pass = true;
 
   for (const auto &epair_path : epair_paths) {
@@ -314,14 +318,14 @@ int main(int argc, char *argv[]) {
 
     std::cout << std::endl;
     std::cout << kStageSep << std::endl;
-    std::cout << " 执行: " << model_name << " (prefix=" << prefix << ")" << std::endl;
+    std::cout << " Running: " << model_name << " (prefix=" << prefix << ")" << std::endl;
     std::cout << kStageSep << std::endl;
 
     if (!RunEpairModel(epair_path, prefix)) {
-      std::cerr << "[FAIL] " << model_name << " 执行失败" << std::endl;
+      std::cerr << "[FAIL] " << model_name << " execution failed" << std::endl;
       all_pass = false;
     } else {
-      std::cout << "[PASS] " << model_name << " 执行成功" << std::endl;
+      std::cout << "[PASS] " << model_name << " execution succeeded" << std::endl;
     }
   }
 
@@ -330,9 +334,9 @@ int main(int argc, char *argv[]) {
   std::cout << std::endl;
   std::cout << kStageSep << std::endl;
   if (all_pass) {
-    std::cout << " 所有模型执行完成" << std::endl;
+    std::cout << " All models executed successfully" << std::endl;
   } else {
-    std::cout << " 部分模型执行失败" << std::endl;
+    std::cout << " Some models failed to execute" << std::endl;
   }
   std::cout << kStageSep << std::endl;
 

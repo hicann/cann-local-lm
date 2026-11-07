@@ -270,7 +270,7 @@ void RunWithCompileAndLoad(const char *epair_path, const std::vector<gert::Tenso
   PrintStage(2, 4, "CompileAndLoad + RunModelWithStreamAsync");
 
   td::EpairModelLoader loader(epair_path);
-  std::cout << "  [OK] EpairModelLoader 构造完成" << std::endl;
+  std::cout << "  [OK] EpairModelLoader constructed" << std::endl;
 
   std::map<ge::AscendString, ge::AscendString> options = {
       {ge::AscendString("ge.exec.deviceId"), ge::AscendString("0")},
@@ -293,7 +293,7 @@ void RunWithCompileAndLoad(const char *epair_path, const std::vector<gert::Tenso
     aclrtDestroyStream(stream);
     return;
   }
-  std::cout << "  [OK] 编译加载完成" << std::endl;
+  std::cout << "  [OK] Compile and load finished" << std::endl;
 
   std::vector<gert::Tensor> outputs;
   status = loader.RunModelWithStreamAsync(stream, inputs, outputs);
@@ -310,7 +310,7 @@ void RunWithCompileAndLoad(const char *epair_path, const std::vector<gert::Tenso
   if (acl_ret != ACL_SUCCESS) {
     std::cerr << "  [FAIL] aclrtSynchronizeStream failed, ret=" << acl_ret << std::endl;
   }
-  std::cout << "  [OK] 推理完成, 输出数=" << outputs.size() << std::endl;
+  std::cout << "  [OK] Inference finished, output count=" << outputs.size() << std::endl;
 
   for (size_t i = 0; i < outputs.size(); ++i) {
     PrintTensor(outputs[i], i);
@@ -356,7 +356,9 @@ void RunWithCompileAndLoad(const char *epair_path, const std::vector<gert::Tenso
 int main(int argc, char *argv[]) {
   if (argc < 2) {
     std::cerr << "Usage: " << argv[0] << " <model.epair>" << std::endl;
-    std::cerr << "\n  请先在 Python 侧运行 export_demo.py 生成 simple_model.epair 和输入文件" << std::endl;
+    std::cerr << "\n  Please run export_demo.py on the Python side first to generate simple_model.epair "
+                 "and input files"
+              << std::endl;
     return -1;
   }
 
@@ -366,7 +368,7 @@ int main(int argc, char *argv[]) {
   // =========================================================
   // [1/4] 初始化 GE + 准备输入
   // =========================================================
-  PrintStage(1, 4, "GE 初始化 + 准备输入数据");
+  PrintStage(1, 4, "GE init + prepare input data");
   std::cout << "  epair: " << epair_path << std::endl;
   std::cout << "  input dir: " << epair_dir << std::endl;
 
@@ -377,18 +379,18 @@ int main(int argc, char *argv[]) {
     std::cerr << "[FAIL] GEInitializeV2" << std::endl;
     return -1;
   }
-  std::cout << "  [OK] GE 初始化完成, deviceId=0" << std::endl;
+  std::cout << "  [OK] GE initialized, deviceId=0" << std::endl;
 
   std::vector<std::vector<char>> input_buffers;
   std::vector<gert::Tensor> inputs;
   try {
     inputs = BuildAllInputs(epair_dir, input_buffers);
   } catch (const std::exception &e) {
-    std::cerr << "[FAIL] 构建输入失败: " << e.what() << std::endl;
+    std::cerr << "[FAIL] Failed to build inputs: " << e.what() << std::endl;
     ge::GEFinalizeV2();
     return -1;
   }
-  std::cout << "  [OK] 共构建 " << inputs.size() << " 个输入" << std::endl;
+  std::cout << "  [OK] Built " << inputs.size() << " input(s)" << std::endl;
 
   // =========================================================
   // [2/4] CompileAndLoad + RunModelWithStreamAsync
@@ -398,12 +400,12 @@ int main(int argc, char *argv[]) {
   // =========================================================
   // [3/4] 精度比对
   // =========================================================
-  PrintStage(3, 4, "精度比对 (vs Python 参考输出)");
+  PrintStage(3, 4, "Accuracy comparison (vs Python reference output)");
 
   std::string ref_path = epair_dir + "/ref_output.bin";
   std::ifstream ref_file(ref_path, std::ios::binary);
   if (!ref_file) {
-    std::cout << "  [SKIP] 未找到参考输出: " << ref_path << std::endl;
+    std::cout << "  [SKIP] Reference output not found: " << ref_path << std::endl;
   } else {
     ref_file.seekg(0, std::ios::end);
     size_t ref_size = ref_file.tellg();
@@ -411,13 +413,14 @@ int main(int argc, char *argv[]) {
     std::vector<char> ref_data(ref_size);
     ref_file.read(ref_data.data(), ref_size);
 
-    std::cout << "  参考输出大小: " << ref_size << " bytes (" << (ref_size / sizeof(float)) << " floats)" << std::endl;
+    std::cout << "  Reference output size: " << ref_size << " bytes (" << (ref_size / sizeof(float)) << " floats)"
+              << std::endl;
 
     // 打印参考输出数据
     {
       size_t count = ref_size / sizeof(float);
       const float *ref_f = reinterpret_cast<const float *>(ref_data.data());
-      std::cout << "  参考输出数据: [";
+      std::cout << "  Reference output data: [";
       size_t print_cnt = std::min(count, size_t(16));
       for (size_t i = 0; i < print_cnt; ++i) {
         if (i > 0) std::cout << ", ";
@@ -430,7 +433,7 @@ int main(int argc, char *argv[]) {
     std::string cpp_out = epair_dir + "/cpp_output_a_0.bin";
     std::ifstream cpp_file(cpp_out, std::ios::binary);
     if (!cpp_file) {
-      std::cout << "  [SKIP] " << cpp_out << " 不存在" << std::endl;
+      std::cout << "  [SKIP] " << cpp_out << " does not exist" << std::endl;
     } else {
       cpp_file.seekg(0, std::ios::end);
       size_t cpp_size = cpp_file.tellg();
@@ -442,8 +445,8 @@ int main(int argc, char *argv[]) {
       {
         size_t count = cpp_size / sizeof(float);
         const float *cpp_f = reinterpret_cast<const float *>(cpp_data.data());
-        std::cout << "  C++输出大小: " << cpp_size << " bytes (" << count << " floats)" << std::endl;
-        std::cout << "  C++输出数据: [";
+        std::cout << "  C++ output size: " << cpp_size << " bytes (" << count << " floats)" << std::endl;
+        std::cout << "  C++ output data: [";
         size_t print_cnt = std::min(count, size_t(16));
         for (size_t i = 0; i < print_cnt; ++i) {
           if (i > 0) std::cout << ", ";
@@ -453,7 +456,7 @@ int main(int argc, char *argv[]) {
         std::cout << "]" << std::endl;
       }
       if (cpp_size != ref_size) {
-        std::cout << "  [DIFF] 大小不一致 (ref=" << ref_size << " vs cpp=" << cpp_size << ")" << std::endl;
+        std::cout << "  [DIFF] Size mismatch (ref=" << ref_size << " vs cpp=" << cpp_size << ")" << std::endl;
       } else {
         size_t n = ref_size / sizeof(float);
         const float *ref_f = reinterpret_cast<const float *>(ref_data.data());
@@ -463,9 +466,9 @@ int main(int argc, char *argv[]) {
           max_err = std::max(max_err, std::abs(ref_f[i] - cpp_f[i]));
         }
         if (max_err < 1e-3f) {
-          std::cout << "  [PASS] 与参考一致 (max_err=" << max_err << ")" << std::endl;
+          std::cout << "  [PASS] Matches reference (max_err=" << max_err << ")" << std::endl;
         } else {
-          std::cout << "  [DIFF] 超出容差 (max_err=" << max_err << ")" << std::endl;
+          std::cout << "  [DIFF] Exceeds tolerance (max_err=" << max_err << ")" << std::endl;
         }
       }
     }
@@ -474,13 +477,13 @@ int main(int argc, char *argv[]) {
   // =========================================================
   // [4/4] 清理
   // =========================================================
-  PrintStage(4, 4, "清理");
+  PrintStage(4, 4, "Cleanup");
   ge::GEFinalizeV2();
-  std::cout << "  [OK] GE 已释放" << std::endl;
+  std::cout << "  [OK] GE finalized" << std::endl;
 
   std::cout << "\n"
             << kSep << "\n"
-            << " 全部完成"
+            << " All done"
             << "\n"
             << kSep << std::endl;
   return 0;

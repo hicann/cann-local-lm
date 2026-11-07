@@ -272,7 +272,8 @@ Status ParseGraphInputs(const OrderedJson &array, const std::vector<ParsedInputS
     return INVALID_PARAM;
   }
   if (array.size() != input_specs.size()) {
-    TDLOGE("graph.inputs and signature.input_specs size mismatch");
+    TDLOGE("graph.inputs and signature.input_specs size mismatch: graph.inputs=%zu, signature.input_specs=%zu",
+           array.size(), input_specs.size());
     return INVALID_PARAM;
   }
   for (size_t i = 0; i < array.size(); ++i) {
@@ -312,7 +313,8 @@ Status ParseGraphOutputs(const OrderedJson &array, const std::vector<ParsedOutpu
     return INVALID_PARAM;
   }
   if (array.size() != output_specs.size()) {
-    TDLOGE("graph.outputs and signature.output_specs size mismatch");
+    TDLOGE("graph.outputs and signature.output_specs size mismatch: graph.outputs=%zu, signature.output_specs=%zu",
+           array.size(), output_specs.size());
     return INVALID_PARAM;
   }
   for (size_t i = 0; i < array.size(); ++i) {

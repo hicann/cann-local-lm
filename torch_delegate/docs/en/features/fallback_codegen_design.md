@@ -40,7 +40,7 @@ Fallback Codegen lets operators not covered by the converter automatically fall 
 
 ### Trigger Location
 
-Fallback Codegen is not a standalone executable but a step in the `GeGraphBuilder` constructor (`csrc/backend/ge_graph_builder.cc:356-374`):
+Fallback Codegen is not a standalone executable but a step in the `GeGraphBuilder` constructor (`csrc/backend/ge_graph_builder.cc`, search for `TORCH_DELEGATE_ENABLE_FALLBACK_CODEGEN` to locate):
 
 ```cpp
 const char *enable_codegen_env = std::getenv("TORCH_DELEGATE_ENABLE_FALLBACK_CODEGEN");
@@ -468,6 +468,6 @@ In the `GeGraphBuilder` constructor, codegen failure directly `return`s (`init_s
 - **Source code**:
   - `csrc/fallback_codegen/fallback_codegen.h` — public interfaces and data structures
   - `csrc/fallback_codegen/fallback_codegen.cc` — implementation
-  - `csrc/backend/ge_graph_builder.cc:356-374` — trigger location
+  - `csrc/backend/ge_graph_builder.cc` — trigger location (`GeGraphBuilder` constructor)
 - **Tests**: `tests/cpp/test_fallback_codegen.cc` — unit tests
 - **Example**: `examples/fallback_inplace_optional_case/` — inplace + optional parameter example

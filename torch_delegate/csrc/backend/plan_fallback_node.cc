@@ -202,7 +202,7 @@ Status FallbackNodePlanner::BuildInputDefs(const ParsedNode &node) {
     if (input.input_kind == NodeInputKind::Tensor) {
       const ParsedTensorMeta *input_meta = deps_.model.FindTensorMeta(input.tensor_name);
       if (input_meta == nullptr) {
-        TDLOGE("Fallback input tensor meta missing, context=%s, tensor=%s", context_.c_str(),
+        TDLOGE("Fallback input tensor meta missing for single tensor input, context=%s, tensor=%s", context_.c_str(),
                input.tensor_name.c_str());
         return INVALID_PARAM;
       }

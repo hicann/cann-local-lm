@@ -92,8 +92,8 @@ Status BuildGeInputs(const std::vector<gert::Tensor> &user_inputs, const InputBi
       values.reserve(binding.source_user_indices.size());
       for (int64_t idx : binding.source_user_indices) {
         if (idx < 0 || static_cast<size_t>(idx) >= user_inputs.size()) {
-          TDLOGE("BuildGeInputs failed: user input index %ld out of range (size=%zu)", static_cast<long>(idx),
-                 user_inputs.size());
+          TDLOGE("BuildGeInputs failed: user input index %ld in multi-index binding out of range (size=%zu)",
+                 static_cast<long>(idx), user_inputs.size());
           return INVALID_PARAM;
         }
         values.push_back(ReadInt64Scalar(user_inputs[idx]));
@@ -220,8 +220,10 @@ class EpairModelLoader::Impl {
     if (input_binding_map_.empty()) {
       const ge::Status ge_status = session_->RunGraphWithStreamAsync(graph_id_, stream, inputs, outputs);
       if (ge_status != ge::SUCCESS) {
-        TDLOGE("RunModelWithStreamAsync failed: RunGraphWithStreamAsync error, return ge_status=%u, graph_id=%u",
-               ge_status, graph_id_);
+        TDLOGE(
+            "RunModelWithStreamAsync failed: RunGraphWithStreamAsync error (input_binding_map_ empty, direct user "
+            "inputs), return ge_status=%u, graph_id=%u",
+            ge_status, graph_id_);
         return ToTdStatus(ge_status);
       }
       run_mode_ = RunMode::kAsync;
@@ -234,8 +236,10 @@ class EpairModelLoader::Impl {
 
     const ge::Status ge_status = session_->RunGraphWithStreamAsync(graph_id_, stream, ge_inputs, outputs);
     if (ge_status != ge::SUCCESS) {
-      TDLOGE("RunModelWithStreamAsync failed: RunGraphWithStreamAsync error, return ge_status=%u, graph_id=%u",
-             ge_status, graph_id_);
+      TDLOGE(
+          "RunModelWithStreamAsync failed: RunGraphWithStreamAsync error (with input binding map), return "
+          "ge_status=%u, graph_id=%u",
+          ge_status, graph_id_);
       return ToTdStatus(ge_status);
     }
     run_mode_ = RunMode::kAsync;
@@ -262,7 +266,10 @@ class EpairModelLoader::Impl {
     if (input_binding_map_.empty()) {
       const ge::Status ge_status = session_->RunGraph(graph_id_, inputs, outputs);
       if (ge_status != ge::SUCCESS) {
-        TDLOGE("RunModel failed: RunGraph error, return ge_status=%u, graph_id=%u", ge_status, graph_id_);
+        TDLOGE(
+            "RunModel failed: RunGraph error (input_binding_map_ empty, direct user inputs), return ge_status=%u, "
+            "graph_id=%u",
+            ge_status, graph_id_);
         return ToTdStatus(ge_status);
       }
       run_mode_ = RunMode::kSync;
@@ -275,7 +282,8 @@ class EpairModelLoader::Impl {
 
     const ge::Status ge_status = session_->RunGraph(graph_id_, ge_inputs, outputs);
     if (ge_status != ge::SUCCESS) {
-      TDLOGE("RunModel failed: RunGraph error, return ge_status=%u, graph_id=%u", ge_status, graph_id_);
+      TDLOGE("RunModel failed: RunGraph error (with input binding map), return ge_status=%u, graph_id=%u", ge_status,
+             graph_id_);
       return ToTdStatus(ge_status);
     }
     run_mode_ = RunMode::kSync;
@@ -378,23 +386,24 @@ EpairModelLoader::EpairModelLoader(const char *archive_path) : impl_(MakeShared<
 EpairModelLoader::~EpairModelLoader() = default;
 
 Status EpairModelLoader::CompileAndLoad(const std::map<ge::AscendString, ge::AscendString> &options, void *stream) {
-  TD_ASSERT_NOTNULL(impl_, "EpairModelLoader construction failed: Impl allocation failed");
+  TD_ASSERT_NOTNULL(impl_, "EpairModelLoader::CompileAndLoad failed: impl_ is null, construction may have failed");
   return impl_->CompileAndLoad(options, stream);
 }
 
 Status EpairModelLoader::RunModelWithStreamAsync(void *stream, const std::vector<gert::Tensor> &inputs,
                                                  std::vector<gert::Tensor> &outputs) {
-  TD_ASSERT_NOTNULL(impl_, "EpairModelLoader construction failed: Impl allocation failed");
+  TD_ASSERT_NOTNULL(impl_,
+                    "EpairModelLoader::RunModelWithStreamAsync failed: impl_ is null, construction may have failed");
   return impl_->RunModelWithStreamAsync(stream, inputs, outputs);
 }
 
 Status EpairModelLoader::RunModel(const std::vector<gert::Tensor> &inputs, std::vector<gert::Tensor> &outputs) {
-  TD_ASSERT_NOTNULL(impl_, "EpairModelLoader construction failed: Impl allocation failed");
+  TD_ASSERT_NOTNULL(impl_, "EpairModelLoader::RunModel failed: impl_ is null, construction may have failed");
   return impl_->RunModel(inputs, outputs);
 }
 
 Status EpairModelLoader::GetGEGraph(ge::Graph *graph) const {
-  TD_ASSERT_NOTNULL(impl_, "EpairModelLoader construction failed: Impl allocation failed");
+  TD_ASSERT_NOTNULL(impl_, "EpairModelLoader::GetGEGraph failed: impl_ is null, construction may have failed");
   return impl_->GetGEGraph(graph);
 }
 

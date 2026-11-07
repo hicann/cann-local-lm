@@ -161,7 +161,8 @@ Status BuildTensorHolder(const std::vector<int64_t> &dims, int64_t dtype, int64_
   out.format = layout;
   const size_t element_size = ElementSizeForPt2Dtype(out.datatype);
   if (element_size == 0) {
-    TDLOGE("Unsupported PT2 dtype, context=%s, dtype=%ld", context.c_str(), static_cast<long>(dtype));
+    TDLOGE("Unsupported PT2 dtype for element size check, context=%s, dtype=%ld", context.c_str(),
+           static_cast<long>(dtype));
     return INVALID_PARAM;
   }
   const size_t expected_bytes = Product(out.dims) * element_size;

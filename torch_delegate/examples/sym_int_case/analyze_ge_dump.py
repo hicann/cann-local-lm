@@ -94,11 +94,11 @@ def compare(name, ref, actual, rtol=1e-3, atol=1e-5):
 
 
 print("=" * 60)
-print("分析 GE dump 数据")
+print("Analyzing GE dump data")
 print("=" * 60)
 
 for group_idx in range(3):
-    print(f"\n输入组 {group_idx}:")
+    print(f"\nInput group {group_idx}:")
 
     # 加载输入
     x, static_tensor = load_input(group_idx)

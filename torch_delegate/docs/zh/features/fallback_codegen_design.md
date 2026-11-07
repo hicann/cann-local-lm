@@ -40,7 +40,7 @@ PyTorch `ExportedProgram` 中存在大量算子，torchair converter只能覆盖
 
 ### 触发位置
 
-Fallback Codegen不是独立可执行文件，而是 `GeGraphBuilder` 构造函数中的一个步骤（`csrc/backend/ge_graph_builder.cc:356-374`）：
+Fallback Codegen不是独立可执行文件，而是 `GeGraphBuilder` 构造函数中的一个步骤（`csrc/backend/ge_graph_builder.cc`，可搜索 `TORCH_DELEGATE_ENABLE_FALLBACK_CODEGEN` 定位）：
 
 ```cpp
 const char *enable_codegen_env = std::getenv("TORCH_DELEGATE_ENABLE_FALLBACK_CODEGEN");
@@ -463,6 +463,6 @@ struct CodegenResult {
 - **源码**：
   - `csrc/fallback_codegen/fallback_codegen.h` — 公共接口和数据结构
   - `csrc/fallback_codegen/fallback_codegen.cc` — 实现
-  - `csrc/backend/ge_graph_builder.cc:356-374` — 触发位置
+  - `csrc/backend/ge_graph_builder.cc` — 触发位置（`GeGraphBuilder` 构造函数）
 - **测试**：`tests/cpp/test_fallback_codegen.cc` — 单元测试
 - **示例**：`examples/fallback_inplace_optional_case/` — inplace +可选参数示例

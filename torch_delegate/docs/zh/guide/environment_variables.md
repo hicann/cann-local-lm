@@ -4,12 +4,12 @@
 
 | 变量名 | 读取位置 | 默认值 | 简述 |
 |--------|---------|--------|------|
-| `TORCH_DELEGATE_ENABLE_FALLBACK_CODEGEN` | `csrc/backend/ge_graph_builder.cc:356` | `1`（启用） | 是否在构图时触发Fallback Codegen |
-| `TORCH_PKG_DIR` | `csrc/fallback_codegen/fallback_codegen.cc:412`；`cmake/third_party/modules/Findlibtorch_cpu.cmake` | — | Python torch包目录 |
-| `TORCH_NPU_DIR` | `csrc/fallback_codegen/fallback_codegen.cc:413` | — | torch_npu库目录 |
-| `TORCH_DELEGATE_OUTPUT_DIR` | `csrc/fallback_codegen/fallback_codegen.cc:413` | `./output_dir` | fallback编译产物保留目录 |
-| `TORCH_DELEGATE_KEEP_ARTIFACTS` | `csrc/fallback_codegen/fallback_codegen.cc:1445` | `0`（不保留） | 编译后是否保留 `.cpp` / `CMakeLists.txt` / `.so` |
-| `TORCH_DELEGATE_DEBUG` | `torch_delegate/core/utils.py:45` | `0`（WARN） | Python侧日志级别切换 |
+| `TORCH_DELEGATE_ENABLE_FALLBACK_CODEGEN` | `csrc/backend/ge_graph_builder.cc`（`GeGraphBuilder` 构造函数） | `1`（启用） | 是否在构图时触发Fallback Codegen |
+| `TORCH_PKG_DIR` | `csrc/fallback_codegen/fallback_codegen.cc`（`FallbackCodegen::GenerateFromModelJson()`）；`cmake/third_party/modules/Findlibtorch_cpu.cmake` | — | Python torch包目录 |
+| `TORCH_NPU_DIR` | `csrc/fallback_codegen/fallback_codegen.cc`（`FallbackCodegen::GenerateFromModelJson()`） | — | torch_npu库目录 |
+| `TORCH_DELEGATE_OUTPUT_DIR` | `csrc/fallback_codegen/fallback_codegen.cc`（`FallbackCodegen::GenerateFromModelJson()`） | `./output_dir` | fallback编译产物保留目录 |
+| `TORCH_DELEGATE_KEEP_ARTIFACTS` | `csrc/fallback_codegen/fallback_codegen.cc`（`FallbackCodegen::GenerateFromTargets()`） | `0`（不保留） | 编译后是否保留 `.cpp` / `CMakeLists.txt` / `.so` |
+| `TORCH_DELEGATE_DEBUG` | `torch_delegate/core/utils.py`（`_get_logger()`） | `0`（WARN） | Python侧日志级别切换 |
 
 ---
 

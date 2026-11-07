@@ -321,7 +321,9 @@ std::map<ge::AscendString, ge::AscendString> MakeGeOptions() {
 int main(int argc, char *argv[]) {
   if (argc < 2) {
     std::cerr << "Usage: " << argv[0] << " <model.epair>" << std::endl;
-    std::cerr << "\n  请先在 Python 侧运行 export_pack_model.py 生成 model.epair 和输入文件" << std::endl;
+    std::cerr << "\n  Please run export_pack_model.py on the Python side first to generate model.epair and "
+                 "input files"
+              << std::endl;
     return -1;
   }
 
@@ -332,14 +334,14 @@ int main(int argc, char *argv[]) {
   // =========================================================
   // [1/5] 初始化 GE + ACL
   // =========================================================
-  PrintStage(1, kTotalStages, "GE + ACL 初始化");
+  PrintStage(1, kTotalStages, "GE + ACL init");
 
   auto ge_opts = MakeGeOptions();
   if (ge::GEInitializeV2(ge_opts) != ge::SUCCESS) {
     std::cerr << "[FAIL] GEInitializeV2" << std::endl;
     return -1;
   }
-  std::cout << "  [OK] GE 初始化完成" << std::endl;
+  std::cout << "  [OK] GE initialized" << std::endl;
 
   if (aclInit(nullptr) != ACL_SUCCESS) {
     std::cerr << "[WARN] aclInit failed or already initialized" << std::endl;
@@ -348,7 +350,7 @@ int main(int argc, char *argv[]) {
   // =========================================================
   // [准备] 读取输入 (x 使用 device 内存)
   // =========================================================
-  PrintStage(0, kTotalStages, "准备输入数据 (x → device)");
+  PrintStage(0, kTotalStages, "Prepare input data (x -> device)");
   std::cout << "  epair: " << epair_path << std::endl;
   std::cout << "  input dir: " << epair_dir << std::endl;
 
@@ -358,7 +360,7 @@ int main(int argc, char *argv[]) {
   try {
     user_inputs = BuildAllUserInputs(epair_dir, host_buffers, device_buffers);
   } catch (const std::exception &e) {
-    std::cerr << "[FAIL] 构建输入失败: " << e.what() << std::endl;
+    std::cerr << "[FAIL] Failed to build inputs: " << e.what() << std::endl;
     for (void *ptr : device_buffers) {
       aclrtFree(ptr);
     }
@@ -366,12 +368,12 @@ int main(int argc, char *argv[]) {
     ge::GEFinalizeV2();
     return -1;
   }
-  std::cout << "  [OK] 共构建 " << user_inputs.size() << " 个输入 (x 在 device)" << std::endl;
+  std::cout << "  [OK] Built " << user_inputs.size() << " input(s) (x on device)" << std::endl;
 
   // =========================================================
   // [2/5] 校验 GE Graph: SymPack 优化后的 Data 节点
   // =========================================================
-  PrintStage(2, kTotalStages, "校验 GE Graph: SymPack 优化后的 Data 节点");
+  PrintStage(2, kTotalStages, "Verify GE Graph: Data nodes after SymPack optimization");
   {
     td::EpairModelLoader loader(epair_path);
     ge::Graph graph("verify_graph");
@@ -379,9 +381,9 @@ int main(int argc, char *argv[]) {
     if (st != td::SUCCESS) {
       std::cerr << "  [FAIL] GetGEGraph failed, status=" << st << std::endl;
     } else {
-      std::cout << "  [OK] GE Graph 提取成功" << std::endl;
+      std::cout << "  [OK] GE Graph extracted" << std::endl;
       auto data_nodes = CollectDataNodes(graph);
-      std::cout << "  Data 节点 (优化后, 共 " << data_nodes.size() << " 个):" << std::endl;
+      std::cout << "  Data nodes (after optimization, total " << data_nodes.size() << "):" << std::endl;
       PrintDataNodes(data_nodes);
     }
   }
@@ -394,7 +396,7 @@ int main(int argc, char *argv[]) {
   PrintStage(3, kTotalStages, "CompileAndLoad + RunModelWithStreamAsync");
 
   td::EpairModelLoader loader(epair_path);
-  std::cout << "  [OK] EpairModelLoader 构造完成" << std::endl;
+  std::cout << "  [OK] EpairModelLoader constructed" << std::endl;
 
   auto options = MakeGeOptions();
 
@@ -407,7 +409,7 @@ int main(int argc, char *argv[]) {
     if (status != td::SUCCESS) {
       std::cerr << "  [FAIL] CompileAndLoad failed, status=" << status << std::endl;
     } else {
-      std::cout << "  [OK] 编译加载完成" << std::endl;
+      std::cout << "  [OK] Compile and load finished" << std::endl;
 
       std::vector<gert::Tensor> outputs;
       status = loader.RunModelWithStreamAsync(stream, user_inputs, outputs);
@@ -418,7 +420,7 @@ int main(int argc, char *argv[]) {
         if (acl_ret != ACL_ERROR_NONE) {
           std::cerr << "  [FAIL] aclrtSynchronizeStream failed, error=" << acl_ret << std::endl;
         } else {
-          std::cout << "  [OK] 推理完成, 输出数=" << outputs.size() << std::endl;
+          std::cout << "  [OK] Inference finished, output count=" << outputs.size() << std::endl;
           for (size_t i = 0; i < outputs.size(); ++i) {
             PrintTensor(outputs[i], i);
           }
@@ -441,12 +443,12 @@ int main(int argc, char *argv[]) {
   // =========================================================
   // [4/5] 精度比对
   // =========================================================
-  PrintStage(4, kTotalStages, "精度比对 (vs Python 参考输出)");
+  PrintStage(4, kTotalStages, "Accuracy comparison (vs Python reference output)");
 
   std::string ref_path = epair_dir + "/ref_output.bin";
   std::ifstream ref_file(ref_path, std::ios::binary);
   if (!ref_file) {
-    std::cout << "  [SKIP] 未找到参考输出: " << ref_path << std::endl;
+    std::cout << "  [SKIP] Reference output not found: " << ref_path << std::endl;
   } else {
     ref_file.seekg(0, std::ios::end);
     size_t ref_size = ref_file.tellg();
@@ -454,12 +456,13 @@ int main(int argc, char *argv[]) {
     std::vector<char> ref_data(ref_size);
     ref_file.read(ref_data.data(), ref_size);
 
-    std::cout << "  参考输出大小: " << ref_size << " bytes (" << (ref_size / sizeof(float)) << " floats)" << std::endl;
+    std::cout << "  Reference output size: " << ref_size << " bytes (" << (ref_size / sizeof(float)) << " floats)"
+              << std::endl;
 
     std::string cpp_out = epair_dir + "/cpp_output_a_0.bin";
     std::ifstream cpp_file(cpp_out, std::ios::binary);
     if (!cpp_file) {
-      std::cout << "  [SKIP] " << cpp_out << " 不存在" << std::endl;
+      std::cout << "  [SKIP] " << cpp_out << " does not exist" << std::endl;
     } else {
       cpp_file.seekg(0, std::ios::end);
       size_t cpp_size = cpp_file.tellg();
@@ -468,7 +471,7 @@ int main(int argc, char *argv[]) {
       cpp_file.read(cpp_data.data(), cpp_size);
 
       if (cpp_size != ref_size) {
-        std::cout << "  [DIFF] 大小不一致 (ref=" << ref_size << " vs cpp=" << cpp_size << ")" << std::endl;
+        std::cout << "  [DIFF] Size mismatch (ref=" << ref_size << " vs cpp=" << cpp_size << ")" << std::endl;
       } else {
         size_t n = ref_size / sizeof(float);
         const float *ref_f = reinterpret_cast<const float *>(ref_data.data());
@@ -479,9 +482,9 @@ int main(int argc, char *argv[]) {
         }
 
         if (max_err < 1e-5f) {
-          std::cout << "  [PASS] 与参考一致 (max_err=" << max_err << ")" << std::endl;
+          std::cout << "  [PASS] Matches reference (max_err=" << max_err << ")" << std::endl;
         } else {
-          std::cout << "  [DIFF] 超出容差 (max_err=" << max_err << ")" << std::endl;
+          std::cout << "  [DIFF] Exceeds tolerance (max_err=" << max_err << ")" << std::endl;
         }
       }
     }
@@ -490,20 +493,20 @@ int main(int argc, char *argv[]) {
   // =========================================================
   // [5/5] 清理
   // =========================================================
-  PrintStage(5, kTotalStages, "清理");
+  PrintStage(5, kTotalStages, "Cleanup");
 
   for (void *ptr : device_buffers) {
     aclrtFree(ptr);
   }
-  std::cout << "  [OK] device 内存已释放" << std::endl;
+  std::cout << "  [OK] Device memory freed" << std::endl;
 
   aclFinalize();
   ge::GEFinalizeV2();
-  std::cout << "  [OK] GE + ACL 已释放" << std::endl;
+  std::cout << "  [OK] GE + ACL finalized" << std::endl;
 
   std::cout << "\n"
             << kSep << "\n"
-            << " 全部完成"
+            << " All done"
             << "\n"
             << kSep << std::endl;
   return 0;

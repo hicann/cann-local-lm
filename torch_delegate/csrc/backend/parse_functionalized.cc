@@ -69,7 +69,8 @@ std::optional<std::vector<ParsedNodeInput>> RebuildFunctionalizedInputs(const Pa
   for (size_t index = 0; index < base_indices.size(); ++index) {
     const int64_t base_index = base_indices[index];
     if (base_index < 0 || static_cast<size_t>(base_index) >= all_bases.size()) {
-      TDLOGE("_base_index is out of range, target=%s", parsed.target.c_str());
+      TDLOGE("_base_index is out of range: base_index=%lld, valid range=[0, %zu), target=%s",
+             static_cast<long long>(base_index), all_bases.size(), parsed.target.c_str());
       return std::nullopt;
     }
     ParsedNodeInput base_input;

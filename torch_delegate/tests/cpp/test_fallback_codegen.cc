@@ -370,9 +370,18 @@ TEST_F(FallbackCodegenTest, ParseTargetFormatVariations) {
   EXPECT_EQ(targets[2].overload, "");
 }
 
+// DISABLED: 在线编译用例依赖真实 torch/torch_npu 安装（g++ 实时编译并 dlopen 产物 .so），
+// stub + ASAN 的 UT 环境无法满足，默认禁用，不随 build_test.sh 执行。
+// 手工运行：先 export TORCH_PKG_DIR / TORCH_NPU_DIR（指向真实安装），再单独过滤运行本用例
+// （fixture 的 TearDown 会 unset 这两个变量，勿与其他用例同批运行）：
+//   ./test_fallback_codegen --gtest_also_run_disabled_tests
+//       --gtest_filter=FallbackCodegenTest.DISABLED_GenerateFromModelJsonOnlineCompilation
 TEST_F(FallbackCodegenTest, DISABLED_GenerateFromModelJsonOnlineCompilation) {
-  setenv("TORCH_PKG_DIR", "/home/thj/code/pytorch/torch_build_env/lib/python3.10/site-packages/torch", 1);
-  setenv("TORCH_NPU_DIR", "/home/thj/code/pytorch/torch_build_env/lib/python3.10/site-packages/torch_npu", 1);
+  const char *torch_pkg_dir = std::getenv("TORCH_PKG_DIR");
+  const char *torch_npu_dir = std::getenv("TORCH_NPU_DIR");
+  if (torch_pkg_dir == nullptr || torch_npu_dir == nullptr) {
+    GTEST_SKIP() << "TORCH_PKG_DIR / TORCH_NPU_DIR not set, online compilation requires real torch/torch_npu";
+  }
   setenv("TORCH_DELEGATE_OUTPUT_DIR", "/tmp/test_fallback_output", 1);
 
   CodegenResult result = FallbackCodegen::GenerateFromModelJson(kModelJsonMixedSources);

@@ -181,24 +181,34 @@ class EpairWriter:
     def __init__(self, converter: NodeIRConverter) -> None:
         self._converter = converter
 
-    def write(self, ep_json: dict) -> tuple[dict, int, int]:
+    def write(self, ep_json: dict) -> tuple[dict, int, int, int]:
+        """注入 ascend_ir 并统计。
+
+        Returns:
+            (ep_json, total_nodes, converted_nodes, cpu_nodes)。
+        """
         return self._inject_ascend_ir(ep_json)
 
-    def _inject_ascend_ir(self, ep_json: dict) -> tuple[dict, int, int]:
+    def _inject_ascend_ir(self, ep_json: dict) -> tuple[dict, int, int, int]:
         ascend_ir_map = self._converter.get_ascend_ir_map()
         graph_nodes: list[dict] = (
             ep_json.get("graph_module", {}).get("graph", {}).get("nodes", [])
         )
         total_nodes = len(graph_nodes)
         converted_nodes = 0
+        cpu_nodes = 0
         geo_2_fxo: dict[str, str] = {}
 
         for serial_node in graph_nodes:
             if self._process_node(serial_node, ascend_ir_map, geo_2_fxo):
                 converted_nodes += 1
+                if serial_node.get("ascend_ir", {}).get("device") == "cpu":
+                    cpu_nodes += 1
 
-        logger.debug(f"Total graph nodes: {total_nodes}, converted: {converted_nodes}")
-        return ep_json, total_nodes, converted_nodes
+        logger.debug(
+            f"Total graph nodes: {total_nodes}, converted: {converted_nodes}, cpu: {cpu_nodes}"
+        )
+        return ep_json, total_nodes, converted_nodes, cpu_nodes
 
     def _process_node(
         self,
@@ -242,6 +252,7 @@ class EpairWriter:
 
         serial_node["ascend_ir"] = {
             "source": node_ir.source,
+            "device": node_ir.device,
             "ops": ops_list,
             "mapping": {"inputs": input_mapping, "outputs": output_mapping},
         }

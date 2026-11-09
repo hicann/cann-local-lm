@@ -10,6 +10,7 @@
 #pragma once
 
 #include <memory>
+#include <string>
 #include <vector>
 
 #include <graph/graph.h>
@@ -43,6 +44,7 @@ class GeGraphBuilder {
   Status BindDeferredEdges();
   Status FinalizeGraph();
   Status NormalizeGraph();
+  std::vector<std::string> CollectCpuNodeNames() const;
 
   const EpairArchive &archive_;
   ParsedModel model_;
@@ -50,6 +52,8 @@ class GeGraphBuilder {
   AtenSchemaResolver schema_resolver_;
   AtenTensorDescMapper tensor_desc_mapper_;
   GraphBuildContext ctx_;
+  // epair manifest 的 cann_version 字段（导出环境记录），仅用于诊断信息，缺省 "unknown"。
+  std::string manifest_cann_version_ = "unknown";
   bool initialized_ = false;
 };
 

@@ -730,9 +730,10 @@ TorchDelegate v1根据算子是否携带 `ascend_ir` 标注、是否有GE入图�
 
 | 场景 | 描述 | ascend_ir | GE交付件 | 构图方式 | v1支持 |
 |------|------|-----------|-----------|----------|---------|
-| **场景1** | 有完整入图交付件的算子。GE侧已注册算子定义（`REG_OP`），torchair提供完整converter转换 | `source="converter"`，ops含完整opdef | 有 | `NamedIoNodeBuilder` 根据ascend_ir.opdef直接构图 | ✅ 支持 |
-| **场景2** | Fallback回调算子，无GE入图交付件。用户通过 `torch.library` 注册PyTorch自定义算子，不需要手写GE自定义算子代码 | `source=""` 或无ascend_ir | 无，由Fallback Codegen自动生成 | Codegen生成GE `EagerExecuteOp` 代码 → 编译 `.so` → `dlopen` 注册 → 运行时回调PyTorch Dispatcher调用用户实现 | ✅ 支持 |
-| **场景3** | CPU算子，需要在CPU上通过libtorch执行 | 无 | 无 | 需HeteroCodegen生成CPU执行代码 | ❌ 暂不支持 |
+| **场景1** | 有完整入图交付件的算子。GE 侧已注册算子定义（`REG_OP`），torchair 提供完整 converter 转换 | `source="converter"`，ops 含完整 opdef | 有 | `NamedIoNodeBuilder` 根据 ascend_ir.opdef 直接构图 | ✅ 支持 |
+| **场景2** | Fallback 回调算子，无 GE 入图交付件。用户通过 `torch.library` 注册 PyTorch 自定义算子，不需要手写 GE 自定义算子代码 | `source=""` 或无 ascend_ir | 无，由 Fallback Codegen 自动生成 | Codegen 生成 GE `EagerExecuteOp` 代码 → 编译 `.so` → `dlopen` 注册 → 运行时回调 PyTorch Dispatcher 调用用户实现 | ✅ 支持 |
+| **场景3** | CPU 算子（HostCpu 后端），需要在 CPU 上通过 libtorch 执行 | `source=""`，`device="cpu"` | 无，由 Fallback Codegen 自动生成 | Codegen 生成 `HostCpuExecuteOp + ShapeInferOp`（`REG_OP_BACKEND(..., kHostCPU)`），运行时回调 PyTorch CPU 实现 | ✅ 支持 |
+
 
 三种场景在GeGraphBuilder中的分流逻辑：
 
@@ -746,7 +747,10 @@ GeGraphBuilder::Build()
         ├── IsConverterNoOpNode(node) == true → 场景1 NoOp：PlanConverterNoOpNode（alias 直通）
         └── else                              → 场景2：PlanFallbackNode（查已注册的自定义 op）
 
-v1 不支持场景3。若图中有场景3节点，GeGraphBuilder::IsFullyOffloaded() 返回 false。
+场景 3（`ascend_ir.device == "cpu"`）经 `IsCpuNode` 谓词分派到
+`FallbackNodePlanner(ctx, deps, ge::kPlacementHost)`，与场景 2 共用构图流程。
+含 CPU 节点的图在 GE 内部走 v2 执行器（unknown 标记），`IsFullyOffloaded()` 判据
+不变（CPU 节点同样携带 ascend_ir）。
 ```
 
 #### Fallback Codegen流程

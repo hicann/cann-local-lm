@@ -9,10 +9,12 @@
  */
 #include "fallback_codegen/fallback_codegen.h"
 
+#include <algorithm>
 #include <cctype>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <map>
 #include <sstream>
 #include <cstdio>
 #include <array>
@@ -25,6 +27,8 @@
 #include <ATen/core/function_schema.h>
 #include <ATen/core/jit_type.h>
 #include "common/logging/logging.h"
+#include "common/op_target_utils.h"
+#include "common/pt2_type_constants.h"
 
 namespace torch_delegate::fallback {
 
@@ -164,7 +168,274 @@ std::string ToCamelCase(const std::string &snake_case) {
   return result;
 }
 
+// ---------------------------------------------------------------------------
+// HostCpu 形状推导数据源（ShapeInferOp 生成）
+// ---------------------------------------------------------------------------
+
+// 从 arg/output JSON 值中收集张量名（覆盖 tensor/tensor_list/optional 变体）。
+void CollectArgTensorNames(const json &value, std::vector<std::string> &out) {
+  if (!value.is_object()) {
+    return;
+  }
+  if (value.contains("as_tensor") && value["as_tensor"].is_object() && value["as_tensor"].contains("name") &&
+      value["as_tensor"]["name"].is_string()) {
+    out.push_back(value["as_tensor"]["name"].get<std::string>());
+    return;
+  }
+  if (value.contains("as_tensors") && value["as_tensors"].is_array()) {
+    for (const auto &t : value["as_tensors"]) {
+      if (t.is_object() && t.contains("name") && t["name"].is_string()) {
+        out.push_back(t["name"].get<std::string>());
+      }
+    }
+    return;
+  }
+  if (value.contains("as_optional_tensor") && value["as_optional_tensor"].is_object()) {
+    CollectArgTensorNames(value["as_optional_tensor"], out);
+    return;
+  }
+  if (value.contains("as_optional_tensors") && value["as_optional_tensors"].is_array()) {
+    for (const auto &t : value["as_optional_tensors"]) {
+      CollectArgTensorNames(t, out);
+    }
+    return;
+  }
+}
+
+// 匹配 "Symbol('<name>')"（torch <= 2.8）或 torch >= 2.9 实际序列化格式
+// "Symbol('<name>', positive=True, integer=True)"（name 仅限 [A-Za-z0-9_]+，
+// assumptions 参数为 bool 标记），用于区分纯符号维与复合表达式维（如
+// "Symbol('s0') + 1"、"2*Symbol('s0')"）。assumptions 只描述符号取值域，
+// 不改变"该维是动态符号"的语义，因此携带参数仍视为纯符号；复合表达式既不能
+// 内联为静态维，也不能按符号透传，必须显式解析失败，禁止静默降级。
+bool ParsePureSymbolExpr(const std::string &expr, std::string &symbol) {
+  static const std::string kPrefix = "Symbol('";
+  if (expr.size() <= kPrefix.size() || expr.compare(0, kPrefix.size(), kPrefix) != 0) {
+    return false;
+  }
+  const size_t name_start = kPrefix.size();
+  const size_t quote = expr.find('\'', name_start);
+  if (quote == std::string::npos || quote == name_start) {
+    return false;
+  }
+  symbol = expr.substr(name_start, quote - name_start);
+  for (char c : symbol) {
+    if (!std::isalnum(static_cast<unsigned char>(c)) && c != '_') {
+      return false;
+    }
+  }
+  // 符号名之后仅允许两种收尾："')"（纯符号）或 "',<assumptions>)"
+  // （torch >= 2.9），assumptions 内不允许再出现引号（排除嵌套表达式）。
+  const std::string tail = expr.substr(quote);
+  if (tail == "')") {
+    return true;
+  }
+  return tail.size() > 3 && tail.compare(0, 2, "',") == 0 && tail.back() == ')' &&
+         tail.find('\'', 2) == std::string::npos;
+}
+
+// 解析 EP JSON tensor_meta 为 ShapeMeta；动态维符号从 as_expr.expr_str 提取，
+// 仅接受纯符号表达式全匹配（复合表达式解析失败，交由调用方显式报错/降权处理）。
+bool ParseShapeMetaJson(const json &meta, ShapeMeta &out) {
+  if (!meta.is_object() || !meta.contains("dtype") || !meta["dtype"].is_number_integer() || !meta.contains("sizes") ||
+      !meta["sizes"].is_array()) {
+    return false;
+  }
+  out.dtype = meta["dtype"].get<int64_t>();
+  out.sizes.clear();
+  out.dynamic_symbols.assign(meta["sizes"].size(), "");
+  for (size_t i = 0; i < meta["sizes"].size(); ++i) {
+    const auto &dim = meta["sizes"][i];
+    if (dim.is_number_integer()) {
+      out.sizes.push_back(dim.get<int64_t>());
+    } else if (dim.is_object() && dim.contains("as_int") && dim["as_int"].is_number_integer()) {
+      out.sizes.push_back(dim["as_int"].get<int64_t>());
+    } else if (dim.is_object() && dim.contains("as_expr") && dim["as_expr"].is_object() &&
+               dim["as_expr"].contains("expr_str") && dim["as_expr"]["expr_str"].is_string()) {
+      const std::string expr_str = dim["as_expr"]["expr_str"].get<std::string>();
+      std::string symbol;
+      if (!ParsePureSymbolExpr(expr_str, symbol)) {
+        // 复合 SymInt 表达式（如 "Symbol('s0') + 1"）或纯算术 repr：按符号透传会
+        // 静默生成错误 InferShape，按 -1 内联会生成非法静态维，必须显式解析失败。
+        return false;
+      }
+      out.sizes.push_back(-1);
+      out.dynamic_symbols[i] = symbol;
+    } else {
+      return false;
+    }
+  }
+  return true;
+}
+
+// 输出结构签名：静态维直接内联取值，动态维按"解析后的透传来源 (input_meta_index, dim)"
+// 比较，而非原始符号名。跨实例符号重命名（如 s0 vs s1，结构等价）不再误报；
+// 同符号不同解析路径（如 s0 ← in0.dim1 vs s0 ← in0.dim0）能被正确拒绝。
+// 解析规则与 GenerateShapeInferMethods 的 symbol_map 构建一致（首个同符号输入维生效，
+// input_metas 顺序即 schema tensor 参数顺序）。
+std::string OutputStructureSignature(const OpTarget &target) {
+  std::ostringstream oss;
+  for (const auto &meta : target.output_metas) {
+    oss << meta.dtype << "[";
+    for (size_t i = 0; i < meta.sizes.size(); ++i) {
+      if (i > 0) oss << ",";
+      const auto &sym = meta.dynamic_symbols[i];
+      if (sym.empty()) {
+        oss << meta.sizes[i];
+        continue;
+      }
+      bool resolved = false;
+      for (size_t k = 0; k < target.input_metas.size() && !resolved; ++k) {
+        const auto &in_meta = target.input_metas[k];
+        for (size_t d = 0; d < in_meta.dynamic_symbols.size(); ++d) {
+          if (in_meta.dynamic_symbols[d] == sym) {
+            oss << "in" << k << "d" << d;
+            resolved = true;
+            break;
+          }
+        }
+      }
+      if (!resolved) {
+        // 不可解析符号：代表实例在生成期显式报错；签名组件保持可比较。
+        oss << "unres:" << sym;
+      }
+    }
+    oss << "];";
+  }
+  return oss.str();
+}
+
 }  // namespace
+
+void FallbackCodegen::CollectShapeInfo(const json &node, const json *tensor_values, OpTarget &target) {
+  target.has_shape_info = false;
+  target.input_metas.clear();
+  target.output_metas.clear();
+  target.input_arg_tensor_counts.clear();
+  if (tensor_values == nullptr) {
+    // 简化格式（如单测 fixture）无 tensor_values：此处不失败，延后到生成期严格报错
+    // （GenerateGeOpClass 要求 HostCpu 算子必须携带 shape info）。
+    TDLOGW(
+        "CollectShapeInfo: CPU op '%s' has no tensor_values in model JSON; "
+        "ShapeInferOp generation will fail if this target reaches codegen",
+        target.target.c_str());
+    return;
+  }
+  // 返回值区分三种情形，便于给出精确报错：
+  // kOk 成功；kMissing tensor_values 中无此名字（如常量特化）；
+  // kInvalid meta 存在但不可解析（复合 SymInt 表达式等，禁止静默降级）。
+  enum class MetaLookup { kOk, kMissing, kInvalid };
+  auto lookup = [&](const std::string &name, ShapeMeta &meta) {
+    auto it = tensor_values->find(name);
+    if (it == tensor_values->end()) {
+      return MetaLookup::kMissing;
+    }
+    return ParseShapeMetaJson(*it, meta) ? MetaLookup::kOk : MetaLookup::kInvalid;
+  };
+
+  // 收集输入条目（每个条目对应一个 schema 参数，含 0..N 个张量名）。
+  // auto_functionalized_v2 节点的 inputs[0] 是被包裹算子占位（0 张量），
+  // _all_bases / *_base_index 是 functionalization 记录字段，均不是内层
+  // schema 参数；且原始顺序（sin/cos 在 self 之前）与内层算子 schema 顺序
+  // （self 排第一）不一致。这里与 parse_functionalized.cc 的运行时归一化
+  // 保持一致：跳过占位条目，_all_bases 中被 *_base_index 选中的基础张量
+  // （内层 self 类参数）排最前（顺序即 *_base_index 的出现顺序），其余参数
+  // 保持原顺序。InferShape 的 IR 输入序号按内层 schema 展开，若两侧顺序
+  // 不一致，动态维透传会绑错输入。
+  const json &inputs = node.value("inputs", json::array());
+  const bool is_functionalized = node.value("target", "") == "torch.ops.higher_order.auto_functionalized_v2";
+  std::vector<std::string> all_bases;
+  std::vector<int64_t> base_indices;
+  std::vector<std::vector<std::string>> ordered_entries;
+  for (size_t i = 0; i < inputs.size(); ++i) {
+    const auto &input = inputs[i];
+    std::vector<std::string> names;
+    CollectArgTensorNames(input.value("arg", json::object()), names);
+    if (is_functionalized) {
+      const std::string input_name = input.value("name", "");
+      const auto &arg = input.contains("arg") && input["arg"].is_object() ? input["arg"] : json::object();
+      if (i == 0 && arg.contains("as_operator")) {
+        continue;  // 被包裹算子占位，不参与内层 schema 对齐
+      }
+      if (input_name == "_all_bases") {
+        all_bases = std::move(names);
+        continue;
+      }
+      static constexpr std::string_view kBaseIndexSuffix = "_base_index";
+      if (input_name.size() >= kBaseIndexSuffix.size() &&
+          input_name.compare(input_name.size() - kBaseIndexSuffix.size(), kBaseIndexSuffix.size(), kBaseIndexSuffix) ==
+              0) {
+        if (!arg.contains("as_int") || !arg["as_int"].is_number_integer()) {
+          throw FallbackCodegenError("functionalized node wrapping '" + target.target + "' has non-integer input '" +
+                                     input_name + "'; cannot align inputs with the wrapped op schema");
+        }
+        base_indices.push_back(arg["as_int"].get<int64_t>());
+        continue;
+      }
+    }
+    ordered_entries.push_back(std::move(names));
+  }
+  if (is_functionalized) {
+    std::vector<std::vector<std::string>> base_entries;
+    base_entries.reserve(base_indices.size());
+    for (const int64_t base_index : base_indices) {
+      if (base_index < 0 || static_cast<size_t>(base_index) >= all_bases.size()) {
+        throw FallbackCodegenError("functionalized node wrapping '" + target.target + "' has _base_index " +
+                                   std::to_string(base_index) + " out of range of _all_bases (size " +
+                                   std::to_string(all_bases.size()) + ")");
+      }
+      base_entries.push_back({all_bases[static_cast<size_t>(base_index)]});
+    }
+    ordered_entries.insert(ordered_entries.begin(), std::make_move_iterator(base_entries.begin()),
+                           std::make_move_iterator(base_entries.end()));
+  }
+
+  for (const auto &names : ordered_entries) {
+    target.input_arg_tensor_counts.push_back(names.size());
+    for (const auto &name : names) {
+      ShapeMeta meta;
+      MetaLookup st = lookup(name, meta);
+      if (st == MetaLookup::kInvalid) {
+        // 输入 meta 不可解析（复合表达式）：保留空位（不参与符号透传匹配），
+        // 引用其符号的输出维会在生成期显式报错。
+        TDLOGW(
+            "CollectShapeInfo: CPU op '%s' input tensor '%s' has an unparseable tensor_meta "
+            "(compound SymInt expr is not supported); its dims won't participate in symbol passthrough",
+            target.target.c_str(), name.c_str());
+        meta.dtype = -1;
+      } else if (st == MetaLookup::kMissing) {
+        // 输入 meta 缺失（如常量特化）：保留空位，不参与符号透传匹配。
+        meta.dtype = -1;
+      }
+      target.input_metas.push_back(std::move(meta));
+    }
+  }
+  for (const auto &output : node.value("outputs", json::array())) {
+    std::vector<std::string> names;
+    CollectArgTensorNames(output, names);
+    for (const auto &name : names) {
+      ShapeMeta meta;
+      MetaLookup st = lookup(name, meta);
+      if (st == MetaLookup::kInvalid) {
+        throw FallbackCodegenError("CPU op '" + target.target + "' output tensor '" + name +
+                                   "' has an unparseable tensor_meta: only static dims and pure Symbol('x') "
+                                   "expressions are supported; compound SymInt expressions are data-dependent "
+                                   "shapes; cannot generate ShapeInferOp");
+      }
+      if (st == MetaLookup::kMissing) {
+        throw FallbackCodegenError("CPU op '" + target.target + "' output tensor '" + name +
+                                   "' has no tensor_meta; cannot generate ShapeInferOp");
+      }
+      target.output_metas.push_back(std::move(meta));
+    }
+  }
+  if (target.output_metas.empty()) {
+    throw FallbackCodegenError("CPU op '" + target.target +
+                               "' has no tensor outputs; "
+                               "HostCpu backend only supports tensor outputs");
+  }
+  target.has_shape_info = true;
+}
 
 std::string FallbackCodegen::GenerateGeOpName(const std::string &op_name, const std::string &overload) {
   bool has_trailing_underscore = !op_name.empty() && op_name.back() == '_';
@@ -206,6 +477,19 @@ OpTarget FallbackCodegen::ParseTargetFromJson(const json &node) {
   OpTarget target;
   target.target = node["target"].get<std::string>();
 
+  // 读取执行 Device 归属标注；缺失按 "npu" 处理（老 epair 兼容）。
+  // 未知取值直接报错，不静默跳过，避免按错误 Device 生成算子。
+  if (node.contains("ascend_ir") && node["ascend_ir"].is_object() && node["ascend_ir"].contains("device")) {
+    if (!node["ascend_ir"]["device"].is_string()) {
+      throw FallbackCodegenError("node '" + target.target + "' ascend_ir.device must be a string");
+    }
+    target.device = node["ascend_ir"]["device"].get<std::string>();
+    if (target.device != "npu" && target.device != "cpu") {
+      throw FallbackCodegenError("node '" + target.target + "' has unknown ascend_ir.device '" + target.device +
+                                 "', expect 'npu' or 'cpu'");
+    }
+  }
+
   // Handle Higher-Order Operators (HOPs)
   // auto_functionalized and auto_functionalized_v2 wrap mutable operators
   // The real operator name is in inputs[0].arg.as_operator
@@ -227,6 +511,8 @@ OpTarget FallbackCodegen::ParseTargetFromJson(const json &node) {
           first_input["arg"]["as_operator"].is_string()) {
         // Replace target with real operator name from as_operator
         target.target = first_input["arg"]["as_operator"].get<std::string>();
+        // 节点 inputs 含算子占位与 functionalization 记录字段，原始顺序与内层
+        // 算子 schema 不一致；CollectShapeInfo 会按运行时归一化顺序重建输入表。
         TDLOGD("HOP unwrapped: real operator = %s", target.target.c_str());
       } else {
         TDLOGE("auto_functionalized node missing 'as_operator' in first input");
@@ -240,45 +526,12 @@ OpTarget FallbackCodegen::ParseTargetFromJson(const json &node) {
     }
   }
 
-  // FX graph format: torch.ops.<namespace>.<op_name>.<overload>
-  // Examples:
-  //   torch.ops.aten.topk.default    -> namespace=aten, op_name=topk, overload=""
-  //   torch.ops.aten.mul.Tensor      -> namespace=aten, op_name=mul, overload="Tensor"
-  //   torch.ops.my_triton_ns.custom_add.default -> namespace=my_triton_ns, op_name=custom_add, overload=""
-
-  // Remove "torch.ops." prefix if present
-  std::string op_str = target.target;
-  const std::string prefix = "torch.ops.";
-  if (op_str.find(prefix) == 0) {
-    op_str = op_str.substr(prefix.size());
-  }
-
-  // Find last dot to split overload
-  size_t last_dot = op_str.find_last_of('.');
-  if (last_dot == std::string::npos) {
-    // No dots: just op_name
-    target.namespace_name = "";
-    target.op_name = op_str;
-    target.overload = "";
-    return target;
-  }
-
-  std::string overload_str = op_str.substr(last_dot + 1);
-  std::string ns_op = op_str.substr(0, last_dot);
-
-  // Find second-to-last dot to split namespace and op_name
-  size_t second_dot = ns_op.find_last_of('.');
-  if (second_dot == std::string::npos) {
-    // No namespace: just op_name.overload
-    target.namespace_name = "";
-    target.op_name = ns_op;
-  } else {
-    target.namespace_name = ns_op.substr(0, second_dot);
-    target.op_name = ns_op.substr(second_dot + 1);
-  }
-
-  // Convert "default" to empty string (Dispatcher uses empty for default overload)
-  target.overload = (overload_str == "default") ? "" : overload_str;
+  // FX graph 格式：torch.ops.<namespace>.<op_name>.<overload>，拆分规则见
+  // common/op_target_utils.h（"default" overload 映射为空串）。
+  const td::OpTargetParts parts = td::ParseOpTarget(target.target);
+  target.namespace_name = parts.namespace_name;
+  target.op_name = parts.op_name;
+  target.overload = parts.overload;
 
   return target;
 }
@@ -306,6 +559,16 @@ std::vector<OpTarget> FallbackCodegen::ParseTargetsFromJson(const json &model) {
   TDLOGD("Processing %zu nodes from JSON", nodes.size());
   size_t fallback_count = 0;
 
+  // tensor_values 查找表：HostCpu 节点的 InferShape 数据源（EP JSON tensor_meta）。
+  const json *tensor_values = nullptr;
+  if (model.contains("graph_module") && model["graph_module"].is_object() && model["graph_module"].contains("graph") &&
+      model["graph_module"]["graph"].is_object() && model["graph_module"]["graph"].contains("tensor_values") &&
+      model["graph_module"]["graph"]["tensor_values"].is_object()) {
+    tensor_values = &model["graph_module"]["graph"]["tensor_values"];
+  } else if (model.contains("tensor_values") && model["tensor_values"].is_object()) {
+    tensor_values = &model["tensor_values"];
+  }
+
   for (const auto &node : nodes) {
     bool needs_fallback = false;
     if (node.contains("ascend_ir") && node["ascend_ir"].is_object()) {
@@ -323,23 +586,61 @@ std::vector<OpTarget> FallbackCodegen::ParseTargetsFromJson(const json &model) {
     }
 
     if (needs_fallback) {
-      targets.push_back(ParseTargetFromJson(node));
+      OpTarget target = ParseTargetFromJson(node);
+      if (target.device == "cpu") {
+        CollectShapeInfo(node, tensor_values, target);
+      }
+      targets.push_back(std::move(target));
     }
   }
 
   TDLOGI("ParseTargetsFromJson: total_nodes=%zu, needs_fallback=%zu", nodes.size(), fallback_count);
 
-  std::set<std::tuple<std::string, std::string, std::string>> seen_ops;
+  std::set<std::tuple<std::string, std::string, std::string, std::string>> seen_ops;
+  std::map<std::string, std::string> cpu_shape_signatures;
   std::vector<OpTarget> unique_targets;
   unique_targets.reserve(targets.size());
 
   for (const auto &target : targets) {
+    auto key = std::make_tuple(target.namespace_name, target.op_name, target.overload, target.device);
+    if (!seen_ops.insert(key).second) {
+      if (target.device == "cpu") {
+        // 同一 CPU 算子多实例：InferShape 用代表性节点内联生成，输出结构不一致时
+        // 内联值必然出错，直接报错。
+        std::string signature = OutputStructureSignature(target);
+        auto dedup_key = target.namespace_name + "::" + target.op_name + "." + target.overload;
+        auto [it, inserted] = cpu_shape_signatures.emplace(dedup_key, signature);
+        if (!inserted && it->second != signature) {
+          throw FallbackCodegenError(
+              "CPU op '" + target.namespace_name + "::" + target.op_name + "' (overload '" + target.overload +
+              "') appears with inconsistent output structures: '" + it->second + "' vs '" + signature +
+              "'. ShapeInferOp inlines the representative instance's meta; split the model or unify shapes.");
+        }
+      }
+      TDLOGD("Skipping duplicate op: namespace=%s, op_name=%s, overload=%s, device=%s", target.namespace_name.c_str(),
+             target.op_name.c_str(), target.overload.empty() ? "(default)" : target.overload.c_str(),
+             target.device.c_str());
+      continue;
+    }
+    if (target.device == "cpu") {
+      cpu_shape_signatures.emplace(target.namespace_name + "::" + target.op_name + "." + target.overload,
+                                   OutputStructureSignature(target));
+    }
+    unique_targets.push_back(target);
+  }
+
+  // 同一算子（含 overload）不允许同时出现 npu 与 cpu 两种归属：GE 注册表按算子类型
+  // 唯一，无法为同一类型同时注册 kDevice 与 kHostCPU 两个后端实现。
+  std::map<std::tuple<std::string, std::string, std::string>, std::string> device_by_op;
+  for (const auto &target : unique_targets) {
     auto key = std::make_tuple(target.namespace_name, target.op_name, target.overload);
-    if (seen_ops.insert(key).second) {
-      unique_targets.push_back(target);
-    } else {
-      TDLOGD("Skipping duplicate op: namespace=%s, op_name=%s, overload=%s", target.namespace_name.c_str(),
-             target.op_name.c_str(), target.overload.empty() ? "(default)" : target.overload.c_str());
+    auto [it, inserted] = device_by_op.emplace(key, target.device);
+    if (!inserted && it->second != target.device) {
+      std::string full_op = target.namespace_name + "::" + target.op_name;
+      throw FallbackCodegenError(
+          "op '" + full_op + "' (overload '" + target.overload + "') appears with inconsistent device ownership: '" +
+          it->second + "' and '" + target.device +
+          "'. GE registers one backend per op type; unify the ownership of this op or use distinct overloads.");
     }
   }
 
@@ -626,7 +927,7 @@ SchemaInfo FallbackCodegen::GetSchemaInfo(const std::string &full_op_name, const
   return info;
 }
 
-std::string FallbackCodegen::GenerateHelperFunctions() {
+std::string FallbackCodegen::GenerateHelperFunctions(bool need_hostcpu) {
   std::ostringstream os;
 
   os << "at::ScalarType MapGeDtypeToTorch(ge::DataType dtype) {\n";
@@ -698,6 +999,19 @@ std::string FallbackCodegen::GenerateHelperFunctions() {
   os << "    return at_npu::native::from_blob(const_cast<void*>(ge_tensor->GetAddr()), sizes, options);\n";
   os << "}\n\n";
 
+  if (need_hostcpu) {
+    // HostCpu 变体：host 指针零拷贝包装，避免 D2H 拷贝。
+    os << "at::Tensor CreateCpuTensor(const gert::Tensor* ge_tensor) {\n";
+    os << "    std::vector<int64_t> sizes;\n";
+    os << "    for (size_t i = 0; i < ge_tensor->GetShape().GetShape().GetDimNum(); i++) {\n";
+    os << "        sizes.push_back(ge_tensor->GetShape().GetShape().GetDim(i));\n";
+    os << "    }\n";
+    os << "    at::ScalarType torch_dtype = MapGeDtypeToTorch(ge_tensor->GetDataType());\n";
+    os << "    auto options = at::TensorOptions().dtype(torch_dtype).device(at::kCPU);\n";
+    os << "    return at::from_blob(const_cast<void*>(ge_tensor->GetAddr()), sizes, options);\n";
+    os << "}\n\n";
+  }
+
   // ReadScalarInput: device 张量走 D2H 拷贝；host 张量直接借用 GetAddr()，不做深拷贝。
   // 背景：GE 对 custom op（REG_AUTO_MAPPING_OP 路径）会把 Const 节点数据放到 device 内存，
   //       kPlacementHost 设置与 HostInputs 注册对 custom op 均不生效
@@ -730,6 +1044,7 @@ std::string FallbackCodegen::GenerateHelperFunctions() {
   return os.str();
 }
 
+// 算子原型（REG_OP 宏链）两类后端完全一致，仅绑定宏不同（见 GenerateGeOpClass）。
 std::string FallbackCodegen::GenerateGeOpReg(const SchemaInfo &schema) {
   std::ostringstream os;
 
@@ -854,9 +1169,11 @@ std::string FallbackCodegen::GenerateGeOpReg(const SchemaInfo &schema) {
   return os.str();
 }
 
-// Helper: generate shape computation + MallocOutputTensor + aclrtMemcpyAsync for one output tensor.
+// Helper: generate shape computation + MallocOutputTensor + write-back for one output tensor.
 // Assumes an `at::Tensor result` variable is in scope.
-static void EmitOutputTensorWrite(std::ostringstream &os, const std::string &out_idx_var) {
+// NPU 变体：aclrtMemcpyAsync D2D 写回 device 输出内存；
+// HostCpu 变体：非连续结果先 .contiguous()，直接 memcpy 写 host 输出内存。
+static void EmitOutputTensorWrite(std::ostringstream &os, const std::string &out_idx_var, bool is_host_cpu) {
   os << "            auto result_sizes = result.sizes();\n";
   os << "            gert::StorageShape storage_shape;\n";
   os << "            gert::Shape& origin_shape = storage_shape.MutableOriginShape();\n";
@@ -872,8 +1189,15 @@ static void EmitOutputTensorWrite(std::ostringstream &os, const std::string &out
   os << "            size_t tensor_bytes = tensor_numel * result.element_size();\n";
   os << "            gert::Tensor* ge_out = ctx->MallocOutputTensor(" << out_idx_var
      << ", storage_shape, format, data_type);\n";
-  os << "            aclrtMemcpyAsync(const_cast<void*>(ge_out->GetAddr()), tensor_bytes,\n";
-  os << "                result.data_ptr(), tensor_bytes, ACL_MEMCPY_DEVICE_TO_DEVICE, ge_stream);\n";
+  if (is_host_cpu) {
+    os << "            at::Tensor contiguous_result = result.contiguous();\n";
+    os << "            if (contiguous_result.data_ptr() != ge_out->GetAddr()) {\n";
+    os << "                std::memcpy(ge_out->GetAddr(), contiguous_result.data_ptr(), tensor_bytes);\n";
+    os << "            }\n";
+  } else {
+    os << "            aclrtMemcpyAsync(const_cast<void*>(ge_out->GetAddr()), tensor_bytes,\n";
+    os << "                result.data_ptr(), tensor_bytes, ACL_MEMCPY_DEVICE_TO_DEVICE, ge_stream);\n";
+  }
 }
 
 // Helper function to generate code for adding a default value or None
@@ -906,10 +1230,22 @@ static void EmitDefaultOrNone(std::ostringstream &os, const SchemaArgInfo &arg) 
   }
 }
 
-std::string FallbackCodegen::GenerateExecuteMethod(const SchemaInfo &schema) {
+std::string FallbackCodegen::GenerateExecuteMethod(const SchemaInfo &schema, bool is_host_cpu) {
   std::ostringstream os;
 
-  os << "    ge::graphStatus Execute(gert::EagerOpExecutionContext* ctx) override {\n";
+  // NPU 变体：EagerOpExecutionContext + device stream；
+  // HostCpu 变体：HostCpuOpExecutionContext，host 执行，无 stream guard。
+  if (is_host_cpu) {
+    os << "    ge::graphStatus Execute(gert::HostCpuOpExecutionContext* ctx) override {\n";
+    // DEBUG 级节点名日志：走 CANN aclAppLog，
+    // 与 TorchDelegate TDLOG 同一通道，部署侧可在 slog 中按 DEBUG 级检索。
+    os << "        aclAppLog(ACL_DEBUG, \"HostCpuExecute\", \"custom_op.cpp\", __LINE__,\n";
+    os << "            \"op=" << schema.full_op_name << " (" << schema.overload << ") execute\");\n";
+    os << "        try {\n";
+  } else {
+    os << "    ge::graphStatus Execute(gert::EagerOpExecutionContext* ctx) override {\n";
+  }
+  const char *wrap_fn = is_host_cpu ? "CreateCpuTensor" : "CreateNpuTensor";
 
   // Prelude: declare ge_input_<ir_index> for each non-variadic, non-out argument.
   // Use IR-indexed APIs (GetRequiredInputTensor/GetOptionalInputTensor) so that
@@ -943,7 +1279,9 @@ std::string FallbackCodegen::GenerateExecuteMethod(const SchemaInfo &schema) {
     ir_index++;
   }
 
-  os << "        aclrtStream ge_stream = static_cast<aclrtStream>(ctx->GetStream());\n";
+  if (!is_host_cpu) {
+    os << "        aclrtStream ge_stream = static_cast<aclrtStream>(ctx->GetStream());\n";
+  }
 
   os << "\n";
 
@@ -979,7 +1317,7 @@ std::string FallbackCodegen::GenerateExecuteMethod(const SchemaInfo &schema) {
     if (arg.is_out) {
       int output_idx = out_arg_output_idx;
       if (output_idx < static_cast<int>(schema.returns.size()) && !schema.returns[output_idx].is_variadic) {
-        os << "        args.emplace_back(CreateNpuTensor(ge_output_" << output_idx << "));\n";
+        os << "        args.emplace_back(" << wrap_fn << "(ge_output_" << output_idx << "));\n";
       } else {
         os << "        args.emplace_back(c10::IValue()); // variadic output placeholder\n";
       }
@@ -999,7 +1337,7 @@ std::string FallbackCodegen::GenerateExecuteMethod(const SchemaInfo &schema) {
       os << "            tensor_list.reserve(dyn_n);\n";
       os << "            for (size_t i = 0; i < dyn_n; ++i) {\n";
       os << "                const gert::Tensor* t = ctx->GetDynamicInputTensor(" << ir_index << ", i);\n";
-      os << "                tensor_list.emplace_back(CreateNpuTensor(t));\n";
+      os << "                tensor_list.emplace_back(" << wrap_fn << "(t));\n";
       os << "            }\n";
       os << "            args.emplace_back(c10::List<at::Tensor>(std::move(tensor_list)));\n";
       os << "        }\n";
@@ -1007,12 +1345,12 @@ std::string FallbackCodegen::GenerateExecuteMethod(const SchemaInfo &schema) {
     } else if (arg.type_category == "tensor") {
       if (IsOptional(arg.input_kind)) {
         os << "        if (ge_input_" << ir_index << " != nullptr) {\n";
-        os << "            args.emplace_back(CreateNpuTensor(ge_input_" << ir_index << "));\n";
+        os << "            args.emplace_back(" << wrap_fn << "(ge_input_" << ir_index << "));\n";
         os << "        } else {\n";
         EmitDefaultOrNone(os, arg);
         os << "        }\n";
       } else {
-        os << "        args.emplace_back(CreateNpuTensor(ge_input_" << ir_index << "));\n";
+        os << "        args.emplace_back(" << wrap_fn << "(ge_input_" << ir_index << "));\n";
       }
       ir_index++;
     } else if (arg.input_kind == InputKind::INT) {
@@ -1176,10 +1514,12 @@ std::string FallbackCodegen::GenerateExecuteMethod(const SchemaInfo &schema) {
   }
   os << "\n";
 
-  os << "        int32_t device_id = 0;\n";
-  os << "        aclrtGetDevice(&device_id);\n";
-  os << "        c10_npu::NPUStream npu_stream = c10_npu::getStreamFromExternal(ge_stream, device_id);\n";
-  os << "        c10_npu::NPUStreamGuard guard(npu_stream);\n\n";
+  if (!is_host_cpu) {
+    os << "        int32_t device_id = 0;\n";
+    os << "        aclrtGetDevice(&device_id);\n";
+    os << "        c10_npu::NPUStream npu_stream = c10_npu::getStreamFromExternal(ge_stream, device_id);\n";
+    os << "        c10_npu::NPUStreamGuard guard(npu_stream);\n\n";
+  }
 
   std::string dispatcher_overload = schema.overload.empty() ? "" : schema.overload;
   os << "        static const auto op_handle = torch::Dispatcher::singleton()\n";
@@ -1199,11 +1539,13 @@ std::string FallbackCodegen::GenerateExecuteMethod(const SchemaInfo &schema) {
   }
 
   os << "        op_handle.callBoxed(args);\n";
-  // TASK_QUEUE_ENABLE=1 时 callBoxed 内部走异步入队，kernel 延迟到消费者线程提交。
-  // 后续 aclrtMemcpyAsync 直接提交到 ge_stream，可能与未提交的 kernel 乱序。
-  // stream(true) 清空 task queue，确保 kernel 已提交到 ge_stream 后再处理输出。
-  // 注意：torch_npu 需配合修改 NPUStream::stream() 让外部流也 drain default repo。
-  os << "        (void)npu_stream.stream(true);\n";
+  if (!is_host_cpu) {
+    // TASK_QUEUE_ENABLE=1 时 callBoxed 内部走异步入队，kernel 延迟到消费者线程提交。
+    // 后续 aclrtMemcpyAsync 直接提交到 ge_stream，可能与未提交的 kernel 乱序。
+    // stream(true) 清空 task queue，确保 kernel 已提交到 ge_stream 后再处理输出。
+    // 注意：torch_npu 需配合修改 NPUStream::stream() 让外部流也 drain default repo。
+    os << "        (void)npu_stream.stream(true);\n";
+  }
 
   if (schema.is_inplace) {
     // Inplace operations with returns:
@@ -1238,12 +1580,12 @@ std::string FallbackCodegen::GenerateExecuteMethod(const SchemaInfo &schema) {
           os << "            TORCH_CHECK(result_list.size() == out_n, \"DYNAMIC_OUTPUT instance count mismatch\");\n";
           os << "            for (size_t i = 0; i < out_n; ++i) {\n";
           os << "                at::Tensor result = result_list[static_cast<int64_t>(i)];\n";
-          EmitOutputTensorWrite(os, "flat_out_idx");
+          EmitOutputTensorWrite(os, "flat_out_idx", is_host_cpu);
           os << "                flat_out_idx++;\n";
           os << "            }\n";
         } else {
           os << "            at::Tensor result = args[result_idx].toTensor();\n";
-          EmitOutputTensorWrite(os, "flat_out_idx");
+          EmitOutputTensorWrite(os, "flat_out_idx", is_host_cpu);
           os << "            flat_out_idx++;\n";
         }
         os << "        }\n";
@@ -1274,8 +1616,12 @@ std::string FallbackCodegen::GenerateExecuteMethod(const SchemaInfo &schema) {
         os << "            void* src = result.data_ptr();\n";
         os << "            void* dst = const_cast<void*>(input_tensor->GetAddr());\n";
         os << "            if (src != dst) {\n";
-        os << "                aclrtMemcpyAsync(dst, input_tensor->GetSize(),\n";
-        os << "                    src, tensor_bytes, ACL_MEMCPY_DEVICE_TO_DEVICE, ge_stream);\n";
+        if (is_host_cpu) {
+          os << "                std::memcpy(dst, src, tensor_bytes);\n";
+        } else {
+          os << "                aclrtMemcpyAsync(dst, input_tensor->GetSize(),\n";
+          os << "                    src, tensor_bytes, ACL_MEMCPY_DEVICE_TO_DEVICE, ge_stream);\n";
+        }
         os << "            }\n";
         os << "            ctx->MakeOutputRefInput(flat_out_idx, " << arg_idx << ");\n";
         os << "            flat_out_idx++;\n";
@@ -1301,16 +1647,35 @@ std::string FallbackCodegen::GenerateExecuteMethod(const SchemaInfo &schema) {
         os << "            TORCH_CHECK(result_list.size() == out_n, \"DYNAMIC_OUTPUT instance count mismatch\");\n";
         os << "            for (size_t i = 0; i < out_n; ++i) {\n";
         os << "                at::Tensor result = result_list[static_cast<int64_t>(i)];\n";
-        EmitOutputTensorWrite(os, "flat_out_idx");
+        EmitOutputTensorWrite(os, "flat_out_idx", is_host_cpu);
         os << "                flat_out_idx++;\n";
         os << "            }\n";
       } else {
         os << "            at::Tensor result = args[result_idx].toTensor();\n";
-        EmitOutputTensorWrite(os, "flat_out_idx");
+        EmitOutputTensorWrite(os, "flat_out_idx", is_host_cpu);
         os << "            flat_out_idx++;\n";
       }
       os << "        }\n";
     }
+  }
+
+  if (is_host_cpu) {
+    // HostCpu 变体：host kernel 异常不外抛，打 ERROR 日志（含算子名）后返回
+    // GRAPH_FAILED 交由 GE 执行栈报错。
+    os << "        } catch (const std::exception &e) {\n";
+    os << "            aclAppLog(ACL_ERROR, \"HostCpuExecute\", __FILE__, __LINE__,\n";
+    os << "                \"op=" << schema.full_op_name << " (" << schema.overload
+       << ") execute failed: %s\", e.what());\n";
+    os << "            return ge::GRAPH_FAILED;\n";
+    os << "        } catch (...) {\n";
+    os << "            aclAppLog(ACL_ERROR, \"HostCpuExecute\", __FILE__, __LINE__,\n";
+    os << "                \"op=" << schema.full_op_name << " (" << schema.overload
+       << ") execute failed: unknown exception\");\n";
+    os << "            return ge::GRAPH_FAILED;\n";
+    os << "        }\n";
+    os << "        return ge::GRAPH_SUCCESS;\n";
+    os << "    }\n";
+    return os.str();
   }
 
   os << "\n        return ge::GRAPH_SUCCESS;\n";
@@ -1319,15 +1684,177 @@ std::string FallbackCodegen::GenerateExecuteMethod(const SchemaInfo &schema) {
   return os.str();
 }
 
-std::string FallbackCodegen::GenerateGeOpClass(const SchemaInfo &schema) {
+// PT2 serde dtype 枚举值 → GE dtype 符号名（InferDataType 内联用）。
+// 编号直接复用 td::pt2 的 PT2 serde 常量（1-based，Float=7），未知取值在生成期报错。
+static std::string Pt2DtypeToGeName(int64_t dtype) {
+  switch (dtype) {
+    case td::pt2::kDtypeByte:
+      return "ge::DT_UINT8";  // kByte
+    case td::pt2::kDtypeChar:
+      return "ge::DT_INT8";  // kChar
+    case td::pt2::kDtypeShort:
+      return "ge::DT_INT16";  // kShort
+    case td::pt2::kDtypeInt:
+      return "ge::DT_INT32";  // kInt
+    case td::pt2::kDtypeLong:
+      return "ge::DT_INT64";  // kLong
+    case td::pt2::kDtypeHalf:
+      return "ge::DT_FLOAT16";  // kHalf
+    case td::pt2::kDtypeFloat:
+      return "ge::DT_FLOAT";  // kFloat
+    case td::pt2::kDtypeDouble:
+      return "ge::DT_DOUBLE";  // kDouble
+    case td::pt2::kDtypeBool:
+      return "ge::DT_BOOL";  // kBool
+    case td::pt2::kDtypeBFloat16:
+      return "ge::DT_BF16";  // kBFloat16
+    case td::pt2::kDtypeUInt16:
+      return "ge::DT_UINT16";  // kUInt16
+    default:
+      throw FallbackCodegenError("unsupported pt2 dtype " + std::to_string(dtype) +
+                                 " for HostCpu InferDataType generation; supported constants: kDtypeByte/kDtypeChar/"
+                                 "kDtypeShort/kDtypeInt/kDtypeLong/kDtypeHalf/kDtypeFloat/kDtypeDouble/kDtypeBool/"
+                                 "kDtypeBFloat16/kDtypeUInt16 (kDtypeUInt32/kDtypeUInt64 and complex dtypes are "
+                                 "not supported yet)");
+  }
+}
+
+std::string FallbackCodegen::GenerateShapeInferMethods(const SchemaInfo &schema, const OpTarget &target) {
+  // HostCpu 后端必须提供 shape/dtype 推导：静态维内联常量；动态维从符号
+  // 匹配的输入 shape 透传；data-dependent（如 nonzero）无法静态推导，报错。
+  std::ostringstream os;
+
+  // 输入 IR 声明与 input_metas 对齐：收集后的每个 inputs 条目恰好对应一个非
+  // out 的 schema 参数（标量条目的张量数为 0；auto_functionalized_v2 节点已在
+  // CollectShapeInfo 中剔除算子占位并按运行时归一化顺序重排），因此
+  // count_cursor 必须逐参数推进 —— 只在 tensor 参数上推进会与
+  // input_arg_tensor_counts 的条目基准错位（如 gather(Tensor, int, Tensor)
+  // 中第二个张量会读到标量条目）。
+  // 每个 IR 声明占 1 个序号（与 Execute 取参的 IR 序号规则一致）。
+  struct InputSource {
+    size_t ir_index;
+    size_t meta_index;
+    size_t list_index;  // 变长列表（DYNAMIC_INPUT）内的相对序号，GetDynamicInputShape 第二参
+    bool optional;
+    bool dynamic;
+  };
+  std::vector<InputSource> sources;
+  {
+    size_t meta_cursor = 0;
+    size_t count_cursor = 0;
+    size_t ir_index = 0;
+    for (const auto &arg : schema.arguments) {
+      if (arg.is_out) {
+        ir_index++;
+        continue;
+      }
+      size_t count = 1;
+      if (count_cursor < target.input_arg_tensor_counts.size()) {
+        count = target.input_arg_tensor_counts[count_cursor];
+      }
+      count_cursor++;
+      const bool is_variadic_list = arg.is_variadic && arg.type_category == "tensor_list";
+      if (arg.type_category == "tensor" || is_variadic_list) {
+        for (size_t k = 0; k < count && meta_cursor + k < target.input_metas.size(); ++k) {
+          sources.push_back({ir_index, meta_cursor + k, k, IsOptional(arg.input_kind), is_variadic_list});
+        }
+        meta_cursor += count;
+      }
+      ir_index++;
+    }
+  }
+
+  // 输出动态维符号 → 首个同符号输入维（透传来源）。
+  struct DimSource {
+    size_t ir_index;
+    size_t dim;
+    const InputSource *src;
+  };
+  std::map<std::string, DimSource> symbol_map;
+  for (const auto &s : sources) {
+    const auto &meta = target.input_metas[s.meta_index];
+    for (size_t d = 0; d < meta.dynamic_symbols.size(); ++d) {
+      if (!meta.dynamic_symbols[d].empty()) {
+        symbol_map.emplace(meta.dynamic_symbols[d], DimSource{s.ir_index, d, &s});
+      }
+    }
+  }
+
+  os << "    ge::graphStatus InferShape(gert::InferShapeContext* ctx) override {\n";
+  for (size_t o = 0; o < target.output_metas.size(); ++o) {
+    const auto &meta = target.output_metas[o];
+    os << "        {\n";
+    os << "            gert::Shape* out_shape = ctx->GetOutputShape(" << o << ");\n";
+    os << "            out_shape->SetDimNum(" << meta.sizes.size() << ");\n";
+    for (size_t d = 0; d < meta.sizes.size(); ++d) {
+      const auto &sym = meta.dynamic_symbols[d];
+      if (sym.empty()) {
+        os << "            out_shape->SetDim(" << d << ", " << meta.sizes[d] << ");\n";
+        continue;
+      }
+      auto it = symbol_map.find(sym);
+      if (it == symbol_map.end()) {
+        throw FallbackCodegenError("CPU op '" + schema.full_op_name + "' (overload '" + schema.overload +
+                                   "') output dim " + std::to_string(d) + " depends on symbol '" + sym +
+                                   "' not derivable from inputs "
+                                   "(data-dependent shape); move this op out of the exported graph");
+      }
+      const auto &src = it->second;
+      if (src.src->dynamic) {
+        // 相对序号取符号实际所在变长张量的位置，不能硬编码 0（第 2+ 个变长
+        // 张量的动态维会读错输入）。
+        os << "            out_shape->SetDim(" << d << ", ctx->GetDynamicInputShape(" << src.ir_index << ", "
+           << src.src->list_index << ")->GetDim(" << src.dim << "));\n";
+      } else if (src.src->optional) {
+        os << "            out_shape->SetDim(" << d << ", ctx->GetOptionalInputShape(" << src.ir_index << ")->GetDim("
+           << src.dim << "));\n";
+      } else {
+        os << "            out_shape->SetDim(" << d << ", ctx->GetRequiredInputShape(" << src.ir_index << ")->GetDim("
+           << src.dim << "));\n";
+      }
+    }
+    os << "        }\n";
+  }
+  os << "        return ge::GRAPH_SUCCESS;\n";
+  os << "    }\n";
+
+  os << "    ge::graphStatus InferDataType(gert::InferDataTypeContext* ctx) override {\n";
+  for (size_t o = 0; o < target.output_metas.size(); ++o) {
+    os << "        ctx->SetOutputDataType(" << o << ", " << Pt2DtypeToGeName(target.output_metas[o].dtype) << ");\n";
+  }
+  os << "        return ge::GRAPH_SUCCESS;\n";
+  os << "    }\n";
+
+  return os.str();
+}
+
+std::string FallbackCodegen::GenerateGeOpClass(const SchemaInfo &schema, bool is_host_cpu,
+                                               const OpTarget *shape_source) {
   std::ostringstream os;
 
   std::string ge_op_name = GenerateGeOpIdentifier(schema.full_op_name, schema.overload);
 
   os << "namespace ge {\n\n";
+  if (is_host_cpu) {
+    os << "class " << ge_op_name << " final : public HostCpuExecuteOp, public ShapeInferOp {\n";
+    os << "public:\n";
+    os << GenerateExecuteMethod(schema, is_host_cpu);
+    if (shape_source == nullptr || !shape_source->has_shape_info) {
+      throw FallbackCodegenError("HostCpu op '" + schema.full_op_name +
+                                 "' has no shape info; "
+                                 "ShapeInferOp implementation is mandatory for HostCpu backend");
+    }
+    os << GenerateShapeInferMethods(schema, *shape_source);
+    os << "};\n\n";
+    os << GenerateGeOpReg(schema) << "\n";
+    os << "REG_OP_BACKEND(" << ge_op_name << ", \"" << ge_op_name << "\", ge::OpBackend::kHostCPU);\n";
+    os << "} // namespace ge\n\n";
+    return os.str();
+  }
+
   os << "class " << ge_op_name << " : public EagerExecuteOp {\n";
   os << "public:\n";
-  os << GenerateExecuteMethod(schema);
+  os << GenerateExecuteMethod(schema, is_host_cpu);
   os << "};\n\n";
 
   os << GenerateGeOpReg(schema) << "\n";
@@ -1337,8 +1864,13 @@ std::string FallbackCodegen::GenerateGeOpClass(const SchemaInfo &schema) {
   return os.str();
 }
 
-std::string FallbackCodegen::EmitCustomOpCpp(const std::vector<SchemaInfo> &schemas, const std::string &gcc_cmd) {
+std::string FallbackCodegen::EmitCustomOpCpp(const std::vector<SchemaInfo> &schemas,
+                                             const std::vector<OpTarget> &targets, const std::string &gcc_cmd) {
   std::ostringstream os;
+  const size_t hostcpu_count =
+      std::count_if(targets.begin(), targets.end(), [](const OpTarget &t) { return t.device == "cpu"; });
+  TDLOGI("EmitCustomOpCpp: schemas=%zu, hostcpu_ops=%zu, npu_ops=%zu", schemas.size(), hostcpu_count,
+         targets.size() - hostcpu_count);
 
   os << "// AUTO-GENERATED by FallbackCodegen\n";
 
@@ -1353,10 +1885,15 @@ std::string FallbackCodegen::EmitCustomOpCpp(const std::vector<SchemaInfo> &sche
   }
 
   os << "#include <torch/torch.h>\n";
+  os << "#include <cstring>\n";
   os << "#include <torch_npu/csrc/aten/common/from_blob.h>\n";
   os << "#include <torch_npu/csrc/core/npu/NPUStream.h>\n";
   os << "#include <torch_npu/csrc/core/npu/NPUGuard.h>\n";
   os << "#include <acl/acl.h>\n";
+  if (hostcpu_count > 0) {
+    // aclAppLog：HostCpu 算子 DEBUG/ERROR 日志通道（与 TDLOG 同源）。
+    os << "#include <acl/acl_base_rt.h>\n";
+  }
   os << "#include <graph/custom_op.h>\n";
   os << "#include <graph/types.h>\n";
   os << "#include <graph/operator_reg.h>\n";
@@ -1364,11 +1901,13 @@ std::string FallbackCodegen::EmitCustomOpCpp(const std::vector<SchemaInfo> &sche
 
   os << "using namespace ge;\n\n";
   os << "namespace {\n\n";
-  os << GenerateHelperFunctions();
+  os << GenerateHelperFunctions(hostcpu_count > 0);
   os << "}\n\n";
 
-  for (const auto &schema : schemas) {
-    os << GenerateGeOpClass(schema);
+  for (size_t i = 0; i < schemas.size(); ++i) {
+    const bool is_host_cpu = i < targets.size() && targets[i].device == "cpu";
+    const OpTarget *shape_source = is_host_cpu ? &targets[i] : nullptr;
+    os << GenerateGeOpClass(schemas[i], is_host_cpu, shape_source);
   }
 
   return os.str();
@@ -1598,6 +2137,18 @@ CodegenResult FallbackCodegen::GenerateFromTargets(const std::vector<OpTarget> &
       TDLOGD("  Getting schema: %s, overload=%s", full_op.c_str(),
              target.overload.empty() ? "(default)" : target.overload.c_str());
       schemas.push_back(GetSchemaInfo(full_op, target.overload));
+      if (target.device == "cpu") {
+        // CPU dispatch key 预检：部署环境缺 libtorch CPU
+        // kernel 时在 codegen 阶段失败，而非运行期 callBoxed 才暴露。
+        c10::OperatorName op_name(full_op, target.overload);
+        auto handle = torch::Dispatcher::singleton().findSchema(op_name);
+        if (!handle.has_value() || !handle->hasComputedKernelForDispatchKey(c10::DispatchKey::CPU)) {
+          throw FallbackCodegenError(
+              "op '" + full_op + "' (overload '" + target.overload +
+              "') has no CPU kernel registered in this environment; HostCpu fallback would fail at runtime. "
+              "Register a CPU implementation (torch.library / TORCH_LIBRARY_IMPL) or move the op out of the graph.");
+        }
+      }
     }
 
     TDLOGD("Generating custom_op.cpp content");
@@ -1653,7 +2204,7 @@ CodegenResult FallbackCodegen::GenerateFromTargets(const std::vector<OpTarget> &
     std::string gcc_cmd = BuildGccCommandFromPaths(torch_pkg_dir, torch_npu_dir, cpp_path, so_path);
     TDLOGI("Generated g++ command (%zu chars)", gcc_cmd.size());
 
-    std::string cpp_content_with_cmd = EmitCustomOpCpp(schemas, gcc_cmd);
+    std::string cpp_content_with_cmd = EmitCustomOpCpp(schemas, targets, gcc_cmd);
     TDLOGI("Generated custom_op.cpp size: %zu bytes", cpp_content_with_cmd.size());
 
     {

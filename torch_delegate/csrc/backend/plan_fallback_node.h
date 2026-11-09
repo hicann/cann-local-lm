@@ -27,7 +27,10 @@ namespace td {
 
 class FallbackNodePlanner {
  public:
-  FallbackNodePlanner(GraphBuildContext &ctx, const GraphPlanningDeps &deps);
+  // tensor_placement：张量输入的 placement。HostCpu 节点传 ge::kPlacementHost，
+  // Device 节点保持默认 ge::kPlacementDevice（现有 NPU 路径行为零变化）。
+  FallbackNodePlanner(GraphBuildContext &ctx, const GraphPlanningDeps &deps,
+                      ge::Placement tensor_placement = ge::kPlacementDevice);
   Status Plan(const ParsedNode &node);
 
  private:
@@ -42,6 +45,7 @@ class FallbackNodePlanner {
 
   GraphBuildContext &ctx_;
   const GraphPlanningDeps &deps_;
+  ge::Placement tensor_placement_ = ge::kPlacementDevice;
   const RegisteredIrDef *ir_def_ = nullptr;
   std::string op_type_;
   std::string context_;

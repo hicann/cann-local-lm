@@ -186,6 +186,12 @@ bool IsConverterNode(const ParsedNode &node) {
   return node.ascend_ir.has_value() && node.ascend_ir->source == "converter";
 }
 
+bool IsCpuNode(const ParsedNode &node) {
+  // HostCpu 自定义算子节点：ascend_ir 存在且 device 判定为 "cpu"，与 NPU
+  // 节点同处一张 ge::Graph，由 GE 统一调度。
+  return node.ascend_ir.has_value() && node.ascend_ir->device == "cpu";
+}
+
 bool HasBuildableConverterOps(const ParsedNode &node) {
   if (!node.ascend_ir.has_value()) {
     return false;

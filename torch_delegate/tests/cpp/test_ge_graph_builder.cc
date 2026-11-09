@@ -17,6 +17,8 @@
 #include "backend/epair_archive.h"
 #include "backend/ge_graph_builder.h"
 #include "backend/ge_graph_optimizer.h"
+#include "backend/host_cpu_capability.h"
+#include "cann_stub/cann_stub_control.h"
 #include "common/logging/assert_macros.h"
 #include "common/logging/logging.h"
 
@@ -115,6 +117,11 @@ REG_OP(Data)
     .ATTR(sorted, Bool, true)
     .OP_END_FACTORY_REG(Topk)
 
+        REG_OP(aten__relu)
+    .INPUT(x, ge::TensorType::ALL())
+    .OUTPUT(y, ge::TensorType::ALL())
+    .OP_END_FACTORY_REG(aten__relu)
+
 }  // namespace ge
 
 namespace td {
@@ -122,6 +129,7 @@ namespace {
 
 const std::string kAnnotated = std::string(FIXTURES_DIR) + "/annotated_mm_add.epair";
 const std::string kAnnotatedMixed = std::string(FIXTURES_DIR) + "/annotated_mixed.epair";
+const std::string kAnnotatedHostCpu = std::string(FIXTURES_DIR) + "/annotated_host_cpu.epair";
 const std::string kAnnotatedConverterNoOp = std::string(FIXTURES_DIR) + "/annotated_converter_no_ops.epair";
 const std::string kAnnotatedConverterNoOpCopy = std::string(FIXTURES_DIR) + "/annotated_converter_noop_copy.epair";
 const std::string kAnnotatedAttrTypes = std::string(FIXTURES_DIR) + "/annotated_attr_types.epair";
@@ -144,7 +152,18 @@ const std::string kMissingGraphSource = std::string(FIXTURES_DIR) + "/missing_gr
 
 }  // namespace
 
-class GeGraphBuilderTest : public ::testing::Test {};
+class GeGraphBuilderTest : public ::testing::Test {
+ protected:
+  void SetUp() override {
+    // 本测试二进制不触发在线 codegen（目标环境无 torch_npu 编译链）；三分派
+    // 与 HostCpu 能力校验通过 fixture + stub IR 注册表覆盖。
+    setenv("TORCH_DELEGATE_ENABLE_FALLBACK_CODEGEN", "0", 1);
+    cann_stub::Reset();
+  }
+  void TearDown() override {
+    unsetenv("TORCH_DELEGATE_ENABLE_FALLBACK_CODEGEN");
+  }
+};
 
 TEST_F(GeGraphBuilderTest, BuildsSimpleAnnotatedGraph) {
   td::EpairArchive archive(kAnnotated.c_str());
@@ -436,6 +455,106 @@ TEST_F(GeGraphBuilderTest, BuildReturnsNullptrForUninitializedBuilder) {
   td::InputBindingMap binding_map;
   auto graph = builder.Build(binding_map);
   EXPECT_EQ(graph, nullptr);
+}
+
+// ===========================================================================
+// HostCpu 混合调度（CPU/NPU 混合）构图测试：三分派、host placement、能力校验
+// ===========================================================================
+
+namespace {
+
+ge::GNode FindNodeByType(ge::Graph &graph, const std::string &type) {
+  for (auto &node : graph.GetAllNodes()) {
+    ge::AscendString node_type;
+    if (node.GetType(node_type) == ge::GRAPH_SUCCESS && node_type.GetString() != nullptr &&
+        type == node_type.GetString()) {
+      return node;
+    }
+  }
+  return ge::GNode();
+}
+
+size_t CountHostPlacementInputs(ge::GNode &node) {
+  size_t host_count = 0;
+  for (size_t i = 0; i < node.GetInputsSize(); ++i) {
+    ge::TensorDesc desc;
+    if (node.GetInputDesc(static_cast<int32_t>(i), desc) != ge::GRAPH_SUCCESS) {
+      continue;
+    }
+    if (desc.GetPlacement() == ge::kPlacementHost) {
+      host_count++;
+    }
+  }
+  return host_count;
+}
+
+}  // namespace
+
+TEST_F(GeGraphBuilderTest, BuildsAnnotatedHostCpuGraph) {
+  td::EpairArchive archive(kAnnotatedHostCpu.c_str());
+  td::Status builder_status = td::FAILED;
+  td::GeGraphBuilder builder(archive, builder_status);
+  ASSERT_EQ(builder_status, td::SUCCESS);
+
+  td::InputBindingMap binding_map;
+  auto graph = builder.Build(binding_map);
+  ASSERT_NE(graph, nullptr) << "CPU fallback node (device=cpu) must join the same ge::Graph";
+
+  // CPU 节点经 FallbackNodePlanner(kPlacementHost) 入图，张量输入为 host placement。
+  ge::GNode relu_node = FindNodeByType(*graph, "aten__relu");
+  ge::AscendString found_type;
+  ASSERT_EQ(relu_node.GetType(found_type), ge::GRAPH_SUCCESS)
+      << "HostCpu custom op node must be planned into the graph";
+  EXPECT_GT(CountHostPlacementInputs(relu_node), 0u)
+      << "HostCpu node tensor inputs must be declared with host placement";
+
+  // converter 节点的 placement 由 ascend_ir inputDesc 决定，不受 FallbackNodePlanner
+  // placement 参数影响（默认参数保证现有路径零变化，见 PureNpuGraphBuildsUnaffected）。
+  ge::GNode mm_node = FindNodeByType(*graph, "MatMul");
+  ASSERT_EQ(mm_node.GetType(found_type), ge::GRAPH_SUCCESS);
+}
+
+TEST_F(GeGraphBuilderTest, PureNpuGraphBuildsUnaffected) {
+  td::EpairArchive archive(kAnnotated.c_str());
+  td::Status builder_status = td::FAILED;
+  td::GeGraphBuilder builder(archive, builder_status);
+  ASSERT_EQ(builder_status, td::SUCCESS);
+
+  td::InputBindingMap binding_map;
+  auto graph = builder.Build(binding_map);
+  ASSERT_NE(graph, nullptr) << "Pure NPU epair must build exactly as before the HostCpu feature";
+}
+
+TEST_F(GeGraphBuilderTest, ReportsCpuOwnershipFromClassifiedNodes) {
+  td::EpairArchive archive(kAnnotatedHostCpu.c_str());
+  td::Status builder_status = td::FAILED;
+  td::GeGraphBuilder builder(archive, builder_status);
+  ASSERT_EQ(builder_status, td::SUCCESS);
+
+  td::ParsedModel model;
+  const RecordData model_record = archive.ReadRecord("extra/ep_json_with_ascend_ir.json");
+  ASSERT_EQ(td::ParsedModel::Parse(model_record.AsString(), model), td::SUCCESS);
+
+  const std::string report = td::ReportCpuOwnership(model);
+  // 归属复述：CPU 节点 + device 分类 + namespace 分级（aten → WARNING）
+  EXPECT_NE(report.find("CPU nodes 1"), std::string::npos) << report;
+  EXPECT_NE(report.find("device=cpu"), std::string::npos) << report;
+  EXPECT_NE(report.find("WARNING"), std::string::npos) << "aten->CPU must be reported as WARNING";
+  EXPECT_NE(report.find("aten.relu.default"), std::string::npos) << report;
+}
+
+TEST_F(GeGraphBuilderTest, ReportsNpuFallbackOwnership) {
+  td::ParsedModel model;
+  const RecordData model_record =
+      td::EpairArchive(kAnnotatedFallbackWithAttrs.c_str()).ReadRecord("extra/ep_json_with_ascend_ir.json");
+  ASSERT_EQ(td::ParsedModel::Parse(model_record.AsString(), model), td::SUCCESS);
+
+  const std::string report = td::ReportCpuOwnership(model);
+  // NPU fallback 必须单独计数并列入清单，不能被当成 converter 或丢弃。
+  EXPECT_NE(report.find("NPU nodes 1"), std::string::npos) << report;
+  EXPECT_NE(report.find("converter 0 / fallback 1"), std::string::npos) << report;
+  EXPECT_NE(report.find("CPU nodes 0"), std::string::npos) << report;
+  EXPECT_NE(report.find("device=npu"), std::string::npos) << report;
 }
 
 }  // namespace td

@@ -19,6 +19,7 @@ class NodeIR:
     mapping: dict[str, Any] | None = (
         None  # output 对应关系：aten_output_name -> ge_output_name
     )
+    device: str = "npu"  # 执行 Device 归属："npu" | "cpu"
 
 
 class NodeIRConverter(ABC):

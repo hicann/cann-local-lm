@@ -12,6 +12,7 @@
 #include <string>
 
 #include "backend/parsed_model.h"
+#include "backend/parse_ascend_ir.h"
 #include "common/abi_compat_utils.h"
 #include "common/epair_archive_constants.h"
 #include "common/logging/logging.h"
@@ -815,5 +816,55 @@ TEST_F(EpairModelParserTest, RejectsNoneGraphOutput) {
 
   td::ParsedModel model;
   EXPECT_NE(td::ParsedModel::Parse(model_json, model), td::SUCCESS);
+}
+// ===========================================================================
+// ascend_ir.device 解析（未知取值严格报错）
+// ===========================================================================
+
+TEST_F(EpairModelParserTest, ParsesAscendIrDeviceCpu) {
+  const auto ir = OrderedJson::parse(R"({"source": "", "device": "cpu", "ops": []})");
+  td::ParsedAscendIr parsed;
+  ASSERT_EQ(td::ParseAscendIrImpl(ir, "test", parsed), td::SUCCESS);
+  EXPECT_EQ(parsed.device, "cpu");
+}
+
+TEST_F(EpairModelParserTest, ParsesAscendIrDeviceMissingDefaultsToNpu) {
+  const auto ir = OrderedJson::parse(R"({"source": "", "ops": []})");
+  td::ParsedAscendIr parsed;
+  ASSERT_EQ(td::ParseAscendIrImpl(ir, "test", parsed), td::SUCCESS);
+  EXPECT_EQ(parsed.device, "npu") << "Missing device field must default to npu (manifest v1 compat)";
+}
+
+TEST_F(EpairModelParserTest, ParsesAscendIrDeviceNpuExplicit) {
+  const auto ir = OrderedJson::parse(R"({"source": "", "device": "npu", "ops": []})");
+  td::ParsedAscendIr parsed;
+  ASSERT_EQ(td::ParseAscendIrImpl(ir, "test", parsed), td::SUCCESS);
+  EXPECT_EQ(parsed.device, "npu");
+}
+
+TEST_F(EpairModelParserTest, RejectsAscendIrUnknownDevice) {
+  const auto ir = OrderedJson::parse(R"({"source": "", "device": "gpu", "ops": []})");
+  td::ParsedAscendIr parsed;
+  EXPECT_EQ(td::ParseAscendIrImpl(ir, "test", parsed), td::INVALID_PARAM) << "Unknown device value must be rejected";
+}
+
+TEST_F(EpairModelParserTest, RejectsAscendIrNonStringDevice) {
+  const auto ir = OrderedJson::parse(R"({"source": "", "device": 1, "ops": []})");
+  td::ParsedAscendIr parsed;
+  EXPECT_EQ(td::ParseAscendIrImpl(ir, "test", parsed), td::INVALID_PARAM);
+}
+
+TEST_F(EpairModelParserTest, ParsesHostCpuFixtureNode) {
+  const std::string kHostCpu = std::string(FIXTURES_DIR) + "/annotated_host_cpu.epair";
+  td::EpairArchive archive(kHostCpu.c_str());
+  ASSERT_TRUE(archive.HasRecord(kGraphSource.c_str()));
+  const RecordData model_record = archive.ReadRecord(kGraphSource.c_str());
+  td::ParsedModel model;
+  ASSERT_EQ(td::ParsedModel::Parse(model_record.AsString(), model), td::SUCCESS);
+  const td::ParsedNode *relu_node = model.FindNodeByName("Relu");
+  ASSERT_NE(relu_node, nullptr);
+  ASSERT_TRUE(relu_node->ascend_ir.has_value());
+  EXPECT_EQ(relu_node->ascend_ir->device, "cpu");
+  EXPECT_EQ(relu_node->ascend_ir->source, "");
 }
 }  // namespace td

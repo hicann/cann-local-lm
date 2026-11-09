@@ -11,9 +11,14 @@
 
 #include <filesystem>
 #include <string>
+#include <vector>
+#include <utility>
 
+#include <ge/ge_api_v2.h>
 #include <graph/ascend_string.h>
 
+// GE / Ascend C 接口的 C++ 侧便捷工具：char*/AscendString/std::string 与
+// std::filesystem::path 之间的安全转换（统一处理 nullptr）。
 namespace td::internal {
 
 inline std::string CharToString(const char *value) {

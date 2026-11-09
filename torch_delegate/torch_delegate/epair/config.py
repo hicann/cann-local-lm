@@ -60,6 +60,11 @@ class EpairConfig:
     remove_noop_ops: bool = True
     pattern_fusion_pass: bool = True
 
+    # 严格校验开关：aten 算子被判到 CPU 执行时，导出阶段直接报错而非告警。
+    # 不改变归属结论本身，用于 CI / 性能基线看护，防止 torch_npu
+    # 覆盖缺口导致静默退化到 CPU。自定义 namespace 算子不受该开关影响。
+    require_aten_on_npu: bool = False
+
     whitelist_decompositions: set[Any] = dataclasses.field(
         default_factory=lambda: {
             torch.ops.aten.linear.default,

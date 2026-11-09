@@ -19,6 +19,28 @@
 namespace td {
 namespace {
 
+constexpr const char *kDefaultDevice = "npu";
+
+Status ParseDeviceField(const OrderedJson &ascend_ir, const std::string &context, ParsedAscendIr &parsed) {
+  parsed.device = kDefaultDevice;
+  if (!ascend_ir.contains("device")) {
+    // 老格式（manifest v1）：device 缺失按 "npu" 处理，等价于现状行为。
+    return SUCCESS;
+  }
+  if (!ascend_ir["device"].is_string()) {
+    TDLOGE("ParseAscendIr failed: device must be string, context=%s", context.c_str());
+    return INVALID_PARAM;
+  }
+  parsed.device = ascend_ir["device"].get<std::string>();
+  if (parsed.device != "npu" && parsed.device != "cpu") {
+    // 严格报错：未知 device 取值不静默跳过，避免按错误 Device 入图。
+    TDLOGE("ParseAscendIr failed: unknown device '%s', expect 'npu' or 'cpu', context=%s", parsed.device.c_str(),
+           context.c_str());
+    return INVALID_PARAM;
+  }
+  return SUCCESS;
+}
+
 Status ParseOpDesc(const OrderedJson &desc, const std::string &context, ParsedAscendIrOpDesc &parsed) {
   parsed = ParsedAscendIrOpDesc{};
   parsed.raw_json = desc;
@@ -69,9 +91,11 @@ Status ParseAscendIrImpl(const OrderedJson &ascend_ir, const std::string &contex
 
   parsed = ParsedAscendIr{};
   parsed.raw_json = ascend_ir;
+  TD_CHK_STATUS(ParseDeviceField(ascend_ir, context, parsed));
   if (ascend_ir.contains("source") && ascend_ir["source"].is_string()) {
     parsed.source = ascend_ir["source"].get<std::string>();
-    TDLOGD("ParseAscendIr: source=%s, context=%s", parsed.source.c_str(), context.c_str());
+    TDLOGD("ParseAscendIr: source=%s, device=%s, context=%s", parsed.source.c_str(), parsed.device.c_str(),
+           context.c_str());
   }
   if (!ascend_ir.contains("ops") || !ascend_ir["ops"].is_array()) {
     TDLOGE("ParseAscendIr failed: missing ops array, context=%s", context.c_str());

@@ -153,15 +153,17 @@ EpairWriter(converter).write(ep_json) → (ep_json, total_nodes, converted_nodes
   │         · _get_ops_list: when source="", match by type and return only [{"attr": ...}]; otherwise return full ops
   │         · _resolve_input_names: rewrite GE input references to FX names using geo_2_fxo
   │         · _map_output_names: flatten FX outputs and match them one-to-one with GE outputs, skipping CONST_* and None/None
-  │         · inject serial_node["ascend_ir"] = {source, ops, mapping: {inputs: {...}, outputs: {...}}}
+  │         · inject serial_node["ascend_ir"] = {source, device, ops, mapping: {inputs: {...}, outputs: {...}}}
+  │           device: "npu" (default) | "cpu", the export-time device ownership resolution
+  │           (PrivateUse1 kernel → npu, CPU-only kernel → cpu, neither → export error)
   │   logger.debug("Total graph nodes: {total}, converted: {converted}")
   ↓
 writer._get_cann_version() → cann_version
   │   try: torch_npu.npu.utils.get_cann_version()
   │   except: logger.warning(...) → "unknown"
   ↓
-EpairManifest(version=1, backend_name="ascend_ge",
-              cann_version, total_nodes, converted_nodes)
+EpairManifest(version=2, backend_name="ascend_ge",
+              cann_version, total_nodes, converted_nodes, cpu_nodes)
   ↓
 EpairContents(manifest, ep_json, converted_ep)
   │ logger.info("EpairContents created successfully")
@@ -228,12 +230,13 @@ Metadata of the epair file, defined in `epair/schema.py`:
 ```python
 @dataclasses.dataclass
 class EpairManifest:
-    version: int             # Format version number, currently 1
+    version: int             # Format version number, currently 2 (v1 means all-NPU semantics, backward compatible)
     backend_name: str        # Backend name, fixed to "ascend_ge"
     cann_version: str        # CANN version number, e.g. "9.2.0"; "unknown" when unavailable
     total_nodes: int         # Total number of compute nodes in the EP JSON
     converted_nodes: int     # Number of nodes successfully converted (with ascend_ir)
                              # converted_nodes < total_nodes means fallback nodes exist
+    cpu_nodes: int           # Number of fallback nodes with device="cpu" (new in v2)
 ```
 
 ### EpairContents
@@ -701,3 +704,39 @@ torch_delegate/
 | `epair/constants.py` | epair filename constants (without the `extra/` prefix) |
 | `epair/writer.py` | `EpairWriter`, injects ascend_ir into EP JSON |
 | `epair/reader.py` | `epair_load` function, loads .epair files |
+
+### ascend_ir.device and manifest v2 (CPU/NPU Mixed Scheduling)
+
+Since format v2, each node's `ascend_ir` gains an optional `device` field that
+records the export-time device ownership resolution:
+
+```json
+"ascend_ir": {
+  "source": "",
+  "device": "cpu",
+  "ops": [],
+  "mapping": {"inputs": {}, "outputs": {}}
+}
+```
+
+- Resolution rule (no configuration): if a fallback node's target has a
+  `PrivateUse1` kernel → `"npu"`; if it only has a `CPU` kernel, or only a
+  `CompositeImplicitAutograd` (decomposition) registration (CPU tensors are
+  passed on callback) → `"cpu"`; none of these → export error.
+- Compatibility: a missing `device` is treated as `"npu"`, equivalent to v1
+  behavior; the C++ side keeps full-NPU semantics for manifest v1.
+- Strict validation switch: with `EpairConfig(require_aten_on_npu=True)`, an
+  aten-namespace operator resolved to CPU makes the export fail immediately
+  (with the full hit list), for CI / performance-baseline guarding.
+- Ownership diagnosability: the export prints the full ownership report (both
+  NPU and CPU inventories, CPU side graded by namespace); C++ load time recaps
+  the CPU node distribution from `device` and the target namespace, warnings
+  only. Decision records are held in memory during export only and are **not
+  serialized into the epair archive** (avoiding `extra/` directory growth and
+  format-evolution burden).
+- No load-time capability validation: no local CANN version/capability validation gate
+  is introduced; capability issues such as unregistered operators or missing HostCpu
+  backend support surface naturally via GE compile-time errors.
+
+The full design of ownership resolution and mixed scheduling lives in
+`docs/en/features/cpu_npu_mixed_scheduling_hostcpu_20261027.md`.

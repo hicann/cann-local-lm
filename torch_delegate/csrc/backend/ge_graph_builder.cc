@@ -32,6 +32,7 @@
 #include "common/pt2_type_constants.h"
 #include "backend/ge_graph_optimizer.h"
 #include "backend/graph_build_utils.h"
+#include "backend/host_cpu_capability.h"
 #include "backend/plan_converter_node.h"
 #include "backend/plan_fallback_node.h"
 #include "fallback_codegen/fallback_codegen.h"
@@ -405,6 +406,20 @@ GeGraphBuilder::GeGraphBuilder(const EpairArchive &archive, Status &init_status)
   }
   TDLOGI("GeGraphBuilder step: weights loaded");
 
+  // 读取 manifest 的 cann_version（可选记录，仅用于诊断信息）。
+  if (archive.HasRecord(epair_spec::kAnnotatedManifestJson)) {
+    try {
+      const auto manifest = nlohmann::json::parse(archive.ReadRecord(epair_spec::kAnnotatedManifestJson).AsString());
+      if (manifest.contains("cann_version") && manifest["cann_version"].is_string()) {
+        manifest_cann_version_ = manifest["cann_version"].get<std::string>();
+      }
+    } catch (const nlohmann::json::parse_error &error) {
+      TDLOGW("GeGraphBuilder: manifest parse skipped, error=%s", error.what());
+    }
+  }
+  TDLOGI("GeGraphBuilder step: manifest loaded, cann_version=%s",
+         manifest_cann_version_.empty() ? "unknown" : manifest_cann_version_.c_str());
+
   initialized_ = true;
   init_status = SUCCESS;
   TDLOGI("GeGraphBuilder exit: success, initialized=true");
@@ -417,6 +432,16 @@ bool GeGraphBuilder::IsFullyOffloaded() const noexcept {
     }
   }
   return true;
+}
+
+std::vector<std::string> GeGraphBuilder::CollectCpuNodeNames() const {
+  std::vector<std::string> cpu_nodes;
+  for (const ParsedNode &node : model_.Nodes()) {
+    if (IsCpuNode(node)) {
+      cpu_nodes.push_back(node.name);
+    }
+  }
+  return cpu_nodes;
 }
 
 Status GeGraphBuilder::PreparePlaceholders() {
@@ -473,7 +498,16 @@ Status GeGraphBuilder::PlanNodes() {
       TD_ASSERT_TRUE(!node.effective_schema_target.empty(),
                      "Fallback node has no effective schema target, node=%s, effective_target=%s", node.name.c_str(),
                      node.effective_schema_target.c_str());
-      TD_CHK_STATUS(FallbackNodePlanner(ctx_, deps).Plan(node));
+      if (IsCpuNode(node)) {
+        // HostCpu 自定义算子（ascend_ir.device="cpu"）→ fallback 回调 CPU 实现，
+        // 张量输入用 host placement
+        TDLOGI("PlanNodes visiting CPU node: node=%s (HostCpu backend)", node.name.c_str());
+        TD_CHK_STATUS(FallbackNodePlanner(ctx_, deps, ge::kPlacementHost).Plan(node));
+      } else {
+        // Device 自定义算子（NPU fallback）→ fallback 回调 PrivateUse1；
+        // 默认参数即现有行为，纯 NPU 模型不受影响
+        TD_CHK_STATUS(FallbackNodePlanner(ctx_, deps).Plan(node));
+      }
     }
   }
   TDLOGI("PlanNodes exit: success");
@@ -594,6 +628,12 @@ std::shared_ptr<ge::Graph> GeGraphBuilder::Build(InputBindingMap &binding_map, s
   if (!IsFullyOffloaded()) {
     TDLOGE("Build skipped: model is not fully offloaded");
     return nullptr;
+  }
+
+  // C++ 加载期归属复述：含 CPU 节点时按节点归属输出 CPU/NPU 分类，
+  // 仅告警不报错；纯 NPU 模型保持原有构建路径零变化。
+  if (!CollectCpuNodeNames().empty()) {
+    (void)ReportCpuOwnership(model_);
   }
 
   TD_ASSERT_TRUE(PreparePlaceholders() == SUCCESS, "Build failed at PreparePlaceholders");

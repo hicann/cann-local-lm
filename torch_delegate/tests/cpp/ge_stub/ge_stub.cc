@@ -256,9 +256,9 @@ bool IsIrRepSupport(const char *rep) {
   return true;
 }
 
-ge::Status GetRegisteredIrDef(const char *op_type, std::vector<std::pair<ge::AscendString, ge::AscendString>> &inputs,
-                              std::vector<std::pair<ge::AscendString, ge::AscendString>> &outputs,
-                              std::vector<std::pair<ge::AscendString, ge::AscendString>> &attrs) {
+ge::Status GetRegisteredIrDefV2(const char *op_type, std::vector<std::pair<ge::AscendString, ge::AscendString>> &inputs,
+                                std::vector<std::pair<ge::AscendString, ge::AscendString>> &outputs,
+                                std::vector<std::pair<ge::AscendString, ge::AscendString>> &attrs) {
   inputs.clear();
   outputs.clear();
   attrs.clear();
@@ -274,6 +274,12 @@ ge::Status GetRegisteredIrDef(const char *op_type, std::vector<std::pair<ge::Asc
     return ge::GRAPH_SUCCESS;
   }
   if (op == "Relu" || op == "ReluInplace") {
+    inputs.push_back({"x", "Tensor"});
+    outputs.push_back({"y", "Tensor"});
+    return ge::GRAPH_SUCCESS;
+  }
+  if (op == "aten__relu") {
+    // HostCpu fallback 算子（aten::relu.default 的 GE 算子类型），供三分派构图测试。
     inputs.push_back({"x", "Tensor"});
     outputs.push_back({"y", "Tensor"});
     return ge::GRAPH_SUCCESS;

@@ -13,7 +13,11 @@
 #include <string>
 #include <vector>
 
+#include <nlohmann/json.hpp>
+
 #include "torch_delegate/epair_model_loader.h"
+#include "backend/epair_archive.h"
+#include "common/epair_archive_constants.h"
 #include "ge_stub/ge_stub_control.h"
 
 #ifndef FIXTURES_DIR
@@ -226,4 +230,22 @@ TEST_F(EpairModelLoaderTest, GetGEGraphReturnsValidGraph) {
   }
 }
 
+// ===========================================================================
+// manifest 内容一致性（cann_version/cpu_nodes 字段自 v2 起写入，仅作诊断信息）
+// ===========================================================================
+
+namespace {
+const std::string kHostCpuFixture = std::string(FIXTURES_DIR) + "/annotated_host_cpu.epair";
+}  // namespace
+
+TEST_F(EpairModelLoaderTest, ManifestFixtureConsistent) {
+  // annotated_host_cpu 的 manifest 记录导出环境信息（cann_version/cpu_nodes），
+  // 归档内容自洽即可加载，版本号不参与加载期门禁。
+  td::EpairArchive archive(kHostCpuFixture.c_str());
+  ASSERT_TRUE(archive.HasRecord(td::epair_spec::kAnnotatedManifestJson));
+  const RecordData manifest_record = archive.ReadRecord(td::epair_spec::kAnnotatedManifestJson);
+  const auto manifest = nlohmann::json::parse(manifest_record.AsString());
+  ASSERT_EQ(manifest["cann_version"].get<std::string>(), "9.2.0");
+  ASSERT_EQ(manifest["cpu_nodes"].get<int>(), 1);
+}
 }  // namespace td

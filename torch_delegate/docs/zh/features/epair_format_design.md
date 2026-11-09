@@ -153,15 +153,17 @@ EpairWriter(converter).write(ep_json) → (ep_json, total_nodes, converted_nodes
   │         · _get_ops_list: source="" 时按 type 匹配只返回 [{"attr": ...}]；否则返回完整 ops
   │         · _resolve_input_names: 用 geo_2_fxo 重写 GE input 引用为 FX name
   │         · _map_output_names: 展平 FX 输出，与 GE 输出逐一对应，跳过 CONST_* 和 None/None
-  │         · 注入 serial_node["ascend_ir"] = {source, ops, mapping: {inputs: {...}, outputs: {...}}}
+  │         · 注入 serial_node["ascend_ir"] = {source, device, ops, mapping: {inputs: {...}, outputs: {...}}}
+  │           device: "npu"（缺省）| "cpu"，导出期 Device 归属自动判定结果
+  │           （有 PrivateUse1 kernel → npu，仅 CPU kernel → cpu，两者皆无 → 报错）
   │   logger.debug("Total graph nodes: {total}, converted: {converted}")
   ↓
 writer._get_cann_version() → cann_version
   │   try: torch_npu.npu.utils.get_cann_version()
   │   except: logger.warning(...) → "unknown"
   ↓
-EpairManifest(version=1, backend_name="ascend_ge",
-              cann_version, total_nodes, converted_nodes)
+EpairManifest(version=2, backend_name="ascend_ge",
+              cann_version, total_nodes, converted_nodes, cpu_nodes)
   ↓
 EpairContents(manifest, ep_json, converted_ep)
   │ logger.info("EpairContents created successfully")
@@ -228,12 +230,13 @@ epair文件的元数据，定义于 `epair/schema.py`：
 ```python
 @dataclasses.dataclass
 class EpairManifest:
-    version: int             # 格式版本号，当前为 1
+    version: int             # 格式版本号，当前为 2（v1 为全 NPU 语义，向后兼容）
     backend_name: str        # 后端名称，固定 "ascend_ge"
     cann_version: str        # CANN 版本号，如 "9.2.0"；无法获取时为 "unknown"
     total_nodes: int         # EP JSON 中计算节点总数
     converted_nodes: int     # 成功转换（有 ascend_ir）的节点数
                              # converted_nodes < total_nodes 表示存在 fallback 节点
+    cpu_nodes: int           # device="cpu" 的 fallback 节点数（v2 新增）
 ```
 
 ### EpairContents
@@ -698,6 +701,37 @@ torch_delegate/
 | `converter/patch_pytorch.py` | 幂等patch `do_auto_functionalize` → v2 |
 | `epair/schema.py` | `EpairManifest`、`EpairContents` 数据类 |
 | `epair/config.py` | `EpairConfig` 配置类 |
-| `epair/constants.py` | epair文件名常量（不含 `extra/` 前缀） |
-| `epair/writer.py` | `EpairWriter`，注入ascend_ir到EP JSON |
-| `epair/reader.py` | `epair_load` 函数，加载 .epair文件 |
+| `epair/constants.py` | epair 文件名常量（不含 `extra/` 前缀） |
+| `epair/writer.py` | `EpairWriter`，注入 ascend_ir 到 EP JSON |
+| `epair/reader.py` | `epair_load` 函数，加载 .epair 文件 |
+
+### ascend_ir.device 与 manifest v2（CPU/NPU 混合调度）
+
+自格式 v2 起，每个节点的 `ascend_ir` 新增可选 `device` 字段，记录导出期
+Device 归属自动判定结果：
+
+```json
+"ascend_ir": {
+  "source": "",
+  "device": "cpu",
+  "ops": [],
+  "mapping": {"inputs": {}, "outputs": {}}
+}
+```
+
+- 判定规则（无配置项）：fallback 节点的 target 存在 `PrivateUse1` kernel →
+  `"npu"`；仅有 `CPU` kernel 或仅注册 `CompositeImplicitAutograd`（分解实现，
+  回调时传 CPU 张量）→ `"cpu"`；以上皆无 → 导出报错。
+- 兼容性：`device` 缺失时按 `"npu"` 处理，等价于 v1 行为；C++ 侧对 manifest
+  v1 保持全 NPU 语义。
+- 严格校验开关：`EpairConfig(require_aten_on_npu=True)` 时，aten 命名空间算子
+  被判到 CPU 执行会在导出阶段直接报错（完整命中清单），用于 CI / 性能基线看护。
+- 归属可诊断性：导出结束打印完整归属报告（NPU/CPU 双侧清单，CPU 侧按
+  namespace 分级告警）；C++ 加载期按 `device` 与 target namespace 复述 CPU
+  节点分布，只告警不报错。归属判定记录仅在导出期内存中持有，**不随 epair
+  落盘**（避免扩展 `extra/` 目录引入格式演进负担）。
+- 加载期不做能力校验：不引入本地 CANN 版本/能力校验门禁；算子未注册、环境
+  不支持 HostCpu 等能力问题由 GE 编译期报错自然暴露。
+
+归属判定与混合调度的完整设计见
+`docs/zh/features/cpu_npu_mixed_scheduling_hostcpu_20261027.md`。

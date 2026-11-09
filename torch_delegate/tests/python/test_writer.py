@@ -336,3 +336,101 @@ class TestEpairWriterWrite:
         nodes = contents.ep_json["graph_module"]["graph"]["nodes"]
         has_ascend_ir = any("ascend_ir" in n for n in nodes)
         assert has_ascend_ir
+
+
+class TestEpairWriterDeviceField:
+    """ascend_ir.device 注入与 cpu_nodes 统计。"""
+
+    class _FakeConverter:
+        def __init__(self, ir_map):
+            self._map = ir_map
+
+        def get_ascend_ir_map(self):
+            return self._map
+
+    def _make_ep_json(self, target: str, torch_fn: str, aten_ir: str) -> dict:
+        return {
+            "graph_module": {
+                "graph": {
+                    "nodes": [
+                        {
+                            "target": target,
+                            "metadata": {"torch_fn": f"n_1;{torch_fn}"},
+                            "inputs": [],
+                            "outputs": [],
+                        }
+                    ]
+                }
+            }
+        }
+
+    def test_device_injected_from_node_ir(self):
+        writer = EpairWriter(
+            self._FakeConverter(
+                {
+                    "relu": NodeIR(
+                        source="",
+                        ops=[{"type": "aten.relu.default", "attr": {}}],
+                        device="cpu",
+                    )
+                }
+            )
+        )
+        ep_json = self._make_ep_json("torch.ops.aten.relu.default", "relu", "relu")
+        ep_json, total, converted, cpu_nodes = writer.write(ep_json)
+        assert converted == 1
+        assert cpu_nodes == 1
+        node = ep_json["graph_module"]["graph"]["nodes"][0]
+        assert node["ascend_ir"]["device"] == "cpu"
+
+    def test_device_defaults_to_npu_for_converter(self):
+        writer = EpairWriter(
+            self._FakeConverter({"relu": NodeIR(source="converter", ops=[])})
+        )
+        ep_json = self._make_ep_json("torch.ops.aten.relu.default", "relu", "relu")
+        _, _, _, cpu_nodes = writer.write(ep_json)
+        assert cpu_nodes == 0
+        node = ep_json["graph_module"]["graph"]["nodes"][0]
+        assert node["ascend_ir"]["device"] == "npu"
+
+    def test_cpu_nodes_counts_only_cpu_fallback(self):
+        ir_map = {
+            "relu": NodeIR(
+                source="", ops=[{"type": "aten.relu.default", "attr": {}}], device="cpu"
+            ),
+            "add": NodeIR(
+                source="", ops=[{"type": "aten.add.Tensor", "attr": {}}], device="npu"
+            ),
+            "mm": NodeIR(source="converter", ops=[]),
+        }
+        writer = EpairWriter(self._FakeConverter(ir_map))
+        ep_json = {
+            "graph_module": {
+                "graph": {
+                    "nodes": [
+                        {
+                            "target": "torch.ops.aten.relu.default",
+                            "metadata": {"torch_fn": "n1;relu"},
+                            "inputs": [],
+                            "outputs": [],
+                        },
+                        {
+                            "target": "torch.ops.aten.add.Tensor",
+                            "metadata": {"torch_fn": "n2;add"},
+                            "inputs": [],
+                            "outputs": [],
+                        },
+                        {
+                            "target": "torch.ops.aten.mm.default",
+                            "metadata": {"torch_fn": "n3;mm"},
+                            "inputs": [],
+                            "outputs": [],
+                        },
+                    ]
+                }
+            }
+        }
+        _, total, converted, cpu_nodes = writer.write(ep_json)
+        assert total == 3
+        assert converted == 3
+        assert cpu_nodes == 1

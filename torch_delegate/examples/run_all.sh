@@ -47,6 +47,7 @@ CASES=(
   "inplace_return_case|run.sh|enabled"
   "fallback_dynamic_optional_case|run.sh|enabled"
   "run_model_multi_instance|run.sh|enabled"
+  "host_cpu_mixed_case|run.sh|enabled"
 )
 
 log() {

@@ -61,7 +61,8 @@ def mixed_epair_contents():
 
 def test_manifest_fields(epair_contents: EpairContents):
     m = epair_contents.manifest
-    assert m.version == 1
+    assert m.version == 2
+    assert m.cpu_nodes >= 0
     assert m.backend_name == "ascend_ge"
     assert m.total_nodes > 0
     assert m.converted_nodes <= m.total_nodes
@@ -126,7 +127,42 @@ def test_roundtrip_via_api():
         loaded = epair_load(path)
         assert isinstance(loaded, EpairContents)
         assert isinstance(loaded.manifest, EpairManifest)
-        assert loaded.manifest.version == 1
+        assert loaded.manifest.version == 2
         assert "graph_module" in loaded.ep_json
     finally:
         os.unlink(path)
+
+
+def test_device_decisions_export_time_only():
+    """DeviceDecision 判定记录仅在导出期持有，不随 epair 落盘。
+
+    归属结论经 ascend_ir.device 固化进 epair；加载侧 C++ 按 device 与
+    target namespace 复述归属，不再序列化逐节点判定记录（避免扩展
+    extra/ 目录的格式演进负担）。
+    """
+    model = SupportedModel()
+    x = torch.randn(4, 4)
+    y = torch.randn(4, 4)
+    ep = torch.export.export(model, (x, y))
+    contents = export_to_epair(ep)
+
+    assert len(contents.decisions) > 0
+    assert all(d.device in ("npu", "cpu") for d in contents.decisions)
+
+    with tempfile.NamedTemporaryFile(suffix=".epair", delete=False) as f:
+        path = f.name
+    try:
+        epair_save(contents, path)
+        loaded = epair_load(path)
+    finally:
+        os.unlink(path)
+
+    assert loaded.decisions == []
+    # 归属结论仍可从 ep_json 的 ascend_ir.device 读取。
+    devices = [
+        node.get("ascend_ir", {}).get("device", "npu")
+        for node in loaded.ep_json["graph_module"]["graph"]["nodes"]
+        if "ascend_ir" in node
+    ]
+    assert devices, "fallback nodes must carry ascend_ir"
+    assert all(d in ("npu", "cpu") for d in devices)

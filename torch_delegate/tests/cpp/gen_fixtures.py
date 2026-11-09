@@ -59,14 +59,23 @@ ArchiveWriter = PT2ArchiveWriter
 
 
 def _write_manifest(
-    writer: ArchiveWriter, total_nodes: int = 0, converted: int = 0
+    writer: ArchiveWriter,
+    total_nodes: int = 0,
+    converted: int = 0,
+    version: int = 1,
+    cpu_nodes: int | None = None,
+    cann_version: str = "9.2.0",
 ) -> None:
     manifest = {
-        "version": 1,
+        "version": version,
         "backend_name": "ascend_ge",
         "total_nodes": total_nodes,
         "converted_nodes": converted,
     }
+    if version >= 2:
+        manifest["cann_version"] = cann_version
+    if cpu_nodes is not None:
+        manifest["cpu_nodes"] = cpu_nodes
     writer.write_string(_MANIFEST_PATH, json.dumps(manifest))
 
 
@@ -692,6 +701,152 @@ def gen_annotated_mixed() -> None:
         )
         _write_manifest(writer, total_nodes=2, converted=1)
     print("Generated: annotated_mixed.epair")
+
+
+def gen_annotated_host_cpu() -> None:
+    """mm（converter/NPU）+ relu（fallback/CPU）混合图，manifest v2。
+
+    relu 节点带 ascend_ir（source="" + device="cpu"），验证三分派构图与
+    HostCpu 能力校验。
+    """
+    graph = {
+        "inputs": [_as_tensor("p_weight"), _as_tensor("x")],
+        "outputs": [_as_tensor("relu")],
+        "nodes": [
+            {
+                "target": "torch.ops.aten.mm.default",
+                "inputs": [
+                    {"name": "self", "arg": _as_tensor("x"), "kind": 1},
+                    {"name": "mat2", "arg": _as_tensor("p_weight"), "kind": 1},
+                ],
+                "outputs": [_as_tensor("mm")],
+                "metadata": {"torch_fn": "mm_1;builtin_function_or_method.mm"},
+                "is_hop_single_tensor_return": None,
+            },
+            {
+                "target": "torch.ops.aten.relu.default",
+                "inputs": [
+                    {"name": "self", "arg": _as_tensor("mm"), "kind": 1},
+                ],
+                "outputs": [_as_tensor("relu")],
+                "metadata": {"torch_fn": "relu_1;builtin_function_or_method.relu"},
+                "is_hop_single_tensor_return": None,
+            },
+        ],
+        "tensor_values": {
+            "p_weight": _tensor_meta([3, 3], True),
+            "x": _tensor_meta([3, 3], False),
+            "mm": _tensor_meta([3, 3], False),
+            "relu": _tensor_meta([3, 3], False),
+        },
+        "sym_int_values": {},
+        "sym_bool_values": {},
+        "sym_float_values": {},
+        "custom_obj_values": {},
+        "is_single_tensor_return": True,
+    }
+    signature = {
+        "input_specs": [
+            {"parameter": {"arg": {"name": "p_weight"}, "parameter_name": "weight"}},
+            {"user_input": {"arg": _as_tensor("x")}},
+        ],
+        "output_specs": [
+            {"user_output": {"arg": _as_tensor("relu")}},
+        ],
+    }
+    model_json = {
+        "graph_module": {
+            "graph": graph,
+            "signature": signature,
+            "module_call_graph": [],
+            "metadata": {},
+            "treespec_namedtuple_fields": {},
+        },
+        "opset_version": {"aten": 10},
+        "range_constraints": {},
+        "schema_version": {"major": 8, "minor": 7},
+        "verifiers": ["ATEN"],
+        "torch_version": "2.7.1+cpu",
+    }
+    annotated_json = json.loads(json.dumps(model_json))
+    annotated_json["graph_module"]["graph"]["nodes"][0]["ascend_ir"] = {
+        "source": "converter",
+        "ops": [
+            {
+                "name": "MatMul",
+                "type": "MatMul",
+                "input": ["x", "p_weight", ""],
+                "attr": {
+                    "transpose_x1": {"b": False},
+                    "transpose_x2": {"b": False},
+                },
+                "inputDesc": [
+                    {
+                        "name": "x1",
+                        "dtype": "DT_FLOAT",
+                        "shape": {"dim": ["3", "3"]},
+                        "layout": "ND",
+                        "deviceType": "CPU",
+                    },
+                    {
+                        "name": "x2",
+                        "dtype": "DT_FLOAT",
+                        "shape": {"dim": ["3", "3"]},
+                        "layout": "ND",
+                        "deviceType": "CPU",
+                    },
+                    {"name": "bias", "attr": {"_is_unfed_optional": {"i": "1"}}},
+                ],
+                "outputDesc": [
+                    {
+                        "name": "y",
+                        "dtype": "DT_FLOAT",
+                        "shape": {"dim": ["3", "3"]},
+                        "layout": "ND",
+                    },
+                ],
+            }
+        ],
+        "mapping": {"inputs": {}, "outputs": {"mm": "MatMul:0"}},
+    }
+    # 场景 3：CPU 节点（HostCpu 后端 fallback）
+    annotated_json["graph_module"]["graph"]["nodes"][1]["ascend_ir"] = {
+        "source": "",
+        "device": "cpu",
+        "ops": [{"attr": {}}],
+        "mapping": {"inputs": {}, "outputs": {"relu": "aten__relu:0"}},
+    }
+
+    weights_config = {
+        "config": {
+            "weight": {
+                "path_name": "weight_0",
+                "is_param": True,
+                "use_pickle": False,
+                "tensor_meta": _tensor_meta([3, 3], True),
+            },
+        }
+    }
+    # Device 归属判定记录已在 v2 中移除：C++ 加载期由 ascend_ir.device
+    # 与节点 target namespace 直接推断，不再落盘 extra/epair_device_decisions.json。
+    out = os.path.join(FIXTURES_DIR, "annotated_host_cpu.epair")
+    with ArchiveWriter(out) as writer:
+        writer.write_string("models/model.json", json.dumps(model_json))
+        writer.write_string(
+            "extra/ep_json_with_ascend_ir.json", json.dumps(annotated_json)
+        )
+        writer.write_string(
+            "data/weights/model_weights_config.json", json.dumps(weights_config)
+        )
+        writer.write_bytes(
+            "data/weights/weight_0",
+            _float_bytes([1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0]),
+        )
+        writer.write_string(
+            "data/constants/model_constants_config.json", json.dumps({"config": {}})
+        )
+        _write_manifest(writer, total_nodes=2, converted=2, version=2, cpu_nodes=1)
+    print("Generated: annotated_host_cpu.epair")
 
 
 def gen_annotated_assert_tensor_metadata() -> None:
@@ -2751,6 +2906,7 @@ def generate(output_dir: str = FIXTURES_DIR) -> None:
     gen_missing_op_type()
     gen_annotated_mm_add()
     gen_annotated_mixed()
+    gen_annotated_host_cpu()
     gen_annotated_assert_tensor_metadata()
     gen_annotated_converter_no_ops()
     gen_annotated_converter_noop_copy()

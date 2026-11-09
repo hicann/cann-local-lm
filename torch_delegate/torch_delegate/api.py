@@ -17,9 +17,9 @@ from .core.utils import logger
 from .converter.patch_pytorch import patch_pytorch, restore_pytorch
 from .epair.schema import EpairContents, EpairManifest
 from .epair.config import EpairConfig
-from .epair.constants import EPAIR_MANIFEST_FILENAME, EPAIR_ANNOTATED_MODEL_FILENAME
-from .epair.writer import EpairWriter
+from .epair.constants import EPAIR_ANNOTATED_MODEL_FILENAME, EPAIR_MANIFEST_FILENAME
 from .epair.reader import epair_load
+from .epair.writer import EpairWriter
 from .lite_context import (
     LiteConversionError,
     LiteExportError,
@@ -133,24 +133,39 @@ def export_to_epair(
 
             ep_json = json.loads(artifact.exported_program)
             writer = EpairWriter(converter)
-            ep_json, total_nodes, converted_nodes = writer.write(ep_json)
+            ep_json, total_nodes, converted_nodes, cpu_nodes = writer.write(ep_json)
             if lite_config is not None:
                 validate_lite_result(ep_json, total_nodes, converted_nodes)
+
+            # Device 归属报告与严格校验
+            from .converter.device_decision import (
+                log_device_report,
+                validate_device_decisions,
+            )
+
+            device_decisions = converter.get_device_decisions()
+            log_device_report(device_decisions)
+            validate_device_decisions(device_decisions, config.require_aten_on_npu)
+
             logger.info(
-                f"Export complete: {converted_nodes}/{total_nodes} nodes converted"
+                f"Export complete: {converted_nodes}/{total_nodes} nodes converted, {cpu_nodes} cpu nodes"
             )
             cann_version = (
                 "unknown" if lite_config is not None else writer._get_cann_version()
             )
             manifest = EpairManifest(
-                version=1,
+                version=2,
                 backend_name="ascend_ge",
                 cann_version=cann_version,
                 total_nodes=total_nodes,
                 converted_nodes=converted_nodes,
+                cpu_nodes=cpu_nodes,
             )
             contents = EpairContents(
-                manifest=manifest, ep_json=ep_json, ep=converted_ep
+                manifest=manifest,
+                ep_json=ep_json,
+                ep=converted_ep,
+                decisions=list(device_decisions),
             )
             logger.info("EpairContents created successfully")
             return contents

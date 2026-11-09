@@ -11,7 +11,7 @@ import os
 import torch.export
 
 from ..core.utils import logger
-from .constants import EPAIR_MANIFEST_FILENAME, EPAIR_ANNOTATED_MODEL_FILENAME
+from .constants import EPAIR_ANNOTATED_MODEL_FILENAME, EPAIR_MANIFEST_FILENAME
 from .schema import EpairContents, EpairManifest
 
 
@@ -50,7 +50,10 @@ def epair_load(archive_path: str | os.PathLike) -> EpairContents:
         - ep_json 字段包含 ascend_ir 注解，可用于分析哪些算子被转换。
     """
     logger.info(f"Loading epair from {archive_path}")
-    extra_files = {EPAIR_MANIFEST_FILENAME: "", EPAIR_ANNOTATED_MODEL_FILENAME: ""}
+    extra_files = {
+        EPAIR_MANIFEST_FILENAME: "",
+        EPAIR_ANNOTATED_MODEL_FILENAME: "",
+    }
     ep = torch.export.load(archive_path, extra_files=extra_files)
     manifest = EpairManifest(**json.loads(extra_files[EPAIR_MANIFEST_FILENAME]))
     ep_json_with_ir = json.loads(extra_files[EPAIR_ANNOTATED_MODEL_FILENAME])

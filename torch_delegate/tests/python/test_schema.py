@@ -119,10 +119,11 @@ class TestEpairManifest:
 
         manifest = contents.manifest
         assert isinstance(manifest, EpairManifest)
-        assert manifest.version == 1
+        assert manifest.version == 2
         assert manifest.backend_name == "ascend_ge"
         assert isinstance(manifest.cann_version, str)
         assert manifest.total_nodes > 0
+        assert manifest.cpu_nodes >= 0
 
 
 class TestEpairContents:
@@ -225,3 +226,118 @@ class TestAscendIRFormat:
                 ir = node["ascend_ir"]
                 if "mapping" in ir:
                     assert isinstance(ir["mapping"], dict)
+
+
+class TestNodeIRDeviceField:
+    """NodeIR.device 字段。"""
+
+    def test_device_defaults_to_npu(self):
+        node_ir = NodeIR(source="converter", ops=[])
+        assert node_ir.device == "npu"
+
+    def test_device_cpu(self):
+        node_ir = NodeIR(source="", ops=[], device="cpu")
+        assert node_ir.device == "cpu"
+
+    def test_device_roundtrip(self):
+        import dataclasses
+
+        node_ir = NodeIR(source="", ops=[], device="cpu")
+        dumped = dataclasses.asdict(node_ir)
+        assert dumped["device"] == "cpu"
+        restored = NodeIR(**dumped)
+        assert restored == node_ir
+
+
+class TestEpairManifestV2:
+    """manifest v2：version=2 与 cpu_nodes 计数。"""
+
+    def test_manifest_v2_fields(self):
+        manifest = EpairManifest(
+            version=2,
+            backend_name="ascend_ge",
+            cann_version="9.2.0",
+            total_nodes=10,
+            converted_nodes=7,
+            cpu_nodes=3,
+        )
+        assert manifest.version == 2
+        assert manifest.cpu_nodes == 3
+
+    def test_manifest_cpu_nodes_default_zero(self):
+        manifest = EpairManifest(
+            version=2,
+            backend_name="ascend_ge",
+            cann_version="unknown",
+            total_nodes=5,
+            converted_nodes=5,
+        )
+        assert manifest.cpu_nodes == 0
+
+    def test_manifest_v1_semantics_unchanged(self):
+        manifest = EpairManifest(
+            version=1,
+            backend_name="ascend_ge",
+            cann_version="9.1.0",
+            total_nodes=5,
+            converted_nodes=5,
+        )
+        assert manifest.version == 1
+
+    def test_manifest_v2_serialization_roundtrip(self):
+        import dataclasses
+        import json as json_lib
+
+        manifest = EpairManifest(
+            version=2,
+            backend_name="ascend_ge",
+            cann_version="9.2.0",
+            total_nodes=8,
+            converted_nodes=8,
+            cpu_nodes=2,
+        )
+        payload = json_lib.dumps(dataclasses.asdict(manifest))
+        loaded = json_lib.loads(payload)
+        assert loaded["version"] == 2
+        assert loaded["cpu_nodes"] == 2
+        assert loaded["cann_version"] == "9.2.0"
+
+
+class TestDeviceDecision:
+    """DeviceDecision 判定记录结构。"""
+
+    def test_decision_fields(self):
+        from torch_delegate.epair.schema import DeviceDecision
+
+        decision = DeviceDecision(
+            node_name="relu_1",
+            target="torch.ops.aten.relu.default",
+            namespace="aten",
+            op_name="aten::relu",
+            overload="",
+            device="cpu",
+            rule="cpu_only",
+            has_privateuse1=False,
+            has_cpu=True,
+        )
+        assert decision.device == "cpu"
+        assert decision.rule == "cpu_only"
+        assert decision.has_cpu is True
+        assert decision.has_privateuse1 is False
+
+    def test_decision_rules(self):
+        from torch_delegate.epair.schema import DeviceDecision
+
+        for rule in ("converter", "has_privateuse1", "cpu_only"):
+            decision = DeviceDecision(
+                node_name="n",
+                target="t",
+                namespace="aten",
+                op_name="aten::op",
+                overload="",
+                device="npu",
+                rule=rule,
+                has_privateuse1=True,
+                has_cpu=True,
+            )
+            assert decision.rule == rule

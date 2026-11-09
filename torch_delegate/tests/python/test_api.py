@@ -72,9 +72,9 @@ class TestExportToEpair:
         contents = export_to_epair(simple_ep)
         assert isinstance(contents.ep, ExportedProgram)
 
-    def test_manifest_version_is_1(self, simple_ep):
+    def test_manifest_version_is_2(self, simple_ep):
         contents = export_to_epair(simple_ep)
-        assert contents.manifest.version == 1
+        assert contents.manifest.version == 2
 
     def test_manifest_backend_name(self, simple_ep):
         contents = export_to_epair(simple_ep)
@@ -211,7 +211,7 @@ class TestEpairContents:
 
     def test_contents_manifest_access(self, matmul_ep):
         contents = export_to_epair(matmul_ep)
-        assert contents.manifest.version == 1
+        assert contents.manifest.version == 2
         assert contents.manifest.backend_name == "ascend_ge"
 
 
@@ -368,3 +368,120 @@ class TestMixedModel:
                 assert any(f.endswith("ep_json_with_ascend_ir.json") for f in filenames)
         finally:
             os.unlink(path)
+
+
+# ===========================================================================
+# Device 归属报告与严格校验（不依赖 torchair）
+# ===========================================================================
+
+
+class TestDeviceReport:
+    def _decision(self, **overrides):
+        from torch_delegate.epair.schema import DeviceDecision
+
+        fields = dict(
+            node_name="relu_1",
+            target="torch.ops.aten.relu.default",
+            namespace="aten",
+            op_name="aten::relu",
+            overload="",
+            device="cpu",
+            rule="cpu_only",
+            has_privateuse1=False,
+            has_cpu=True,
+        )
+        fields.update(overrides)
+        return DeviceDecision(**fields)
+
+    def test_report_contains_both_sides(self):
+        from torch_delegate.converter.device_decision import format_device_report
+
+        decisions = [
+            self._decision(
+                node_name="mm_1",
+                op_name="aten::mm",
+                device="npu",
+                rule="converter",
+                has_cpu=True,
+            ),
+            self._decision(
+                node_name="relu_1", op_name="aten::relu", device="cpu", rule="cpu_only"
+            ),
+            self._decision(
+                node_name="merge_1",
+                target="torch.ops.my_ops.merge.default",
+                namespace="my_ops",
+                op_name="my_ops::merge",
+                device="cpu",
+                rule="cpu_only",
+            ),
+        ]
+        text = format_device_report(decisions)
+        assert "Device ownership report" in text
+        assert "NPU (1)" in text
+        assert "CPU (2)" in text
+        assert "suspicious" in text  # aten→CPU 属 WARNING 级可疑
+        assert "expected" in text  # 自定义 namespace→CPU 属预期
+        # 双清单带 overload 与探测依据，机器可读
+        assert "has_privateuse1=False" in text
+        assert "aten::relu.default" in text
+
+    def test_aten_cpu_warning_logged(self, caplog):
+        from torch_delegate.converter.device_decision import log_device_report
+
+        with caplog.at_level("WARNING", logger="torch_delegate"):
+            log_device_report([self._decision()])
+        assert any("no PrivateUse1 kernel" in r.message for r in caplog.records)
+
+    def test_custom_namespace_cpu_is_not_suspicious(self, caplog):
+        from torch_delegate.converter.device_decision import log_device_report
+
+        decision = self._decision(
+            node_name="merge_1",
+            target="torch.ops.my_ops.merge.default",
+            namespace="my_ops",
+            op_name="my_ops::merge",
+        )
+        with caplog.at_level("WARNING", logger="torch_delegate"):
+            log_device_report([decision])
+        assert not any("no PrivateUse1 kernel" in r.message for r in caplog.records)
+
+    def test_strict_validation_raises_with_full_list(self):
+        from torch_delegate.converter.device_decision import validate_device_decisions
+
+        decisions = [
+            self._decision(node_name="relu_1", op_name="aten::relu"),
+            self._decision(node_name="unique_1", op_name="aten::_unique2"),
+        ]
+        with pytest.raises(RuntimeError) as exc_info:
+            validate_device_decisions(decisions, require_aten_on_npu=True)
+        message = str(exc_info.value)
+        assert "2 aten op(s)" in message
+        assert "aten::relu" in message
+        assert "aten::_unique2" in message
+        assert "relu_1" in message
+
+    def test_strict_validation_ignores_custom_namespace(self):
+        from torch_delegate.converter.device_decision import validate_device_decisions
+
+        decisions = [
+            self._decision(
+                node_name="merge_1",
+                target="torch.ops.my_ops.merge.default",
+                namespace="my_ops",
+                op_name="my_ops::merge",
+            ),
+        ]
+        validate_device_decisions(decisions, require_aten_on_npu=True)  # 不抛异常
+
+    def test_strict_validation_disabled_by_default(self):
+        from torch_delegate.converter.device_decision import validate_device_decisions
+
+        decisions = [self._decision()]
+        validate_device_decisions(decisions, require_aten_on_npu=False)  # 仅告警不报错
+
+    def test_epair_config_has_strict_switch(self):
+        config = EpairConfig()
+        assert config.require_aten_on_npu is False
+        strict = EpairConfig(require_aten_on_npu=True)
+        assert strict.require_aten_on_npu is True

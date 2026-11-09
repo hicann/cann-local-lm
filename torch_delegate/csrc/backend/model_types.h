@@ -123,6 +123,10 @@ struct ParsedAscendIrOp {
 
 struct ParsedAscendIr {
   std::string source;
+  // 执行 Device 归属："npu"（缺省）| "cpu"；由导出期按 Dispatcher kernel
+  // 注册情况自动判定并固化，缺失时按 npu 兼容老 epair。CPU 节点判定统一
+  // 用 device == "cpu"（IsCpuNode），不再另设派生布尔字段。
+  std::string device = "npu";
   std::vector<ParsedAscendIrOp> ops;
   std::unordered_map<std::string, std::string> input_mappings;
   std::unordered_map<std::string, std::string> output_mappings;

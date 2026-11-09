@@ -27,13 +27,17 @@ Fallback Codegen的作用：
 
 TorchDelegate根据算子是否携带 `ascend_ir` 标注、是否有GE入图交付件，将算子分为三种场景：
 
-| 场景 | 描述 | ascend_ir | GE交付件 | 构图方式 | v1支持 |
+| 场景 | 描述 | ascend_ir | GE 交付件 | 构图方式 | 支持 |
 |------|------|-----------|-----------|----------|---------|
-| **场景1** | 有完整入图交付件的算子 | `source="converter"`，ops含完整opdef | 有 | `NamedIoNodeBuilder` 直接构图 | ✅ 支持 |
-| **场景2** | Fallback回调算子 | `source=""` 或无ascend_ir | 无，由Fallback Codegen自动生成 | Codegen生成GE `EagerExecuteOp` → 编译 → dlopen注册 → 运行时回调PyTorch Dispatcher | ✅ 支持 |
-| **场景3** | CPU算子 | 无 | 无 | 需HeteroCodegen生成CPU执行代码 | ❌ 暂不支持 |
+| **场景 1** | 有完整入图交付件的算子 | `source="converter"`，ops 含完整 opdef | 有 | `NamedIoNodeBuilder` 直接构图 | ✅ 支持 |
+| **场景 2** | Fallback 回调算子（NPU 执行） | `source=""`，`device="npu"`（缺省） | 无，由 Fallback Codegen 自动生成 | Codegen 生成 GE `EagerExecuteOp`（`REG_AUTO_MAPPING_OP`）→ 编译 → dlopen 注册 → 运行时回调 PyTorch Dispatcher（PrivateUse1） | ✅ 支持 |
+| **场景 3** | CPU 算子（HostCpu 后端） | `source=""`，`device="cpu"` | 无，由 Fallback Codegen 自动生成 | Codegen 生成 GE `HostCpuExecuteOp + ShapeInferOp`（`REG_OP_BACKEND(..., kHostCPU)`）→ 编译 → dlopen 注册 → 运行时回调 PyTorch Dispatcher（CPU） | ✅ 支持 |
 
-Fallback Codegen处理的是**场景2**。
+Fallback Codegen 同时处理**场景 2 与场景 3**，同一 `.so` 可包含两类算子。场景 3 的
+Device 归属由导出期自动判定（`ascend_ir.device`），最低 CANN 版本 9.2.0
+（详见
+`docs/zh/features/cpu_npu_mixed_scheduling_hostcpu_20261027.md`）。
+
 
 ### 运行时调用链
 

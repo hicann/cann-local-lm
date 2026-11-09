@@ -13,6 +13,7 @@ import pytest
 
 from torch.export import export
 from torch_delegate import export_to_epair, epair_save, epair_load
+from torch_delegate.converter.base import NodeIR
 from torch_delegate.epair.schema import EpairContents, EpairManifest
 from torch_delegate.converter.torchair_converter import TorchAirGEConverter
 
@@ -63,7 +64,8 @@ def mixed_epair_contents():
 
 def test_manifest_fields(epair_contents: EpairContents):
     m = epair_contents.manifest
-    assert m.version == 1
+    assert m.version == 2
+    assert m.cpu_nodes >= 0
     assert m.backend_name == "ascend_ge"
     assert m.total_nodes > 0
     assert m.converted_nodes <= m.total_nodes
@@ -97,7 +99,7 @@ def test_roundtrip_via_api():
         loaded = epair_load(path)
         assert isinstance(loaded, EpairContents)
         assert isinstance(loaded.manifest, EpairManifest)
-        assert loaded.manifest.version == 1
+        assert loaded.manifest.version == 2
         assert "graph_module" in loaded.ep_json
     finally:
         os.unlink(path)
@@ -238,3 +240,199 @@ def test_assert_tensor_metadata_stripped():
     assert not any("_assert_tensor_metadata" in t for t in targets), (
         f"epair JSON 中不应含 _assert_tensor_metadata 节点，实际: {targets}"
     )
+
+
+# ===========================================================================
+# Device 归属自动判定（monkeypatch dispatcher 探测，不依赖 torch_npu）
+# ===========================================================================
+
+
+class TestResolveDevice:
+    @pytest.fixture
+    def converter(self):
+        from torch_delegate.converter.torchair_converter import TorchAirGEConverter
+
+        return TorchAirGEConverter()
+
+    def _patch_dispatch(
+        self,
+        monkeypatch,
+        has_privateuse1: bool,
+        has_cpu: bool,
+        has_composite: bool = False,
+    ):
+        import torch_delegate.converter.torchair_converter as tc
+
+        def fake_has_kernel(target, key):
+            if key == "PrivateUse1":
+                return has_privateuse1
+            if key == "CPU":
+                return has_cpu
+            if key == "CompositeImplicitAutograd":
+                return has_composite
+            raise AssertionError(f"unexpected key {key}")
+
+        monkeypatch.setattr(tc, "_dispatch_has_kernel", fake_has_kernel)
+
+    def test_has_privateuse1_resolves_npu(self, converter, monkeypatch):
+        self._patch_dispatch(monkeypatch, has_privateuse1=True, has_cpu=True)
+        device, has_pu1, has_cpu = converter._resolve_device(
+            torch.ops.aten.relu.default
+        )
+        assert device == "npu"
+        assert has_pu1 is True and has_cpu is True
+
+    def test_cpu_only_resolves_cpu(self, converter, monkeypatch):
+        self._patch_dispatch(monkeypatch, has_privateuse1=False, has_cpu=True)
+        device, has_pu1, has_cpu = converter._resolve_device(
+            torch.ops.aten.relu.default
+        )
+        assert device == "cpu"
+        assert has_pu1 is False and has_cpu is True
+
+    def test_composite_only_resolves_cpu(self, converter, monkeypatch):
+        """仅注册 CompositeImplicitAutograd 的算子：回调时传 CPU 张量，判定为 CPU。"""
+        self._patch_dispatch(
+            monkeypatch, has_privateuse1=False, has_cpu=False, has_composite=True
+        )
+        device, has_pu1, has_cpu = converter._resolve_device(
+            torch.ops.aten.relu.default
+        )
+        assert device == "cpu"
+        assert has_pu1 is False and has_cpu is False
+
+    def test_neither_kernel_raises(self, converter, monkeypatch):
+        self._patch_dispatch(monkeypatch, has_privateuse1=False, has_cpu=False)
+        with pytest.raises(
+            RuntimeError,
+            match="has neither PrivateUse1, CPU nor CompositeImplicitAutograd kernel",
+        ):
+            converter._resolve_device(torch.ops.aten.relu.default)
+
+    def test_decision_record_fields(self, converter, monkeypatch):
+        self._patch_dispatch(monkeypatch, has_privateuse1=False, has_cpu=True)
+        device, has_pu1, has_cpu = converter._resolve_device(
+            torch.ops.aten.relu.default
+        )
+        node_ir = converter._ascend_ir_map
+        decision = converter._make_decision(
+            _FakeFxNode("relu_1", torch.ops.aten.relu.default),
+            torch.ops.aten.relu.default,
+            device,
+            has_pu1,
+            has_cpu,
+        )
+        assert decision.node_name == "relu_1"
+        assert decision.device == "cpu"
+        assert decision.rule == "cpu_only"
+        assert decision.namespace == "aten"
+        assert decision.op_name == "aten::relu"
+        assert decision.overload == ""
+        assert node_ir == {}
+
+
+class _FakeFxNode:
+    """最小 FX 节点替身：仅提供 _make_decision / _resolve_mock_node_devices 需要的属性。"""
+
+    def __init__(self, name, target, args=(), op="call_function"):
+        self.name = name
+        self.target = target
+        self.args = args
+        self.op = op
+
+
+class _FakeOptimizedGraph:
+    """最小 torchair 优化图替身：提供 _resolve_mock_node_devices 需要的
+    optimized.graph.nodes 访问路径。"""
+
+    class _Graph:
+        def __init__(self, nodes):
+            self.nodes = nodes
+
+    class _Optimized:
+        def __init__(self, nodes):
+            self.graph = _FakeOptimizedGraph._Graph(nodes)
+
+    def __init__(self, nodes):
+        self.optimized = _FakeOptimizedGraph._Optimized(nodes)
+
+
+class TestResolveMockNodeDevices:
+    """fallback 节点归属判定：HOP 解包与 Dispatcher 探测（不依赖 torchair）。"""
+
+    def _run(self, monkeypatch, nodes):
+        import torch_delegate.converter.torchair_converter as tc
+
+        converter = TorchAirGEConverter()
+        converter._ascend_ir_map = {n.name: NodeIR(source="", ops=[]) for n in nodes}
+        converter._ge_graph_ascend = _FakeOptimizedGraph(nodes)
+        monkeypatch.setattr(
+            tc,
+            "_dispatch_has_kernel",
+            lambda target, key: key == "CPU",
+        )
+        converter._resolve_mock_node_devices()
+        return converter
+
+    def test_auto_functionalized_v2_unwraps_inner_op(self, monkeypatch):
+        """auto_functionalized_v2 的 target 不是 OpOverload，须解包后再判定。
+
+        torch >= 2.9 导出图中节点 args[0] 直接是被包裹的 OpOverload
+        （auto_functionalized_v2(_mutable_op, **kwargs) 的第一个位置参数）。
+        """
+        from torch._higher_order_ops.auto_functionalize import auto_functionalized_v2
+
+        inner_op = torch.ops.aten.relu_.default
+        node = _FakeFxNode(
+            "relu_mutated_1",
+            auto_functionalized_v2,
+            args=(inner_op,),
+        )
+        converter = self._run(monkeypatch, [node])
+        decisions = converter.get_device_decisions()
+        assert len(decisions) == 1
+        decision = decisions[0]
+        assert decision.device == "cpu"
+        assert decision.target == "torch.ops.aten.relu_.default"
+        assert decision.namespace == "aten"
+        assert converter._ascend_ir_map[node.name].device == "cpu"
+
+    def test_auto_functionalized_v1_unwraps_inner_op(self, monkeypatch):
+        """v1 HOP（args[0] 同样是被包裹算子）也能解包判定。"""
+        from torch._higher_order_ops.auto_functionalize import auto_functionalized
+
+        inner_op = torch.ops.aten.relu_.default
+        node = _FakeFxNode("relu_mutated_v1", auto_functionalized, args=(inner_op,))
+        converter = self._run(monkeypatch, [node])
+        decisions = converter.get_device_decisions()
+        assert len(decisions) == 1
+        assert decisions[0].device == "cpu"
+        assert decisions[0].target == "torch.ops.aten.relu_.default"
+
+    def test_auto_functionalized_v2_wrapper_with_func_attr(self, monkeypatch):
+        """兼容 AutoFunctionalizedV2(func=...) 包装形态：取 .func 解包。"""
+        from torch._higher_order_ops.auto_functionalize import auto_functionalized_v2
+
+        inner_op = torch.ops.aten.relu_.default
+
+        class _FuncWrapper:
+            func = inner_op
+
+        node = _FakeFxNode(
+            "relu_mutated_wrap", auto_functionalized_v2, args=(_FuncWrapper(),)
+        )
+        converter = self._run(monkeypatch, [node])
+        decisions = converter.get_device_decisions()
+        assert len(decisions) == 1
+        assert decisions[0].device == "cpu"
+        assert decisions[0].target == "torch.ops.aten.relu_.default"
+
+    def test_unsupported_hop_target_still_raises(self, monkeypatch):
+        """非 auto_functionalized 的 HOP（target 非 OpOverload）保持严格报错。"""
+
+        def unknown_hop(x):
+            return x
+
+        node = _FakeFxNode("hop_1", unknown_hop, args=(1,))
+        with pytest.raises(RuntimeError, match="unsupported target type"):
+            self._run(monkeypatch, [node])

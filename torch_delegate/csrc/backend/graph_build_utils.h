@@ -69,6 +69,7 @@ Status LookupOutputIndex(ge::GNode &node, const std::string &output_name, int32_
 bool IsConstOp(const ParsedAscendIrOp &op);
 bool IsAscendIrPresent(const ParsedNode &node);
 bool IsConverterNode(const ParsedNode &node);
+bool IsCpuNode(const ParsedNode &node);
 bool HasBuildableConverterOps(const ParsedNode &node);
 bool IsConverterNoOpNode(const ParsedNode &node);
 bool IsAssertTensorMetadataNode(const ParsedNode &node);

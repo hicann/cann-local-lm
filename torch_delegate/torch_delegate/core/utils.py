@@ -16,7 +16,7 @@ from datetime import datetime
 
 
 class _MillisecFormatter(logging.Formatter):
-    def formatTime(self, record, datefmt=None):
+    def formatTime(self, record: logging.LogRecord, datefmt: str | None = None) -> str:
         ct = datetime.fromtimestamp(record.created)
         s = ct.strftime("%Y-%m-%d %H:%M:%S")
         s += ".{:03d}".format(ct.microsecond // 1000)

@@ -39,7 +39,7 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv=None) -> int:
+def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
     print(PACKAGE_DIR if args.cmake_prefix else __version__)
     return 0

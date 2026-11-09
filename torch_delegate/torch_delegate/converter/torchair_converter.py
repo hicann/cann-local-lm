@@ -130,6 +130,13 @@ def _strip_assert_tensor_metadata(ep: ExportedProgram) -> int:
 
 
 class TorchAirGEConverter(NodeIRConverter):
+    """基于 TorchAir 的 NodeIRConverter 实现。
+
+    通过 torchair 的 _optimize_and_convert 将 ExportedProgram 转换为 GE 图，
+    并逐节点产出 NodeIR，供 EpairWriter 注入 EP JSON 的 ascend_ir 字段。
+    构造时未显式传入 config 则使用默认 EpairConfig()。
+    """
+
     def __init__(self, config: EpairConfig | None = None):
         self._config = config if config is not None else EpairConfig()
         self._ascend_ir_map: dict[str, NodeIR] = {}

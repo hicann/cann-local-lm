@@ -178,6 +178,14 @@ def _flatten_output(output: dict) -> list[str]:
 
 
 class EpairWriter:
+    """将 Ascend IR 注解注入 EP JSON 的写入器。
+
+    write() 遍历 EP JSON 的图节点，按节点名从 converter 的 ascend_ir 映射中
+    取出对应 NodeIR，写入该节点的 ascend_ir 字段（source / ops / mapping），
+    并返回注入后的 EP JSON 及节点总数、成功转换的节点数。
+    未在映射中命中或无法解析 ops 的节点保持原样，由 C++ 侧走 fallback。
+    """
+
     def __init__(self, converter: NodeIRConverter) -> None:
         self._converter = converter
 

@@ -11,6 +11,8 @@ Patch PyTorch的do_auto_functionalize为v2版本
 通过在源头patch，确保ExportedProgram生成auto_functionalized_v2格式的节点
 """
 
+from typing import Any, Callable
+
 import torch._higher_order_ops.auto_functionalize as auto_func
 
 from ..core.utils import logger
@@ -19,7 +21,9 @@ _original_do_auto_functionalize = None
 _is_patched = False
 
 
-def do_auto_functionalize_patch(mode, op, args, kwargs):
+def do_auto_functionalize_patch(
+    mode: Any, op: Callable[..., Any], args: tuple[Any, ...], kwargs: dict[str, Any]
+) -> Any:
     """
     Patched version that directly calls do_auto_functionalize_v2
 
@@ -62,7 +66,7 @@ def patch_pytorch():
     return _original_do_auto_functionalize
 
 
-def restore_pytorch(original=None):
+def restore_pytorch(original: Callable[..., Any] | None = None) -> None:
     """
     Restore original PyTorch do_auto_functionalize
 

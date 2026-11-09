@@ -14,6 +14,12 @@ import torch
 
 @dataclasses.dataclass
 class NodeIR:
+    """单个 EP 节点转换得到的 Ascend IR 描述。
+
+    由 NodeIRConverter.convert_node() 产出，最终写入 EP JSON 中 node 对象的
+    可选 ascend_ir 字段；source 为空字符串表示该节点走 fallback。
+    """
+
     source: str
     ops: list[dict[str, Any]]  # GE opdef 列表
     mapping: dict[str, Any] | None = (
@@ -23,6 +29,13 @@ class NodeIR:
 
 
 class NodeIRConverter(ABC):
+    """EP 节点到 Ascend IR 的转换器抽象基类。
+
+    实现类需保证 is_node_supported 与 convert_node 幂等且无副作用，
+    convert_node 统一返回本模块定义的 NodeIR，返回 None 表示该节点不支持转换。
+    当前唯一实现为 converter/torchair_converter.py 中的 TorchAirGEConverter。
+    """
+
     @abstractmethod
     def is_node_supported(self, node: torch.fx.Node) -> bool: ...
 

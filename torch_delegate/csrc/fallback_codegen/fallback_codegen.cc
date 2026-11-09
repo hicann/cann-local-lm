@@ -1183,7 +1183,7 @@ static void EmitOutputTensorWrite(std::ostringstream &os, const std::string &out
   os << "            storage_shape_ref.SetDimNum(result_sizes.size());\n";
   os << "            for (size_t d = 0; d < result_sizes.size(); ++d) storage_shape_ref.SetDim(d, result_sizes[d]);\n";
   os << "            ge::DataType data_type = MapTorchDtypeToGe(result.scalar_type());\n";
-  os << "            gert::StorageFormat format;\n";
+  os << "            gert::StorageFormat format(ge::FORMAT_ND, ge::FORMAT_ND, {});\n";
   os << "            size_t tensor_numel = 1; for (size_t d = 0; d < result_sizes.size(); ++d) { tensor_numel *= "
         "static_cast<size_t>(result_sizes[d]); }\n";
   os << "            size_t tensor_bytes = tensor_numel * result.element_size();\n";
@@ -1195,6 +1195,10 @@ static void EmitOutputTensorWrite(std::ostringstream &os, const std::string &out
     os << "                std::memcpy(ge_out->GetAddr(), contiguous_result.data_ptr(), tensor_bytes);\n";
     os << "            }\n";
   } else {
+    // The flat memcpy below only describes a contiguous buffer (data_ptr + numel).
+    // Views like transpose/slice/unfold share the source storage with a different
+    // stride; materialize them first or the copy keeps the raw storage order.
+    os << "            if (!result.is_contiguous()) { result = result.contiguous(); }\n";
     os << "            aclrtMemcpyAsync(const_cast<void*>(ge_out->GetAddr()), tensor_bytes,\n";
     os << "                result.data_ptr(), tensor_bytes, ACL_MEMCPY_DEVICE_TO_DEVICE, ge_stream);\n";
   }
@@ -1608,7 +1612,7 @@ std::string FallbackCodegen::GenerateExecuteMethod(const SchemaInfo &schema, boo
         os << "            for (size_t d = 0; d < result_sizes.size(); ++d) storage_shape_ref.SetDim(d, "
               "result_sizes[d]);\n";
         os << "            ge::DataType data_type = MapTorchDtypeToGe(result.scalar_type());\n";
-        os << "            gert::StorageFormat format;\n";
+        os << "            gert::StorageFormat format(ge::FORMAT_ND, ge::FORMAT_ND, {});\n";
         os << "            size_t tensor_numel = 1; for (size_t d = 0; d < result_sizes.size(); ++d) { tensor_numel *= "
               "static_cast<size_t>(result_sizes[d]); }\n";
         os << "            size_t tensor_bytes = tensor_numel * result.element_size();\n";

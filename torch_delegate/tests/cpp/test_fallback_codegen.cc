@@ -640,6 +640,21 @@ TEST_F(FallbackCodegenTest, GenerateExecuteMethod_DynamicInput_NReadFromInstance
   EXPECT_EQ(code.find("GetAttrs"), std::string::npos) << "Must not use GetAttrs for DYNAMIC_INPUT count";
 }
 
+TEST_F(FallbackCodegenTest, GenerateExecuteMethod_OutputWrite_MaterializesNonContiguousResult) {
+  SchemaInfo schema = MakeDynamicInputSchema();
+  std::string code = FallbackCodegen::GenerateExecuteMethod(schema, false);
+
+  // Output write must materialize non-contiguous views before the flat memcpy,
+  // otherwise data_ptr() + numel copies the raw storage order (silent corruption)
+  EXPECT_NE(code.find("if (!result.is_contiguous()) { result = result.contiguous(); }"), std::string::npos)
+      << "Must normalize non-contiguous results before aclrtMemcpyAsync";
+
+  // StorageFormat must be initialized (uninitialized format is UB metadata)
+  EXPECT_NE(code.find("gert::StorageFormat format(ge::FORMAT_ND, ge::FORMAT_ND, {})"), std::string::npos)
+      << "Must initialize StorageFormat instead of leaving it default-constructed";
+  EXPECT_EQ(code.find("gert::StorageFormat format;"), std::string::npos) << "Must not emit uninitialized StorageFormat";
+}
+
 TEST_F(FallbackCodegenTest, GenerateExecuteMethod_DynamicInput_DimUsesCorrectIrIndex) {
   SchemaInfo schema = MakeDynamicInputSchema();
   std::string code = FallbackCodegen::GenerateExecuteMethod(schema, false);

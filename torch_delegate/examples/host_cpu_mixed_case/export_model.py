@@ -117,7 +117,7 @@ def save_tensor(path: Path, tensor: torch.Tensor) -> None:
 
 
 def export_one(name: str, module, x: torch.Tensor, output_dir: Path) -> None:
-    print(f"\n{'=' * 60}\n导出 {name}\n{'=' * 60}")
+    print(f"\n{'=' * 60}\nExporting {name}\n{'=' * 60}")
     module.eval()
     with torch.no_grad():
         ref = module(x)
@@ -146,13 +146,13 @@ def export_one(name: str, module, x: torch.Tensor, output_dir: Path) -> None:
     assert cpu_ops == EXPECTED_CPU_OPS[name], (
         f"{name}: CPU 算子集合不符，实际 {cpu_ops}，预期 {EXPECTED_CPU_OPS[name]}"
     )
-    print(f"  ascend_ir.device=cpu 节点: {sorted(cpu_ops)}")
+    print(f"  ascend_ir.device=cpu nodes: {sorted(cpu_ops)}")
 
     epair_path = output_dir / f"{name}.epair"
     td.epair_save(contents, epair_path)
     save_tensor(output_dir / f"input_{name.removeprefix('model_')}_x.bin", x)
     save_tensor(output_dir / f"ref_{name.removeprefix('model_')}.bin", ref)
-    print(f"  保存 epair: {epair_path}")
+    print(f"  Saved epair: {epair_path}")
 
 
 def main() -> None:
@@ -169,7 +169,7 @@ def main() -> None:
             name, module, ids_f if name == "model_recommender" else x, output_dir
         )
 
-    print(f"\n{'=' * 60}\n所有模型导出并校验通过\n{'=' * 60}")
+    print(f"\n{'=' * 60}\nAll models exported and validated\n{'=' * 60}")
 
 
 if __name__ == "__main__":

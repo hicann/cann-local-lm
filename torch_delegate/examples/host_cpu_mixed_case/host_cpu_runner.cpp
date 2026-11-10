@@ -123,32 +123,32 @@ bool RunEpairModel(const std::string &epair_path) {
   const std::string input_bin = dir + "/input_" + prefix + "_x.bin";
   const std::string input_shape = input_bin + "_shape.txt";
 
-  std::cout << "加载: " << epair_path << std::endl;
+  std::cout << "Loading: " << epair_path << std::endl;
   td::EpairModelLoader loader(epair_path.c_str());
   ge::Graph test_graph(prefix.c_str());
   if (loader.GetGEGraph(&test_graph) != td::SUCCESS) {
-    std::cerr << "[ERROR] EpairModelLoader 初始化失败" << std::endl;
+    std::cerr << "[ERROR] EpairModelLoader init failed" << std::endl;
     return false;
   }
   const auto t_loaded = std::chrono::steady_clock::now();
   const double load_ms = std::chrono::duration<double, std::milli>(t_loaded - t_start).count();
-  std::cout << "  ✓ epair 加载成功（含 codegen 编译）: " << load_ms << " ms" << std::endl;
+  std::cout << "  [OK] epair loaded (incl. codegen compile): " << load_ms << " ms" << std::endl;
 
   aclrtStream stream = nullptr;
   if (aclrtCreateStream(&stream) != ACL_ERROR_NONE) {
-    std::cerr << "[ERROR] aclrtCreateStream 失败" << std::endl;
+    std::cerr << "[ERROR] aclrtCreateStream failed" << std::endl;
     return false;
   }
 
   std::map<ge::AscendString, ge::AscendString> session_options = {};
   if (loader.CompileAndLoad(session_options, stream) != td::SUCCESS) {
-    std::cerr << "[ERROR] CompileAndLoad 失败" << std::endl;
+    std::cerr << "[ERROR] CompileAndLoad failed" << std::endl;
     aclrtDestroyStream(stream);
     return false;
   }
   const auto t_compiled = std::chrono::steady_clock::now();
   const double compile_ms = std::chrono::duration<double, std::milli>(t_compiled - t_loaded).count();
-  std::cout << "  ✓ CompileAndLoad 成功: " << compile_ms << " ms" << std::endl;
+  std::cout << "  [OK] CompileAndLoad succeeded: " << compile_ms << " ms" << std::endl;
 
   std::vector<gert::Tensor> inputs;
   inputs.push_back(LoadTensorFromFile(input_bin, input_shape, input_bin + "_dtype.txt"));
@@ -184,12 +184,12 @@ bool RunEpairModel(const std::string &epair_path) {
   const auto t_run_end = std::chrono::steady_clock::now();
   const double run_ms = std::chrono::duration<double, std::milli>(t_run_end - t_run_start).count();
   if (run_status != td::SUCCESS || sync_ret != ACL_ERROR_NONE) {
-    std::cerr << "[ERROR] RunModelWithStreamAsync 失败, status=" << run_status << ", sync=" << sync_ret << std::endl;
+    std::cerr << "[ERROR] RunModelWithStreamAsync failed, status=" << run_status << ", sync=" << sync_ret << std::endl;
     if (prealloc_out_ptr != nullptr) aclrtFree(prealloc_out_ptr);
     aclrtDestroyStream(stream);
     return false;
   }
-  std::cout << "  ✓ 执行成功（CPU/NPU 混合图一次调用）" << std::endl;
+  std::cout << "  [OK] Executed (CPU/NPU mixed graph in one call)" << std::endl;
 
   // 性能观测数据：编译时长 / 端到端时延 / HBM 占用
   size_t hbm_free = 0;
@@ -206,7 +206,7 @@ bool RunEpairModel(const std::string &epair_path) {
   aclrtMemcpy(host_buf.data(), out_size, outputs[0].GetAddr(), out_size, ACL_MEMCPY_DEVICE_TO_HOST);
   std::ofstream out_file(out_path, std::ios::binary);
   out_file.write(reinterpret_cast<const char *>(host_buf.data()), static_cast<std::streamsize>(out_size));
-  std::cout << "  写出 output → " << out_path << std::endl;
+  std::cout << "  Writing output to: " << out_path << std::endl;
 
   if (prealloc_out_ptr != nullptr) aclrtFree(prealloc_out_ptr);
   aclrtDestroyStream(stream);
@@ -226,16 +226,16 @@ int main(int argc, char *argv[]) {
     }
   }
   if (epair_paths.empty()) {
-    std::cerr << "[ERROR] 用法: " << argv[0] << " [--custom-ops <libcustom_ops.so>] <model.epair> [...]" << std::endl;
+    std::cerr << "[ERROR] Usage: " << argv[0] << " [--custom-ops <libcustom_ops.so>] <model.epair> [...]" << std::endl;
     return -1;
   }
 
   // C++ 进程与 Python 导出进程不共享 Dispatcher 注册表，先 dlopen 自定义算子库。
   if (!custom_ops_path.empty()) {
-    std::cout << "加载自定义算子库: " << custom_ops_path << std::endl;
+    std::cout << "Loading custom ops library: " << custom_ops_path << std::endl;
     void *handle = dlopen(custom_ops_path.c_str(), RTLD_NOW | RTLD_GLOBAL);
     if (handle == nullptr) {
-      std::cerr << "[ERROR] dlopen 失败: " << dlerror() << std::endl;
+      std::cerr << "[ERROR] dlopen failed: " << dlerror() << std::endl;
       return -1;
     }
   }
@@ -248,23 +248,26 @@ int main(int argc, char *argv[]) {
   std::map<ge::AscendString, ge::AscendString> ge_options = {
       {ge::AscendString("ge.exec.deviceId"), ge::AscendString("0")}};
   if (ge::GEInitializeV2(ge_options) != ge::SUCCESS) {
-    std::cerr << "[ERROR] GEInitializeV2 失败" << std::endl;
+    std::cerr << "[ERROR] GEInitializeV2 failed" << std::endl;
     return -1;
   }
   if (aclrtSetDevice(0) != ACL_ERROR_NONE) {
-    std::cerr << "[ERROR] aclrtSetDevice 失败" << std::endl;
+    std::cerr << "[ERROR] aclrtSetDevice failed" << std::endl;
     ge::GEFinalizeV2();
     return -1;
   }
 
   bool all_pass = true;
   for (const auto &epair_path : epair_paths) {
-    std::cout << std::endl << kStageSep << std::endl << " 执行: " << epair_path << std::endl << kStageSep << std::endl;
+    std::cout << std::endl
+              << kStageSep << std::endl
+              << " Running: " << epair_path << std::endl
+              << kStageSep << std::endl;
     if (!RunEpairModel(epair_path)) {
-      std::cerr << "[FAIL] " << epair_path << " 执行失败" << std::endl;
+      std::cerr << "[FAIL] " << epair_path << " execution failed" << std::endl;
       all_pass = false;
     } else {
-      std::cout << "[PASS] " << epair_path << " 执行成功" << std::endl;
+      std::cout << "[PASS] " << epair_path << " execution succeeded" << std::endl;
     }
   }
 

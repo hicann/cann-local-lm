@@ -536,10 +536,12 @@ TEST_F(GeGraphBuilderTest, ReportsCpuOwnershipFromClassifiedNodes) {
   ASSERT_EQ(td::ParsedModel::Parse(model_record.AsString(), model), td::SUCCESS);
 
   const std::string report = td::ReportCpuOwnership(model);
-  // 归属复述：CPU 节点 + device 分类 + namespace 分级（aten → WARNING）
+  // 归属复述：CPU 节点 + device 分类 + namespace 分级；aten → suspicious 可疑分组，
+  // 汇总报告不含级别字样，告警语义由逐节点 TDLOGW 输出保留（见 host_cpu_capability.cc）。
   EXPECT_NE(report.find("CPU nodes 1"), std::string::npos) << report;
   EXPECT_NE(report.find("device=cpu"), std::string::npos) << report;
-  EXPECT_NE(report.find("WARNING"), std::string::npos) << "aten->CPU must be reported as WARNING";
+  EXPECT_NE(report.find("suspicious: aten op has no PrivateUse1 kernel"), std::string::npos)
+      << "aten->CPU must be reported as suspicious (per-node warning kept via TDLOGW)";
   EXPECT_NE(report.find("aten.relu.default"), std::string::npos) << report;
 }
 

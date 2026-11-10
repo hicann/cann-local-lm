@@ -30,7 +30,7 @@ def load_tensor(path: Path, shape) -> torch.Tensor:
 def compare(ref: torch.Tensor, test: torch.Tensor, rtol=1e-3, atol=1e-5) -> bool:
     if ref.shape != test.shape:
         print(
-            f"    [FAIL] 形状不匹配: ref {list(ref.shape)} vs test {list(test.shape)}"
+            f"    [FAIL] Shape mismatch: ref {list(ref.shape)} vs test {list(test.shape)}"
         )
         return False
     abs_diff = (ref - test).abs()
@@ -55,20 +55,27 @@ def main() -> None:
     }
     all_pass = True
     for name, (in_shape, out_shape) in shapes.items():
-        print(f"\n测试 {name}:")
+        print(f"\nTesting {name}:")
         ref = load_tensor(
             output_dir / f"ref_{name.removeprefix('model_')}.bin", out_shape
         )
         out_path = output_dir / f"delegate_output_{name.removeprefix('model_')}.bin"
         if not out_path.exists():
-            print("    [SKIP] delegate 输出未找到（runner 未执行）")
+            print("    [SKIP] delegate output not found (runner not executed)")
             all_pass = False
             continue
         test = load_tensor(out_path, out_shape)
         if not compare(ref, test):
             all_pass = False
 
-    print("\n" + ("[PASS] 所有模型精度对齐" if all_pass else "[FAIL] 存在精度不匹配"))
+    print(
+        "\n"
+        + (
+            "[PASS] All models match"
+            if all_pass
+            else "[FAIL] Accuracy mismatch detected"
+        )
+    )
     sys.exit(0 if all_pass else 1)
 
 

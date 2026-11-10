@@ -56,13 +56,13 @@ std::string ReportCpuOwnership(const ParsedModel &model) {
   report << "[torch_delegate] Load-time device ownership: NPU nodes " << npu_count << " (converter "
          << npu_converter_count << " / fallback " << npu_fallback_nodes.size() << "), CPU nodes " << cpu_count << "\n";
   for (const std::string &entry : npu_fallback_nodes) {
-    report << "  [INFO] fallback callback to PrivateUse1: " << entry << "\n";
+    report << "  fallback callback to PrivateUse1: " << entry << "\n";
   }
   for (const std::string &entry : aten_cpu_nodes) {
-    report << "  [WARNING] suspicious: aten op has no PrivateUse1 kernel: " << entry << "\n";
+    report << "  suspicious: aten op has no PrivateUse1 kernel: " << entry << "\n";
   }
   for (const std::string &entry : custom_cpu_nodes) {
-    report << "  [INFO] expected: custom namespace with CPU-only impl: " << entry << "\n";
+    report << "  expected: custom namespace with CPU-only impl: " << entry << "\n";
   }
   TDLOGI("%s", report.str().c_str());
   return report.str();

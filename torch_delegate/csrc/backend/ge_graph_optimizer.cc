@@ -197,7 +197,7 @@ Status ReconnectPackConsumers(ge::Graph &graph, ge::GNode &pack_node, ge::GNode 
     if (graph.AddDataEdge(merged_data, 0, consumer, port) != ge::GRAPH_SUCCESS) {
       std::string name;
       (void)GetNodeName(pack_node, name);
-      TDLOGE("ReconnectPackConsumers failed: AddDataEdge merged→consumer port=%d, pack=%s", port, name.c_str());
+      TDLOGE("ReconnectPackConsumers failed: AddDataEdge merged->consumer port=%d, pack=%s", port, name.c_str());
       return FAILED;
     }
   }
@@ -377,7 +377,7 @@ Status GeGraphOptimizer::RemoveDeadDataAndReorderPass(ge::Graph &graph, InputBin
     } else {
       new_binding_map.push_back({{info.old_index}});
     }
-    TDLOGD("RemoveDeadDataAndReorderPass: data=%s old_index=%ld → new_index=%ld refcount=%ld", info.name.c_str(),
+    TDLOGD("RemoveDeadDataAndReorderPass: data=%s old_index=%ld -> new_index=%ld refcount=%ld", info.name.c_str(),
            static_cast<long>(info.old_index), static_cast<long>(new_index), static_cast<long>(info.refcount));
     ++new_index;
   }

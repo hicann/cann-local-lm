@@ -82,7 +82,7 @@ def test_exported_program_generates_v2():
         print(f"  - Has auto_functionalized_v2: {has_auto_functionalized_v2}")
         print(f"  - Has auto_functionalized: {has_auto_functionalized}")
 
-        print("✓ exported program test passed")
+        print("[PASS] exported program test passed")
 
     finally:
         # 恢复
@@ -106,7 +106,7 @@ def test_context_manager():
         restore_pytorch(original)
 
     assert not is_patched()
-    print("✓ context manager test passed")
+    print("[PASS] context manager test passed")
 
 
 def test_multiple_patch_restore():
@@ -130,7 +130,7 @@ def test_multiple_patch_restore():
     # 验证两次的original函数相同
     assert original1 == original2, "Original functions should be the same"
 
-    print("✓ multiple patch/restore test passed")
+    print("[PASS] multiple patch/restore test passed")
 
 
 def run_all_tests():
@@ -145,11 +145,11 @@ def run_all_tests():
         test_multiple_patch_restore()
 
         print()
-        print("✅ All tests passed!")
+        print("[PASS] All tests passed!")
 
     except Exception as e:
         print()
-        print(f"❌ Test failed: {e}")
+        print(f"[FAIL] Test failed: {e}")
         import traceback
 
         traceback.print_exc()

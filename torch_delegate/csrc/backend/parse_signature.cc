@@ -293,7 +293,7 @@ Status ParseGraphInputs(const OrderedJson &array, const std::vector<ParsedInputS
       continue;
     }
     if (graph_name.empty()) {
-      TDLOGE("Graph input has no resolvable name");
+      TDLOGE("Graph input has no resolvable name at graph.inputs[%zu]", i);
       return INVALID_PARAM;
     }
     values.push_back({graph_name});
@@ -333,7 +333,7 @@ Status ParseGraphOutputs(const OrderedJson &array, const std::vector<ParsedOutpu
       continue;
     }
     if (graph_name.empty()) {
-      TDLOGE("Graph output has no resolvable name");
+      TDLOGE("Graph output has no resolvable name at graph.outputs[%zu]", i);
       return INVALID_PARAM;
     }
     values.push_back({graph_name});

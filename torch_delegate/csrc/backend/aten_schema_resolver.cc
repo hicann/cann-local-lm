@@ -51,7 +51,8 @@ Status AtenSchemaResolver::Resolve(const ParsedNode &node, AtenSchemaInfo &out) 
   out.is_inplace = !out.is_out && !out.target.op_name.empty() && out.target.op_name.back() == '_';
 
   if (node.inputs.size() < node.schema_metadata_input_count) {
-    TDLOGE("schema metadata input count is invalid, context=%s", context.c_str());
+    TDLOGE("schema metadata input count is invalid, context=%s, inputs=%zu, schema_metadata_input_count=%zu",
+           context.c_str(), node.inputs.size(), node.schema_metadata_input_count);
     return INVALID_PARAM;
   }
 

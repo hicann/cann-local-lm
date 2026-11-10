@@ -11,6 +11,7 @@
 
 #include <memory>
 #include <type_traits>
+#include <typeinfo>
 
 namespace td {
 
@@ -22,7 +23,7 @@ static inline std::shared_ptr<T> MakeShared(Args &&...args) {
     ret = std::make_shared<T_nc>(std::forward<Args>(args)...);
   } catch (const std::bad_alloc &) {
     ret = nullptr;
-    TDLOGE("Make shared failed");
+    TDLOGE("Make shared failed: type=%s, size=%zu", typeid(T_nc).name(), sizeof(T_nc));
   }
   return ret;
 }

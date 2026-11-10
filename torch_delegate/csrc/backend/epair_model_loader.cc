@@ -300,8 +300,9 @@ class EpairModelLoader::Impl {
       TDLOGE("GetGEGraph failed: graph is null");
       return FAILED;
     }
-    if (out_graph->CopyFrom(*graph_) != ge::GRAPH_SUCCESS) {
-      TDLOGE("GetGEGraph failed: copy error");
+    const ge::Status ge_status = out_graph->CopyFrom(*graph_);
+    if (ge_status != ge::GRAPH_SUCCESS) {
+      TDLOGE("GetGEGraph failed: CopyFrom return ge_status=%u", static_cast<unsigned>(ge_status));
       return FAILED;
     }
     TDLOGI("GetGEGraph success: graph_id=%u", graph_id_);

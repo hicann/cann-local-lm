@@ -173,7 +173,7 @@ protected:
 TORCH_CMAKE_PREFIX=$(python -c "import torch; print(torch.utils.cmake_prefix_path)")
 cmake -B build \
       -DCMAKE_PREFIX_PATH="$TORCH_CMAKE_PREFIX" \
-      -DCANN_ROOT=/home/sn/code/ascend/opensdk/cann/cann \
+      -DCANN_ROOT=$ASCEND_HOME_PATH \
       -DENABLE_ASAN=ON
 
 cmake --build build -j$(nproc)
@@ -186,11 +186,9 @@ cd build && ctest --output-on-failure
 
 ## 扩展 添加新stub API
 
-使用 `/add-cann-stub-api <api_name>` command添加新API，该command会引导你完成：
+添加新 stub API 时，按以下步骤操作：
 
 1. 在真实CANN头文件中定位函数签名
 2. 按行为策略表判断返回值和副作用
 3. 在对应 `.cc` 文件中添加函数体
 4. 在 `test_cann_stub.cc` 添加测试
-
-详见 `.claude/commands/add-cann-stub-api.md`。

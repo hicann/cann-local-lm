@@ -360,7 +360,7 @@ torch_delegate提供完整的日志系统，支持环境变量控制：
 ### 启用DEBUG日志
 
 ```bash
-# 默认：ERROR 级别
+# 默认：WARN 级别
 python your_script.py
 
 # 启用 DEBUG 级别
@@ -395,38 +395,52 @@ Python 侧 → C++ 侧
 2. Python: epair_save(contents, "model.epair")
    ↓ 保存为 .epair 文件
 
-3. C++: DelegateSession.LoadEpair("model.epair")
-   ↓ 加载 .epair，解析 ep_json_with_ascend_ir.json
+3. C++: td::EpairModelLoader loader("model.epair")
+   ↓ 加载 .epair，解析 ep_json_with_ascend_ir.json 并构建 GE 图
 
-4. C++: EpairPartitioner.Partition()
-   ↓ 根据 ascend_ir 字段切图（NPU/CPU 分区）
+4. C++: loader.CompileAndLoad(session_options, stream)
+   ↓ 编译（含 fallback 自定义算子）并加载
 
-5. C++: GeGraphBuilder.Build()
-   ↓ NPU 子图 → GE Graph
-
-6. C++: DelegateSession.Compile()
-   ↓ 编译并执行
+5. C++: loader.RunModelWithStreamAsync(stream, inputs, outputs)
+   ↓ 执行推理
 ```
 
 ### C++加载示例
 
+完整可运行示例见 `examples/export_and_load_example/main.cpp`。
+
 ```cpp
-#include "torch_delegate/delegate_session.h"
+#include "ge/ge_api_v2.h"
+#include "graph/graph.h"
+#include "torch_delegate/epair_model_loader.h"
+#include <map>
+#include <vector>
 
-td::DelegateSession session;
-td::ModelHandle model_handle;
-td::EpairArchive archive("model.epair");
+// 1. 初始化 GE
+std::map<ge::AscendString, ge::AscendString> ge_options = {
+    {ge::AscendString("ge.exec.deviceId"), ge::AscendString("0")}};
+ge::GEInitializeV2(ge_options);
 
-// 加载 epair 文件（Python 侧生成）
-td::Status status = session.LoadEpair(archive, &model_handle);
-
-if (status.ok()) {
-    // 编译模型
-    status = session.Compile(model_handle);
-
-    // 执行推理
-    // ...
+// 2. 加载 epair 文件（Python 侧生成），完成构图与编译加载
+td::EpairModelLoader loader("model.epair");
+std::map<ge::AscendString, ge::AscendString> session_options;
+aclrtStream stream = nullptr;
+aclrtCreateStream(&stream);
+td::Status status = loader.CompileAndLoad(session_options, stream);
+if (status != td::SUCCESS) {
+    // 编译加载失败，报错返回
+    return FAILED;
 }
+
+// 3. 准备输入并执行推理（动态 shape 场景 outputs 可不预分配）
+std::vector<gert::Tensor> inputs;   // 按 GE 图输入 desc 填充
+std::vector<gert::Tensor> outputs;
+status = loader.RunModelWithStreamAsync(stream, inputs, outputs);
+if (status != td::SUCCESS) {
+    // 推理失败，报错返回
+    return FAILED;
+}
+// ...
 ```
 
 ---
@@ -473,7 +487,7 @@ if (status.ok()) {
 ## 相关文档
 
 - **[build.md](build.md)** - C++ delegate库构建指南
-- **[epair.md](../features/epair_format_design.md)** - epair实现方案详细设计
+- **[epair_format_design.md](../features/epair_format_design.md)** - epair实现方案详细设计
 
 ---
 
@@ -481,4 +495,4 @@ if (status.ok()) {
 
 - [PyTorch Export文档](https://pytorch.org/docs/stable/export.html)
 - [PT2 Archive格式](https://docs.pytorch.org/docs/stable/user_guide/torch_compiler/export/pt2_archive.html)
-- [TorchAir GE Converter](https://github.com/PyTorch/PyTorch)
+- [TorchAir GE Converter](https://gitcode.com/Ascend/pytorch)

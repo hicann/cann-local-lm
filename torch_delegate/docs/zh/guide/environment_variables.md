@@ -58,7 +58,7 @@ export TORCH_NPU_DIR=/path/to/libtorch_npu
 **说明**：
 - 生成的fallback代码依赖 `libtorch_npu.so`
 - 仅在Fallback Codegen触发时必需；所有节点的 `ascend_ir.source` 为 `converter` 时不校验
-- 获取 `libtorch_npu`：从 [Ascend/pytorch](https://gitcode.com/Ascend/pytorch) 仓库下载 **v2.9.0分支**源码后，按 [libtorch_npu编译指南](https://gitcode.com/Ascend/pytorch/blob/v2.7.1-7.3.0/docs/zh/installation_guide/building_libtorch_npu.md) 编译产出
+- 获取 `libtorch_npu`：从 [Ascend/pytorch](https://gitcode.com/Ascend/pytorch) 仓库下载 **v2.9.0分支**源码后，按 [libtorch_npu编译指南](https://gitcode.com/Ascend/pytorch/blob/master/docs/zh/installation_guide/references/building_libtorch_npu.md) 编译产出
 
 ---
 

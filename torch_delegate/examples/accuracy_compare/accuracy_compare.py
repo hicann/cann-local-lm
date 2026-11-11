@@ -11,7 +11,7 @@ Accuracy Comparison: torch.compile(backend='npu') vs C++ epair runner
 
 This script compares numerical accuracy between two execution paths:
 1. Reference: torch.compile(model, backend='npu') - GE backend (Python)
-2. Epair: C++ td::DelegateSession + ge::GeSession::RunGraph (C++)
+2. Epair: C++ td::EpairModelLoader + ge::GeSession::RunGraph (C++)
 
 Data transfer: Binary files (.bin) with embedded dtype and shape header.
 """
@@ -553,7 +553,7 @@ def main() -> int:
 
     config = {
         "reference_backend": "torch.compile(backend='npu')",
-        "epair_backend": "C++ td::DelegateSession + ge::GeSession::RunGraph",
+        "epair_backend": "C++ td::EpairModelLoader + ge::GeSession::RunGraph",
         "random_seed": args.seed,
         "device": str(device),
         "ep_path": str(ep_path),

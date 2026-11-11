@@ -5,7 +5,7 @@ English | [简体中文](README.md)
 This example demonstrates the end-to-end accuracy comparison feature of TorchDelegate, verifying numerical consistency between two execution paths:
 
 - **Reference path**: Python `torch.compile(backend='npu')` using the GE backend
-- **Delegate path**: C++ `td::DelegateSession + ge::GeSession::RunGraph()` executing directly from the epair file
+- **Delegate path**: C++ `td::EpairModelLoader` (`CompileAndLoad` / `RunModelWithStreamAsync`) executing directly from the epair file
 
 ---
 
@@ -39,7 +39,7 @@ accuracy_compare/
 
 ## Requirements
 
-1. **torch 2.9.0+cpu** (the thj_delegate venv is recommended)
+1. **torch 2.9.0+cpu** (the torch_delegate venv is recommended)
 2. **torch_npu** + **torchair**
 3. **torch-delegate** built
 4. **CANN 9.2.0+**
@@ -59,8 +59,7 @@ accuracy_compare/
 
 | Environment variable | Description | Default |
 |----------|------|--------|
-| `ASCEND_HOME_PATH` or `CANN_ENV` | CANN environment | ASCEND_HOME_PATH is checked first |
-| `TORCH_DELEGATE_REPO` | torch-delegate repository root | Derived automatically |
+| `ASCEND_HOME_PATH` | CANN environment | ASCEND_HOME_PATH is checked first |
 | `TORCH_PKG_DIR` | Python torch package directory | Detected automatically |
 | `DEVICE` | Export device | `cpu` |
 | `COMPILE_DEVICE` | Compile device | `npu:0` |
@@ -74,13 +73,13 @@ accuracy_compare/
 source ~/Ascend/cann/set_env.sh
 
 # 2. Activate the Python environment with torch 2.9.0
-source /mnt/workspace/thj_delegate/bin/activate
+source /path/to/torch_delegate/bin/activate
 
 # 3. Set the only required environment variable
-export TORCH_NPU_DIR=/mnt/workspace/gitCode/pytorch/libtorch_npu
+export TORCH_NPU_DIR=/path/to/libtorch_npu
 
 # 4. Run the accuracy comparison
-cd /mnt/workspace/gitCode/torch-delegate/examples/accuracy_compare
+cd /path/to/torch-delegate/examples/accuracy_compare
 bash run.sh compare
 ```
 
@@ -182,9 +181,9 @@ See `xllm_ops/torch_compile_example/python/compare_beam_search.py`:
 
 **Cause**: torch version mismatch. torch-delegate requires torch 2.9.0+cpu.
 
-**Solution**: Use the thj_delegate venv:
+**Solution**: Use the torch_delegate venv:
 ```bash
-source /mnt/workspace/thj_delegate/bin/activate
+source /path/to/torch_delegate/bin/activate
 ```
 
 ### Error "environment variable XXX is not set"

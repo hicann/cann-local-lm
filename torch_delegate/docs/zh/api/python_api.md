@@ -469,6 +469,6 @@ python my_script.py
 
 ## 相关文档
 
-- [epair.md](../features/epair_format_design.md) — `.epair` 格式详细设计文档
+- [epair_format_design.md](../features/epair_format_design.md) — `.epair` 格式详细设计文档
 - [build_epair.md](../guide/build_epair.md) — 用户指南（含完整工作流示例）
 - [architecture.md](../features/architecture.md) — 整体架构概览

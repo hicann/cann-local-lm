@@ -158,18 +158,24 @@ epair_save(contents, "model.epair")
 ```cpp
 #include "torch_delegate/epair_model_loader.h"
 
-// 加载 epair 文件
-td::EpairModelLoader loader;
-td::ModelHandle model_handle;
-td::Status status = loader.LoadEpair("model.epair", &model_handle);
+// 加载 epair 文件（构造函数内完成解析与 GE 图构建）
+td::EpairModelLoader loader("model.epair");
 
 // GeGraphBuilder 构建时自动触发 FallbackCodegen
 // （需设置 TORCH_DELEGATE_ENABLE_FALLBACK_CODEGEN=1）
-loader.CompileAndLoad(options, stream);
+td::Status status = loader.CompileAndLoad(options, stream);
+if (status != td::SUCCESS) {
+    // 编译加载失败，报错返回
+    return FAILED;
+}
 
 // 执行推理
 std::vector<gert::Tensor> inputs, outputs;
-loader.RunModelWithStreamAsync(stream, inputs, outputs);
+status = loader.RunModelWithStreamAsync(stream, inputs, outputs);
+if (status != td::SUCCESS) {
+    // 推理失败，报错返回
+    return FAILED;
+}
 ```
 
 ### 完整示例代码
@@ -184,43 +190,27 @@ loader.RunModelWithStreamAsync(stream, inputs, outputs);
 
 ## 工作模式
 
-Fallback Codegen支持两种工作模式：在线模式和离线模式。
+Fallback Codegen采用在线编译工作流：生成代码文件，**立即编译**生成 `.so`，**动态加载**到进程。
 
-### 在线模式（默认）
-
-- **行为**：生成代码文件，**立即编译**生成 `.so`，**动态加载**到进程
-- **落盘**：默认使用临时目录（编译后清理），设置 `KEEP_ARTIFACTS=1` 后保留到 `OUTPUT_DIR`
+- **落盘**：默认使用临时目录（编译后清理），设置 `TORCH_DELEGATE_KEEP_ARTIFACTS=1` 后保留到 `TORCH_DELEGATE_OUTPUT_DIR`
 - **产物**：
-  - 默认（`KEEP_ARTIFACTS=0`）：仅内存中的 `.so` handle（临时文件被清理）
-  - 调试（`KEEP_ARTIFACTS=1`）：`custom_op.cpp`（带g++命令注释）+ `CMakeLists.txt` + `libcust_opapi.so`
+  - 默认（`TORCH_DELEGATE_KEEP_ARTIFACTS=0`）：仅内存中的 `.so` handle（临时文件被清理）
+  - 调试（`TORCH_DELEGATE_KEEP_ARTIFACTS=1`）：`custom_op.cpp`（带g++命令注释）+ `CMakeLists.txt` + `libcust_opapi.so`
 - **适用场景**：即时编译执行、单机环境、快速原型开发
-
-### 离线模式
-
-- **行为**：生成代码文件（`.cpp` + `CMakeLists.txt`），**不编译**
-- **落盘**：文件必须落盘到 `OUTPUT_DIR`
-- **产物**：
-  - `custom_op.cpp`（GE自定义算子实现）
-  - `CMakeLists.txt`（编译脚本）
-- **适用场景**：跨机器部署、版本控制、手动修改代码、集成现有构建系统
 
 ### 行为矩阵
 
-| 模式 | `OFFLINE` | `KEEP_ARTIFACTS` | `OUTPUT_DIR` | 落盘文件 | 编译行为 | 文件保留 |
-|------|-----------|------------------|--------------|---------|---------|---------|
-| **离线** | `1` | -（忽略） | 设置值或默认 `./output_dir` | cpp + CMakeLists.txt | 不编译 | 总是保留 |
-| **在线（默认）** | `0`（默认） | `0`（默认） | -（忽略） | 无（临时目录） | g++编译+ dlopen | 清理临时文件 |
-| **在线（调试）** | `0` | `1` | 设置值或默认 `./output_dir` | cpp（带g++注释） + CMakeLists.txt + .so | g++编译+ dlopen | 保留文件 |
+| `TORCH_DELEGATE_KEEP_ARTIFACTS` | `TORCH_DELEGATE_OUTPUT_DIR` | 落盘文件 | 编译行为 | 文件保留 |
+|------|------|---------|---------|---------|
+| `0`（默认） | -（忽略） | 无（临时目录） | g++编译+ dlopen | 清理临时文件 |
+| `1` | 设置值或默认 `./output_dir` | cpp（带g++注释） + CMakeLists.txt + .so | g++编译+ dlopen | 保留文件 |
 
 ### 模式选择建议
 
-| 场景 | 推荐模式 | 原因 |
+| 场景 | 推荐配置 | 原因 |
 |------|---------|------|
-| 单机开发调试 | 在线模式 | 无需手动编译，快速迭代 |
-| 跨机器部署 | 离线模式 | 编译环境和运行环境分离 |
-| CI/CD流水线 | 离线模式 | 可版本控制生成代码 |
-| 查看生成代码 | 离线模式 | 直接查看 .cpp文件 |
-| 调试编译问题 | 在线调试模式 | 查看完整g++命令 |
+| 单机开发调试 | 默认配置 | 无需手动编译，快速迭代 |
+| 调试编译问题 | `TORCH_DELEGATE_KEEP_ARTIFACTS=1` | 查看完整g++命令与生成代码 |
 
 ---
 
@@ -248,7 +238,6 @@ Fallback Codegen支持两种工作模式：在线模式和离线模式。
 
 | 环境变量 | 说明 | 默认值 |
 |---------|------|--------|
-| `TORCH_DELEGATE_OFFLINE` | 工作模式（`1`=离线，`0`=在线） | `0`（在线） |
 | `TORCH_DELEGATE_OUTPUT_DIR` | 文件落盘位置 | `./output_dir` |
 | `TORCH_DELEGATE_KEEP_ARTIFACTS` | 在线模式下是否保留编译产物（`1`/`true`/`TRUE`） | `0`（不保留） |
 
@@ -274,17 +263,12 @@ echo $ASCEND_HOME_PATH  # 输出：/path/to/cann
 
 环境变量读取遵循以下优先级：
 
-**1. `OUTPUT_DIR`**：
+**1. `TORCH_DELEGATE_OUTPUT_DIR`**：
 ```text
 函数参数 > TORCH_DELEGATE_OUTPUT_DIR > 默认值 ./output_dir
 ```
 
-**2. `OFFLINE`**：
-```text
-TORCH_DELEGATE_OFFLINE > 默认值 0（在线）
-```
-
-**3. `KEEP_ARTIFACTS`**（仅在线模式）：
+**2. `TORCH_DELEGATE_KEEP_ARTIFACTS`**：
 ```text
 TORCH_DELEGATE_KEEP_ARTIFACTS > 默认值 0（不保留）
 ```
@@ -373,45 +357,6 @@ export TORCH_DELEGATE_ENABLE_FALLBACK_CODEGEN=1
 ./build.sh  # 不触发 codegen，不校验 TORCH_PKG_DIR/TORCH_NPU_DIR
 ```
 
-### 离线模式（跨机器部署）
-
-**适用场景**：编译环境和运行环境分离，需要在目标机器上手动编译。
-
-```bash
-# 1. 查找并设置必需环境变量
-TORCH_CMAKE_DIR=$(python3 -c "import torch; import os; print(os.path.join(torch.__path__[0], 'share', 'cmake', 'Torch'))")
-export TORCH_PKG_DIR="${TORCH_CMAKE_DIR}"
-export TORCH_NPU_DIR=/path/to/libtorch_npu
-
-# 2. 设置 CANN 路径（离线模式可选，但建议设置用于 CMakeLists.txt）
-source ~/Ascend/cann/set_env.sh
-
-# 3. 配置输出目录（可选）
-export TORCH_DELEGATE_OUTPUT_DIR=/path/to/output
-
-# 4. 启用 fallback codegen（离线模式）
-export TORCH_DELEGATE_ENABLE_FALLBACK_CODEGEN=1
-export TORCH_DELEGATE_OFFLINE=1  # 默认值，可省略
-
-# 5. 运行程序，生成代码文件
-./build.sh
-
-# 产物：/path/to/output/custom_op.cpp + CMakeLists.txt
-```
-
-**后续在目标机器编译**：
-
-```bash
-cd /path/to/output
-cmake -B build \
-  -DTorch_DIR=$TORCH_PKG_DIR \
-  -DTORCH_NPU_DIR=$TORCH_NPU_DIR \
-  -DASCEND_HOME_PATH=$ASCEND_HOME_PATH
-cmake --build build -j4
-
-# 产物：build/libcustom_op.so
-```
-
 ### 在线模式（即时编译执行）
 
 **适用场景**：单机环境，编译环境和运行环境相同。
@@ -425,7 +370,6 @@ source ~/Ascend/cann/set_env.sh  # 设置 ASCEND_HOME_PATH
 
 # 2. 启用 fallback codegen（在线模式）
 export TORCH_DELEGATE_ENABLE_FALLBACK_CODEGEN=1
-export TORCH_DELEGATE_OFFLINE=0
 
 # 3. 运行程序，自动编译并加载
 ./build.sh
@@ -443,7 +387,6 @@ export TORCH_DELEGATE_OFFLINE=0
 
 # 3. 启用在线模式 + 保留产物
 export TORCH_DELEGATE_ENABLE_FALLBACK_CODEGEN=1
-export TORCH_DELEGATE_OFFLINE=0
 export TORCH_DELEGATE_KEEP_ARTIFACTS=1
 export TORCH_DELEGATE_OUTPUT_DIR=/tmp/fallback_debug
 
@@ -466,12 +409,12 @@ g++ -shared -fPIC ... -o libcust_opapi.so custom_op.cpp
 
 ### 快速验证生成的代码
 
-**适用场景**：想查看生成的代码，但不实际编译。
+**适用场景**：想查看生成的代码文件（codegen会完整执行编译加载，产物保留供查看）。
 
 ```bash
-# 使用离线模式生成文件
+# 保留编译产物到指定目录
 export TORCH_DELEGATE_ENABLE_FALLBACK_CODEGEN=1
-export TORCH_DELEGATE_OFFLINE=1
+export TORCH_DELEGATE_KEEP_ARTIFACTS=1
 export TORCH_DELEGATE_OUTPUT_DIR=/tmp/inspect_codegen
 
 ./build.sh
@@ -608,10 +551,10 @@ if (!codegen_result.success) {
 
 如果在线编译失败，按以下步骤排查：
 
-**1. 查看生成的g++命令**（设置 `KEEP_ARTIFACTS=1`）：
+**1. 查看生成的g++命令**（设置 `TORCH_DELEGATE_KEEP_ARTIFACTS=1` 与 `TORCH_DELEGATE_OUTPUT_DIR`）：
 
 ```bash
-head -10 $OUTPUT_DIR/custom_op.cpp
+head -10 $TORCH_DELEGATE_OUTPUT_DIR/custom_op.cpp
 ```
 
 **2. 手动执行g++命令**：
@@ -624,7 +567,7 @@ g++ -shared -fPIC ... -o test.so custom_op.cpp
 **3. 使用CMake方法**（备选方案）：
 
 ```bash
-cd $OUTPUT_DIR
+cd $TORCH_DELEGATE_OUTPUT_DIR
 cmake -B build -DTorch_DIR=$TORCH_PKG_DIR ...
 cmake --build build -j4
 ```
@@ -639,33 +582,19 @@ ls $ASCEND_HOME_PATH/lib64/libascendcl.so  # 应存在
 
 ### 查看生成的代码
 
-**离线模式**：
+设置 `TORCH_DELEGATE_KEEP_ARTIFACTS=1` 后，产物保留在 `TORCH_DELEGATE_OUTPUT_DIR`：
 
 ```bash
-cat $OUTPUT_DIR/custom_op.cpp
-cat $OUTPUT_DIR/CMakeLists.txt
-```
+cat $TORCH_DELEGATE_OUTPUT_DIR/custom_op.cpp
+cat $TORCH_DELEGATE_OUTPUT_DIR/CMakeLists.txt
 
-**在线调试模式**（带g++命令注释）：
-
-```bash
 # 生成的 cpp 文件头部包含完整 g++ 命令
-head -20 $OUTPUT_DIR/custom_op.cpp
+head -20 $TORCH_DELEGATE_OUTPUT_DIR/custom_op.cpp
 ```
 
 ### 生成文件说明
 
-**离线模式生成的 `custom_op.cpp`**（不包含g++命令）：
-
-```cpp
-// AUTO-GENERATED by FallbackCodegen
-#include <torch/torch.h>
-#include <torch_npu/csrc/aten/common/from_blob.h>
-#include <acl/acl.h>
-...
-```
-
-**在线模式（调试）生成的 `custom_op.cpp`**（包含完整g++命令注释）：
+**生成的 `custom_op.cpp`**（头部包含完整g++命令注释）：
 
 ```cpp
 // AUTO-GENERATED by FallbackCodegen
@@ -698,14 +627,11 @@ head -20 $OUTPUT_DIR/custom_op.cpp
 
 ### 编译开销
 
-| 模式 | 首次加载 | 后续加载 |
-|------|---------|---------|
-| 离线模式 | 无编译开销（仅生成代码） | 需手动编译 |
-| 在线模式 | 编译开销（约数秒） | 可缓存（`KEEP_ARTIFACTS=1`） |
+每次触发codegen都会完整执行"生成 + g++编译 + dlopen加载"流程，首次加载引入约数秒的编译开销，无跨进程编译缓存。
 
-### 编译缓存
+### 产物保留
 
-在线模式下，如果 `OUTPUT_DIR` 已存在 `.so` 文件，不会重新编译（直接加载）。建议在生产环境设置 `KEEP_ARTIFACTS=1` 并指定固定的 `OUTPUT_DIR` 以利用缓存。
+默认使用临时目录并在加载后清理；设置 `TORCH_DELEGATE_KEEP_ARTIFACTS=1` 并指定固定的 `TORCH_DELEGATE_OUTPUT_DIR` 可保留生成文件用于排查。
 
 ### 运行时开销
 

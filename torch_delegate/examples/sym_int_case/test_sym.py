@@ -6,6 +6,8 @@
 # INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 # See LICENSE in the root of the software repository for the full text of the License.
 
+import os
+
 import torch
 import torch.nn as nn
 from torch.export import Dim
@@ -95,13 +97,9 @@ if __name__ == "__main__":
 
     example_inputs = (x, static_tensor, scale, multiplier)
     ep = torch.export.export(model, example_inputs, dynamic_shapes=dynamic_shapes)
-    torch.export.save(
-        ep,
-        "/mnt/workspace/gitCode/air-de/torch-delegate/examples/sym_int_case/test_sym.pt2",
-    )
-    ep_load = torch.export.load(
-        "/mnt/workspace/gitCode/air-de/torch-delegate/examples/sym_int_case/test_sym.pt2"
-    )
+    here = os.path.dirname(os.path.abspath(__file__))
+    torch.export.save(ep, os.path.join(here, "test_sym.pt2"))
+    ep_load = torch.export.load(os.path.join(here, "test_sym.pt2"))
     print("----------------------------------------------------")
     print(ep_load.module()(x, static_tensor, scale, multiplier))
     print("----------------------------------------------------")
@@ -109,7 +107,4 @@ if __name__ == "__main__":
     print("----------------------------------------------------")
 
     epair_content = td.export_to_epair(ep)
-    td.epair_save(
-        epair_content,
-        "/mnt/workspace/gitCode/air-de/torch-delegate/examples/sym_int_case/test_sym.epair",
-    )
+    td.epair_save(epair_content, os.path.join(here, "test_sym.epair"))

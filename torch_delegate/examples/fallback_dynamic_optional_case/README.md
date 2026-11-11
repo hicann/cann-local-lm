@@ -15,8 +15,8 @@
 ### 关键codegen验证点
 
 - **DYNAMIC_INPUT**: `GetDynamicInputTensor(ir_idx, i)` + `GetIrInputInstanceInfo` 获取实例数
-- **OPTIONAL_INPUT (Tensor?)**: `GetOptionalInputTensor(ir_idx)` 返回nullptr时不崩溃
-- **OPTIONAL_INPUT (Scalar with default)**: 有默认值的Scalar参数声明为OPTIONAL_INPUT，EP JSON缺失时用默认值
+- **OPTIONAL_INPUT (Tensor?)**：`GetOptionalInputTensor(ir_idx)` 返回nullptr时不崩溃
+- **OPTIONAL_INPUT (Scalar with default)**：有默认值的Scalar参数声明为OPTIONAL_INPUT，EP JSON缺失时用默认值
 - **IR索引对齐**: `GetRequiredInputTensor`/`GetOptionalInputTensor` 使用IR声明索引，不受DYNAMIC_INPUT扩展和OPTIONAL不连接影响
 
 ## 文件结构

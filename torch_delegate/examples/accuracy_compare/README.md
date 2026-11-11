@@ -5,7 +5,7 @@
 本示例演示TorchDelegate的端到端精度对比功能，验证两条执行路径的数值精度一致性：
 
 - **Reference路径**：Python `torch.compile(backend='npu')` 使用GE backend
-- **Delegate路径**：C++ `td::DelegateSession + ge::GeSession::RunGraph()` 直接从epair文件执行
+- **Delegate路径**：C++ `td::EpairModelLoader`（`CompileAndLoad` / `RunModelWithStreamAsync`）直接从epair文件执行
 
 ---
 
@@ -39,7 +39,7 @@ accuracy_compare/
 
 ## 环境要求
 
-1. **torch 2.9.0+cpu**（推荐使用thj_delegate venv）
+1. **torch 2.9.0+cpu**（推荐使用 torch_delegate venv）
 2. **torch_npu** + **torchair**
 3. **torch-delegate** 已构建
 4. **CANN 9.2.0+**
@@ -59,8 +59,7 @@ accuracy_compare/
 
 | 环境变量 | 说明 | 默认值 |
 |----------|------|--------|
-| `ASCEND_HOME_PATH` 或 `CANN_ENV` | CANN环境 | 优先检查ASCEND_HOME_PATH |
-| `TORCH_DELEGATE_REPO` | torch-delegate仓库根目录 | 自动推导 |
+| `ASCEND_HOME_PATH` | CANN环境 | 优先检查ASCEND_HOME_PATH |
 | `TORCH_PKG_DIR` | Python torch包目录 | 自动检测 |
 | `DEVICE` | 导出设备 | `cpu` |
 | `COMPILE_DEVICE` | 编译设备 | `npu:0` |
@@ -74,13 +73,13 @@ accuracy_compare/
 source ~/Ascend/cann/set_env.sh
 
 # 2. 激活包含 torch 2.9.0 的 Python 环境
-source /mnt/workspace/thj_delegate/bin/activate
+source /path/to/torch_delegate/bin/activate
 
 # 3. 设置唯一必填环境变量
-export TORCH_NPU_DIR=/mnt/workspace/gitCode/pytorch/libtorch_npu
+export TORCH_NPU_DIR=/path/to/libtorch_npu
 
 # 4. 执行精度对比
-cd /mnt/workspace/gitCode/torch-delegate/examples/accuracy_compare
+cd /path/to/torch-delegate/examples/accuracy_compare
 bash run.sh compare
 ```
 
@@ -182,9 +181,9 @@ compiled_model = torch.compile(model, backend=npu_backend, fullgraph=True)
 
 **原因**: torch版本不匹配。torch-delegate需要torch 2.9.0+cpu。
 
-**解决**: 使用thj_delegate venv：
+**解决**：使用 torch_delegate venv：
 ```bash
-source /mnt/workspace/thj_delegate/bin/activate
+source /path/to/torch_delegate/bin/activate
 ```
 
 ### 错误 "环境变量XXX未设置"
@@ -202,7 +201,7 @@ export TORCH_NPU_DIR=/path/to/pytorch/libtorch_npu
 
 ### 错误 "TopK不支持DT_BF16"
 
-**解决**: 已在 `export_program.py` 中处理，转换为float32后执行TopK。
+**解决**：已在 `export_program.py` 中处理，转换为float32后执行TopK。
 
 ---
 

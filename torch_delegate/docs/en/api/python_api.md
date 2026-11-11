@@ -469,6 +469,6 @@ python my_script.py
 
 ## Related documentation
 
-- [epair.md](../features/epair_format_design.md) — Detailed design of the `.epair` format
+- [epair_format_design.md](../features/epair_format_design.md) — Detailed design of the `.epair` format
 - [build_epair.md](../guide/build_epair.md) — User guide (with a complete workflow example)
 - [architecture.md](../features/architecture.md) — Overall architecture overview

@@ -108,7 +108,7 @@ ExportedProgram
 
 ## epair格式总览
 
-epair复用 **PT2 Archive格式**，文件结构与PT2完全相同，在 `extra/` 目录下新增两个文件（完整字段说明详见 [epair.md](epair_format_design.md)）：
+epair复用 **PT2 Archive格式**，文件结构与PT2完全相同，在 `extra/` 目录下新增两个文件（完整字段说明详见 [epair_format_design.md](epair_format_design.md)）：
 
 ```text
 model.epair（ZIP 结构）

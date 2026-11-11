@@ -175,7 +175,7 @@ protected:
 TORCH_CMAKE_PREFIX=$(python -c "import torch; print(torch.utils.cmake_prefix_path)")
 cmake -B build \
       -DCMAKE_PREFIX_PATH="$TORCH_CMAKE_PREFIX" \
-      -DCANN_ROOT=/home/sn/code/ascend/opensdk/cann/cann \
+      -DCANN_ROOT=$ASCEND_HOME_PATH \
       -DENABLE_ASAN=ON
 
 cmake --build build -j$(nproc)
@@ -188,11 +188,9 @@ cd build && ctest --output-on-failure
 
 ## Extension Adding a New Stub API
 
-Use the `/add-cann-stub-api <api_name>` command to add a new API. The command walks you through:
+To add a new stub API, follow these steps:
 
 1. Locating the function signature in the real CANN headers
 2. Determining the return value and side effects according to the behavior contract table
 3. Adding the function body to the corresponding `.cc` file
 4. Adding a test in `test_cann_stub.cc`
-
-See `.claude/commands/add-cann-stub-api.md` for details.

@@ -110,7 +110,7 @@ ExportedProgram
 
 ## Epair Format Overview
 
-epair reuses the **PT2 Archive format**. The file structure is identical to PT2, with two files added under the `extra/` directory (see [epair.md](epair_format_design.md) for complete field descriptions):
+epair reuses the **PT2 Archive format**. The file structure is identical to PT2, with two files added under the `extra/` directory (see [epair_format_design.md](epair_format_design.md) for complete field descriptions):
 
 ```text
 model.epair (ZIP structure)

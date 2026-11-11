@@ -82,8 +82,8 @@ mkdir build && cd build
 # TORCH_PKG_DIR points to the Python torch package directory
 # TORCH_NPU_DIR points to the libtorch_npu source root
 cmake .. \
-    -DTORCH_PKG_DIR=/mnt/workspace/thj_delegate/lib/python3.12/site-packages/torch \
-    -DTORCH_NPU_DIR=/mnt/workspace/gitCode/pytorch/libtorch_npu
+    -DTORCH_PKG_DIR=/path/to/python/site-packages/torch \
+    -DTORCH_NPU_DIR=/path/to/libtorch_npu
 
 # Build
 cmake --build .
@@ -93,8 +93,8 @@ ls libstub_kernel.so
 ```
 
 **Notes**:
-- `TORCH_PKG_DIR` must point to the **Python torch package directory** (e.g. `/mnt/workspace/thj_delegate/lib/python3.12/site-packages/torch`)
-- `TORCH_NPU_DIR` must point to the **libtorch_npu source root** (e.g. `/mnt/workspace/gitCode/pytorch/libtorch_npu`)
+- `TORCH_PKG_DIR` must point to the **Python torch package directory** (e.g. `<python_env>/lib/python3.12/site-packages/torch`)
+- `TORCH_NPU_DIR` must point to the **libtorch_npu source root** (e.g. `/path/to/libtorch_npu`)
 - CMake automatically adds the source parent directory to the include path so that `#include "torch_npu/csrc/logging/LogContext.h"` in `NPUQueue.h` resolves
 - Automatically locates and links `${TORCH_NPU_DIR}/lib/libtorch_npu.so`, providing runtime symbols such as `NPUStream`
 - Replace `/path/to/libtorch` with the actual libtorch installation path

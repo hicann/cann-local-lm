@@ -27,7 +27,7 @@ rope_in_place(Tensor(a!) input, Tensor sin_cache, Tensor cos_cache) -> ()
 **关键特征**：
 - `Tensor(a!)`： 表示input参数会被**写入**（alias annotation）
 - `-> ()`： 返回类型为 `void`（inplace操作不返回新tensor）
-- Kernel参数类型: `at::Tensor&`（引用，非const）
+- Kernel参数类型：`at::Tensor&`（引用，非const）
 
 **Dispatch Keys**：
 - Meta: inplace shape inference（无输出tensor，input shape不变）
@@ -83,8 +83,8 @@ mkdir build && cd build
 # TORCH_PKG_DIR 指向 Python torch 包目录
 # TORCH_NPU_DIR 指向 libtorch_npu 源码根目录
 cmake .. \
-    -DTORCH_PKG_DIR=/mnt/workspace/thj_delegate/lib/python3.12/site-packages/torch \
-    -DTORCH_NPU_DIR=/mnt/workspace/gitCode/pytorch/libtorch_npu
+    -DTORCH_PKG_DIR=/path/to/python/site-packages/torch \
+    -DTORCH_NPU_DIR=/path/to/libtorch_npu
 
 # 构建
 cmake --build .
@@ -94,8 +94,8 @@ ls libstub_kernel.so
 ```
 
 **注意**：
-- `TORCH_PKG_DIR` 必须指向 **Python torch包目录**（如 `/mnt/workspace/thj_delegate/lib/python3.12/site-packages/torch`）
-- `TORCH_NPU_DIR` 必须指向 **libtorch_npu源码根目录**（如 `/mnt/workspace/gitCode/pytorch/libtorch_npu`）
+- `TORCH_PKG_DIR` 必须指向 **Python torch包目录**（如 `<python_env>/lib/python3.12/site-packages/torch`）
+- `TORCH_NPU_DIR` 必须指向 **libtorch_npu源码根目录**（如 `/path/to/libtorch_npu`）
 - CMake会自动将源码父目录加入include路径，以解析 `NPUQueue.h` 中的 `#include "torch_npu/csrc/logging/LogContext.h"`
 - 自动查找 `${TORCH_NPU_DIR}/lib/libtorch_npu.so` 并链接，提供 `NPUStream` 等运行时符号
 - 将 `/path/to/libtorch` 替换为实际的libtorch安装路径

@@ -7,7 +7,7 @@ CXX11 ABI是GCC 5.1 （2015年） 引入的**破坏性ABI变更**，目的是实
 ### ABI变更的本质
 
 ABI (Application Binary Interface) 定义了：
-- 数据类型的内存布局 (`sizeof`，成员偏移)
+- 数据类型的内存布局（`sizeof`，成员偏移）
 - 函数调用约定 （参数传递、返回值）
 - 符号命名规则
 - 异常处理机制
@@ -91,7 +91,7 @@ ABI兼容性问题分为三类：
 | 类型 | 说明 |
 |------|------|
 | `std::list<T>` | 所有 `list<T>` 的ABI都变化 |
-| `std::forward_list<T>` | **不受影响** (无 `size()` 方法，无ABI变化) |
+| `std::forward_list<T>` | **不受影响**（无 `size()` 方法，无ABI变化） |
 | `std::pmr::list<T>` | C++17 polymorphic allocator版本 |
 
 **受影响的 `std::list` 成员函数：**
@@ -161,7 +161,7 @@ ABI兼容性问题分为三类：
 | 类型 | 受影响的实例化 |
 |------|----------------|
 | `std::pair<T1, T2>` | `pair<string, T>`, `pair<T, string>` |
-| `std::tuple<Ts...>` | `tuple<string, ...>`, 任意元素为string |
+| `std::tuple<Ts...>` | `tuple<string, ...>`，任意元素为string |
 | `std::pair<std::list<T>, U>` | pair包含list |
 
 #### 智能指针
@@ -185,17 +185,17 @@ ABI兼容性问题分为三类：
 |------|----------------|
 | `std::optional<T>` | `optional<string>` |
 | `std::variant<Ts...>` | `variant<string, ...>` |
-| `std::any` | **总是受影响** (内部可能存储任意类型，包括string) |
+| `std::any` | **总是受影响**（内部可能存储任意类型，包括string） |
 | `std::expected<T, E>` (C++23) | `expected<string, E>`, `expected<T, string>` |
 
 #### C++17 filesystem
 
 | 类型 | 说明 |
 |------|------|
-| `std::filesystem::path` | **直接受影响** (内部使用string-like存储) |
-| `std::filesystem::directory_entry` | 受影响 (包含path) |
+| `std::filesystem::path` | **直接受影响**（内部使用string-like存储） |
+| `std::filesystem::directory_entry` | 受影响（包含path） |
 | `std::filesystem::path::iterator` | 受影响 |
-| `std::filesystem::space_info` | 不受影响 (仅size_t成员) |
+| `std::filesystem::space_info` | 不受影响（仅size_t成员） |
 | `std::filesystem::file_status` | 不受影响 |
 | `std::filesystem::file_type` | 不受影响 （枚举） |
 | `std::filesystem::perms` | 不受影响 （枚举） |
@@ -207,7 +207,7 @@ ABI兼容性问题分为三类：
 | `std::regex` | **直接受影响** (内部存储string pattern) |
 | `std::wregex` | **直接受影响** |
 | `std::regex_error` | **直接受影响** (继承exception，有string message) |
-| `std::sub_match<BidirIt>` | 受影响 (当匹配string时) |
+| `std::sub_match<BidirIt>` | 受影响（当匹配string时） |
 | `std::match_results<BidirIt>` | 受影响 |
 
 ---
@@ -218,7 +218,7 @@ ABI兼容性问题分为三类：
 
 | 类型 | 说明 |
 |------|------|
-| `int`, `float`, `double`, `char`, `bool` 等 | 基础类型ABI不变 |
+| `int`，`float`，`double`，`char`，`bool` 等 | 基础类型ABI不变 |
 | `std::complex<T>` | 不受影响 |
 | `std::array<T, N>` | 当T不是string/list时不受影响 |
 
@@ -270,18 +270,18 @@ ABI兼容性问题分为三类：
 | `std::ios_base::failure` | 继承runtime_error |
 | `std::system_error` | 继承runtime_error，存储string + error_code |
 | `std::future_error` | 继承logic_error |
-| `std::bad_exception` | 不受影响 (无string成员) |
-| `std::bad_alloc` | 不受影响 (无string成员) |
-| `std::bad_cast` | 不受影响 (无string成员) |
-| `std::bad_typeid` | 不受影响 (无string成员) |
-| `std::bad_function_call` | 不受影响 (无string成员) |
-| `std::bad_weak_ptr` | 不受影响 (无string成员) |
-| `std::bad_array_new_length` | 不受影响 (无string成员) |
-| `std::filesystem::filesystem_error` (C++17) | 受影响 (存储path) |
+| `std::bad_exception` | 不受影响（无string成员） |
+| `std::bad_alloc` | 不受影响（无string成员） |
+| `std::bad_cast` | 不受影响（无string成员） |
+| `std::bad_typeid` | 不受影响（无string成员） |
+| `std::bad_function_call` | 不受影响（无string成员） |
+| `std::bad_weak_ptr` | 不受影响（无string成员） |
+| `std::bad_array_new_length` | 不受影响（无string成员） |
+| `std::filesystem::filesystem_error` (C++17) | 受影响（存储path） |
 | `std::regex_error` (C++11) | 受影响 |
-| `std::bad_optional_access` (C++17) | 不受影响 (无string成员) |
-| `std::bad_variant_access` (C++17) | 不受影响 (无string成员) |
-| `std::bad_any_cast` (C++17) | 不受影响 (无string成员) |
+| `std::bad_optional_access` (C++17) | 不受影响（无string成员） |
+| `std::bad_variant_access` (C++17) | 不受影响（无string成员） |
+| `std::bad_any_cast` (C++17) | 不受影响（无string成员） |
 
 ---
 
@@ -410,8 +410,8 @@ nm -D /usr/lib/x86_64-linux-gnu/libstdc++.so.6 | grep __cxx11 | head -5
 ### 使用独立libtorch分发包
 
 torch-delegate使用独立libtorch而非Python wheel版，原因是：
-- 独立版本不导出STL符号 (避免与系统libstdc++冲突)
-- 明确标注ABI版本 (下载页面有 `_cxx11_abi` 或 `_pre_cxx11_abi` 后缀)
+- 独立版本不导出STL符号（避免与系统libstdc++冲突）
+- 明确标注ABI版本（下载页面有 `_cxx11_abi` 或 `_pre_cxx11_abi` 后缀）
 
 ---
 
@@ -456,8 +456,8 @@ torch-delegate使用独立libtorch而非Python wheel版，原因是：
 | **基础类型** | `int`, `float`, `double`, `char`, `bool`, `complex<T>` |
 | **容器 (元素不含string/list)** | `vector<int>`, `map<int, int>`, `unordered_map<int, int>` |
 | **forward_list** | `forward_list<T>` (无size() 方法，ABI不变) |
-| **string_view** | `string_view`, `wstring_view` （仅视图，无所有权） |
-| **span** | `span<T>` (C++20，仅视图) |
+| **string_view** | `string_view`，`wstring_view` （仅视图，无所有权） |
+| **span** | `span<T>`（C++20，仅视图） |
 | **bitset** | `bitset<N>` |
 | **chrono** | `duration`, `time_point`, `ratio` |
 | **无string成员的异常** | `exception`, `bad_alloc`, `bad_cast`, `bad_typeid`, `bad_function_call`, `bad_weak_ptr`, `bad_array_new_length`, `bad_optional_access`, `bad_variant_access`, `bad_any_cast` |
@@ -506,7 +506,7 @@ torch-delegate使用独立libtorch而非Python wheel版，原因是：
 | `std::pair` move constructor non-trivial | 4.7.0 - 4.7.1 | **已修复** (4.7.2) |
 | `complex::real()`/`imag()` 返回类型变化 | 4.4 - 4.7 | **已修复** (4.8.0 mangle不同) |
 | `map::erase()` 等返回类型从 `void` → `iterator` | 4.5 - 4.8.1 | **已修复** (4.8.2 mangle不同) |
-| `vector::data()` 返回类型从 `pointer` → `_Tp*` | 4.6+ | **兼容** (大多数allocator的 `pointer` 就是 `_Tp*`) |
+| `vector::data()` 返回类型从 `pointer` → `_Tp*` | 4.6+ | **兼容**（大多数allocator的 `pointer` 就是 `_Tp*`） |
 | `_Rb_tree_node<T>` alignment问题 | 4.9.0 - 5.1.0 | **已修复** (5.2) |
 
 ### 重要结论
@@ -547,7 +547,7 @@ void erase(iterator);
 iterator erase(const_iterator);  // 返回删除后的迭代器
 ```
 
-**影响**：`map`, `set`, `multimap`, `multiset` 的 `erase()` 方法。仅导出签名时不兼容。
+**影响**：`map`，`set`，`multimap`，`multiset` 的 `erase()` 方法。仅导出签名时不兼容。
 
 ### `std::vector::data()` 返回类型
 

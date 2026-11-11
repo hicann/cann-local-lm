@@ -39,7 +39,8 @@ This directory provides the complete NPU flow for epair export, loading, and acc
 
 ```bash
 # These two environment variables are required
-export TORCH_DELEGATE_ROOT=/mnt/workspace/File/torch-delegate
+# Root of the source repository (for whl installs, use torch-delegate-config --cmake-prefix to get the install prefix)
+export TORCH_DELEGATE_ROOT=/path/to/torch-delegate
 export ASCEND_HOME_PATH=/home/developer/Ascend/cann-9.2.0
 ```
 
@@ -227,5 +228,5 @@ cat $ASCEND_HOME_PATH/version.info
 | TorchDelegate source | `$TORCH_DELEGATE_ROOT/csrc/` |
 | Python API | `$TORCH_DELEGATE_ROOT/torch_delegate/api.py` |
 | epair format constants | `$TORCH_DELEGATE_ROOT/csrc/common/epair_archive_constants.h` |
-| C++ loading flow | `$TORCH_DELEGATE_ROOT/csrc/backend/delegate_session.cc` |
+| C++ loading flow | `$TORCH_DELEGATE_ROOT/csrc/backend/epair_model_loader.cc` |
 | Model definitions | `$TORCH_DELEGATE_ROOT/examples/inplace_input/models.py` |

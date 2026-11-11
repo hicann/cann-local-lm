@@ -69,7 +69,7 @@ def _resolve_tensor_device(compile_device: str | torch.device) -> torch.device:
     except ImportError as exc:
         raise RuntimeError(
             "NPU compile requires torch_npu and CANN runtime. "
-            "Please source ${CANN_ENV} first, or set ASCEND_HOME_PATH environment variable."
+            "Please source the CANN environment first (set_env.sh), or set the ASCEND_HOME_PATH environment variable."
         ) from exc
     return torch.device(compile_device)
 

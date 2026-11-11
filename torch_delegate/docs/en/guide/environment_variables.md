@@ -58,7 +58,7 @@ export TORCH_NPU_DIR=/path/to/libtorch_npu
 **Notes**:
 - The generated fallback code depends on `libtorch_npu.so`
 - Only required when Fallback Codegen is triggered; not validated when every node's `ascend_ir.source` is `converter`
-- Getting `libtorch_npu`: download the **v2.9.0 branch** source from the [Ascend/pytorch](https://gitcode.com/Ascend/pytorch) repository, then build it following the [libtorch_npu build guide](https://gitcode.com/Ascend/pytorch/blob/v2.7.1-7.3.0/docs/zh/installation_guide/building_libtorch_npu.md)
+- Getting `libtorch_npu`: download the **v2.9.0 branch** source from the [Ascend/pytorch](https://gitcode.com/Ascend/pytorch) repository, then build it following the [libtorch_npu build guide](https://gitcode.com/Ascend/pytorch/blob/master/docs/en/installation_guide/references/building_libtorch_npu.md)
 
 ---
 

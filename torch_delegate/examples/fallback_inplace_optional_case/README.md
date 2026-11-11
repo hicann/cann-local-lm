@@ -82,10 +82,10 @@ source ~/Ascend/cann/set_env.sh
 conda activate py311gcc13
 
 # 3. 设置 TORCH_NPU_DIR
-export TORCH_NPU_DIR=/mnt/workspace/gitCode/pta_comp/pytorch/libtorch_npu
+export TORCH_NPU_DIR=/path/to/libtorch_npu
 
 # 4. 执行测试
-cd /mnt/workspace/gitCode/air-de/torch-delegate/examples/fallback_inplace_optional_case
+cd /path/to/torch-delegate/examples/fallback_inplace_optional_case
 bash run.sh
 ```
 

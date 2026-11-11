@@ -158,18 +158,24 @@ epair_save(contents, "model.epair")
 ```cpp
 #include "torch_delegate/epair_model_loader.h"
 
-// Load the epair file
-td::EpairModelLoader loader;
-td::ModelHandle model_handle;
-td::Status status = loader.LoadEpair("model.epair", &model_handle);
+// Load the epair file (parsing and GE graph construction happen in the constructor)
+td::EpairModelLoader loader("model.epair");
 
 // FallbackCodegen is triggered automatically when GeGraphBuilder builds the graph
 // (requires TORCH_DELEGATE_ENABLE_FALLBACK_CODEGEN=1)
-loader.CompileAndLoad(options, stream);
+td::Status status = loader.CompileAndLoad(options, stream);
+if (status != td::SUCCESS) {
+    // Compile and load failed; report the error and return
+    return FAILED;
+}
 
 // Run inference
 std::vector<gert::Tensor> inputs, outputs;
-loader.RunModelWithStreamAsync(stream, inputs, outputs);
+status = loader.RunModelWithStreamAsync(stream, inputs, outputs);
+if (status != td::SUCCESS) {
+    // Inference failed; report the error and return
+    return FAILED;
+}
 ```
 
 ### Complete Example Code
@@ -184,43 +190,27 @@ For complete end-to-end examples, see:
 
 ## Working Modes
 
-Fallback Codegen supports two working modes: online mode and offline mode.
+Fallback Codegen uses an online compilation workflow: it generates code files, **compiles them immediately** to produce a `.so`, and **loads it dynamically** into the process.
 
-### Online Mode (Default)
-
-- **Behavior**: generates code files, **compiles immediately** to produce a `.so`, and **loads it dynamically** into the process
-- **On-disk artifacts**: uses a temporary directory by default (cleaned up after compilation); set `KEEP_ARTIFACTS=1` to keep them under `OUTPUT_DIR`
+- **On-disk artifacts**: uses a temporary directory by default (cleaned up after compilation); set `TORCH_DELEGATE_KEEP_ARTIFACTS=1` to keep them under `TORCH_DELEGATE_OUTPUT_DIR`
 - **Artifacts**:
-  - Default (`KEEP_ARTIFACTS=0`): only the in-memory `.so` handle (temporary files are cleaned up)
-  - Debug (`KEEP_ARTIFACTS=1`): `custom_op.cpp` (with g++ command in comments) + `CMakeLists.txt` + `libcust_opapi.so`
+  - Default (`TORCH_DELEGATE_KEEP_ARTIFACTS=0`): only the in-memory `.so` handle (temporary files are cleaned up)
+  - Debug (`TORCH_DELEGATE_KEEP_ARTIFACTS=1`): `custom_op.cpp` (with g++ command in comments) + `CMakeLists.txt` + `libcust_opapi.so`
 - **Use cases**: just-in-time compilation and execution, single-machine environments, rapid prototyping
-
-### Offline Mode
-
-- **Behavior**: generates code files (`.cpp` + `CMakeLists.txt`) but **does not compile**
-- **On-disk artifacts**: files must be written to `OUTPUT_DIR`
-- **Artifacts**:
-  - `custom_op.cpp` (GE custom operator implementation)
-  - `CMakeLists.txt` (build script)
-- **Use cases**: cross-machine deployment, version control, manual code modification, integration with an existing build system
 
 ### Behavior Matrix
 
-| Mode | `OFFLINE` | `KEEP_ARTIFACTS` | `OUTPUT_DIR` | On-disk files | Compilation | File retention |
-|------|-----------|------------------|--------------|---------|---------|---------|
-| **Offline** | `1` | — (ignored) | Configured value or default `./output_dir` | cpp + CMakeLists.txt | No compilation | Always kept |
-| **Online (default)** | `0` (default) | `0` (default) | — (ignored) | None (temporary directory) | g++ compile + dlopen | Temporary files cleaned up |
-| **Online (debug)** | `0` | `1` | Configured value or default `./output_dir` | cpp (with g++ comments) + CMakeLists.txt + .so | g++ compile + dlopen | Files kept |
+| `TORCH_DELEGATE_KEEP_ARTIFACTS` | `TORCH_DELEGATE_OUTPUT_DIR` | On-disk files | Compilation | File retention |
+|------|------|---------|---------|---------|
+| `0` (default) | — (ignored) | None (temporary directory) | g++ compile + dlopen | Temporary files cleaned up |
+| `1` | Configured value or default `./output_dir` | cpp (with g++ comments) + CMakeLists.txt + .so | g++ compile + dlopen | Files kept |
 
-### Choosing a Mode
+### Configuration Recommendations
 
-| Scenario | Recommended mode | Reason |
+| Scenario | Recommended configuration | Reason |
 |------|---------|------|
-| Single-machine development and debugging | Online mode | No manual compilation; fast iteration |
-| Cross-machine deployment | Offline mode | Build and run environments are separated |
-| CI/CD pipelines | Offline mode | Generated code can be version-controlled |
-| Inspecting generated code | Offline mode | View the .cpp files directly |
-| Debugging build issues | Online debug mode | Inspect the full g++ command |
+| Single-machine development and debugging | Default configuration | No manual compilation; fast iteration |
+| Debugging build issues | `TORCH_DELEGATE_KEEP_ARTIFACTS=1` | Inspect the full g++ command and generated code |
 
 ---
 
@@ -248,7 +238,6 @@ When any node needs fallback codegen, the following environment variables **must
 
 | Environment variable | Description | Default |
 |---------|------|--------|
-| `TORCH_DELEGATE_OFFLINE` | Working mode (`1`=offline, `0`=online) | `0` (online) |
 | `TORCH_DELEGATE_OUTPUT_DIR` | Location for on-disk files | `./output_dir` |
 | `TORCH_DELEGATE_KEEP_ARTIFACTS` | Whether to keep build artifacts in online mode (`1`/`true`/`TRUE`) | `0` (not kept) |
 
@@ -274,17 +263,12 @@ echo $ASCEND_HOME_PATH  # Output: /path/to/cann
 
 Environment variables are read according to the following precedence:
 
-**1. `OUTPUT_DIR`**:
+**1. `TORCH_DELEGATE_OUTPUT_DIR`**:
 ```text
 function argument > TORCH_DELEGATE_OUTPUT_DIR > default ./output_dir
 ```
 
-**2. `OFFLINE`**:
-```text
-TORCH_DELEGATE_OFFLINE > default 0 (online)
-```
-
-**3. `KEEP_ARTIFACTS`** (online mode only):
+**2. `TORCH_DELEGATE_KEEP_ARTIFACTS`**:
 ```text
 TORCH_DELEGATE_KEEP_ARTIFACTS > default 0 (not kept)
 ```
@@ -373,45 +357,6 @@ export TORCH_DELEGATE_ENABLE_FALLBACK_CODEGEN=1
 ./build.sh  # Codegen is not triggered; TORCH_PKG_DIR/TORCH_NPU_DIR are not validated
 ```
 
-### Offline Mode (Cross-Machine Deployment)
-
-**Use case**: the build environment and the run environment are separated, and compilation must be performed manually on the target machine.
-
-```bash
-# 1. Locate and set the required environment variables
-TORCH_CMAKE_DIR=$(python3 -c "import torch; import os; print(os.path.join(torch.__path__[0], 'share', 'cmake', 'Torch'))")
-export TORCH_PKG_DIR="${TORCH_CMAKE_DIR}"
-export TORCH_NPU_DIR=/path/to/libtorch_npu
-
-# 2. Set the CANN path (optional in offline mode, but recommended for CMakeLists.txt)
-source ~/Ascend/cann/set_env.sh
-
-# 3. Configure the output directory (optional)
-export TORCH_DELEGATE_OUTPUT_DIR=/path/to/output
-
-# 4. Enable fallback codegen (offline mode)
-export TORCH_DELEGATE_ENABLE_FALLBACK_CODEGEN=1
-export TORCH_DELEGATE_OFFLINE=1  # Default value; can be omitted
-
-# 5. Run the program to generate the code files
-./build.sh
-
-# Artifacts: /path/to/output/custom_op.cpp + CMakeLists.txt
-```
-
-**Compile later on the target machine**:
-
-```bash
-cd /path/to/output
-cmake -B build \
-  -DTorch_DIR=$TORCH_PKG_DIR \
-  -DTORCH_NPU_DIR=$TORCH_NPU_DIR \
-  -DASCEND_HOME_PATH=$ASCEND_HOME_PATH
-cmake --build build -j4
-
-# Artifact: build/libcustom_op.so
-```
-
 ### Online Mode (Just-in-Time Compilation and Execution)
 
 **Use case**: a single-machine environment where the build environment and the run environment are the same.
@@ -425,7 +370,6 @@ source ~/Ascend/cann/set_env.sh  # Sets ASCEND_HOME_PATH
 
 # 2. Enable fallback codegen (online mode)
 export TORCH_DELEGATE_ENABLE_FALLBACK_CODEGEN=1
-export TORCH_DELEGATE_OFFLINE=0
 
 # 3. Run the program; it compiles and loads automatically
 ./build.sh
@@ -443,7 +387,6 @@ export TORCH_DELEGATE_OFFLINE=0
 
 # 3. Enable online mode and keep artifacts
 export TORCH_DELEGATE_ENABLE_FALLBACK_CODEGEN=1
-export TORCH_DELEGATE_OFFLINE=0
 export TORCH_DELEGATE_KEEP_ARTIFACTS=1
 export TORCH_DELEGATE_OUTPUT_DIR=/tmp/fallback_debug
 
@@ -466,12 +409,12 @@ g++ -shared -fPIC ... -o libcust_opapi.so custom_op.cpp
 
 ### Quickly Verify the Generated Code
 
-**Use case**: you want to inspect the generated code without actually compiling it.
+**Use case**: you want to inspect the generated code files (codegen always runs the full compile-and-load flow; artifacts are kept for inspection).
 
 ```bash
-# Generate files using offline mode
+# Keep the build artifacts in a dedicated directory
 export TORCH_DELEGATE_ENABLE_FALLBACK_CODEGEN=1
-export TORCH_DELEGATE_OFFLINE=1
+export TORCH_DELEGATE_KEEP_ARTIFACTS=1
 export TORCH_DELEGATE_OUTPUT_DIR=/tmp/inspect_codegen
 
 ./build.sh
@@ -608,10 +551,10 @@ if (!codegen_result.success) {
 
 If online compilation fails, troubleshoot as follows:
 
-**1. Inspect the generated g++ command** (set `KEEP_ARTIFACTS=1`):
+**1. Inspect the generated g++ command** (set `TORCH_DELEGATE_KEEP_ARTIFACTS=1` and `TORCH_DELEGATE_OUTPUT_DIR`):
 
 ```bash
-head -10 $OUTPUT_DIR/custom_op.cpp
+head -10 $TORCH_DELEGATE_OUTPUT_DIR/custom_op.cpp
 ```
 
 **2. Run the g++ command manually**:
@@ -624,7 +567,7 @@ g++ -shared -fPIC ... -o test.so custom_op.cpp
 **3. Use the CMake method** (alternative):
 
 ```bash
-cd $OUTPUT_DIR
+cd $TORCH_DELEGATE_OUTPUT_DIR
 cmake -B build -DTorch_DIR=$TORCH_PKG_DIR ...
 cmake --build build -j4
 ```
@@ -639,33 +582,19 @@ ls $ASCEND_HOME_PATH/lib64/libascendcl.so  # Should exist
 
 ### Inspecting the Generated Code
 
-**Offline mode**:
+With `TORCH_DELEGATE_KEEP_ARTIFACTS=1`, the artifacts are kept under `TORCH_DELEGATE_OUTPUT_DIR`:
 
 ```bash
-cat $OUTPUT_DIR/custom_op.cpp
-cat $OUTPUT_DIR/CMakeLists.txt
-```
+cat $TORCH_DELEGATE_OUTPUT_DIR/custom_op.cpp
+cat $TORCH_DELEGATE_OUTPUT_DIR/CMakeLists.txt
 
-**Online debug mode** (with the g++ command in comments):
-
-```bash
 # The header of the generated cpp file contains the full g++ command
-head -20 $OUTPUT_DIR/custom_op.cpp
+head -20 $TORCH_DELEGATE_OUTPUT_DIR/custom_op.cpp
 ```
 
 ### About the Generated Files
 
-**`custom_op.cpp` generated in offline mode** (does not contain the g++ command):
-
-```cpp
-// AUTO-GENERATED by FallbackCodegen
-#include <torch/torch.h>
-#include <torch_npu/csrc/aten/common/from_blob.h>
-#include <acl/acl.h>
-...
-```
-
-**`custom_op.cpp` generated in online mode (debug)** (contains the full g++ command in comments):
+**Generated `custom_op.cpp`** (contains the full g++ command in the header comments):
 
 ```cpp
 // AUTO-GENERATED by FallbackCodegen
@@ -698,14 +627,11 @@ You can copy the g++ command directly to compile and debug manually, or use the 
 
 ### Compilation Overhead
 
-| Mode | First load | Subsequent loads |
-|------|---------|---------|
-| Offline mode | No compilation overhead (code generation only) | Must be compiled manually |
-| Online mode | Compilation overhead (a few seconds) | Can be cached (`KEEP_ARTIFACTS=1`) |
+Each codegen trigger runs the full "generate + g++ compile + dlopen load" flow. The first load adds a compilation overhead of a few seconds; there is no cross-process compilation cache.
 
-### Compilation Cache
+### Keeping Artifacts
 
-In online mode, if a `.so` file already exists in `OUTPUT_DIR`, it is not recompiled (it is loaded directly). In production environments, set `KEEP_ARTIFACTS=1` and use a fixed `OUTPUT_DIR` to take advantage of the cache.
+By default a temporary directory is used and cleaned up after loading; set `TORCH_DELEGATE_KEEP_ARTIFACTS=1` with a fixed `TORCH_DELEGATE_OUTPUT_DIR` to keep the generated files for troubleshooting.
 
 ### Runtime Overhead
 

@@ -12,8 +12,11 @@ set -e
 source /home/developer/miniforge3/etc/profile.d/conda.sh
 conda activate py311gcc13
 
-# 设置 CANN 路径
-export ASCEND_HOME_PATH=/mnt/workspace/gitCode/cann/cann-9.1.0
+# 检查 CANN 环境
+if [[ -z "${ASCEND_HOME_PATH:-}" ]]; then
+  echo "[error] ASCEND_HOME_PATH 未设置，请先 source CANN 环境"
+  exit 1
+fi
 
 # 确保 python3 在 PATH 中
 export PATH="/home/developer/miniforge3/envs/py311gcc13/bin:$PATH"

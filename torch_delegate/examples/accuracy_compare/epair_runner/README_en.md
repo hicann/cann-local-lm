@@ -31,7 +31,7 @@ epair_runner/
 | `ASCEND_HOME_PATH` | Yes | CANN installation path |
 | `TORCH_DELEGATE_ROOT` | Yes | TorchDelegate install directory |
 | `TORCH_PKG_DIR` | Yes | Python torch package directory |
-| `TORCH_NPU_DIR` | No | libtorch_npu source path (used for `LIBTORCH_NPU_ROOT`) |
+| `TORCH_NPU_DIR` | No | libtorch_npu source path |
 
 ## Build and Run
 

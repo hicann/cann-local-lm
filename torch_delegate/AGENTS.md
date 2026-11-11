@@ -13,7 +13,6 @@ torch-delegate/
 ├── csrc/                   ← C++ 源码（backend、common、fallback_codegen、对外头文件）
 ├── tests/                  ← 测试（python/ pytest、cpp/ GTest + CANN/GE stub）
 ├── examples/               ← 示例项目（导出加载、精度对比、异步执行等）
-├── openspec/               ← OpenSpec 变更管理
 ├── docs/                   ← 设计文档、构建指南、调研报告
 ├── build.sh                ← 一站式构建（产出单一 whl）
 ├── build_test.sh           ← 编译并运行测试（含 ASAN）

@@ -401,8 +401,8 @@ model.epair (ZIP 结构，兼容 PT2 格式)
 
 图转换由 `TorchAirGEConverter.convert_graph()` 委托 `torchair.ge.ge_graph_ascend._optimize_and_convert()` 完成。torchair负责图优化、算子分解和FX → GE转换，返回 `_GeGraphAscend` 对象，其中包含：
 
-- `optimized`: 优化后的 `ExportedProgram`
-- `ascend_ir_map`: `dict[str, _NodeIR]`，键为FX节点名，值为torchair内部 `_NodeIR`
+- `optimized`：优化后的 `ExportedProgram`
+- `ascend_ir_map`：`dict[str, _NodeIR]`，键为FX节点名，值为torchair内部 `_NodeIR`
 
 ```python
 def convert_graph(self, ep: ExportedProgram) -> ExportedProgram:

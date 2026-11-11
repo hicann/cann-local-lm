@@ -39,7 +39,8 @@
 
 ```bash
 # 必须设置这两个环境变量
-export TORCH_DELEGATE_ROOT=/mnt/workspace/File/torch-delegate
+# 源码仓根目录（whl 安装场景可用 torch-delegate-config --cmake-prefix 获取安装前缀）
+export TORCH_DELEGATE_ROOT=/path/to/torch-delegate
 export ASCEND_HOME_PATH=/home/developer/Ascend/cann-9.2.0
 ```
 
@@ -227,5 +228,5 @@ cat $ASCEND_HOME_PATH/version.info
 | TorchDelegate源码 | `$TORCH_DELEGATE_ROOT/csrc/` |
 | Python API | `$TORCH_DELEGATE_ROOT/torch_delegate/api.py` |
 | epair格式常量 | `$TORCH_DELEGATE_ROOT/csrc/common/epair_archive_constants.h` |
-| C++加载流程 | `$TORCH_DELEGATE_ROOT/csrc/backend/delegate_session.cc` |
+| C++加载流程 | `$TORCH_DELEGATE_ROOT/csrc/backend/epair_model_loader.cc` |
 | 模型定义 | `$TORCH_DELEGATE_ROOT/examples/inplace_input/models.py` |

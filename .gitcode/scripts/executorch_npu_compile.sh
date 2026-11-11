@@ -60,10 +60,19 @@ if [ ! -f /usr/include/openssl/evp.h ]; then
 fi
 
 # 4) torch 2.11.0+cpu (pytorch cpu index) + executorch 1.5.0 full wheel (huaweicloud)
-if ! timeout 600 "${VENV_PY}" -m pip install -q "torch==2.11.0+cpu" \
-    --index-url https://download.pytorch.org/whl/cpu \
-    --extra-index-url "${HUAWEI_INDEX}"; then
-    echo "deps FAIL: torch (pytorch.org 不可达?)"; exit 1
+# torch 2.11.0+cpu 首选 pytorch cpu index; pytorch.org 不可达时回退华为云 plain 2.11.0
+# (PyPI aarch64 torch wheel 即 CPU 构建, 功能等价; executorch/build.sh 不 pin +cpu 本地标签)
+# 探测选源 (10s 探测省 300s 超时等待; 2026-11-10 pytorch.org 对 ARM 池全天断实证)
+if curl -s -o /dev/null -m 10 --head https://download.pytorch.org/whl/cpu/; then
+    TORCH_ARGS="--index-url https://download.pytorch.org/whl/cpu --extra-index-url ${HUAWEI_INDEX}"
+else
+    echo "WARN: pytorch.org 探测不可达, 主源切 aliyun 镜像"
+    TORCH_ARGS="-f https://mirrors.aliyun.com/pytorch-wheels/cpu/ -i ${HUAWEI_INDEX}"
+fi
+if ! timeout 600 "${VENV_PY}" -m pip install -q "torch==2.11.0+cpu" ${TORCH_ARGS}; then
+    echo "WARN: +cpu 安装失败, 兜底华为云 torch==2.11.0 (aarch64 pypi wheel 即 CPU 构建)"
+    timeout 600 "${VENV_PY}" -m pip install -q "torch==2.11.0" -i "${HUAWEI_INDEX}" \
+        || { echo "deps FAIL: torch (多源均失败)"; exit 1; }
 fi
 if ! timeout 600 "${VENV_PY}" -m pip install -q "executorch==1.5.0" -i "${HUAWEI_INDEX}"; then
     echo "deps FAIL: executorch"; exit 1

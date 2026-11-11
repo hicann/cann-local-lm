@@ -48,6 +48,38 @@ if python3 -c "import torch,sys; sys.exit(0 if torch.__version__.split('+')[0]==
     PY_FLAGS="--system_python"
 fi
 
+# venv 路径预装依赖 (探测选源, 抗 pytorch.org 不可达——2026-11-10 实证全天断):
+# 1) 10s 探测 pytorch.org 选主源, 不通直接用 aliyun 镜像 (省 300s 超时等待)
+# 2) 预装全部 requirements (华为云稳定源): build.sh phase_venv 见依赖全满足即零联网,
+#    不再撞其内部硬编码的 pytorch.org 索引 (不可达时 pip 重试要浪费 ~5min)
+if [ -z "${PY_FLAGS}" ]; then
+    [ -d .venv ] || python3 -m venv .venv
+    VP=.venv/bin/python3
+    timeout 60 ${VP} -m pip install -q --upgrade pip -i https://repo.huaweicloud.com/repository/pypi/simple 2>/dev/null
+    # 源链: 探测选主源(pytorch.org/aliyun) → 另一源 → SJTU; 每源 300s 超时即换
+    # (2026-11-10 x86 池实证 pytorch.org 与 aliyun 同时劣化: 单源长等待不如多源快故障转移;
+    #  健康源 1-2min 装完, 300s 窗口充裕; SJTU 已实测含 2.9.0+cpu cp310/cp312 x86_64/aarch64)
+    if curl -s -o /dev/null -m 10 --head https://download.pytorch.org/whl/cpu/; then
+        SRC1="--index-url https://download.pytorch.org/whl/cpu --extra-index-url https://repo.huaweicloud.com/repository/pypi/simple"
+        SRC2="-f https://mirrors.aliyun.com/pytorch-wheels/cpu/ -i https://repo.huaweicloud.com/repository/pypi/simple"
+    else
+        echo "WARN: pytorch.org 探测不可达, 主源切 aliyun 镜像"
+        SRC1="-f https://mirrors.aliyun.com/pytorch-wheels/cpu/ -i https://repo.huaweicloud.com/repository/pypi/simple"
+        SRC2="--index-url https://download.pytorch.org/whl/cpu --extra-index-url https://repo.huaweicloud.com/repository/pypi/simple"
+    fi
+    SRC3="-f https://mirror.sjtu.edu.cn/pytorch-wheels/cpu/ -i https://repo.huaweicloud.com/repository/pypi/simple"
+    TORCH_OK=0
+    for SRC_ARGS in "$SRC1" "$SRC2" "$SRC3"; do
+        if timeout 300 ${VP} -m pip install -q "torch==2.9.0+cpu" ${SRC_ARGS}; then
+            TORCH_OK=1
+            break
+        fi
+        echo "WARN: torch 安装超时/失败, 换下一源"
+    done
+    [ ${TORCH_OK} -eq 1 ] || echo "WARN: torch 预装三源均失败, 交由后续脚本自行安装"
+    timeout 300 ${VP} -m pip install -q -r requirements.txt -i https://repo.huaweicloud.com/repository/pypi/simple 2>/dev/null || true
+fi
+
 echo "exec cmd: [bash build.sh ${PY_FLAGS}]"
 bash build.sh ${PY_FLAGS}
 ret=$?

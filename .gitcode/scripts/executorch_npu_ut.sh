@@ -24,6 +24,20 @@ set -x
 echo $(grep -E "^VERSION_ID=" /etc/os-release | cut -d'"' -f2)
 python3 --version
 
+# 早退: PR 未触碰 executorch_npu/** 且未触碰 torch_delegate/** 与 .gitcode/** 时跳过。
+# 涉及 torch_delegate 时仍要跑: executorch_npu 经 delegate_adapter 依赖 delegate 导出接口,
+# 接口漂移需被本 UT 捕获 (filelist 缺失/为空则照常跑, fail-safe 同 ge 惯例)
+FILELIST="${WORKSPACE}/pr_filelist.txt"
+if [ -s "${FILELIST}" ] && ! grep -qE "executorch_npu/|torch_delegate/|\.gitcode/" "${FILELIST}"; then
+    echo "UT_ExecuTorchNPU SKIP: PR 未改动 executorch_npu/**、torch_delegate/** 与 .gitcode/**, 与本 UT 无关"
+    # 占位报告: upload report 步骤 (if always) 找不到 report.xml 会置 job FAILED
+    cat > "${WORKSPACE}/executorch_npu/report.xml" <<'XML'
+<?xml version="1.0" encoding="utf-8"?>
+<testsuites><testsuite name="executorch_npu_ut" tests="1" skipped="1" failures="0" errors="0"><testcase name="early_exit_skipped"><skipped message="PR not touching executorch_npu/torch_delegate/.gitcode"/></testcase></testsuite></testsuites>
+XML
+    exit 0
+fi
+
 source /home/jenkins/Ascend/cann/bin/setenv.bash
 set +e
 
@@ -37,9 +51,20 @@ VENV_PY="${PWD}/.venv_ci/bin/python3"
 
 timeout 300 "${VENV_PY}" -m pip install -q --upgrade pip setuptools wheel \
     -i "${HUAWEI_INDEX}" || { echo "deps FAIL: pip base"; exit 1; }
-timeout 600 "${VENV_PY}" -m pip install -q "torch==2.11.0+cpu" \
-    --index-url https://download.pytorch.org/whl/cpu \
-    --extra-index-url "${HUAWEI_INDEX}" || { echo "deps FAIL: torch"; exit 1; }
+# torch 2.11.0+cpu 首选 pytorch cpu index; pytorch.org 不可达时回退华为云 plain 2.11.0
+# (PyPI aarch64 torch wheel 即 CPU 构建, 功能等价; executorch/build.sh 不 pin +cpu 本地标签)
+# 探测选源 (10s 探测省 300s 超时等待; 2026-11-10 pytorch.org 对 ARM 池全天断实证)
+if curl -s -o /dev/null -m 10 --head https://download.pytorch.org/whl/cpu/; then
+    TORCH_ARGS="--index-url https://download.pytorch.org/whl/cpu --extra-index-url ${HUAWEI_INDEX}"
+else
+    echo "WARN: pytorch.org 探测不可达, 主源切 aliyun 镜像"
+    TORCH_ARGS="-f https://mirrors.aliyun.com/pytorch-wheels/cpu/ -i ${HUAWEI_INDEX}"
+fi
+if ! timeout 600 "${VENV_PY}" -m pip install -q "torch==2.11.0+cpu" ${TORCH_ARGS}; then
+    echo "WARN: +cpu 安装失败, 兜底华为云 torch==2.11.0 (aarch64 pypi wheel 即 CPU 构建)"
+    timeout 600 "${VENV_PY}" -m pip install -q "torch==2.11.0" -i "${HUAWEI_INDEX}" \
+        || { echo "deps FAIL: torch (多源均失败)"; exit 1; }
+fi
 # protobuf: torchair import 时需要其包元数据 (torch_npu 未声明该依赖, 实测缺失致 P1 用例红)
 timeout 600 "${VENV_PY}" -m pip install -q \
     "executorch==1.5.0" "transformers==5.17.0" "protobuf<6" pytest jsonschema pydantic psutil \

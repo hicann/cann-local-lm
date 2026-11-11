@@ -21,6 +21,15 @@
 #   torchair 缺失时自动跳过依赖它的用例 (TORCHAIR_SKIP), 装好后无需改脚本即全量恢复。
 set -x
 echo $(grep -E "^VERSION_ID=" /etc/os-release | cut -d'"' -f2)
+
+# 早退: PR 未触碰 torch_delegate/** 与 .gitcode/** 时本 UT 无增量信号, 跳过节省资源
+# (filelist 缺失/为空则照常跑, fail-safe 同 ge 惯例; 与冒烟早退同一判据)
+FILELIST="${WORKSPACE}/pr_filelist.txt"
+if [ -s "${FILELIST}" ] && ! grep -qE "torch_delegate/|\.gitcode/" "${FILELIST}"; then
+    echo "UT_TorchDelegate SKIP: PR 未改动 torch_delegate/** 与 .gitcode/**, 与本 UT 无关"
+    exit 0
+fi
+
 if sudo update-alternatives --set gcc /usr/bin/gcc-16 2>/dev/null; then
     echo "Switched to gcc-16"
 elif sudo update-alternatives --set gcc /usr/bin/gcc-15 2>/dev/null; then
@@ -49,24 +58,35 @@ fi
 
 FAIL=0
 
-# venv 路径预装 torch(带重试): download.pytorch.org 在 UT 池偶发不可达(pip 内部重试
-# 不足以覆盖节点级网络故障), 预装成功后 build_test.sh 复用已有 .venv,
-# requirements 里 torch==2.9.0+cpu 已满足即跳过, 其余依赖走稳定的 huaweicloud 源
+# venv 路径预装依赖 (探测选源, 抗 pytorch.org 不可达——2026-11-10 实证全天断):
+# 10s 探测选主源(pytorch.org/aliyun), 失败换另一源; 再预装全部 requirements(华为云),
+# build_test.sh phase_venv 见依赖全满足即零联网 (否则其内部 pip 撞 pytorch.org 浪费 ~5min)
 if [ -z "${PY_FLAGS}" ]; then
-    for attempt in 1 2; do
-        echo "预装 torch 到 .venv (attempt ${attempt})..."
-        python3 -m venv .venv
-        if timeout 600 "${PWD}/.venv/bin/python3" -m pip install -q --upgrade pip \
-            -i https://repo.huaweicloud.com/repository/pypi/simple \
-           && timeout 600 "${PWD}/.venv/bin/python3" -m pip install -q "torch==2.9.0+cpu" \
-            --index-url https://download.pytorch.org/whl/cpu \
-            --extra-index-url https://repo.huaweicloud.com/repository/pypi/simple; then
-            echo "torch 预装 OK"
+    [ -d .venv ] || python3 -m venv .venv
+    VP="${PWD}/.venv/bin/python3"
+    timeout 60 ${VP} -m pip install -q --upgrade pip -i https://repo.huaweicloud.com/repository/pypi/simple 2>/dev/null
+    # 源链: 探测选主源(pytorch.org/aliyun) → 另一源 → SJTU; 每源 300s 超时即换
+    # (2026-11-10 x86 池实证 pytorch.org 与 aliyun 同时劣化: 单源长等待不如多源快故障转移;
+    #  健康源 1-2min 装完, 300s 窗口充裕; SJTU 已实测含 2.9.0+cpu cp310/cp312 x86_64/aarch64)
+    if curl -s -o /dev/null -m 10 --head https://download.pytorch.org/whl/cpu/; then
+        SRC1="--index-url https://download.pytorch.org/whl/cpu --extra-index-url https://repo.huaweicloud.com/repository/pypi/simple"
+        SRC2="-f https://mirrors.aliyun.com/pytorch-wheels/cpu/ -i https://repo.huaweicloud.com/repository/pypi/simple"
+    else
+        echo "WARN: pytorch.org 探测不可达, 主源切 aliyun 镜像"
+        SRC1="-f https://mirrors.aliyun.com/pytorch-wheels/cpu/ -i https://repo.huaweicloud.com/repository/pypi/simple"
+        SRC2="--index-url https://download.pytorch.org/whl/cpu --extra-index-url https://repo.huaweicloud.com/repository/pypi/simple"
+    fi
+    SRC3="-f https://mirror.sjtu.edu.cn/pytorch-wheels/cpu/ -i https://repo.huaweicloud.com/repository/pypi/simple"
+    TORCH_OK=0
+    for SRC_ARGS in "$SRC1" "$SRC2" "$SRC3"; do
+        if timeout 300 ${VP} -m pip install -q "torch==2.9.0+cpu" ${SRC_ARGS}; then
+            TORCH_OK=1
             break
         fi
-        echo "torch 预装失败 (attempt ${attempt})"
-        rm -rf .venv
+        echo "WARN: torch 安装超时/失败, 换下一源"
     done
+    [ ${TORCH_OK} -eq 1 ] || echo "WARN: torch 预装三源均失败, 交由后续脚本自行安装"
+    timeout 300 ${VP} -m pip install -q -r requirements.txt -i https://repo.huaweicloud.com/repository/pypi/simple 2>/dev/null || true
 fi
 
 echo "=== [1/2] torch_delegate C++ UT (build_test.sh, GTest + ASAN) ==="

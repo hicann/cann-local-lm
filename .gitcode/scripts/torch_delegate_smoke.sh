@@ -28,6 +28,9 @@ RET=0
 FILELIST="${WORKSPACE}/pr_filelist.txt"
 if [ -s "${FILELIST}" ] && ! grep -qE "torch_delegate/|\.gitcode/" "${FILELIST}"; then
     echo "SMOKE SKIP: PR 未改动 torch_delegate/** 与 .gitcode/**, 与本 PR 无关"
+    # 占位 slog: upload 步骤 (if always) glob slog*.tar.gz 零匹配会置 job FAILED
+    echo "SMOKE SKIP: PR not touching torch_delegate/.gitcode" > "${WORKSPACE}/smoke_skip.txt"
+    tar -czf "${WORKSPACE}/slog_skip.tar.gz" -C "${WORKSPACE}" smoke_skip.txt 2>/dev/null
     exit 0
 fi
 

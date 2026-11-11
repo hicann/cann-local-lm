@@ -28,7 +28,7 @@ torch_delegate.cmake_prefix()   # C++ artifact prefix, can be added directly to 
 
 Equivalent CLI: `torch-delegate-config --cmake-prefix` / `torch-delegate-config --version`.
 
-> Full export mode depends on `torchair` provided by `torch_npu`. The whl only declares `torch>=2.9` and does not install `torch_npu` automatically; when it is missing, `export_to_epair()` raises a `RuntimeError` and prompts you to install a matching version. For environments without a CANN runtime, use [Lite export mode](#experimental-feature-lite-export-mode-no-cann-runtime).
+> Full export mode depends on `torchair` provided by `torch_npu`. Since the whl declares no runtime dependencies, pip installs neither `torch` nor `torch_npu` automatically: pre-install `torch>=2.9.0` in the environment where you install the whl, then install a matching `torch_npu`; when `torch_npu` is missing, `export_to_epair()` raises a `RuntimeError` and prompts you to install a matching version. For environments without a CANN runtime, use [Lite export mode](#experimental-feature-lite-export-mode-no-cann-runtime).
 
 **Experimental feature (Lite export mode) imports:**
 

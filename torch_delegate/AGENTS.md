@@ -161,4 +161,4 @@ TorchDelegate 使用 `ErrorResult` 结构体实现自动返回值类型推导，
 - **版本号单一来源**：`build.conf` 的 `TORCH_DELEGATE_VERSION` 是唯一来源，构建时经 `TORCH_DELEGATE_PACKAGE_VERSION` 注入 whl 元数据与 `torch_delegate/_version.py`，CMake 用同一变量；`pyproject.toml` 使用 dynamic version，不得硬编码版本号。debug 构建追加 PEP 440 local version `+debug`。
 - **多 Python 版本**：whl 的 tag 固定 `py3-none`（动态库不链接 libpython），单包覆盖 3.10~3.13；`requires-python = ">=3.10,<3.14"`。
 - **不提供 set_env.sh**：C++ 前缀通过 `torch_delegate.cmake_prefix()` 或 `torch-delegate-config --cmake-prefix` 获取；运行期 `LD_LIBRARY_PATH`（libtorch、CANN）由用户按 docs/zh/guide/build.md 手动配置，动态库不注入指向 torch/CANN 的 RUNPATH。
-- **依赖声明**：whl 只声明 `torch>=2.9`；`torch_npu`（提供 `torchair`）由用户自行安装配套版本，运行期缺失时直接报错，不自动安装。
+- **依赖声明**：whl 不声明任何运行时依赖（由 `test_wheel_package.py` 守护此行为）；环境依赖 `torch>=2.9.0`，完整导出模式另需配套 `torch_npu`，均由用户预装。

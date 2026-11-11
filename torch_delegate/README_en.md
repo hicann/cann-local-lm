@@ -72,6 +72,8 @@ source ${HOME}/Ascend/cann/set_env.sh
 pip install output/package/torch_delegate-*-py3-none-linux_*.whl
 ```
 
+> Environment dependency: torch>=2.9.0 (the whl does not install it automatically; pre-install it into the current Python environment). See [docs/en/guide/build.md "whl Installation and Usage"](docs/en/guide/build.md#whl-installation-and-usage).
+
 C++ prefix and runtime library paths (the whl no longer ships `set_env.sh`):
 
 ```bash

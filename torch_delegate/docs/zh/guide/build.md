@@ -214,6 +214,7 @@ pip install output/package/torch_delegate-<version>-py3-none-linux_<arch>.whl
 ```
 
 - 平台标签为 `linux_x86_64` / `linux_aarch64`；Python/ABI标签固定 `py3-none`，同一个whl可安装进Python 3.10 ~ 3.13，无需按版本分别构建。
+- 环境依赖：`torch>=2.9.0`（whl不自动安装，Python API导入与运行期都依赖它，需预装到安装whl的环境）。
 - `torch_npu` 不在依赖中自动安装：完整导出模式需要它（提供 `torchair`），请自行安装与 `torch` 配套的版本（`torch_npu>=2.9.0`）；缺失时导出直接报错，不静默降级。
 - debug构建的版本号带 `+debug` 后缀（如 `0.1.0+debug`）。
 

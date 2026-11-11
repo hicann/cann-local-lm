@@ -28,7 +28,7 @@ torch_delegate.cmake_prefix()   # C++ 制品前缀，可直接加入 CMAKE_PREFI
 
 等价CLI：`torch-delegate-config --cmake-prefix` / `torch-delegate-config --version`。
 
-> 完整导出模式依赖 `torch_npu` 提供的 `torchair`。whl只声明 `torch>=2.9`，不会自动安装 `torch_npu`；缺失时 `export_to_epair()` 抛出 `RuntimeError` 并提示安装配套版本。无CANN运行时的场景请使用 [Lite导出模式](#实验特性lite导出模式无cann运行时)。
+> 完整导出模式依赖 `torch_npu` 提供的 `torchair`，由于 whl 未声明运行时依赖，pip不会自动安装 `torch` 与 `torch_npu`。请先在安装whl的环境中预装 `torch>=2.9.0`，再安装配套的 `torch_npu`；缺失 `torch_npu` 时，`export_to_epair()` 会抛出 `RuntimeError` 并提示安装配套版本。无CANN运行时的场景请使用 [Lite导出模式](#实验特性lite导出模式无cann运行时)。
 
 **实验特性（Lite导出模式）导入：**
 

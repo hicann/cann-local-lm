@@ -214,6 +214,7 @@ pip install output/package/torch_delegate-<version>-py3-none-linux_<arch>.whl
 ```
 
 - Platform tags are `linux_x86_64` / `linux_aarch64`; Python/ABI tags are fixed to `py3-none`, so the same whl can be installed into Python 3.10 ~ 3.13 without building separately per version.
+- Environment dependency: `torch>=2.9.0` (the whl does not install it automatically; both the Python API import and the runtime depend on it, so pre-install it into the environment where you install the whl).
 - `torch_npu` is not installed automatically as a dependency: the full export mode requires it (it provides `torchair`), so install the version matching `torch` yourself (`torch_npu>=2.9.0`); when missing, export fails immediately instead of degrading silently.
 - Debug builds have a `+debug` suffix in the version number (e.g. `0.1.0+debug`).
 

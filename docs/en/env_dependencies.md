@@ -254,14 +254,14 @@ Look up "which Part 1 section + which Part 2 section" from the task:
 
 | I want to | which env to source | Part 1 build deps | Part 2 runtime deps | NPU/GPU needed? |
 |--------|----------------|---------------|---------------|------------|
-| Compile cann_lm_compile + build whl/.run | `source scripts/set_env.sh` | §1.1 + §1.2 CANN | — | No |
+| Compile cann_lm_compile + build whl/.run | `source scripts/cann_lm_compile/set_env.sh` | §1.1 + §1.2 CANN | — | No |
 | ③a engine .so (HarmonyOS cross) | root `bash build.sh --pkg` | §1.1 + §1.3 OHOS toolkit | — | No |
 | UT build + run | `bash build.sh -u` | §1.1 + §1.2 + §1.4 ASAN | — | No |
-| ① Export epair (converter) | `source scripts/set_env.sh` | — | §1.2 CANN + §2.1 P1 venv | No |
-| ② kirinx90 omc compilation | source CANN set_env.sh + source scripts/set_env.sh (SOC_VERSION=KirinX90) | — | §1.2 CANN + §2.1 P1 venv (TBE/tvm) | No |
-| Quantization Step A (dopt GPTQ) | `source scripts/set_env_cann.sh --npu` (or GPU env) | — | §2.2 P2 (NPU or GPU) | NPU or GPU |
-| Quantization Step B (converter consumption) | `source scripts/set_env.sh` | — | §1.2 CANN + §2.1 P1 venv | No |
-| ③ NPU text generation (numerical verification) | `source scripts/set_env_cann.sh --npu` | — | §1.2 CANN + §2.2 P2 | NPU |
+| ① Export epair (converter) | `source scripts/cann_lm_compile/set_env.sh` | — | §1.2 CANN + §2.1 P1 venv | No |
+| ② kirinx90 omc compilation | source CANN set_env.sh + source scripts/cann_lm_compile/set_env.sh (SOC_VERSION=KirinX90) | — | §1.2 CANN + §2.1 P1 venv (TBE/tvm) | No |
+| Quantization Step A (dopt GPTQ) | `source scripts/cann_lm_compile/set_env_cann.sh --npu` (or GPU env) | — | §2.2 P2 (NPU or GPU) | NPU or GPU |
+| Quantization Step B (converter consumption) | `source scripts/cann_lm_compile/set_env.sh` | — | §1.2 CANN + §2.1 P1 venv | No |
+| ③ NPU text generation (numerical verification) | `source scripts/cann_lm_compile/set_env_cann.sh --npu` | — | §1.2 CANN + §2.2 P2 | NPU |
 | ③b/c Kirin device text generation | `cann_local_lm.generate` on device | — | §2.3 device side | Kirin device |
 | Release full packaging | root `bash build.sh --pkg` | Part 1 all (§1.1-1.4) | — | No |
 

@@ -254,14 +254,14 @@ pip install torchaudio==2.9.0 --force-reinstall --no-deps --user   # 装到 ~/.l
 
 | 我想做 | source哪个env | Part 1构建依赖 | Part 2运行依赖 | 需NPU/GPU? |
 |--------|----------------|---------------|---------------|------------|
-| 编cann_lm_compile + 打whl/.run | `source scripts/set_env.sh` | §1.1 + §1.2 CANN | — | 否 |
+| 编cann_lm_compile + 打whl/.run | `source scripts/cann_lm_compile/set_env.sh` | §1.1 + §1.2 CANN | — | 否 |
 | ③a engine .so（鸿蒙交叉） | 根 `bash build.sh --pkg` | §1.1 + §1.3 OHOS套件 | — | 否 |
 | UT构建 + 运行 | `bash build.sh -u` | §1.1 + §1.2 + §1.4 ASAN | — | 否 |
-| ① 导出epair（converter） | `source scripts/set_env.sh` | — | §1.2 CANN + §2.1 P1 venv | 否 |
-| ② kirinx90 omc编译 | source CANN set_env.sh + source scripts/set_env.sh（SOC_VERSION=KirinX90） | — | §1.2 CANN + §2.1 P1 venv（TBE/tvm） | 否 |
-| 量化Step A（dopt GPTQ） | `source scripts/set_env_cann.sh --npu`（或GPU env） | — | §2.2 P2（NPU或GPU） | NPU或GPU |
-| 量化Step B（converter消费） | `source scripts/set_env.sh` | — | §1.2 CANN + §2.1 P1 venv | 否 |
-| ③ NPU出字（数值验证） | `source scripts/set_env_cann.sh --npu` | — | §1.2 CANN + §2.2 P2 | NPU |
+| ① 导出epair（converter） | `source scripts/cann_lm_compile/set_env.sh` | — | §1.2 CANN + §2.1 P1 venv | 否 |
+| ② kirinx90 omc编译 | source CANN set_env.sh + source scripts/cann_lm_compile/set_env.sh（SOC_VERSION=KirinX90） | — | §1.2 CANN + §2.1 P1 venv（TBE/tvm） | 否 |
+| 量化Step A（dopt GPTQ） | `source scripts/cann_lm_compile/set_env_cann.sh --npu`（或GPU env） | — | §2.2 P2（NPU或GPU） | NPU或GPU |
+| 量化Step B（converter消费） | `source scripts/cann_lm_compile/set_env.sh` | — | §1.2 CANN + §2.1 P1 venv | 否 |
+| ③ NPU出字（数值验证） | `source scripts/cann_lm_compile/set_env_cann.sh --npu` | — | §1.2 CANN + §2.2 P2 | NPU |
 | ③b/c Kirin设备出字 | 设备上 `cann_local_lm.generate` | — | §2.3设备侧 | Kirin设备 |
 | 发版全量打包 | 根 `bash build.sh --pkg` | Part 1全装（§1.1-1.4） | — | 否 |
 

@@ -57,6 +57,9 @@ stages:
         container:
           image: swr.cn-north-4.myhuaweicloud.com/ci_cann/ubuntu20.04.05_x86:k8s_v1.1006
       JOB_pre:
+        permissions:
+          repository: read
+          id-token: write
         name: Test_PreBuild
         uses: cann/.gitcode/.gitcode/workflows/pre_action.yml@master
     pre:
@@ -68,12 +71,18 @@ stages:
     jobs:
       # 本仓无codecheck,以codecheck用codecheck_dt的规则集代替
       JOB_codecheck:
+        permissions:
+          repository: read
+          id-token: write
         name: CodeCheck
         uses: cann/.gitcode/.gitcode/workflows/codecheck_action.yml@master
         with:
           precommit_image_version: ${{ jobs.JOB_image.outputs.precommit }}
           codecheck_image_version: ${{ jobs.JOB_image.outputs.codecheck }}
       JOB_staticcheck_md_check:
+        permissions:
+          repository: read
+          id-token: write
         name: CodeCheck_staticcheck_md_check
         uses: .gitcode/workflows/staticcheck_action.yml
         with:
@@ -87,6 +96,9 @@ stages:
     name: Compile
     jobs:
       JOB_x86_compile:
+        permissions:
+          repository: read
+          id-token: write
         name: Compile_Ascend_X86
         uses: .gitcode/workflows/compile_action.yml
         with:
@@ -95,6 +107,9 @@ stages:
           arch: 'x64'
           package_name: 'cann_local_lm_x86_64.tar.gz'
       JOB_arm_compile:
+        permissions:
+          repository: read
+          id-token: write
         name: Compile_Ascend_ARM
         uses: .gitcode/workflows/compile_action.yml
         with:
@@ -103,6 +118,9 @@ stages:
           arch: 'arm64'
           package_name: 'cann_local_lm_aarch64.tar.gz'
       JOB_torch_delegate_x86_compile:
+        permissions:
+          repository: read
+          id-token: write
         name: Compile_TorchDelegate_X86
         uses: .gitcode/workflows/torch_delegate_compile_action.yml
         with:
@@ -110,6 +128,9 @@ stages:
           image_version: ${{ jobs.JOB_image.outputs.Compile_TorchDelegate_X86 }}
           arch: 'x64'
       JOB_torch_delegate_arm_compile:
+        permissions:
+          repository: read
+          id-token: write
         name: Compile_TorchDelegate_ARM
         uses: .gitcode/workflows/torch_delegate_compile_action.yml
         with:
@@ -119,6 +140,9 @@ stages:
       # 镜像复用已注册的 Compile_TorchDelegate_ARM output (同一 ARM ndk 镜像,
       # 不新增 image-conf 条目); python 依赖栈由脚本运行时安装
       JOB_executorch_npu_arm_compile:
+        permissions:
+          repository: read
+          id-token: write
         name: Compile_ExecuTorchNPU_ARM
         uses: .gitcode/workflows/executorch_npu_compile_action.yml
         with:
@@ -133,6 +157,9 @@ stages:
     name: UT
     jobs:
       JOB_UT_Test:
+        permissions:
+          repository: read
+          id-token: write
         name: UT_Test
         uses: .gitcode/workflows/ut_action.yml
         with:
@@ -140,6 +167,9 @@ stages:
           ut_package: 'coverage_*.info'
           image_version: ${{ jobs.JOB_image.outputs.UT_Test }}
       JOB_torch_delegate_ut:
+        permissions:
+          repository: read
+          id-token: write
         name: UT_TorchDelegate
         uses: .gitcode/workflows/torch_delegate_ut_action.yml
         with:
@@ -147,6 +177,9 @@ stages:
           image_version: ${{ jobs.JOB_image.outputs.UT_TorchDelegate }}
       # 镜像复用已注册的 Compile_TorchDelegate_ARM output (ARM ndk, 同上)
       JOB_executorch_npu_ut:
+        permissions:
+          repository: read
+          id-token: write
         name: UT_ExecuTorchNPU
         uses: .gitcode/workflows/executorch_npu_ut_action.yml
         with:
@@ -160,6 +193,9 @@ stages:
     name: Smoke
     jobs:
       JOB_torch_delegate_smoke:
+        permissions:
+          repository: read
+          id-token: write
         name: Smoke_TorchDelegate_A2
         uses: .gitcode/workflows/torch_delegate_smoke_action.yml
         with:

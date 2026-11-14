@@ -58,8 +58,8 @@ GE 图模式
 
 | 组件 | 版本要求 | 说明 |
 |------|---------|------|
-| PyTorch | >= 2.9.0 | 提供Dispatcher、torch.library、torch.export |
-| torch_npu | 与PyTorch配套 | 提供NPU设备后端、from_blob零拷贝 |
+| PyTorch | 2.9 ~ 2.14 | 提供Dispatcher、torch.library、torch.export |
+| torch_npu | 与PyTorch配套，源码编译产出的libtorch_npu | 提供NPU设备后端、from_blob零拷贝；**不支持pip wheel版 `torch_npu`**（含 `--system_python` 环境里pip安装的） |
 | CANN | >= 9.2.0 | 提供GeSession、ACL runtime、NamedIoNodeBuilder |
 | g++ | 支持C++17 | 在线模式编译必需 |
 

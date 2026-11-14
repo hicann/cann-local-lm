@@ -12,7 +12,7 @@
 | make | GNU Make | `build_third_party.sh` 会显式检查；随 `build-essential` 安装 |
 | pip | | `--system_python` 模式必需；默认模式下由 `python3-venv` 自带 |
 | python3-venv | | 构建时自动创建虚拟环境所需 |
-| torch (CPU) | 2.9.0 | 由 `build.sh` 自动安装到 `.venv`|
+| torch (CPU) | 2.9 ~ 2.14 | `build.sh` 自动安装 `build.conf` 中 `TORCH_VERSION` 指定的版本（当前 `2.9.0`）到 `.venv`|
 | CANN | 见下方安装说明 | 路径通过 `ASCEND_HOME_PATH` 环境变量指定 |
 | libasan | 与gcc版本匹配 | AddressSanitizer运行时库，`build_test.sh` 默认启用ASAN，通过 `gcc -print-file-name=libasan.so` 推导路径并 `LD_PRELOAD` 加载；缺失则ASAN无法正常工作。包名随gcc主版本变化：以gcc 7.5.0为例对应 `libasan4`，gcc 13对应 `libasan8`，其他版本请安装对应版本asan |
 

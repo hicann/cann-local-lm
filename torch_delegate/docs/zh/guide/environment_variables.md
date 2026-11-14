@@ -46,9 +46,9 @@ export TORCH_PKG_DIR=$(python3 -c "import torch, os; print(os.path.dirname(torch
 
 ## `TORCH_NPU_DIR`
 
-**作用**：指向torch_npu库目录，用于g++编译时查找 `libtorch_npu.so` 和头文件。
+**作用**：指向**libtorch_npu**安装目录，用于g++编译时查找 `libtorch_npu.so` 和头文件。
 
-**取值**：torch_npu库目录（包含 `lib/libtorch_npu.so` 和 `include/` 子目录）。
+**取值**：源码编译产出的libtorch_npu目录（包含 `lib/libtorch_npu.so` 和 `include/` 子目录）。
 
 **示例**：
 ```bash
@@ -58,6 +58,8 @@ export TORCH_NPU_DIR=/path/to/libtorch_npu
 **说明**：
 - 生成的fallback代码依赖 `libtorch_npu.so`
 - 仅在Fallback Codegen触发时必需；所有节点的 `ascend_ir.source` 为 `converter` 时不校验
+- **不支持pip wheel版的 `torch_npu`**；`--system_python` 模式下环境里pip安装的 `torch_npu` 同样不可用
+- `build.sh --with_libtorch_npu` 按 `build.conf` 的 `LIBTORCH_NPU_BRANCH`（当前 `v2.9.0`）从源码编译到 `third_party/lib/libtorch_npu`；不使用build脚本时需自行编译libtorch_npu并把本变量指向它
 - 获取 `libtorch_npu`：从 [Ascend/pytorch](https://gitcode.com/Ascend/pytorch) 仓库下载 **v2.9.0分支**源码后，按 [libtorch_npu编译指南](https://gitcode.com/Ascend/pytorch/blob/master/docs/zh/installation_guide/references/building_libtorch_npu.md) 编译产出
 
 ---

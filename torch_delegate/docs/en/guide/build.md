@@ -12,7 +12,7 @@ This document describes the one-stop build process for TorchDelegate, including 
 | make | GNU Make | Explicitly checked by `build_third_party.sh`; installed with `build-essential` |
 | pip | | Required in `--system_python` mode; in the default mode it comes with `python3-venv` |
 | python3-venv | | Needed to automatically create the virtual environment during the build |
-| torch (CPU) | 2.9.0 | Automatically installed into `.venv` by `build.sh` |
+| torch (CPU) | 2.9 ~ 2.14 | `build.sh` installs the version given by `TORCH_VERSION` in `build.conf` (currently `2.9.0`) into `.venv` |
 | CANN | See the installation instructions below | The path is specified through the `ASCEND_HOME_PATH` environment variable |
 | libasan | Matches the gcc version | AddressSanitizer runtime library. `build_test.sh` enables ASAN by default, derives the path via `gcc -print-file-name=libasan.so` and loads it via `LD_PRELOAD`; ASAN will not work without it. The package name changes with the gcc major version: gcc 7.5.0 corresponds to `libasan4`, gcc 13 to `libasan8`; for other versions, install the matching asan version |
 

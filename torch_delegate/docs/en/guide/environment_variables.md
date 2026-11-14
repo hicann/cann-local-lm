@@ -46,9 +46,9 @@ export TORCH_PKG_DIR=$(python3 -c "import torch, os; print(os.path.dirname(torch
 
 ## `TORCH_NPU_DIR`
 
-**Purpose**: points to the torch_npu library directory. It is used by g++ to locate `libtorch_npu.so` and headers during compilation.
+**Purpose**: points to the **libtorch_npu** installation directory. It is used by g++ to locate `libtorch_npu.so` and headers during compilation.
 
-**Value**: torch_npu library directory (contains the `lib/libtorch_npu.so` and `include/` subdirectories).
+**Value**: a libtorch_npu directory built from source (contains the `lib/libtorch_npu.so` and `include/` subdirectories).
 
 **Example**:
 ```bash
@@ -58,6 +58,8 @@ export TORCH_NPU_DIR=/path/to/libtorch_npu
 **Notes**:
 - The generated fallback code depends on `libtorch_npu.so`
 - Only required when Fallback Codegen is triggered; not validated when every node's `ascend_ir.source` is `converter`
+- **The `torch_npu` pip wheel is not supported**; in `--system_python` mode the pip-installed `torch_npu` in that environment cannot be used either
+- `build.sh --with_libtorch_npu` builds libtorch_npu from source into `third_party/lib/libtorch_npu`, using `LIBTORCH_NPU_BRANCH` from `build.conf` (currently `v2.9.0`); when the build script is not used, build libtorch_npu yourself and point this variable at it
 - Getting `libtorch_npu`: download the **v2.9.0 branch** source from the [Ascend/pytorch](https://gitcode.com/Ascend/pytorch) repository, then build it following the [libtorch_npu build guide](https://gitcode.com/Ascend/pytorch/blob/master/docs/en/installation_guide/references/building_libtorch_npu.md)
 
 ---

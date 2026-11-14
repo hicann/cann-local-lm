@@ -58,8 +58,8 @@ GE graph mode
 
 | Component | Version requirement | Notes |
 |------|---------|------|
-| PyTorch | >= 2.9.0 | Provides Dispatcher, torch.library, torch.export |
-| torch_npu | Matching PyTorch | Provides the NPU device backend and from_blob zero copy |
+| PyTorch | 2.9 ~ 2.14 | Provides Dispatcher, torch.library, torch.export |
+| torch_npu | Matching PyTorch, a libtorch_npu built from source | Provides the NPU device backend and from_blob zero copy; **the `torch_npu` pip wheel is not supported** (including the pip-installed one in a `--system_python` environment) |
 | CANN | >= 9.2.0 | Provides GeSession, ACL runtime, NamedIoNodeBuilder |
 | g++ | C++17 support | Required for online-mode compilation |
 

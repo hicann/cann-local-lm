@@ -109,8 +109,9 @@ def epair_load(f: str | os.PathLike) -> EpairContents:
 from torch_delegate.epair import EpairConfig
 
 config = EpairConfig(
-    remove_noop_ops=True,       # 移除无操作算子（默认 True）
-    pattern_fusion_pass=True,   # 模式融合优化（默认 True）
+    remove_noop_ops=True,        # 移除无操作算子（默认 True）
+    pattern_fusion_pass=True,    # 模式融合优化（默认 True）
+    require_aten_on_npu=False,   # aten算子落到CPU时是否报错（默认 False，仅告警）
     whitelist_decompositions=None  # 算子分解白名单（默认分解 linear/matmul/layernorm 等）
 )
 ```
@@ -121,6 +122,7 @@ config = EpairConfig(
 |--------|------|--------|------|
 | `remove_noop_ops` | `bool` | `True` | 移除无操作算子（如identity、reshape等无实际计算的节点） |
 | `pattern_fusion_pass` | `bool` | `True` | 启用模式融合优化，将多个算子融合为单个Ascend算子以提升NPU执行效率 |
+| `require_aten_on_npu` | `bool` | `False` | 严格校验开关：aten算子被判到CPU执行时导出阶段直接报错（用于CI/性能基线看护），自定义namespace算子不受影响 |
 | `whitelist_decompositions` | `set \| None` | `None` | 允许分解的算子白名单。`None` 表示使用默认白名单，`set()` 表示禁用所有分解 |
 
 ### whitelist_decompositions详解
@@ -293,7 +295,8 @@ model.epair (ZIP 结构)
   "backend_name": "ascend_ge",
   "cann_version": "9.2.0",
   "total_nodes": 20,
-  "converted_nodes": 15
+  "converted_nodes": 15,
+  "cpu_nodes": 3
 }
 ```
 

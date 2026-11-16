@@ -77,5 +77,5 @@ bash run_step5.sh
 ## 注意事项
 
 - 确保已安装protobuf: `pip install protobuf`
-- 确保已激活py311gcc13环境
+- 确保已激活满足版本要求（Python 3.11+ / GCC 13+ 或 build.md 前置条件）的虚拟环境
 - 确保已source CANN环境

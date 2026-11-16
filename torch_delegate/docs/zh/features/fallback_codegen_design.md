@@ -17,7 +17,6 @@
 > 无需独立编译和调用CLI工具。
 >
 > 当前实现详情请参考：
-> - `csrc/fallback_codegen/README.md`（实现/使用文档）
 > - `docs/zh/guide/fallback_codegen_guide.md`（统一用户使用指南）
 > - `docs/zh/features/overall_design_20260630.md` 第5节（Fallback Codegen特性）
 

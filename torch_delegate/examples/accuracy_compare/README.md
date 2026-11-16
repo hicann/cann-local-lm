@@ -24,9 +24,8 @@ accuracy_compare/
 ├── placeholder_to_custom_pass.py  # rewrite pass
 ├── ops.py                    # placeholder 算子
 ├── util.py                   # 工具函数
-├── custom_op/                # 自定义算子编译
-│   ├── custom_op.cpp
-│   └── CMakeLists.txt
+├── patches/                  # 依赖构建补丁（beam_search_const_tiling.patch）
+├── build_accuracy_deps.sh    # 构建 xllm_ops 与 stub_kernel 依赖
 ├── epair_runner/             # C++ runner
 │   ├── CMakeLists.txt
 │   ├── epair_runner.cpp
@@ -44,6 +43,8 @@ accuracy_compare/
 3. **torch-delegate** 已构建
 4. **CANN 9.2.0+**
 5. **libtorch_npu** 源码可用
+
+> **依赖构建**：首次运行 `run.sh` 时会自动执行 `build_accuracy_deps.sh`，构建 xllm_ops（安装到 CANN）与 stub_kernel；也可手动执行 `bash build_accuracy_deps.sh`。
 
 ---
 

@@ -162,7 +162,7 @@ writer._get_cann_version() → cann_version
   │   try: torch_npu.npu.utils.get_cann_version()
   │   except: logger.warning(...) → "unknown"
   ↓
-EpairManifest(version=2, backend_name="ascend_ge",
+EpairManifest(version=1, backend_name="ascend_ge",
               cann_version, total_nodes, converted_nodes, cpu_nodes)
   ↓
 EpairContents(manifest, ep_json, converted_ep)
@@ -230,13 +230,13 @@ Metadata of the epair file, defined in `epair/schema.py`:
 ```python
 @dataclasses.dataclass
 class EpairManifest:
-    version: int             # Format version number, currently 2 (v1 means all-NPU semantics, backward compatible)
+    version: int             # Format version number, currently 1; increment only for backward-incompatible archive changes
     backend_name: str        # Backend name, fixed to "ascend_ge"
     cann_version: str        # CANN version number, e.g. "9.2.0"; "unknown" when unavailable
     total_nodes: int         # Total number of compute nodes in the EP JSON
     converted_nodes: int     # Number of nodes successfully converted (with ascend_ir)
                              # converted_nodes < total_nodes means fallback nodes exist
-    cpu_nodes: int           # Number of fallback nodes with device="cpu" (new in v2)
+    cpu_nodes: int           # Number of fallback nodes whose device is "cpu" (new field; backward compatible; defaults to 0 when missing in older files)
 ```
 
 ### EpairContents
@@ -389,9 +389,16 @@ model.epair (ZIP structure, PT2-compatible)
   "backend_name": "ascend_ge",
   "cann_version": "9.2.0",
   "total_nodes": 20,
-  "converted_nodes": 15
+  "converted_nodes": 15,
+  "cpu_nodes": 3
 }
 ```
+
+> **Versioning**: following the PT2 Archive Spec convention, `version` is incremented only
+> for backward-incompatible changes to the archive (for example, deleting a field/folder or
+> renaming archive paths). Backward-compatible additions such as `cpu_nodes` do not bump
+> `version`; readers must tolerate a missing field by falling back to its default
+> (`cpu_nodes=0`, i.e. all-NPU semantics). The C++ backend does not validate `version`.
 
 ---
 

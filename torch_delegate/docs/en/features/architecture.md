@@ -1,5 +1,8 @@
 # TorchDelegate Overall Architecture
 
+> [!NOTE] Document Status
+> This is the overall architecture design document for TorchDelegate. HeteroCodegen in modules 2/3/4, together with the deployment-side `runner.so` and `load_runner`, are evolution designs that are not yet implemented. For the current deployment form and user interface, see [EpairModelLoader API](../api/epair_model_loader.md).
+
 ## Project Background and Positioning
 
 ### Problem Statement

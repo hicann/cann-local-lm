@@ -162,7 +162,7 @@ writer._get_cann_version() → cann_version
   │   try: torch_npu.npu.utils.get_cann_version()
   │   except: logger.warning(...) → "unknown"
   ↓
-EpairManifest(version=2, backend_name="ascend_ge",
+EpairManifest(version=1, backend_name="ascend_ge",
               cann_version, total_nodes, converted_nodes, cpu_nodes)
   ↓
 EpairContents(manifest, ep_json, converted_ep)
@@ -230,13 +230,13 @@ epair文件的元数据，定义于 `epair/schema.py`：
 ```python
 @dataclasses.dataclass
 class EpairManifest:
-    version: int             # 格式版本号，当前为 2（v1 为全 NPU 语义，向后兼容）
+    version: int             # 格式版本号，当前为 1；仅在归档格式出现向后不兼容变更时递增
     backend_name: str        # 后端名称，固定 "ascend_ge"
     cann_version: str        # CANN 版本号，如 "9.2.0"；无法获取时为 "unknown"
     total_nodes: int         # EP JSON 中计算节点总数
     converted_nodes: int     # 成功转换（有 ascend_ir）的节点数
                              # converted_nodes < total_nodes 表示存在 fallback 节点
-    cpu_nodes: int           # device="cpu" 的 fallback 节点数（v2 新增）
+    cpu_nodes: int           # fallback 节点中 device="cpu" 的节点数量（新增字段，向后兼容；旧文件缺少该字段时默认为 0）
 ```
 
 ### EpairContents
@@ -389,9 +389,14 @@ model.epair (ZIP 结构，兼容 PT2 格式)
   "backend_name": "ascend_ge",
   "cann_version": "9.2.0",
   "total_nodes": 20,
-  "converted_nodes": 15
+  "converted_nodes": 15,
+  "cpu_nodes": 3
 }
 ```
+
+> **版本管理**：参照 PT2 Archive Spec 的约定，`version` 仅在归档格式出现向后不兼容变更时递增
+> （例如删除字段/目录、修改归档路径或命名约定）；新增 `cpu_nodes` 这类向后兼容字段不递增版本号。
+> 读取侧需兼容缺省字段：manifest 中无 `cpu_nodes` 时按 0 处理（即全 NPU 语义）。C++ 后端不校验 `version`。
 
 ---
 

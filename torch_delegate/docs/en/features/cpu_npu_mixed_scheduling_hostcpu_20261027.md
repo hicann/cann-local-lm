@@ -1,6 +1,9 @@
 # TorchDelegate CPU/NPU Mixed Scheduling Design (HostCpu Backend)
 
-# Introduction
+> [!NOTE] Document Status
+> This is a design draft dated 2026-10-27 that describes CPU/NPU mixed scheduling (HostCpu backend). For current usage, see the [Fallback Codegen User Guide](../guide/fallback_codegen_guide.md).
+
+## Introduction
 
 ## Purpose
 
@@ -37,7 +40,7 @@ This document describes the requirements and design of the TorchDelegate CPU/NPU
 
 ---
 
-# Overall Description
+## Overall Description
 
 This section describes the general factors affecting this design: project background, product environment, feature overview, design constraints, and dependencies.
 
@@ -148,7 +151,7 @@ This feature delivers six functions; see the "Feature Requirements & Design" cha
 
 ---
 
-# Feature Requirements & Design
+## Feature Requirements & Design
 
 ## Overview
 
@@ -914,7 +917,7 @@ Three items reviewed and excluded as risks (verified):
 
 ---
 
-# Appendix
+## Appendix
 
 ## Appendix A: Design Document Check Results
 

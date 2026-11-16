@@ -24,9 +24,8 @@ accuracy_compare/
 ├── placeholder_to_custom_pass.py  # rewrite pass
 ├── ops.py                    # placeholder ops
 ├── util.py                   # Utility functions
-├── custom_op/                # Custom op build
-│   ├── custom_op.cpp
-│   └── CMakeLists.txt
+├── patches/                  # Dependency build patches (beam_search_const_tiling.patch)
+├── build_accuracy_deps.sh    # Build xllm_ops and stub_kernel dependencies
 ├── epair_runner/             # C++ runner
 │   ├── CMakeLists.txt
 │   ├── epair_runner.cpp
@@ -44,6 +43,8 @@ accuracy_compare/
 3. **torch-delegate** built
 4. **CANN 9.2.0+**
 5. **libtorch_npu** source available
+
+> **Dependency build**: the first `run.sh` invocation automatically runs `build_accuracy_deps.sh` to build xllm_ops (installed into CANN) and stub_kernel; you can also run `bash build_accuracy_deps.sh` manually.
 
 ---
 

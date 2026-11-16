@@ -17,7 +17,6 @@
 > with no need for separate compilation or CLI invocation.
 >
 > For current implementation details, see:
-> - `csrc/fallback_codegen/README.md` (implementation/usage documentation)
 > - `docs/en/guide/fallback_codegen_guide.md` (unified user guide)
 > - `docs/en/features/overall_design_20260630.md` section 5 (Fallback Codegen feature)
 

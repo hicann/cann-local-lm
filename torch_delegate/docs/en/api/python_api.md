@@ -200,15 +200,17 @@ class EpairManifest:
     cann_version: str
     total_nodes: int
     converted_nodes: int
+    cpu_nodes: int = 0
 ```
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `version` | `int` | Format version number, currently 1 |
+| `version` | `int` | Format version number, currently 1. Increment only for backward-incompatible archive changes (for example, deleting a field/folder or renaming archive paths or naming conventions) |
 | `backend_name` | `str` | Backend name, always `"ascend_ge"` |
 | `cann_version` | `str` | CANN build environment version, such as `"9.2.0"`. `"unknown"` when unavailable |
 | `total_nodes` | `int` | Total number of operator nodes in the EP JSON |
 | `converted_nodes` | `int` | Number of nodes successfully converted to Ascend IR |
+| `cpu_nodes` | `int` | Number of fallback nodes whose `device` is `cpu` (new field; backward compatible; defaults to 0 when missing in older files) |
 
 ---
 
@@ -259,6 +261,7 @@ Epair conversion configuration that controls conversion behavior.
 class EpairConfig:
     remove_noop_ops: bool = True
     pattern_fusion_pass: bool = True
+    require_aten_on_npu: bool = False
     whitelist_decompositions: set[Any] = field(default_factory=...)
 ```
 
@@ -266,6 +269,7 @@ class EpairConfig:
 |--------|------|---------|-------------|
 | `remove_noop_ops` | `bool` | `True` | Whether to remove no-op nodes (such as identity, reshape) |
 | `pattern_fusion_pass` | `bool` | `True` | Whether to enable pattern fusion optimization |
+| `require_aten_on_npu` | `bool` | `False` | Strict-validation switch: fail the export when an aten operator is assigned to CPU (for CI/performance-baseline guarding); operators in custom namespaces are unaffected |
 | `whitelist_decompositions` | `set[Any]` | See the table below | Set of operators allowed to be decomposed |
 
 **Default decomposed operators:**

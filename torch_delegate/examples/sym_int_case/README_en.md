@@ -77,5 +77,5 @@ All 5 steps should pass:
 ## Notes
 
 - Make sure protobuf is installed: `pip install protobuf`
-- Make sure the py311gcc13 environment is activated
+- Make sure a virtual environment that meets the version requirements is activated (Python 3.11+ / GCC 13+, or the prerequisites in build.md)
 - Make sure the CANN environment is sourced

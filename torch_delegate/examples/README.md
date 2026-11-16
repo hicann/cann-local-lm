@@ -18,6 +18,7 @@
 | [`fallback_inplace_optional_case`](./fallback_inplace_optional_case/) | Fallback codegen对多Inplace参数和多可选参数的正确性验证 |
 | [`fallback_dynamic_optional_case`](./fallback_dynamic_optional_case/) | Fallback codegen对动态输入 (Tensor[]) 和可选输入 (Tensor?) 的正确性验证 |
 | [`run_model_multi_instance`](./run_model_multi_instance/) | 多进程并发示例：一进程一实例（绕开GE同步 `RunGraph` 进程级锁），worker内生产者-消费者线程并行调用 `RunModel`，度量host并发下发与device多流并行 |
+| [`host_cpu_mixed_case`](./host_cpu_mixed_case/) | CPU/NPU 混合调度（HostCpu 后端）端到端示例 |
 | [`common`](./common/) | 公共工具脚本（`build_libtorch_npu.sh`，供各示例复用） |
 
 ## 环境准备
@@ -69,7 +70,9 @@ CASES=(
   "assert_tensor_metadata_demo|run.sh|enabled"
   "accuracy_compare|run.sh|ignored"
   "fallback_inplace_optional_case|run.sh|enabled"
+  "inplace_return_case|run.sh|enabled"
   "fallback_dynamic_optional_case|run.sh|enabled"
   "run_model_multi_instance|run.sh|enabled"
+  "host_cpu_mixed_case|run.sh|enabled"
 )
 ```

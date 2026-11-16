@@ -1,5 +1,8 @@
 # TorchDelegate整体架构
 
+> [!NOTE]文档状态
+> 本文为TorchDelegate整体架构设计文档。模块2/3/4中 HeteroCodegen、部署侧 `runner.so` 与 `load_runner` 属演进设计，尚未实现；当前部署形态与用户接口请参考[《EpairModelLoader API》](../api/epair_model_loader.md)。
+
 ## 项目背景与定位
 
 ### 问题陈述

@@ -64,7 +64,7 @@ fallback_inplace_optional_case/
 
 ## 环境要求
 
-1. **torch 2.9.0+cpu**（推荐使用py311gcc13 venv）
+1. **torch 2.9.0+cpu**（推荐使用独立 venv）
 2. **torch_npu** + **torchair**
 3. **torch-delegate** 已构建
 4. **CANN 9.2.0+**
@@ -79,7 +79,7 @@ fallback_inplace_optional_case/
 source ~/Ascend/cann/set_env.sh
 
 # 2. 激活 Python 环境
-conda activate py311gcc13
+conda activate <your_env>  # 或 source <venv>/bin/activate
 
 # 3. 设置 TORCH_NPU_DIR
 export TORCH_NPU_DIR=/path/to/libtorch_npu

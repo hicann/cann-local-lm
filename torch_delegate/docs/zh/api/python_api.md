@@ -200,15 +200,17 @@ class EpairManifest:
     cann_version: str
     total_nodes: int
     converted_nodes: int
+    cpu_nodes: int = 0
 ```
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| `version` | `int` | 格式版本号，当前为1 |
+| `version` | `int` | 格式版本号，当前为1。仅在归档格式出现向后不兼容变更（如删除字段/目录、修改归档路径或命名约定）时递增 |
 | `backend_name` | `str` | 后端名称，固定为 `"ascend_ge"` |
 | `cann_version` | `str` | CANN编译环境版本号，如 `"9.2.0"`。无法获取时为 `"unknown"` |
 | `total_nodes` | `int` | EP JSON中的总算子节点数 |
 | `converted_nodes` | `int` | 成功转换为Ascend IR的节点数 |
+| `cpu_nodes` | `int` | fallback 节点中 `device` 为 `cpu` 的节点数量（新增字段，向后兼容；旧文件缺少该字段时默认为 0） |
 
 ---
 
@@ -259,6 +261,7 @@ Epair转换配置，控制转换行为。
 class EpairConfig:
     remove_noop_ops: bool = True
     pattern_fusion_pass: bool = True
+    require_aten_on_npu: bool = False
     whitelist_decompositions: set[Any] = field(default_factory=...)
 ```
 
@@ -266,6 +269,7 @@ class EpairConfig:
 |--------|------|--------|------|
 | `remove_noop_ops` | `bool` | `True` | 是否移除无操作节点（如identity、reshape） |
 | `pattern_fusion_pass` | `bool` | `True` | 是否启用模式融合优化 |
+| `require_aten_on_npu` | `bool` | `False` | 严格校验开关：aten算子被判到CPU执行时导出阶段直接报错（用于CI/性能基线看护），自定义namespace算子不受影响 |
 | `whitelist_decompositions` | `set[Any]` | 见下表 | 允许分解的算子集合 |
 
 **默认分解算子：**

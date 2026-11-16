@@ -183,7 +183,6 @@ if (status != td::SUCCESS) {
 For complete end-to-end examples, see:
 
 - **[examples/fallback_inplace_optional_case/](../../../examples/fallback_inplace_optional_case/)** — multiple inplace parameters + multiple optional parameters
-- **examples/fallback_e2e_test/** — A/B testing that verifies full aten type support
 - **[examples/sym_int_case/](../../../examples/sym_int_case/)** — simplified e2e that verifies non-Tensor input support
 
 ---
@@ -220,7 +219,7 @@ Fallback Codegen uses an online compilation workflow: it generates code files, *
 
 | Environment variable | Description | Default |
 |---------|------|--------|
-| `TORCH_DELEGATE_ENABLE_FALLBACK_CODEGEN` | Whether to enable fallback codegen (`1`/`true`/`TRUE`; `0`/`false`/`FALSE` to disable) | Enabled |
+| `TORCH_DELEGATE_ENABLE_FALLBACK_CODEGEN` | Whether to enable fallback codegen (`1` to enable; `0` or any other value to disable) | Enabled |
 
 > **Important**: If all nodes are converted successfully (`ascend_ir.source = "converter"`), codegen is not triggered even when this environment variable is enabled, and `TORCH_PKG_DIR` and `TORCH_NPU_DIR` are not validated.
 
@@ -239,7 +238,7 @@ When any node needs fallback codegen, the following environment variables **must
 | Environment variable | Description | Default |
 |---------|------|--------|
 | `TORCH_DELEGATE_OUTPUT_DIR` | Location for on-disk files | `./output_dir` |
-| `TORCH_DELEGATE_KEEP_ARTIFACTS` | Whether to keep build artifacts in online mode (`1`/`true`/`TRUE`) | `0` (not kept) |
+| `TORCH_DELEGATE_KEEP_ARTIFACTS` | Whether to keep build artifacts in online mode (`1` to enable; `0` or any other value to disable) | `0` (not kept) |
 
 ### How to Locate Environment Variables
 
@@ -678,15 +677,6 @@ Tests scenarios with multiple inplace parameters and multiple optional parameter
 - **Directory**: `examples/fallback_inplace_optional_case/`
 - **Run**: `cd examples/fallback_inplace_optional_case && bash run.sh`
 
-### fallback_e2e_test
-
-End-to-end A/B testing that verifies full aten type support in Fallback Codegen.
-
-- **Model A**: Tensor-only (regression baseline)
-- **Model B**: Full Type Spectrum (int/float/bool/int[]/Scalar/Tensor[])
-- **Directory**: `examples/fallback_e2e_test/`
-- **Run**: `cd examples/fallback_e2e_test && bash run.sh`
-
 ### sym_int_case
 
 A simplified end-to-end test that verifies support for non-tensor inputs in the fallback mechanism.
@@ -703,9 +693,6 @@ A simplified end-to-end test that verifies support for non-tensor inputs in the 
 - [Fallback Feature Design Document](../features/fallback_codegen_design.md) — initial design (including implementation evolution notes)
 - [Overall Design Document](../features/overall_design_20260630.md), Section 5 — Fallback Codegen feature
 - [Design of Automatic GE Custom Operator Generation Based on ATen IR Callbacks](../features/aten_ir_callback_codegen_20260715.md) — InputKind encoding, BuildStack/WriteBack implementation, user integration guidelines
-
-### Implementation Documents
-- csrc/fallback_codegen/README.md — module implementation document
 
 ### Build Documents
 - [Build Guide](build.md) — TorchDelegate build guide (including `TORCH_NPU_DIR` configuration)

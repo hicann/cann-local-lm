@@ -18,6 +18,7 @@ This directory contains end-to-end validation examples for TorchDelegate, coveri
 | [`fallback_inplace_optional_case`](./fallback_inplace_optional_case/) | Fallback codegen correctness for multiple inplace parameters and multiple optional parameters |
 | [`fallback_dynamic_optional_case`](./fallback_dynamic_optional_case/) | Fallback codegen correctness for dynamic inputs (Tensor[]) and optional inputs (Tensor?) |
 | [`run_model_multi_instance`](./run_model_multi_instance/) | Multi-process concurrency example: one process per instance (avoiding the process-level lock of GE synchronous `RunGraph`), with producer-consumer threads inside each worker calling `RunModel` in parallel to measure host concurrent submission and device multi-stream parallelism |
+| [`host_cpu_mixed_case`](./host_cpu_mixed_case/) | End-to-end example of CPU/NPU mixed scheduling (HostCpu backend) |
 | [`common`](./common/) | Shared utility scripts (`build_libtorch_npu.sh`, reused by the examples) |
 
 ## Environment Setup
@@ -69,7 +70,9 @@ CASES=(
   "assert_tensor_metadata_demo|run.sh|enabled"
   "accuracy_compare|run.sh|ignored"
   "fallback_inplace_optional_case|run.sh|enabled"
+  "inplace_return_case|run.sh|enabled"
   "fallback_dynamic_optional_case|run.sh|enabled"
   "run_model_multi_instance|run.sh|enabled"
+  "host_cpu_mixed_case|run.sh|enabled"
 )
 ```

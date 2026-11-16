@@ -183,7 +183,6 @@ if (status != td::SUCCESS) {
 完整的端到端示例请参考：
 
 - **[examples/fallback_inplace_optional_case/](../../../examples/fallback_inplace_optional_case/)** — 多Inplace +多可选参数场景
-- **examples/fallback_e2e_test/** — A/B测试，验证完整aten类型支持
 - **[examples/sym_int_case/](../../../examples/sym_int_case/)** — 简化e2e，验证非Tensor输入支持
 
 ---
@@ -220,7 +219,7 @@ Fallback Codegen采用在线编译工作流：生成代码文件，**立即编�
 
 | 环境变量 | 说明 | 默认值 |
 |---------|------|--------|
-| `TORCH_DELEGATE_ENABLE_FALLBACK_CODEGEN` | 是否启用fallback codegen（`1`/`true`/`TRUE`，`0`/`false`/`FALSE` 禁用） | 启用 |
+| `TORCH_DELEGATE_ENABLE_FALLBACK_CODEGEN` | 是否启用fallback codegen（`1` 启用；`0` 或其他任意值禁用） | 启用 |
 
 > **重要**：如果所有节点都成功转换（`ascend_ir.source = "converter"`），即使启用了环境变量，也不会触发codegen，不强制校验 `TORCH_PKG_DIR` 和 `TORCH_NPU_DIR`。
 
@@ -239,7 +238,7 @@ Fallback Codegen采用在线编译工作流：生成代码文件，**立即编�
 | 环境变量 | 说明 | 默认值 |
 |---------|------|--------|
 | `TORCH_DELEGATE_OUTPUT_DIR` | 文件落盘位置 | `./output_dir` |
-| `TORCH_DELEGATE_KEEP_ARTIFACTS` | 在线模式下是否保留编译产物（`1`/`true`/`TRUE`） | `0`（不保留） |
+| `TORCH_DELEGATE_KEEP_ARTIFACTS` | 在线模式下是否保留编译产物（`1` 启用；`0` 或其他任意值禁用） | `0`（不保留） |
 
 ### 环境变量查找方法
 
@@ -678,15 +677,6 @@ head -20 $TORCH_DELEGATE_OUTPUT_DIR/custom_op.cpp
 - **目录**：`examples/fallback_inplace_optional_case/`
 - **运行**：`cd examples/fallback_inplace_optional_case && bash run.sh`
 
-### fallback_e2e_test
-
-端到端A/B测试，验证Fallback Codegen完整aten类型支持。
-
-- **Model A**：Tensor-only（回归基线）
-- **Model B**：Full Type Spectrum（int/float/bool/int[]/Scalar/Tensor[]）
-- **目录**：`examples/fallback_e2e_test/`
-- **运行**：`cd examples/fallback_e2e_test && bash run.sh`
-
 ### sym_int_case
 
 简化端到端测试，验证fallback机制对非tensor输入的支持。
@@ -703,9 +693,6 @@ head -20 $TORCH_DELEGATE_OUTPUT_DIR/custom_op.cpp
 - [Fallback特性设计文档](../features/fallback_codegen_design.md) — 初始设计（含实现演进说明）
 - [整体设计文档](../features/overall_design_20260630.md) 第5节 — Fallback Codegen特性
 - [基于ATen IR回调的GE自定义算子自动生成方案设计](../features/aten_ir_callback_codegen_20260715.md) — InputKind编码、BuildStack/WriteBack实现、用户接入规范
-
-### 实现文档
-- csrc/fallback_codegen/README.md — 模块实现文档
 
 ### 构建文档
 - [构建指南](build.md) — TorchDelegate构建指南（含 `TORCH_NPU_DIR` 配置）

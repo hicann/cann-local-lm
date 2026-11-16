@@ -38,7 +38,7 @@ class EpairModelLoader {
  public:
   /**
    * @brief 从 .epair 归档文件构造模型加载器。
-   * @param archive_path epair 归档文件的绝对路径，必须非空。
+   * @param archive_path epair 归档文件路径，必须非空；支持相对路径与绝对路径，相对路径相对进程当前工作目录（CWD）解析。
    * @note 构造过程会解析归档并构建 GE Graph，但不执行编译。
    */
   explicit EpairModelLoader(const char *archive_path);

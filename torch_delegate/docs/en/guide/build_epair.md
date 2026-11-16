@@ -109,8 +109,9 @@ Controls graph optimization switches and operator decomposition behavior:
 from torch_delegate.epair import EpairConfig
 
 config = EpairConfig(
-    remove_noop_ops=True,       # Remove no-op operators (default True)
-    pattern_fusion_pass=True,   # Pattern fusion optimization (default True)
+    remove_noop_ops=True,        # Remove no-op operators (default True)
+    pattern_fusion_pass=True,    # Pattern fusion optimization (default True)
+    require_aten_on_npu=False,   # Fail export when an aten operator lands on CPU (default False, warning only)
     whitelist_decompositions=None  # Operator decomposition whitelist (decomposes linear/matmul/layernorm etc. by default)
 )
 ```
@@ -121,6 +122,7 @@ config = EpairConfig(
 |--------|------|--------|------|
 | `remove_noop_ops` | `bool` | `True` | Remove no-op operators (nodes such as identity and reshape that perform no actual computation) |
 | `pattern_fusion_pass` | `bool` | `True` | Enable pattern fusion optimization, fusing multiple operators into a single Ascend operator to improve NPU execution efficiency |
+| `require_aten_on_npu` | `bool` | `False` | Strict-validation switch: fail the export when an aten operator is assigned to CPU (for CI/performance-baseline guarding); operators in custom namespaces are unaffected |
 | `whitelist_decompositions` | `set \| None` | `None` | Whitelist of operators allowed to be decomposed. `None` means use the default whitelist, and `set()` disables all decomposition |
 
 ### whitelist_decompositions in Detail
@@ -293,7 +295,8 @@ model.epair (ZIP structure)
   "backend_name": "ascend_ge",
   "cann_version": "9.2.0",
   "total_nodes": 20,
-  "converted_nodes": 15
+  "converted_nodes": 15,
+  "cpu_nodes": 3
 }
 ```
 

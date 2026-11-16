@@ -10,8 +10,8 @@ CPU 上执行的算子（自定义 namespace 仅注册 CPU 实现），与 NPU �
 |------|------|---------|
 | `model_mixed` | mm(NPU) → `hcpu_ops::feature_scale`(CPU) → relu(NPU) | CPU 段夹在 NPU 段中间 |
 | `model_pure_cpu` | `feature_scale`(CPU) → `feature_merge`(CPU) | 纯 CPU 段 |
-| `model_non_adjacent` | `feature_scale`(CPU) → mm(NPU) → relu(NPU) → `feature_merge`(CPU, 共享输入) | 非相邻 CPU 段 + 共享输入 |
-| `model_recommender` | `feature_gather`(CPU embedding 查表) → 3 层 MLP(NPU Task Tower) → `score_rank`(CPU 排序打分) | 推荐网络三段式架构近似 |
+| `model_non_adjacent` | `feature_scale`(CPU) → mm(NPU) → relu(NPU) → `feature_merge`（CPU，共享输入） | 非相邻 CPU 段 + 共享输入 |
+| `model_recommender` | `feature_gather`（CPU embedding 查表） → 3 层 MLP(NPU Task Tower) → `score_rank`（CPU 排序打分） | 推荐网络三段式架构近似 |
 
 `hcpu_ops::feature_scale` / `hcpu_ops::feature_merge` 只注册 CPU kernel（无
 PrivateUse1 实现），导出期 Device 归属自动判定将其判为 `device="cpu"` 并固化进

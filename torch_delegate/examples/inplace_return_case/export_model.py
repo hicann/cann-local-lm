@@ -115,13 +115,13 @@ def save_input_group(output_dir, prefix, group_idx, x, scale_val):
     x.numpy().tofile(x_path)
     with open(x_shape_path, "w") as f:
         f.write(",".join(str(d) for d in x.shape))
-    print(f"  Saved x: shape={list(x.shape)} → {x_path.name}")
+    print(f"  Saved x: shape={list(x.shape)} -> {x_path.name}")
 
     # 保存 scale_val
     scale_path = output_dir / f"input_{prefix}_{group_idx}_scale.txt"
     with open(scale_path, "w") as f:
         f.write(str(scale_val))
-    print(f"  Saved scale_val: {scale_val} → {scale_path.name}")
+    print(f"  Saved scale_val: {scale_val} -> {scale_path.name}")
 
 
 def main():

@@ -125,7 +125,7 @@ def save_input_group(output_dir, prefix, group_idx, x, y, alpha_val, gamma_val):
     x.numpy().tofile(x_path)
     with open(x_shape_path, "w") as f:
         f.write(",".join(str(d) for d in x.shape))
-    print(f"  Saved x: shape={list(x.shape)} → {x_path.name}")
+    print(f"  Saved x: shape={list(x.shape)} -> {x_path.name}")
 
     # 保存 y
     y_path = output_dir / f"input_{prefix}_{group_idx}_y.bin"
@@ -133,19 +133,19 @@ def save_input_group(output_dir, prefix, group_idx, x, y, alpha_val, gamma_val):
     y.numpy().tofile(y_path)
     with open(y_shape_path, "w") as f:
         f.write(",".join(str(d) for d in y.shape))
-    print(f"  Saved y: shape={list(y.shape)} → {y_path.name}")
+    print(f"  Saved y: shape={list(y.shape)} -> {y_path.name}")
 
     # 保存 alpha_val
     alpha_path = output_dir / f"input_{prefix}_{group_idx}_alpha.txt"
     with open(alpha_path, "w") as f:
         f.write(str(alpha_val))
-    print(f"  Saved alpha: {alpha_val} → {alpha_path.name}")
+    print(f"  Saved alpha: {alpha_val} -> {alpha_path.name}")
 
     # 保存 gamma_val
     gamma_path = output_dir / f"input_{prefix}_{group_idx}_gamma.txt"
     with open(gamma_path, "w") as f:
         f.write(str(gamma_val))
-    print(f"  Saved gamma: {gamma_val} → {gamma_path.name}")
+    print(f"  Saved gamma: {gamma_val} -> {gamma_path.name}")
 
 
 def main():

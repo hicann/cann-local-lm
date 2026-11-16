@@ -178,7 +178,7 @@ Input group 2 (batch_size=2, alpha=3.0, gamma=1.0):
 ========================================
 Test summary
 ========================================
-✓ All tests passed!
+[PASS] All tests passed!
 ```
 
 ---

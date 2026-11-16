@@ -171,7 +171,7 @@ def save_input_group(
     x.numpy().tofile(x_path)
     with open(x_shape_path, "w") as f:
         f.write(",".join(str(d) for d in x.shape))
-    print(f"  Saved x: shape={list(x.shape)} → {x_path.name}")
+    print(f"  Saved x: shape={list(x.shape)} -> {x_path.name}")
 
     # 保存 static_tensor
     st_path = output_dir / f"input_{prefix}_{group_idx}_static_tensor.bin"
@@ -179,19 +179,19 @@ def save_input_group(
     static_tensor.numpy().tofile(st_path)
     with open(st_shape_path, "w") as f:
         f.write(",".join(str(d) for d in static_tensor.shape))
-    print(f"  Saved static_tensor: shape={list(static_tensor.shape)} → {st_path.name}")
+    print(f"  Saved static_tensor: shape={list(static_tensor.shape)} -> {st_path.name}")
 
     # 保存 scale
     scale_path = output_dir / f"input_{prefix}_{group_idx}_scale.txt"
     with open(scale_path, "w") as f:
         f.write(str(scale))
-    print(f"  Saved scale: {scale} → {scale_path.name}")
+    print(f"  Saved scale: {scale} -> {scale_path.name}")
 
     # 保存 multiplier
     mult_path = output_dir / f"input_{prefix}_{group_idx}_multiplier.txt"
     with open(mult_path, "w") as f:
         f.write(str(multiplier))
-    print(f"  Saved multiplier: {multiplier} → {mult_path.name}")
+    print(f"  Saved multiplier: {multiplier} -> {mult_path.name}")
 
 
 def main():

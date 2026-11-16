@@ -209,10 +209,10 @@ def main():
     print("=" * 60)
 
     if all_pass:
-        print("✓ All tests passed!")
+        print("[PASS] All tests passed!")
         sys.exit(0)
     else:
-        print("✗ Some tests failed")
+        print("[FAIL] Some tests failed")
         sys.exit(1)
 
 

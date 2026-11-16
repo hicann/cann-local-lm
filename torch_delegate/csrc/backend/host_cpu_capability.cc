@@ -37,24 +37,23 @@ std::string ReportCpuOwnership(const ParsedModel &model) {
     entry << node.name << " (" << node.effective_schema_target << ") device=" << (is_cpu ? "cpu" : "npu");
     if (!is_cpu) {
       npu_fallback_nodes.push_back(entry.str());
-      TDLOGI("HostCpu ownership: NPU fallback op, %s", entry.str().c_str());
       continue;
     }
     const std::string name_space = ParseOpTarget(node.effective_schema_target).namespace_name;
     if (name_space == "aten") {
       aten_cpu_nodes.push_back(entry.str());
-      TDLOGW("HostCpu ownership: suspicious aten op on CPU, %s", entry.str().c_str());
     } else {
       custom_cpu_nodes.push_back(entry.str());
-      TDLOGI("HostCpu ownership: custom namespace op on CPU, %s", entry.str().c_str());
     }
   }
 
   const size_t npu_count = npu_converter_count + npu_fallback_nodes.size();
   const size_t cpu_count = aten_cpu_nodes.size() + custom_cpu_nodes.size();
+  std::ostringstream summary;
+  summary << "[torch_delegate] Load-time device ownership: NPU nodes " << npu_count << " (converter "
+          << npu_converter_count << " / fallback " << npu_fallback_nodes.size() << "), CPU nodes " << cpu_count;
   std::ostringstream report;
-  report << "[torch_delegate] Load-time device ownership: NPU nodes " << npu_count << " (converter "
-         << npu_converter_count << " / fallback " << npu_fallback_nodes.size() << "), CPU nodes " << cpu_count << "\n";
+  report << summary.str() << "\n";
   for (const std::string &entry : npu_fallback_nodes) {
     report << "  fallback callback to PrivateUse1: " << entry << "\n";
   }
@@ -64,8 +63,20 @@ std::string ReportCpuOwnership(const ParsedModel &model) {
   for (const std::string &entry : custom_cpu_nodes) {
     report << "  expected: custom namespace with CPU-only impl: " << entry << "\n";
   }
-  TDLOGI("%s", report.str().c_str());
-  return report.str();
+  const std::string report_text = report.str();
+
+  // 日志级别由归属分组决定，不依赖文案匹配：aten→CPU 为可疑告警，其余为信息。
+  TDLOG_CHUNKED(ACL_INFO, "HostCpu ownership: summary", summary.str());
+  for (const std::string &entry : npu_fallback_nodes) {
+    TDLOG_CHUNKED(ACL_INFO, "HostCpu ownership: NPU fallback op", entry);
+  }
+  for (const std::string &entry : aten_cpu_nodes) {
+    TDLOG_CHUNKED(ACL_WARNING, "HostCpu ownership: suspicious aten op on CPU", entry);
+  }
+  for (const std::string &entry : custom_cpu_nodes) {
+    TDLOG_CHUNKED(ACL_INFO, "HostCpu ownership: custom namespace op on CPU", entry);
+  }
+  return report_text;
 }
 
 }  // namespace td

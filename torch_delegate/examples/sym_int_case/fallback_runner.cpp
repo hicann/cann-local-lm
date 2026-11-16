@@ -395,7 +395,6 @@ int main(int argc, char *argv[]) {
                                                      {"torch_npu.acl", 10},
                                                      {"torch_npu.memory", 10}};
   // npu_logging::LogContext::GetInstance().setLogs(log_levels);
-  // std::cout << "[PASS] torch_npu 日志级别设置完成" << std::endl;
 
   // 设置设备
   aclError acl_ret = aclrtSetDevice(0);

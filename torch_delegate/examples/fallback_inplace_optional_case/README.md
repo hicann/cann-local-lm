@@ -176,9 +176,9 @@ python3 compare_accuracy.py
     PASS (max_abs=1.11e-06, max_rel=2.22e-06)
 
 ========================================
-测试总结
+Test summary
 ========================================
-✓ 所有测试通过!
+[PASS] All tests passed!
 ```
 
 ---

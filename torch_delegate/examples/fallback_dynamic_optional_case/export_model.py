@@ -80,7 +80,7 @@ def save_tensor(output_dir, prefix, name, tensor):
     tensor.cpu().float().detach().numpy().tofile(path)
     with open(shape_path, "w") as f:
         f.write(",".join(str(d) for d in tensor.shape))
-    print(f"  Saved {name}: shape={list(tensor.shape)} → {path.name}")
+    print(f"  Saved {name}: shape={list(tensor.shape)} -> {path.name}")
 
 
 def main():

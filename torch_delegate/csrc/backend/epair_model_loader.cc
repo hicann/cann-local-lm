@@ -408,4 +408,12 @@ Status EpairModelLoader::GetGEGraph(ge::Graph *graph) const {
   return impl_->GetGEGraph(graph);
 }
 
+Status EpairModelLoader::GetInitStatus() const {
+  if (impl_ == nullptr) {
+    TDLOGE("GetInitStatus failed: Impl allocation failed");
+    return INTERNAL_ERROR;
+  }
+  return impl_->GetInitStatus();
+}
+
 }  // namespace td

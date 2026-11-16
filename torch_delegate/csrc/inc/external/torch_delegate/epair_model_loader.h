@@ -96,6 +96,14 @@ class EpairModelLoader {
    */
   Status GetGEGraph(ge::Graph *graph) const;
 
+  /**
+   * @brief 获取构造初始化状态。
+   * @return 构造初始化成功返回 Status::SUCCESS，失败返回对应错误码。
+   * @note 构造函数不抛出异常，初始化失败时可通过本方法查询具体错误码；
+   *       初始化失败后继续调用其他方法均返回对应错误码。
+   */
+  Status GetInitStatus() const;
+
  private:
   class Impl;
   std::shared_ptr<Impl> impl_;

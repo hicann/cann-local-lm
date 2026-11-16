@@ -16,6 +16,7 @@
 #include <nlohmann/json.hpp>
 
 #include "torch_delegate/epair_model_loader.h"
+#include "backend/epair_model_loader_c.h"
 #include "backend/epair_archive.h"
 #include "common/epair_archive_constants.h"
 #include "ge_stub/ge_stub_control.h"
@@ -27,6 +28,7 @@
 namespace {
 
 const std::string kAnnotated = std::string(FIXTURES_DIR) + "/annotated_mm_add.epair";
+const std::string kMalformedShapeDim = std::string(FIXTURES_DIR) + "/annotated_mm_add_bad_shape_dim.epair";
 const std::string kMissingGraphSource = std::string(FIXTURES_DIR) + "/missing_graph_source.epair";
 const std::string kSymIntInput = std::string(FIXTURES_DIR) + "/annotated_sym_int_input.epair";
 
@@ -76,6 +78,14 @@ TEST_F(EpairModelLoaderTest, ConstructorFailurePropagatesToCompileAndLoad) {
   EpairModelLoader loader(kMissingGraphSource.c_str());
   std::map<ge::AscendString, ge::AscendString> options;
   EXPECT_EQ(loader.CompileAndLoad(options, nullptr), FAILED);
+}
+
+TEST_F(EpairModelLoaderTest, GetInitStatusReflectsConstructionResult) {
+  EpairModelLoader ok(kAnnotated.c_str());
+  EXPECT_EQ(ok.GetInitStatus(), SUCCESS);
+
+  EpairModelLoader bad(kMissingGraphSource.c_str());
+  EXPECT_EQ(bad.GetInitStatus(), FAILED);
 }
 
 TEST_F(EpairModelLoaderTest, CompileSucceedsForAnnotatedModel) {
@@ -228,6 +238,110 @@ TEST_F(EpairModelLoaderTest, GetGEGraphReturnsValidGraph) {
     EXPECT_EQ(expect_nodes[idx].first, name.GetString());
     EXPECT_EQ(expect_nodes[idx].second, type.GetString());
   }
+}
+
+// ===========================================================================
+// 内部 C ABI（epair_model_loader_c.h）
+// ===========================================================================
+
+class EpairModelLoaderCAbiTest : public ::testing::Test {
+ protected:
+  void SetUp() override {
+    stub::GeApiStub::Instance().Reset();
+  }
+
+  void TearDown() override {
+    stub::GeApiStub::Instance().Reset();
+  }
+};
+
+TEST_F(EpairModelLoaderCAbiTest, CreateRejectsNullHandleOutParam) {
+  EXPECT_EQ(TdEpairModelLoaderCreate(kAnnotated.c_str(), nullptr), INVALID_PARAM);
+}
+
+TEST_F(EpairModelLoaderCAbiTest, CreateRejectsNullPath) {
+  TdEpairModelLoaderHandle *handle = nullptr;
+  EXPECT_EQ(TdEpairModelLoaderCreate(nullptr, &handle), INVALID_PARAM);
+  EXPECT_EQ(handle, nullptr);
+}
+
+TEST_F(EpairModelLoaderCAbiTest, CreateRejectsEmptyPath) {
+  TdEpairModelLoaderHandle *handle = nullptr;
+  EXPECT_EQ(TdEpairModelLoaderCreate("", &handle), INVALID_PARAM);
+  EXPECT_EQ(handle, nullptr);
+}
+
+TEST_F(EpairModelLoaderCAbiTest, CreateSucceedsAndOutputsHandle) {
+  TdEpairModelLoaderHandle *handle = nullptr;
+  EXPECT_EQ(TdEpairModelLoaderCreate(kAnnotated.c_str(), &handle), SUCCESS);
+  ASSERT_NE(handle, nullptr);
+  EXPECT_EQ(TdEpairModelLoaderDestroy(handle), SUCCESS);
+}
+
+TEST_F(EpairModelLoaderCAbiTest, CreateFailureSetsLastError) {
+  TdEpairModelLoaderHandle *handle = nullptr;
+  EXPECT_EQ(TdEpairModelLoaderCreate(kMissingGraphSource.c_str(), &handle), FAILED);
+  EXPECT_EQ(handle, nullptr);
+  const std::string error = TdEpairModelLoaderLastError();
+  EXPECT_NE(error.find("FAILED"), std::string::npos);
+  EXPECT_NE(error.find(kMissingGraphSource), std::string::npos);
+}
+
+TEST_F(EpairModelLoaderCAbiTest, GetGraphReturnsIndependentCopy) {
+  TdEpairModelLoaderHandle *handle = nullptr;
+  ASSERT_EQ(TdEpairModelLoaderCreate(kAnnotated.c_str(), &handle), SUCCESS);
+  ASSERT_NE(handle, nullptr);
+
+  ge::Graph graph;
+  EXPECT_EQ(TdEpairModelLoaderGetGraph(handle, &graph), SUCCESS);
+  EXPECT_FALSE(graph.GetDirectNode().empty());
+
+  // 拷贝为独立副本：重复取图互不影响
+  ge::Graph second;
+  EXPECT_EQ(TdEpairModelLoaderGetGraph(handle, &second), SUCCESS);
+
+  EXPECT_EQ(TdEpairModelLoaderDestroy(handle), SUCCESS);
+}
+
+TEST_F(EpairModelLoaderCAbiTest, GetGraphRejectsNullHandle) {
+  ge::Graph graph;
+  EXPECT_EQ(TdEpairModelLoaderGetGraph(nullptr, &graph), INTERNAL_ERROR);
+  EXPECT_NE(std::string(TdEpairModelLoaderLastError()).find("handle is null"), std::string::npos);
+}
+
+TEST_F(EpairModelLoaderCAbiTest, GetGraphRejectsNullGraphParam) {
+  TdEpairModelLoaderHandle *handle = nullptr;
+  ASSERT_EQ(TdEpairModelLoaderCreate(kAnnotated.c_str(), &handle), SUCCESS);
+  EXPECT_EQ(TdEpairModelLoaderGetGraph(handle, nullptr), INVALID_PARAM);
+  EXPECT_EQ(TdEpairModelLoaderDestroy(handle), SUCCESS);
+}
+
+TEST_F(EpairModelLoaderCAbiTest, DestroyAcceptsNull) {
+  TdEpairModelLoaderHandle *handle = nullptr;
+  ASSERT_EQ(TdEpairModelLoaderCreate(kAnnotated.c_str(), &handle), SUCCESS);
+  ASSERT_NE(handle, nullptr);
+  EXPECT_EQ(TdEpairModelLoaderDestroy(handle), SUCCESS);
+  // NULL 安全；同一非空句柄只能销毁一次，重复销毁为未定义行为
+  EXPECT_EQ(TdEpairModelLoaderDestroy(nullptr), SUCCESS);
+}
+
+TEST_F(EpairModelLoaderCAbiTest, CreateReturnsInternalErrorOnCppException) {
+  TdEpairModelLoaderHandle *handle = nullptr;
+  EXPECT_EQ(TdEpairModelLoaderCreate(kMalformedShapeDim.c_str(), &handle), INTERNAL_ERROR);
+  EXPECT_EQ(handle, nullptr);
+  const std::string error = TdEpairModelLoaderLastError();
+  EXPECT_NE(error.find("INTERNAL_ERROR"), std::string::npos);
+  EXPECT_NE(error.find(kMalformedShapeDim), std::string::npos);
+}
+
+TEST_F(EpairModelLoaderCAbiTest, CreateGetGraphDestroyFullSequence) {
+  TdEpairModelLoaderHandle *handle = nullptr;
+  ASSERT_EQ(TdEpairModelLoaderCreate(kAnnotated.c_str(), &handle), SUCCESS);
+  ASSERT_NE(handle, nullptr);
+  ge::Graph graph;
+  ASSERT_EQ(TdEpairModelLoaderGetGraph(handle, &graph), SUCCESS);
+  EXPECT_EQ(graph.GetDirectNode().size(), 6u);
+  EXPECT_EQ(TdEpairModelLoaderDestroy(handle), SUCCESS);
 }
 
 // ===========================================================================

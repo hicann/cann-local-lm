@@ -8,7 +8,11 @@
 ExportedProgram → export_to_epair() → EpairContents → epair_save() → .epair file
                                                                   ↓
                                                           epair_load() → EpairContents
+
+.epair file → EpairModelLoader(path) → GE graph → GE Offline_compile (offline compilation path)
 ```
+
+> The `EpairModelLoader` class (`.epair` → GE graph for offline compilation) is documented in [EpairModelLoader (Python API)](model_loader.md).
 
 **Import:**
 

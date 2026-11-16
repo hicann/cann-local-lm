@@ -550,25 +550,36 @@ def gen_annotated_mm_add() -> None:
         }
     }
     constants_config = {"config": {}}
-    out = os.path.join(FIXTURES_DIR, "annotated_mm_add.epair")
-    with ArchiveWriter(out) as writer:
-        writer.write_string("models/model.json", json.dumps(model_json))
-        writer.write_string(
-            "extra/ep_json_with_ascend_ir.json", json.dumps(annotated_json)
-        )
-        writer.write_string(
-            "data/weights/model_weights_config.json", json.dumps(weights_config)
-        )
-        writer.write_bytes(
-            "data/weights/weight_0",
-            _float_bytes([1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0]),
-        )
-        writer.write_bytes("data/weights/weight_1", _float_bytes([0.5, 1.5, 2.5]))
-        writer.write_string(
-            "data/constants/model_constants_config.json", json.dumps(constants_config)
-        )
-        _write_manifest(writer, total_nodes=2, converted=2)
-    print("Generated: annotated_mm_add.epair")
+
+    def _write(filename: str, annotated: dict) -> None:
+        out = os.path.join(FIXTURES_DIR, filename)
+        with ArchiveWriter(out) as writer:
+            writer.write_string("models/model.json", json.dumps(model_json))
+            writer.write_string(
+                "extra/ep_json_with_ascend_ir.json", json.dumps(annotated)
+            )
+            writer.write_string(
+                "data/weights/model_weights_config.json", json.dumps(weights_config)
+            )
+            writer.write_bytes(
+                "data/weights/weight_0",
+                _float_bytes([1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0]),
+            )
+            writer.write_bytes("data/weights/weight_1", _float_bytes([0.5, 1.5, 2.5]))
+            writer.write_string(
+                "data/constants/model_constants_config.json",
+                json.dumps(constants_config),
+            )
+            _write_manifest(writer, total_nodes=2, converted=2)
+        print(f"Generated: {filename}")
+
+    _write("annotated_mm_add.epair", annotated_json)
+    # 畸形 shape.dim 触发 std::stoll 异常，用于验证 C ABI 异常边界。
+    malformed_json = json.loads(json.dumps(annotated_json))
+    malformed_json["graph_module"]["graph"]["nodes"][0]["ascend_ir"]["ops"][0][
+        "inputDesc"
+    ][0]["shape"]["dim"][0] = "abc"
+    _write("annotated_mm_add_bad_shape_dim.epair", malformed_json)
 
 
 def gen_annotated_mixed() -> None:

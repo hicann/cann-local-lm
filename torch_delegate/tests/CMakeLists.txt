@@ -51,6 +51,7 @@ set(TORCH_DELEGATE_FIXTURE_OUTPUTS
     "${FIXTURES_DIR}/no_model_json.epair"
     "${FIXTURES_DIR}/missing_op_type.epair"
     "${FIXTURES_DIR}/annotated_mm_add.epair"
+    "${FIXTURES_DIR}/annotated_mm_add_bad_shape_dim.epair"
     "${FIXTURES_DIR}/annotated_mixed.epair"
     "${FIXTURES_DIR}/annotated_converter_no_ops.epair"
     "${FIXTURES_DIR}/annotated_attr_types.epair"

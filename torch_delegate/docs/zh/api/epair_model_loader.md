@@ -41,6 +41,7 @@ EpairContents
 - **[RunModel](#section_run_model_sync)**
 - **[RunModelWithStreamAsync](#section_run_model)**
 - **[GetGEGraph](#section_get_ge_graph)**
+- **[GetInitStatus](#section_get_init_status)**
 
 ---
 
@@ -95,7 +96,7 @@ explicit EpairModelLoader(const char *archive_path)
 #### 约束说明<a id="section_constructor_constraints"></a>
 
 - `archive_path` 必须指向有效的 `.epair` 文件（由 `epair_save()` 生成的ZIP归档），支持相对路径和绝对路径
-- 构造函数不会抛出异常；初始化失败时，继续调用其他方法均返回非 `SUCCESS` 错误码（`INVALID_PARAM` 或 `FAILED`）
+- 构造函数不会抛出异常；初始化失败时，继续调用其他方法均返回非 `SUCCESS` 错误码（`INVALID_PARAM` 或 `FAILED`），可通过 [GetInitStatus](#section_get_init_status) 查询具体错误码
 
 ---
 
@@ -270,6 +271,37 @@ Status GetGEGraph(ge::Graph *graph) const
 - `graph` 指针必须非空，必须是有效的Graph对象
 - 返回的Graph是副本，调用方拥有所有权
 - **输入shape可能与EP JSON不一致**：内部GE Graph构建完成后会执行SymPack优化Pass（合并冗余Pack节点、清理死Data、重排Data index），此时图中Data节点的数量、index、shape均可能与EP JSON中的原始输入定义不同。若需获取优化后实际的输入规格（Data节点数量、index、shape、dtype、placement），应通过 `ge::Graph::GetAllNodes()` 遍历 `type == "Data"` 的节点并读取其 `index` 属性和 `TensorDesc`，或通过GE Dump工具导出图结构查看，**不应直接按EP JSON的输入签名构造 `RunGraph` 的输入**。关于SymPack优化Pass对输入结构的影响及运行时输入适配机制，参见 [SymPack合并优化与AssertTensorMetadata过滤](../features/sympack_merge_20260710.md)
+
+---
+
+### GetInitStatus<a id="section_get_init_status"></a>
+
+#### 头文件/库文件<a id="section_get_init_status_files"></a>
+
+- 头文件：`#include <torch_delegate/epair_model_loader.h>`
+- 库文件：`libtorch_delegate_backend.so`
+
+#### 功能说明<a id="section_get_init_status_desc"></a>
+
+获取构造初始化状态。构造函数不抛出异常，初始化失败时可通过本接口查询具体错误码，用于判断是否继续调用其他接口。
+
+#### 函数原型<a id="section_get_init_status_proto"></a>
+
+```cpp
+Status GetInitStatus() const
+```
+
+#### 返回值说明<a id="section_get_init_status_ret"></a>
+
+<a id="table_get_init_status_ret"></a>
+| 参数名 | 类型 | 说明 |
+| --- | --- | --- |
+| - | td::Status | `td::SUCCESS`：构造初始化成功<br>`td::FAILED`：初始化失败（归档解析或Graph构建失败）<br>`td::INVALID_PARAM`：构造函数传入null路径<br>`td::INTERNAL_ERROR`：内部对象分配失败 |
+
+#### 约束说明<a id="section_get_init_status_constraints"></a>
+
+- 本接口仅查询构造初始化状态，不执行编译、加载或其他操作
+- 返回非 `SUCCESS` 时，表示构造初始化失败，不应继续调用 `CompileAndLoad` / `RunModel` 等后续接口
 
 ---
 ## 相关文档<a id="section_references"></a>

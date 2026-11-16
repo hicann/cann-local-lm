@@ -9,6 +9,7 @@ import os
 
 from ._version import __version__
 from .api import export_to_epair, epair_save, epair_load
+from .model_loader import EpairModelLoader, EpairModelLoaderError
 from .epair.schema import EpairContents, EpairManifest
 from .epair.config import EpairConfig
 from .lite_context import (
@@ -51,6 +52,8 @@ __all__ = [
     "EpairConfig",
     "LiteConfig",
     "lite_export_context",
+    "EpairModelLoader",
+    "EpairModelLoaderError",
     "LiteExportError",
     "LiteImportError",
     "LiteStateError",

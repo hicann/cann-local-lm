@@ -41,6 +41,7 @@ Inference results
 - **[RunModel](#section_run_model_sync)**
 - **[RunModelWithStreamAsync](#section_run_model)**
 - **[GetGEGraph](#section_get_ge_graph)**
+- **[GetInitStatus](#section_get_init_status)**
 
 ---
 
@@ -95,7 +96,7 @@ explicit EpairModelLoader(const char *archive_path)
 #### Constraints<a id="section_constructor_constraints"></a>
 
 - `archive_path` must point to a valid `.epair` file (a ZIP archive produced by `epair_save()`); relative and absolute paths are supported
-- The constructor does not throw; if initialization fails, subsequent method calls return non-`SUCCESS` error codes (`INVALID_PARAM` or `FAILED`)
+- The constructor does not throw; if initialization fails, subsequent method calls return non-`SUCCESS` error codes (`INVALID_PARAM` or `FAILED`). Use [GetInitStatus](#section_get_init_status) to query the specific error code
 
 ---
 
@@ -270,6 +271,37 @@ Status GetGEGraph(ge::Graph *graph) const
 - The `graph` pointer must be non-null and must be a valid Graph object
 - The returned Graph is a copy; the caller owns it
 - **Input shapes may differ from the EP JSON**: after the internal GE Graph is built, the SymPack optimization pass runs (merging redundant Pack nodes, removing dead Data, and reordering Data indices). At this point the number, index, and shape of Data nodes in the graph may all differ from the original input definitions in the EP JSON. To obtain the actual input specifications after optimization (Data node count, index, shape, dtype, placement), iterate over nodes with `type == "Data"` via `ge::Graph::GetAllNodes()` and read their `index` attribute and `TensorDesc`, or export the graph structure with the GE Dump tool. **Do not construct `RunGraph` inputs directly from the input signature in the EP JSON.** For details on how the SymPack optimization pass affects input structure and on the runtime input adaptation mechanism, see [SymPack merge optimization and AssertTensorMetadata filtering](../features/sympack_merge_20260710.md)
+
+---
+
+### GetInitStatus<a id="section_get_init_status"></a>
+
+#### Header/library<a id="section_get_init_status_files"></a>
+
+- Header: `#include <torch_delegate/epair_model_loader.h>`
+- Library: `libtorch_delegate_backend.so`
+
+#### Description<a id="section_get_init_status_desc"></a>
+
+Gets the construction initialization status. The constructor does not throw; when initialization fails, this interface can be used to query the specific error code to decide whether to proceed with other interfaces.
+
+#### Prototype<a id="section_get_init_status_proto"></a>
+
+```cpp
+Status GetInitStatus() const
+```
+
+#### Return value<a id="section_get_init_status_ret"></a>
+
+<a id="table_get_init_status_ret"></a>
+| Parameter | Type | Description |
+| --- | --- | --- |
+| - | td::Status | `td::SUCCESS`: construction initialization succeeded<br>`td::FAILED`: initialization failed (archive parsing or Graph construction failed)<br>`td::INVALID_PARAM`: a null path was passed to the constructor<br>`td::INTERNAL_ERROR`: internal object allocation failed |
+
+#### Constraints<a id="section_get_init_status_constraints"></a>
+
+- This interface only queries the construction initialization status; it does not perform compilation, loading, or any other operations
+- A non-`SUCCESS` return means construction initialization failed; do not proceed with subsequent interfaces such as `CompileAndLoad` / `RunModel`
 
 ---
 ## Related documentation<a id="section_references"></a>

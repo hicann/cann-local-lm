@@ -8,7 +8,11 @@
 ExportedProgram → export_to_epair() → EpairContents → epair_save() → .epair 文件
                                                                   ↓
                                                           epair_load() → EpairContents
+
+.epair 文件 → EpairModelLoader(path) → GE 图 → GE Offline_compile（离线编译路径）
 ```
+
+> `EpairModelLoader` 类（`.epair` → GE 图，供离线编译）见 [EpairModelLoader（Python API）](model_loader.md)。
 
 **导入方式：**
 

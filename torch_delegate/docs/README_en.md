@@ -29,4 +29,4 @@ Chinese documents are located in the `zh/` directory. The directory structure an
 - When a Chinese document is added or modified, add or modify the file with the same name under `en/`.
 - Use lowercase English file names with underscores between words.
 - Mark the design date and scope at the beginning of historical design documents.
-- The Python API is currently maintained in a single `python_api.md` as a registered exception to the one-API-per-file rule. New standalone APIs should be split into separate files.
+- Common Python API functions and data classes are maintained in `python_api.md`; new standalone APIs should be split into separate files (for example, `model_loader.md`).

@@ -60,11 +60,15 @@ option(ENABLE_ASAN "Build with AddressSanitizer" OFF)
 # 生成 compile_commands.json，供 clangd / IDE 代码导航使用
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-set(DELEGATE_COMMON_FLAGS
+# 基础告警选项：不依赖 ASAN 等运行时配置，供必须规避 ASAN 的特殊 target
+# （如会被 Python 进程 dlopen 的 stub）单独引用。
+set(DELEGATE_COMMON_WARNING_FLAGS
     -Wall
     -Wextra
     -Werror
 )
+
+set(DELEGATE_COMMON_FLAGS ${DELEGATE_COMMON_WARNING_FLAGS})
 
 if(ENABLE_ASAN)
     list(APPEND DELEGATE_COMMON_FLAGS
@@ -113,6 +117,7 @@ set(TORCH_DELEGATE_GE_RUNNER_V2_LINK_TARGET ge_runner_v2)
 if(BUILD_TESTS)
     include(TorchDelegateTestStubs)
     torch_delegate_add_ge_runner_v2_stub()
+    torch_delegate_add_epair_loader_c_stub()
     set(TORCH_DELEGATE_GE_RUNNER_V2_LINK_TARGET ge_runner_v2_stub)
 else()
     find_package(ge_runner_v2 REQUIRED)

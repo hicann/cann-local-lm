@@ -1,7 +1,11 @@
 """gen_model_json.py 单元测试 — _extract_from_hf_config / gen_model_json (纯 dict ops).
 
-测: _extract_from_hf_config 从 hf_config 提取字段 (正常/缺字段报错/eos_multi_turn 列表/layer_types 长度警告),
-gen_model_json 生成 model.json 字典 (结构/默认值/参数覆盖/路径参数/写死值覆盖/eos_multi_turn).
+测: _extract_from_hf_config 从 hf_config 提取字段 (正常/缺必填字段报错/
+sliding_window+head_dim 提取/缺 sliding_window 或 head_dim 时静默返回 None/layer_types 长度警告/
+eos_multi_turn 从顶层 eos_token_id 列表第二元素提取, 缺失或非列表或长度 1 时为 None),
+gen_model_json 生成 model.json 字典 (结构/默认值/参数覆盖/路径参数/写死值覆盖/
+special_tokens 为 {"<turn|>": eos_multi_turn_id} 映射/embedding_dequant_scale 键废弃/
+sliding_window 与 sliding_window_head_dim 缺失时输出 null).
 跳过: saver.save_epair* 内的调用 (需 torch.export + torchair GE, 归 e2e).
 """
 
@@ -26,13 +30,19 @@ def _make_hf_config(
     vocab_size=262144,
     num_key_value_heads=2,
     global_head_dim=512,
+    head_dim=256,
+    sliding_window=512,
     layer_types=None,
     bos_token_id=1,
     eos_token_id=106,
-    top_eos_token_id=None,
     pad_token_id=0,
+    top_eos_token_id=None,
 ):
-    """构造一个最小可用的 hf_config dict。"""
+    """构造一个最小可用的 hf_config dict (匹配 gemma4 真实 config 字段)。
+
+    top_eos_token_id: 顶层 eos_token_id 列表; None 时使用默认 [1, 106] (第二元素
+    即 eos_multi_turn id 106)。传入其他值则覆盖顶层 eos_token_id。
+    """
     if layer_types is None:
         # 5 sliding + 1 full 循环, 共 42 层
         layer_types = []
@@ -40,23 +50,25 @@ def _make_hf_config(
             layer_types.append(
                 "full_attention" if (i + 1) % 6 == 0 else "sliding_attention"
             )
-    cfg = {
+    if top_eos_token_id is None:
+        top_eos_token_id = [1, 106]
+    return {
         "model_type": model_type,
+        "eos_token_id": top_eos_token_id,
         "text_config": {
             "hidden_size": hidden_size,
             "num_hidden_layers": num_hidden_layers,
             "vocab_size": vocab_size,
             "num_key_value_heads": num_key_value_heads,
             "global_head_dim": global_head_dim,
+            "head_dim": head_dim,
+            "sliding_window": sliding_window,
             "layer_types": layer_types,
             "bos_token_id": bos_token_id,
             "eos_token_id": eos_token_id,
             "pad_token_id": pad_token_id,
         },
     }
-    if top_eos_token_id is not None:
-        cfg["eos_token_id"] = top_eos_token_id
-    return cfg
 
 
 def _write_config(tmp_path, hf_config):
@@ -81,6 +93,8 @@ def test_extract_returns_all_expected_fields():
         "num_attention_kv_heads",
         "num_attention_head_dims",
         "layer_types",
+        "sliding_window",
+        "sliding_window_head_dim",
         "bos_token_id",
         "eos_token_id",
         "eos_multi_turn",
@@ -94,6 +108,8 @@ def test_extract_field_values_match_config():
         vocab_size=32000,
         num_key_value_heads=8,
         global_head_dim=64,
+        head_dim=128,
+        sliding_window=1024,
     )
     cfg = _extract_from_hf_config(hf_config)
     assert cfg["hidden_size"] == 512
@@ -103,6 +119,21 @@ def test_extract_field_values_match_config():
     assert cfg["num_attention_head_dims"] == 64
     assert cfg["model_type"] == "gemma4"
     assert cfg["pad_token_id"] == 0
+
+
+def test_extract_sliding_window_from_text_config():
+    """sliding_window 从 text_config.sliding_window 提取 (原写死 256 已删除)。"""
+    hf_config = _make_hf_config(sliding_window=768)
+    cfg = _extract_from_hf_config(hf_config)
+    assert cfg["sliding_window"] == 768
+
+
+def test_extract_sliding_window_head_dim_from_head_dim():
+    """sliding_window_head_dim 从 text_config.head_dim 提取 (区别于 global_head_dim)。"""
+    hf_config = _make_hf_config(head_dim=256, global_head_dim=512)
+    cfg = _extract_from_hf_config(hf_config)
+    assert cfg["sliding_window_head_dim"] == 256
+    assert cfg["num_attention_head_dims"] == 512
 
 
 def test_extract_layer_types_correct():
@@ -117,36 +148,43 @@ def test_extract_layer_types_correct():
     assert cfg["layer_types"] == layer_types
 
 
-def test_extract_eos_multi_turn_from_list():
-    hf_config = _make_hf_config(top_eos_token_id=[1, 106])
-    cfg = _extract_from_hf_config(hf_config)
-    assert cfg["eos_multi_turn"] == 106
-
-
-def test_extract_eos_multi_turn_none_when_single_element_list():
-    """top_eos_token_id=[1] 长度 1, 不满足 len > 1 → eos_multi_turn=None。"""
-    hf_config = _make_hf_config(top_eos_token_id=[1])
-    cfg = _extract_from_hf_config(hf_config)
-    assert cfg["eos_multi_turn"] is None
-
-
-def test_extract_eos_multi_turn_none_when_not_list():
-    hf_config = _make_hf_config(top_eos_token_id=106)
-    cfg = _extract_from_hf_config(hf_config)
-    assert cfg["eos_multi_turn"] is None
-
-
-def test_extract_eos_multi_turn_none_when_absent():
-    hf_config = _make_hf_config()
-    cfg = _extract_from_hf_config(hf_config)
-    assert cfg["eos_multi_turn"] is None
-
-
 def test_extract_pad_token_id_default_zero():
     hf_config = _make_hf_config()
     hf_config["text_config"].pop("pad_token_id")
     cfg = _extract_from_hf_config(hf_config)
     assert cfg["pad_token_id"] == 0
+
+
+# ── _extract_from_hf_config: eos_multi_turn 提取 ──
+
+
+def test_extract_eos_multi_turn_from_top_level_list():
+    """顶层 eos_token_id=[1, 106] → eos_multi_turn 取第二元素 106。"""
+    hf_config = _make_hf_config(top_eos_token_id=[1, 106])
+    cfg = _extract_from_hf_config(hf_config)
+    assert cfg["eos_multi_turn"] == 106
+
+
+def test_extract_eos_multi_turn_single_element_list_is_none():
+    """顶层 eos_token_id 单元素列表 [1] → eos_multi_turn 为 None。"""
+    hf_config = _make_hf_config(top_eos_token_id=[1])
+    cfg = _extract_from_hf_config(hf_config)
+    assert cfg["eos_multi_turn"] is None
+
+
+def test_extract_eos_multi_turn_non_list_is_none():
+    """顶层 eos_token_id 非列表 (int) → eos_multi_turn 为 None。"""
+    hf_config = _make_hf_config(top_eos_token_id=106)
+    cfg = _extract_from_hf_config(hf_config)
+    assert cfg["eos_multi_turn"] is None
+
+
+def test_extract_eos_multi_turn_missing_is_none():
+    """顶层 eos_token_id 缺失 → eos_multi_turn 为 None。"""
+    hf_config = _make_hf_config()
+    hf_config.pop("eos_token_id")
+    cfg = _extract_from_hf_config(hf_config)
+    assert cfg["eos_multi_turn"] is None
 
 
 # ── _extract_from_hf_config: 缺字段报错 ──
@@ -196,8 +234,7 @@ def test_extract_layer_types_length_mismatch_warns(capsys):
     )
     _extract_from_hf_config(hf_config)
     err = capsys.readouterr().err
-    assert "WARN" in err
-    assert "2" in err and "4" in err
+    assert "[WARN] layer_types 长度(2) != num_hidden_layers(4)" in err
 
 
 # ── gen_model_json: 结构与默认值 ──
@@ -234,7 +271,9 @@ def test_gen_model_json_model_config_defaults(tmp_path):
     assert mc["max_io_tokens"] == 8192
     assert mc["kv_cache_format"] == "nd"
     assert mc["kv_cache_type"] == "fp16"
-    assert mc["sliding_window"] == 256
+    # [config] sliding_window 从 text_config.sliding_window 提取 (不再写死 256)
+    assert mc["sliding_window"] == 512
+    assert mc["sliding_window_head_dim"] == 256
     # layer_types
     assert len(mc["layer_types"]) == 42
 
@@ -243,7 +282,7 @@ def test_gen_model_json_embedding_config_defaults(tmp_path):
     path = _write_config(tmp_path, _make_hf_config())
     ec = gen_model_json(path)["embedding_config"]
     assert ec["embedding_weights"] == ""
-    assert ec["embedding_dequant_scale"] == ""
+    assert "embedding_dequant_scale" not in ec  # 键已废弃
     assert ec["embedding_quant_mode"] == "per_token"
     assert ec["embedding_load_mode"] == "in_memory"
     assert ec["embedding_type"] == "int8"
@@ -261,14 +300,49 @@ def test_gen_model_json_tokenizer_config_defaults(tmp_path):
     assert tc["bos_token"] == "<bos>"
     assert tc["eos_token"] == "<eos>"
     assert tc["add_bos"] is True
-    assert tc["special_tokens"] == {}
+    # special_tokens 的 key 是固定 token 字符串 "<turn|>", value 是 eos_multi_turn id
+    assert tc["special_tokens"] == {"<turn|>": 106}
 
 
-def test_gen_model_json_eos_multi_turn_in_special_tokens(tmp_path):
-    hf_config = _make_hf_config(top_eos_token_id=[1, 106])
+def test_gen_model_json_eos_multi_turn_token_key_maps_to_id(tmp_path):
+    """special_tokens 为 {"<turn|>": eos_multi_turn_id}, id 取自顶层 eos_token_id 列表第二元素。"""
+    path = _write_config(tmp_path, _make_hf_config(top_eos_token_id=[1, 106]))
+    tc = gen_model_json(path)["tokenizer_config"]
+    assert tc["special_tokens"] == {"<turn|>": 106}
+
+
+def test_gen_model_json_eos_multi_turn_missing_maps_to_none(tmp_path):
+    """顶层 eos_token_id 缺失 → special_tokens 值为 None, key 仍为 "<turn|>"。"""
+    hf_config = _make_hf_config()
+    hf_config.pop("eos_token_id")
     path = _write_config(tmp_path, hf_config)
     tc = gen_model_json(path)["tokenizer_config"]
-    assert tc["special_tokens"]["eos_multi_turn"] == 106
+    assert tc["special_tokens"] == {"<turn|>": None}
+
+
+# ── gen_model_json: 缺字段容错 ──
+
+
+def test_gen_model_json_sliding_window_none_when_missing(tmp_path, capsys):
+    """text_config.sliding_window 缺失 → model_config 输出 None, 且不打印 WARN。"""
+    hf_config = _make_hf_config()
+    hf_config["text_config"].pop("sliding_window")
+    path = _write_config(tmp_path, hf_config)
+    mc = gen_model_json(path)["model_config"]
+    assert "sliding_window" in mc
+    assert mc["sliding_window"] is None
+    assert "WARN" not in capsys.readouterr().err
+
+
+def test_gen_model_json_sliding_window_head_dim_none_when_missing(tmp_path, capsys):
+    """text_config.head_dim 缺失 → 键恒存在且值为 None, 且不打印 WARN。"""
+    hf_config = _make_hf_config()
+    hf_config["text_config"].pop("head_dim")
+    path = _write_config(tmp_path, hf_config)
+    mc = gen_model_json(path)["model_config"]
+    assert "sliding_window_head_dim" in mc
+    assert mc["sliding_window_head_dim"] is None
+    assert "WARN" not in capsys.readouterr().err
 
 
 # ── gen_model_json: 参数覆盖 ──
@@ -306,11 +380,9 @@ def test_gen_model_json_path_params_reflected(tmp_path):
     result = gen_model_json(
         path,
         embedding_weights_path="/device/embed.bin",
-        embedding_dequant_scale_path="/device/scale.bin",
         tokenizer_file_path="/device/tokenizer.json",
     )
     assert result["embedding_config"]["embedding_weights"] == "/device/embed.bin"
-    assert result["embedding_config"]["embedding_dequant_scale"] == "/device/scale.bin"
     assert result["tokenizer_config"]["tokenizer_file"] == "/device/tokenizer.json"
 
 
@@ -336,9 +408,10 @@ def test_gen_model_json_kv_cache_type_override(tmp_path):
 
 
 def test_gen_model_json_sliding_window_override(tmp_path):
+    """参数 sliding_window 优先于 config 的 text_config.sliding_window=512。"""
     path = _write_config(tmp_path, _make_hf_config())
-    mc = gen_model_json(path, sliding_window=512)["model_config"]
-    assert mc["sliding_window"] == 512
+    mc = gen_model_json(path, sliding_window=1024)["model_config"]
+    assert mc["sliding_window"] == 1024
 
 
 # ── gen_model_json: 文件不存在 ──

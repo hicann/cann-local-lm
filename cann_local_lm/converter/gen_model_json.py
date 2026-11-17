@@ -16,10 +16,6 @@ _FIXED_KV_CACHE_FORMAT = "nd"  # KV cache 布局
 _FIXED_KV_CACHE_TYPE = (
     "fp16"  # KV cache 数据类型（部署用 fp16，不是 config 的 bfloat16）
 )
-_FIXED_SLIDING_WINDOW = (
-    256  # sliding window 大小（model.json 值，config.json 是 512，未确认用哪个）
-)
-
 _FIXED_EMBEDDING_QUANT_MODE = "per_token"
 _FIXED_EMBEDDING_LOAD_MODE = "in_memory"
 _FIXED_EMBEDDING_TYPE = "int8"
@@ -29,6 +25,7 @@ _FIXED_TOKEN_IDENTITY_SCALE_TYPE = "fp32"
 
 _FIXED_BOS_TOKEN = "<bos>"
 _FIXED_EOS_TOKEN = "<eos>"
+_FIXED_EOS_MULTI_TURN_TOKEN = "<turn|>"
 _FIXED_ADD_BOS = True
 
 
@@ -44,6 +41,8 @@ def _extract_from_hf_config(hf_config: dict) -> dict:
     num_kv_heads = text_cfg.get("num_key_value_heads")
     num_head_dims = text_cfg.get("global_head_dim")
     layer_types = text_cfg.get("layer_types", [])
+    sliding_window = text_cfg.get("sliding_window")
+    sliding_window_head_dim = text_cfg.get("head_dim")
 
     bos_token_id = text_cfg.get("bos_token_id")
     eos_token_id = text_cfg.get("eos_token_id")
@@ -91,6 +90,8 @@ def _extract_from_hf_config(hf_config: dict) -> dict:
         "num_attention_kv_heads": num_kv_heads,
         "num_attention_head_dims": num_head_dims,
         "layer_types": layer_types,
+        "sliding_window": sliding_window,
+        "sliding_window_head_dim": sliding_window_head_dim,
         "bos_token_id": bos_token_id,
         "eos_token_id": eos_token_id,
         "eos_multi_turn": eos_multi_turn,
@@ -105,7 +106,6 @@ def gen_model_json(
     kv_cache_max_len: int = 2048,
     batch_num: int = 1,
     embedding_weights_path: str = "",
-    embedding_dequant_scale_path: str = "",
     tokenizer_file_path: str = "",
     max_io_tokens: int | None = None,
     kv_cache_format: str | None = None,
@@ -121,10 +121,9 @@ def gen_model_json(
         kv_cache_max_len: KV cache 最大长度。
         batch_num: batch 数。
         embedding_weights_path: embedding 权重设备路径。
-        embedding_dequant_scale_path: embedding dequant scale 设备路径。
         tokenizer_file_path: tokenizer.json 设备路径。
-        max_io_tokens / kv_cache_format / kv_cache_type / sliding_window:
-            可选覆盖写死值。
+        max_io_tokens / kv_cache_format / kv_cache_type: 可选覆盖写死值。
+        sliding_window: 可选覆盖 config.json 的 text_config.sliding_window。
 
     Returns:
         dict with keys: model_config, embedding_config, tokenizer_config
@@ -150,13 +149,13 @@ def gen_model_json(
         "num_attention_head_dims": cfg["num_attention_head_dims"],
         "batch_num": batch_num,
         "kv_cache_type": kv_cache_type or _FIXED_KV_CACHE_TYPE,
-        "sliding_window": sliding_window or _FIXED_SLIDING_WINDOW,
+        "sliding_window": sliding_window or cfg["sliding_window"],
+        "sliding_window_head_dim": cfg["sliding_window_head_dim"],
         "layer_types": cfg["layer_types"],
     }
 
     embedding_config = {
         "embedding_weights": embedding_weights_path,
-        "embedding_dequant_scale": embedding_dequant_scale_path,
         "embedding_quant_mode": _FIXED_EMBEDDING_QUANT_MODE,
         "embedding_load_mode": _FIXED_EMBEDDING_LOAD_MODE,
         "embedding_type": _FIXED_EMBEDDING_TYPE,
@@ -172,10 +171,10 @@ def gen_model_json(
         "bos_token": _FIXED_BOS_TOKEN,
         "eos_token": _FIXED_EOS_TOKEN,
         "add_bos": _FIXED_ADD_BOS,
-        "special_tokens": {},
+        "special_tokens": {
+            _FIXED_EOS_MULTI_TURN_TOKEN: cfg["eos_multi_turn"],
+        },
     }
-    if cfg["eos_multi_turn"] is not None:
-        tokenizer_config["special_tokens"]["eos_multi_turn"] = cfg["eos_multi_turn"]
 
     return {
         "model_config": model_config,

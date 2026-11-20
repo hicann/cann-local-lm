@@ -7,7 +7,7 @@ Mirrors `mlx_lm.generate`: one command, config-driven model + a prompt → print
 the response.
 
     cann_local_lm.generate --config testcase.json --prompt "你好"
-    cann_local_lm.generate --config testcase.json --prompt xxx --max-tokens 128 --stop </s>
+    cann_local_lm.generate --config testcase.json --prompt xxx --max-tokens 128 --stop '</s>'
 
 --config provides model paths + tokenizer + sampling defaults (from
 sentences[0], same contract as bbit); --prompt / --max-tokens / --stop override

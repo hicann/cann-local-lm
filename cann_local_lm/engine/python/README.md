@@ -74,7 +74,7 @@ bash scripts/build.sh cpp    # 详见 docs/build_guide.md
 
 ```bash
 cllm generate --config testcase.json --prompt "你好"
-cllm generate --config testcase.json --prompt "你好" --max-tokens 128 --stop </s>
+cllm generate --config testcase.json --prompt "你好" --max-tokens 128 --stop '</s>'
 # 模块模式（调试用）：
 python -m cann_local_lm.generate --config testcase.json --prompt "你好"
 ```

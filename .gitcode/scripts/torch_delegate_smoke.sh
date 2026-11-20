@@ -53,7 +53,7 @@ export ASCEND_SLOG_PRINT_TO_STDOUT=0
 
 npu-smi info 2>&1 | head -20 || echo "WARN: npu-smi 不可用"
 
-cd "${WORKSPACE}/torch_delegate" || exit 0
+cd "${WORKSPACE}/torch_delegate" || { echo "SMOKE FAIL: torch_delegate 目录不存在"; exit 1; }
 
 # 1) 下载 compile 阶段 (ARM job) 产出的 whl, 放到 prepare_env.sh 约定的 output/package/
 if [ $RET -eq 0 ]; then

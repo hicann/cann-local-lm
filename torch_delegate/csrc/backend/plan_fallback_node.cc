@@ -27,35 +27,6 @@
 
 namespace td {
 
-namespace {
-
-// pt2 dtype 的元素字节宽度；未知 dtype 返回 0。
-size_t Pt2DtypeElementSize(int64_t dtype) {
-  switch (dtype) {
-    case pt2::kDtypeByte:
-    case pt2::kDtypeChar:
-    case pt2::kDtypeBool:
-      return sizeof(uint8_t);
-    case pt2::kDtypeShort:
-    case pt2::kDtypeHalf:
-    case pt2::kDtypeBFloat16:
-    case pt2::kDtypeUInt16:
-      return sizeof(uint16_t);
-    case pt2::kDtypeInt:
-      return sizeof(int32_t);
-    case pt2::kDtypeLong:
-      return sizeof(int64_t);
-    case pt2::kDtypeFloat:
-      return sizeof(float);
-    case pt2::kDtypeDouble:
-      return sizeof(double);
-    default:
-      return 0;
-  }
-}
-
-}  // namespace
-
 FallbackNodePlanner::FallbackNodePlanner(GraphBuildContext &ctx, const GraphPlanningDeps &deps,
                                          ge::Placement tensor_placement)
     : ctx_(ctx), deps_(deps), tensor_placement_(tensor_placement) {}
@@ -236,22 +207,9 @@ Status FallbackNodePlanner::BuildInputDefs(const ParsedNode &node) {
                input.tensor_name.c_str());
         return INVALID_PARAM;
       }
-      if (tensor_placement_ == ge::kPlacementHost) {
-        // GE runtime 对 HostCpu 算子的 Data（用户运行时输入）做 device→host staging 时，
-        // 拷贝长度按 4 字节/元素计算，与 desc 的实际 dtype 无关（实测 DT_INT64 输入被截断一半，
-        // DT_FLOAT 输入不受影响）。Const 权重输入不走该路径，不受影响。
-        // 已知规避：导出侧改传 float32，CPU kernel 内转回原 dtype。
-        const auto placeholder_kind = deps_.model.PlaceholderKindOf(input.tensor_name);
-        const size_t element_size = Pt2DtypeElementSize(input_meta->dtype);
-        if (placeholder_kind == PlaceholderKind::UserInput && element_size != 0 && element_size != 4) {
-          TDLOGE(
-              "HostCpu node consumes Data input with non-4-byte dtype (element_size=%zu), "
-              "GE runtime staging would truncate the transfer; re-export with a float32 input "
-              "and cast back inside the CPU kernel, context=%s, tensor=%s",
-              element_size, context_.c_str(), input.tensor_name.c_str());
-          return UNIMPLEMENTED;
-        }
-      }
+      // HostCpu 用户 Data 输入的 D2H staging 由 GE 按 desc 实际 dtype 计算长度
+      // （CalcTensorSizeFromStorage → CalcAlignedSizeByShape → GetSizeInBytes），
+      // 非 4 字节 dtype（int64/fp16/bf16 等）无需再做 fail-fast。
       td::GeTensorDescInfo desc_info;
       TD_CHK_STATUS(deps_.tensor_desc_mapper.MapPt2TensorMeta(*input_meta, context_ + ":" + ir_name, desc_info));
       ge::TensorDesc desc = MakeTensorDesc(desc_info);

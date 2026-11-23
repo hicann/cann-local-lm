@@ -130,6 +130,7 @@ namespace {
 const std::string kAnnotated = std::string(FIXTURES_DIR) + "/annotated_mm_add.epair";
 const std::string kAnnotatedMixed = std::string(FIXTURES_DIR) + "/annotated_mixed.epair";
 const std::string kAnnotatedHostCpu = std::string(FIXTURES_DIR) + "/annotated_host_cpu.epair";
+const std::string kAnnotatedHostCpuNon4Byte = std::string(FIXTURES_DIR) + "/annotated_host_cpu_non4byte_inputs.epair";
 const std::string kAnnotatedConverterNoOp = std::string(FIXTURES_DIR) + "/annotated_converter_no_ops.epair";
 const std::string kAnnotatedConverterNoOpCopy = std::string(FIXTURES_DIR) + "/annotated_converter_noop_copy.epair";
 const std::string kAnnotatedAttrTypes = std::string(FIXTURES_DIR) + "/annotated_attr_types.epair";
@@ -512,6 +513,32 @@ TEST_F(GeGraphBuilderTest, BuildsAnnotatedHostCpuGraph) {
   // placement 参数影响（默认参数保证现有路径零变化，见 PureNpuGraphBuildsUnaffected）。
   ge::GNode mm_node = FindNodeByType(*graph, "MatMul");
   ASSERT_EQ(mm_node.GetType(found_type), ge::GRAPH_SUCCESS);
+}
+
+TEST_F(GeGraphBuilderTest, BuildsHostCpuGraphWithNon4ByteUserDataInputs) {
+  // 回归 0036：HostCpu 用户 Data 输入为 int64(8B)/fp16(2B) 时，旧实现按“4 字节/元素”
+  // 假设直接返回 UNIMPLEMENTED；GE v2 的 D2H staging 实际按 desc dtype 计长，
+  // 因此这里必须能正常构图。
+  td::EpairArchive archive(kAnnotatedHostCpuNon4Byte.c_str());
+  td::Status builder_status = td::FAILED;
+  td::GeGraphBuilder builder(archive, builder_status);
+  ASSERT_EQ(builder_status, td::SUCCESS);
+
+  td::InputBindingMap binding_map;
+  auto graph = builder.Build(binding_map);
+  ASSERT_NE(graph, nullptr) << "HostCpu user Data inputs of 8/2-byte dtype must not be rejected";
+
+  size_t relu_nodes = 0;
+  for (auto &node : graph->GetAllNodes()) {
+    ge::AscendString node_type;
+    if (node.GetType(node_type) == ge::GRAPH_SUCCESS && node_type.GetString() != nullptr &&
+        std::string(node_type.GetString()) == "aten__relu") {
+      relu_nodes++;
+      EXPECT_GT(CountHostPlacementInputs(node), 0u)
+          << "HostCpu node tensor inputs must be declared with host placement";
+    }
+  }
+  EXPECT_EQ(relu_nodes, 2u) << "both int64 and fp16 user-input HostCpu nodes must be planned";
 }
 
 TEST_F(GeGraphBuilderTest, PureNpuGraphBuildsUnaffected) {

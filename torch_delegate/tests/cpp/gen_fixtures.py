@@ -328,7 +328,7 @@ def gen_missing_op_type() -> None:
     print("Generated: missing_op_type.epair")
 
 
-def _tensor_meta(shape: list[int], requires_grad: bool) -> dict:
+def _tensor_meta(shape: list[int], requires_grad: bool, dtype: int = 7) -> dict:
     strides = []
     running = 1
     for size in reversed(shape):
@@ -336,7 +336,7 @@ def _tensor_meta(shape: list[int], requires_grad: bool) -> dict:
         running *= size
     strides.reverse()
     return {
-        "dtype": 7,
+        "dtype": dtype,
         "sizes": [{"as_int": v} for v in shape],
         "requires_grad": requires_grad,
         "device": {"type": "cpu", "index": None},
@@ -858,6 +858,105 @@ def gen_annotated_host_cpu() -> None:
         )
         _write_manifest(writer, total_nodes=2, converted=2, version=2, cpu_nodes=1)
     print("Generated: annotated_host_cpu.epair")
+
+
+def gen_annotated_host_cpu_non4byte_inputs() -> None:
+    """两个 CPU fallback 节点分别消费 int64 / fp16 用户 Data 输入。
+
+    回归用例：GE runtime 的 D2H staging 按 desc dtype 计算长度，HostCpu 用户
+    Data 输入不应再被“非 4 字节 dtype”门禁拒绝（历史实现对 8/2 字节 dtype
+    直接返回 UNIMPLEMENTED）。
+    """
+    graph = {
+        "inputs": [_as_tensor("x_i64"), _as_tensor("x_f16")],
+        "outputs": [_as_tensor("relu_i64"), _as_tensor("relu_f16")],
+        "nodes": [
+            {
+                "target": "torch.ops.aten.relu.default",
+                "inputs": [
+                    {"name": "self", "arg": _as_tensor("x_i64"), "kind": 1},
+                ],
+                "outputs": [_as_tensor("relu_i64")],
+                "metadata": {"torch_fn": "relu_i64;builtin_function_or_method.relu"},
+                "is_hop_single_tensor_return": None,
+            },
+            {
+                "target": "torch.ops.aten.relu.default",
+                "inputs": [
+                    {"name": "self", "arg": _as_tensor("x_f16"), "kind": 1},
+                ],
+                "outputs": [_as_tensor("relu_f16")],
+                "metadata": {"torch_fn": "relu_f16;builtin_function_or_method.relu"},
+                "is_hop_single_tensor_return": None,
+            },
+        ],
+        "tensor_values": {
+            # pt2 serde dtype：5 = Long(int64)，6 = Half(fp16)，7 = Float。
+            "x_i64": _tensor_meta([3, 3], False, dtype=5),
+            "relu_i64": _tensor_meta([3, 3], False, dtype=5),
+            "x_f16": _tensor_meta([3, 3], False, dtype=6),
+            "relu_f16": _tensor_meta([3, 3], False, dtype=6),
+        },
+        "sym_int_values": {},
+        "sym_bool_values": {},
+        "sym_float_values": {},
+        "custom_obj_values": {},
+        "is_single_tensor_return": True,
+    }
+    signature = {
+        "input_specs": [
+            {"user_input": {"arg": _as_tensor("x_i64")}},
+            {"user_input": {"arg": _as_tensor("x_f16")}},
+        ],
+        "output_specs": [
+            {"user_output": {"arg": _as_tensor("relu_i64")}},
+            {"user_output": {"arg": _as_tensor("relu_f16")}},
+        ],
+    }
+    model_json = {
+        "graph_module": {
+            "graph": graph,
+            "signature": signature,
+            "module_call_graph": [],
+            "metadata": {},
+            "treespec_namedtuple_fields": {},
+        },
+        "opset_version": {"aten": 10},
+        "range_constraints": {},
+        "schema_version": {"major": 8, "minor": 7},
+        "verifiers": ["ATEN"],
+        "torch_version": "2.7.1+cpu",
+    }
+    annotated_json = json.loads(json.dumps(model_json))
+    for node, out_name in zip(
+        annotated_json["graph_module"]["graph"]["nodes"], ["relu_i64", "relu_f16"]
+    ):
+        # mapping 别名在全图内必须唯一，否则两个 CPU 节点会在 BindDeferredOutputs
+        # 争用同一个别名（alias already bound）。
+        node["ascend_ir"] = {
+            "source": "",
+            "device": "cpu",
+            "ops": [{"attr": {}}],
+            "mapping": {
+                "inputs": {},
+                "outputs": {out_name: f"aten__relu_{out_name}:0"},
+            },
+        }
+
+    out = os.path.join(FIXTURES_DIR, "annotated_host_cpu_non4byte_inputs.epair")
+    with ArchiveWriter(out) as writer:
+        writer.write_string("models/model.json", json.dumps(model_json))
+        writer.write_string(
+            "extra/ep_json_with_ascend_ir.json", json.dumps(annotated_json)
+        )
+        writer.write_string(
+            "data/weights/model_weights_config.json", json.dumps({"config": {}})
+        )
+        writer.write_string(
+            "data/constants/model_constants_config.json", json.dumps({"config": {}})
+        )
+        _write_manifest(writer, total_nodes=2, converted=2, version=2, cpu_nodes=2)
+    print("Generated: annotated_host_cpu_non4byte_inputs.epair")
 
 
 def gen_annotated_assert_tensor_metadata() -> None:
@@ -2918,6 +3017,7 @@ def generate(output_dir: str = FIXTURES_DIR) -> None:
     gen_annotated_mm_add()
     gen_annotated_mixed()
     gen_annotated_host_cpu()
+    gen_annotated_host_cpu_non4byte_inputs()
     gen_annotated_assert_tensor_metadata()
     gen_annotated_converter_no_ops()
     gen_annotated_converter_noop_copy()

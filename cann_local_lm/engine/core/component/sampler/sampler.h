@@ -17,7 +17,7 @@
 //     RNG（可复现，仅 do_sample 时有意义）。precomputed_topk 仍不对外（无来源通道）；
 //   - do_sample 无对外开关，映射规则：temperature!=1 或 top_k>0 或 top_p∈(0,1) 任一
 //     成立 → 概率采样，否则贪心；越界旋钮值（top_k<=0、top_p∉(0,1)）视为关闭且不计入
-//     判定；temperature==0 经 1e-8 钳制退化为贪心（对齐 HF）；repetition_penalty==1
+//     判定；temperature<=0 显式选择贪心（不进行温度缩放或概率采样）；repetition_penalty==1
 //     视为关闭（贪心下仍生效——对齐 HF processors 语义）。
 //   - prefill chunk（chunk_len>1）的 logits 行语义待真实后端落地时核对：自回归续写应
 //     取 chunk 末位置而非 slot 0 对应首位置，中间 chunk 不应采样——当前 host 前向桩

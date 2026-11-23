@@ -184,20 +184,23 @@ SamplerOutput Sampler::Sample(SamplerInputs in, const SamplerConfig& cfg)
 {
     // ①→②→③(precomputed 或 ApplyTopK)→④→⑤→⑥；in 按值传入，可 move in.logits 走零拷贝
     std::vector<float> x = ApplyRepetitionPenalty(std::move(in.logits), in.generated_ids, cfg.repetition_penalty);
-    x = ApplyTemperature(std::move(x), cfg.temperature);
+    const bool zero_temperature = cfg.temperature <= 0.0f;
+    if (!zero_temperature)
+        x = ApplyTemperature(std::move(x), cfg.temperature);
     // ③ TopK：precomputed 在场则复用（覆盖 cfg.top_k，NPU 已算过），否则自己算
     if (in.precomputed_topk && !in.precomputed_topk->token_ids.empty()) {
         x = ApplyPrecomputedTopK(std::move(x), in.precomputed_topk);
     } else {
         x = ApplyTopK(std::move(x), cfg.top_k);
     }
-    x = ApplyTopP(std::move(x), cfg.top_p);
+    if (!zero_temperature)
+        x = ApplyTopP(std::move(x), cfg.top_p);
     // 贪心免归一化快路径（R1，perf_optimize.md §4.1）：softmax 单调保序 ⇒
     // argmax(x) ≡ argmax(Normalize(x))；tie-break 语义逐字保留（argmax 首个
     // 最大值下标，:40-46 不动）。probs 惰性产出——引擎接入层只消费
     // next_token_id（:244），probs 无消费者，免 262K exp + double 累加 +
-    // 262K 概率分配。do_sample=true 路径不改（softmax/multinomial 原样）。
-    if (!cfg.do_sample) {
+    // 262K 概率分配。正温度 do_sample=true 路径保留 softmax/multinomial。
+    if (!cfg.do_sample || zero_temperature) {
         return SamplerOutput{argmax(x), std::vector<float>()};
     }
     std::vector<float> probs = Normalize(x);
@@ -261,7 +264,7 @@ Status Sampler::Sample(ITensorBuffer& batch_logits, int slot, const SamplingPara
 
     // SamplingParams → SamplerConfig（映射规则见 sampler.h 头注释）。前移到行
     // 提取之前：贪心 + 无 top-k/p 时整行向量物化被免掉（R1 配套）。
-    // 默认参数 → 贪心；任一采样旋钮非默认 → 概率采样（temp==0 经钳制退化为贪心）。
+    // 默认参数 → 贪心；任一采样旋钮非默认 → 概率采样（temp<=0 显式选择贪心）。
     // repetition_penalty / seed：经 SamplingParams 对外（F-SAMPLE），
     // 关闭值 = 1.0 及一切非法值（<=0/NaN——C ABI 零初始化得 0.0，须与 top_k/top_p
     // 同按"越界视为关闭"处理，否则 p=0 除零污染分布）；precomputed_topk 仍不对外。

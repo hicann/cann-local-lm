@@ -593,5 +593,60 @@ TEST(SamplerTest, GreedyShortpathFp16RowEquivToExpand_R1_4)
     EXPECT_EQ(rep_out, 0u);
 }
 
+TEST(SamplerZeroTemperatureTest, CloseLogitsAreGreedyForEverySeed)
+{
+    for (float temperature : {0.0f, -1.0f}) {
+        for (uint64_t seed = 1; seed <= 32; ++seed) {
+            SamplerConfig config;
+            config.temperature = temperature;
+            config.do_sample = true;
+            config.seed = seed;
+            config.top_p = 0.9f;
+            SamplerInputs input;
+            input.logits = {0.0f, 1e-10f};
+            EXPECT_EQ(Sampler::Sample(input, config).next_token_id, 1);
+        }
+    }
+}
+
+TEST(SamplerZeroTemperatureTest, LargeFiniteLogitsDoNotOverflow)
+{
+    SamplerConfig config;
+    config.temperature = 0;
+    config.do_sample = true;
+    SamplerInputs input;
+    input.logits = {1e32f, 2e32f};
+    EXPECT_EQ(Sampler::Sample(input, config).next_token_id, 1);
+}
+
+TEST(SamplerZeroTemperatureTest, PenaltiesAndTieBreakStillApply)
+{
+    SamplerConfig config;
+    config.temperature = 0;
+    config.do_sample = true;
+    config.repetition_penalty = 2;
+    config.top_k = 2;
+    SamplerInputs input;
+    input.logits = {4, 3, 3};
+    input.generated_ids = {0};
+    EXPECT_EQ(Sampler::Sample(input, config).next_token_id, 1);
+    input.precomputed_topk = PrecomputedTopK{{0, 2}};
+    EXPECT_EQ(Sampler::Sample(input, config).next_token_id, 2);
+}
+
+TEST(SamplerZeroTemperatureTest, EngineAdapterUsesGreedyAtZeroTemperature)
+{
+    Sampler sampler;
+    auto logits = MakeLogits({2}, {0.0f, 1e-10f});
+    SamplingParams params;
+    params.temperature = 0;
+    for (uint64_t seed = 1; seed <= 32; ++seed) {
+        params.seed = seed;
+        TokenId token = 99;
+        ASSERT_EQ(sampler.Sample(*logits, 0, params, {}, &token).code, Status::SUCCESS);
+        EXPECT_EQ(token, 1u);
+    }
+}
+
 } // namespace
 } // namespace cann_local_lm::engine

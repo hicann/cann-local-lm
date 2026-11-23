@@ -45,6 +45,16 @@ def compile_partition(
 ) -> Manifest:
     """Compile a graph and consume its files before the staging scope closes."""
     with compile_lock:
+        # Reclaim the previous method's transient allocations (Python cycles +
+        # glibc arena residue) before this method's GE phase ramps up.
+        import ctypes
+        import gc
+
+        gc.collect()
+        try:
+            ctypes.CDLL("libc.so.6").malloc_trim(0)
+        except Exception:
+            pass
         identity = f"{_path_part(specs.method_name)}_d{specs.delegate_index}"
         partition_dir = staging_root / identity
         partition_dir.mkdir(parents=True, exist_ok=False)

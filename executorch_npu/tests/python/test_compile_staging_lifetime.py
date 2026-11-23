@@ -6,6 +6,7 @@
 # INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 # See LICENSE in the root of the software repository for the full text of the License.
 import torch
+from executorch.exir._serialize._cord import FileBackedData
 from executorch.exir._serialize._named_data_store import NamedDataStore
 from test_backend import (
     _fake_torch_delegate,
@@ -50,4 +51,10 @@ def test_multimethod_drops_consumed_files_but_keeps_packaged_bytes(
     assert not list(tmp_path.rglob("weight_*"))
     payloads = store.get_named_data_store_output().buffers
     assert b"fake-om" in payloads
-    assert b"fake-weight" in payloads
+    # External weights are registered as file-backed blobs (streamed from a
+    # spill file instead of residing in RAM); the packaged bytes must still
+    # be recoverable from the store.
+    assert any(
+        isinstance(payload, FileBackedData) and payload.to_bytes() == b"fake-weight"
+        for payload in payloads
+    )

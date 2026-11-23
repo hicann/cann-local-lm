@@ -280,8 +280,19 @@ ge::Status GetRegisteredIrDefV2(const char *op_type, std::vector<std::pair<ge::A
   }
   if (op == "aten__relu") {
     // HostCpu fallback 算子（aten::relu.default 的 GE 算子类型），供三分派构图测试。
-    inputs.push_back({"x", "Tensor"});
+    inputs.push_back({"self", "Tensor"});
     outputs.push_back({"y", "Tensor"});
+    return ge::GRAPH_SUCCESS;
+  }
+  // 0012：中间默认参数 beta/alpha 被省略，用于验证输入按 schema 名对齐 IR 槽位。
+  if (op == "aten___addmm_activation") {
+    inputs.push_back({"self", "Tensor"});
+    inputs.push_back({"mat1", "Tensor"});
+    inputs.push_back({"mat2", "Tensor"});
+    inputs.push_back({"beta", "Tensor"});
+    inputs.push_back({"alpha", "Tensor"});
+    inputs.push_back({"use_gelu", "Tensor"});
+    outputs.push_back({"result", "Tensor"});
     return ge::GRAPH_SUCCESS;
   }
   if (op == "Topk") {

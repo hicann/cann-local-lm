@@ -1153,6 +1153,43 @@ TEST_F(FallbackCodegenTest, GenerateExecuteMethod_HostCpu_ScalarReadsHostMemory)
   EXPECT_EQ(code.find("aclrtMemcpy"), std::string::npos) << "Host scalar path must not call aclrtMemcpy";
 }
 
+TEST_F(FallbackCodegenTest, GenerateExecuteMethod_NonOptionalDefaultsUsePlainTypes) {
+  SchemaInfo schema = FallbackCodegen::GetSchemaInfo("aten::_addmm_activation", "");
+  bool found_use_gelu = false;
+  bool found_beta = false;
+  for (const auto &arg : schema.arguments) {
+    if (arg.name == "use_gelu") {
+      found_use_gelu = true;
+      EXPECT_TRUE(arg.has_default);
+      EXPECT_FALSE(arg.is_optional) << "plain bool must not be treated as Optional[bool]";
+    }
+    if (arg.name == "beta") {
+      found_beta = true;
+      EXPECT_TRUE(arg.has_default);
+      EXPECT_FALSE(arg.is_optional);
+    }
+  }
+  EXPECT_TRUE(found_use_gelu);
+  EXPECT_TRUE(found_beta);
+
+  std::string code = FallbackCodegen::GenerateExecuteMethod(schema, true);
+  EXPECT_EQ(code.find("c10::optional<bool>"), std::string::npos) << "Non-Optional bool schema arg must pass plain bool";
+  EXPECT_NE(code.find("args.emplace_back(c10::Scalar(static_cast<int64_t>(1)));"), std::string::npos)
+      << "Scalar default must materialize as c10::Scalar instead of None";
+}
+
+TEST_F(FallbackCodegenTest, SchemaOptionalFlagTracksSchemaType) {
+  SchemaInfo schema = FallbackCodegen::GetSchemaInfo("aten::native_dropout", "");
+  bool found_train = false;
+  for (const auto &arg : schema.arguments) {
+    if (arg.name == "train") {
+      found_train = true;
+      EXPECT_TRUE(arg.is_optional) << "bool? train must keep Optional semantics";
+    }
+  }
+  EXPECT_TRUE(found_train);
+}
+
 TEST_F(FallbackCodegenTest, GenerateGeOpClass_HostCpu_RegOpBackendBinding) {
   SchemaInfo schema = FallbackCodegen::GetSchemaInfo("aten::relu", "");
   OpTarget target = MakeHostCpuTarget("aten::relu", "");

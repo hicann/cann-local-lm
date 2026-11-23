@@ -54,6 +54,7 @@ set(TORCH_DELEGATE_FIXTURE_OUTPUTS
     "${FIXTURES_DIR}/annotated_mm_add_bad_shape_dim.epair"
     "${FIXTURES_DIR}/annotated_mixed.epair"
     "${FIXTURES_DIR}/annotated_host_cpu_non4byte_inputs.epair"
+    "${FIXTURES_DIR}/annotated_host_cpu_default_args.epair"
     "${FIXTURES_DIR}/annotated_converter_no_ops.epair"
     "${FIXTURES_DIR}/annotated_attr_types.epair"
     "${FIXTURES_DIR}/annotated_fallback_with_attrs.epair"

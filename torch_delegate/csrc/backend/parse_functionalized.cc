@@ -39,9 +39,37 @@ std::optional<int64_t> ParseIntArg(const OrderedJson &arg) {
   return arg["as_int"].get<int64_t>();
 }
 
+// 基础张量的元数据键形如 "_{arg_name}_base_index"（Tensor 列表为
+// "_{arg_name}_{i}_base_index"），arg_name 即内层算子 schema 的参数名。
+// 返回参数名供 IR 按名对齐；列表元素或无法解析时返回空串，退回旧命名。
+std::string ArgNameFromBaseIndexKey(const std::string &key) {
+  constexpr std::string_view kBaseIndexSuffix = "_base_index";
+  std::string stem = key.substr(0, key.size() - kBaseIndexSuffix.size());
+  if (!stem.empty() && stem.front() == '_') {
+    stem.erase(0, 1);
+  }
+  if (stem.empty()) {
+    return {};
+  }
+  const size_t sep = stem.rfind('_');
+  if (sep != std::string::npos && sep + 1 < stem.size()) {
+    bool list_element = true;
+    for (size_t i = sep + 1; i < stem.size(); ++i) {
+      if (stem[i] < '0' || stem[i] > '9') {
+        list_element = false;
+        break;
+      }
+    }
+    if (list_element) {
+      return {};
+    }
+  }
+  return stem;
+}
+
 std::optional<std::vector<ParsedNodeInput>> RebuildFunctionalizedInputs(const ParsedNode &parsed) {
   std::vector<std::string> all_bases;
-  std::vector<int64_t> base_indices;
+  std::vector<std::pair<std::string, int64_t>> base_inputs;
   std::vector<ParsedNodeInput> other_inputs;
   other_inputs.reserve(parsed.inputs.size());
   for (size_t index = 1; index < parsed.inputs.size(); ++index) {
@@ -59,22 +87,23 @@ std::optional<std::vector<ParsedNodeInput>> RebuildFunctionalizedInputs(const Pa
         TDLOGE("_base_index must be integer, target=%s", parsed.target.c_str());
         return std::nullopt;
       }
-      base_indices.push_back(parsed_index.value());
+      base_inputs.emplace_back(ArgNameFromBaseIndexKey(input.name), parsed_index.value());
       continue;
     }
     other_inputs.push_back(input);
   }
   std::vector<ParsedNodeInput> normalized_inputs;
-  normalized_inputs.reserve(base_indices.size() + other_inputs.size());
-  for (size_t index = 0; index < base_indices.size(); ++index) {
-    const int64_t base_index = base_indices[index];
+  normalized_inputs.reserve(base_inputs.size() + other_inputs.size());
+  for (size_t index = 0; index < base_inputs.size(); ++index) {
+    const int64_t base_index = base_inputs[index].second;
     if (base_index < 0 || static_cast<size_t>(base_index) >= all_bases.size()) {
       TDLOGE("_base_index is out of range: base_index=%lld, valid range=[0, %zu), target=%s",
              static_cast<long long>(base_index), all_bases.size(), parsed.target.c_str());
       return std::nullopt;
     }
     ParsedNodeInput base_input;
-    base_input.name = index == 0 ? "self" : "self_" + std::to_string(index);
+    const std::string &arg_name = base_inputs[index].first;
+    base_input.name = arg_name.empty() ? (index == 0 ? "self" : "self_" + std::to_string(index)) : arg_name;
     base_input.input_kind = NodeInputKind::Tensor;
     base_input.tensor_name = all_bases[static_cast<size_t>(base_index)];
     normalized_inputs.push_back(std::move(base_input));

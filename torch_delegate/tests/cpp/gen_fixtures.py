@@ -959,6 +959,93 @@ def gen_annotated_host_cpu_non4byte_inputs() -> None:
     print("Generated: annotated_host_cpu_non4byte_inputs.epair")
 
 
+def gen_annotated_host_cpu_default_args() -> None:
+    """CPU fallback 节点省略中间默认参数（beta/alpha），仅传 self/mat1/mat2/use_gelu。
+
+    回归 0012：输入必须按 schema 参数名对齐 IR 槽位；use_gelu 落在自己的槽位，
+    beta/alpha 保留空槽，Execute 侧再物化 Scalar/bool 默认值。
+    """
+    graph = {
+        "inputs": [_as_tensor("self"), _as_tensor("mat1"), _as_tensor("mat2")],
+        "outputs": [_as_tensor("addmm_out")],
+        "nodes": [
+            {
+                "name": "addmm_act",
+                "target": "torch.ops.aten._addmm_activation.default",
+                "inputs": [
+                    {"name": "self", "arg": _as_tensor("self"), "kind": 1},
+                    {"name": "mat1", "arg": _as_tensor("mat1"), "kind": 1},
+                    {"name": "mat2", "arg": _as_tensor("mat2"), "kind": 1},
+                    {"name": "use_gelu", "arg": {"as_bool": False}, "kind": 1},
+                ],
+                "outputs": [_as_tensor("addmm_out")],
+                "metadata": {
+                    "torch_fn": "addmm_act;builtin_function_or_method._addmm_activation"
+                },
+                "is_hop_single_tensor_return": None,
+            },
+        ],
+        "tensor_values": {
+            "self": _tensor_meta([4, 4], False),
+            "mat1": _tensor_meta([4, 8], False),
+            "mat2": _tensor_meta([8, 4], False),
+            "addmm_out": _tensor_meta([4, 4], False),
+        },
+        "sym_int_values": {},
+        "sym_bool_values": {},
+        "sym_float_values": {},
+        "custom_obj_values": {},
+        "is_single_tensor_return": True,
+    }
+    signature = {
+        "input_specs": [
+            {"user_input": {"arg": _as_tensor("self")}},
+            {"user_input": {"arg": _as_tensor("mat1")}},
+            {"user_input": {"arg": _as_tensor("mat2")}},
+        ],
+        "output_specs": [{"user_output": {"arg": _as_tensor("addmm_out")}}],
+    }
+    model_json = {
+        "graph_module": {
+            "graph": graph,
+            "signature": signature,
+            "module_call_graph": [],
+            "metadata": {},
+            "treespec_namedtuple_fields": {},
+        },
+        "opset_version": {"aten": 10},
+        "range_constraints": {},
+        "schema_version": {"major": 8, "minor": 7},
+        "verifiers": ["ATEN"],
+        "torch_version": "2.7.1+cpu",
+    }
+    annotated_json = json.loads(json.dumps(model_json))
+    annotated_json["graph_module"]["graph"]["nodes"][0]["ascend_ir"] = {
+        "source": "",
+        "device": "cpu",
+        "ops": [{"attr": {}}],
+        "mapping": {
+            "inputs": {},
+            "outputs": {"addmm_out": "aten___addmm_activation:0"},
+        },
+    }
+
+    out = os.path.join(FIXTURES_DIR, "annotated_host_cpu_default_args.epair")
+    with ArchiveWriter(out) as writer:
+        writer.write_string("models/model.json", json.dumps(model_json))
+        writer.write_string(
+            "extra/ep_json_with_ascend_ir.json", json.dumps(annotated_json)
+        )
+        writer.write_string(
+            "data/weights/model_weights_config.json", json.dumps({"config": {}})
+        )
+        writer.write_string(
+            "data/constants/model_constants_config.json", json.dumps({"config": {}})
+        )
+        _write_manifest(writer, total_nodes=1, converted=1, version=2, cpu_nodes=1)
+    print("Generated: annotated_host_cpu_default_args.epair")
+
+
 def gen_annotated_assert_tensor_metadata() -> None:
     """Graph containing torch.export-inserted _assert_tensor_metadata guard nodes.
 
@@ -1804,7 +1891,7 @@ def gen_annotated_auto_functionalized() -> None:
                     },
                     {"name": "sin_cache", "arg": _as_tensor("sin_cache"), "kind": 2},
                     {"name": "cos_cache", "arg": _as_tensor("cos_cache"), "kind": 2},
-                    {"name": "_input_base_index", "arg": {"as_int": 0}, "kind": 2},
+                    {"name": "_self_base_index", "arg": {"as_int": 0}, "kind": 2},
                     {
                         "name": "_all_bases",
                         "arg": {"as_tensors": [{"name": "hidden_states"}]},
@@ -3018,6 +3105,7 @@ def generate(output_dir: str = FIXTURES_DIR) -> None:
     gen_annotated_mixed()
     gen_annotated_host_cpu()
     gen_annotated_host_cpu_non4byte_inputs()
+    gen_annotated_host_cpu_default_args()
     gen_annotated_assert_tensor_metadata()
     gen_annotated_converter_no_ops()
     gen_annotated_converter_noop_copy()

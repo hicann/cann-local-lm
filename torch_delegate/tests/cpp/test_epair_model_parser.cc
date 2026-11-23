@@ -85,7 +85,7 @@ TEST_F(EpairModelParserTest, IgnoresAsNoneOutputForAutoFunctionalizedNode) {
               {"name": "op", "arg": {"as_operator": "torch.ops.xllm_ascend.rope_in_place.default"}, "kind": 1},
               {"name": "sin_cache", "arg": {"as_tensor": {"name": "sin_cache"}}, "kind": 2},
               {"name": "cos_cache", "arg": {"as_tensor": {"name": "cos_cache"}}, "kind": 2},
-              {"name": "_input_base_index", "arg": {"as_int": 0}, "kind": 2},
+              {"name": "_self_base_index", "arg": {"as_int": 0}, "kind": 2},
               {"name": "_all_bases", "arg": {"as_tensors": [{"name": "hidden_states"}]}, "kind": 2}
             ],
             "outputs": [
@@ -129,6 +129,47 @@ TEST_F(EpairModelParserTest, IgnoresAsNoneOutputForAutoFunctionalizedNode) {
   EXPECT_EQ(model.Nodes()[0].outputs[0].tensor_name, "updated_x");
   ASSERT_EQ(model.Nodes()[0].functionalize.runtime_input_tensor_names.size(), 3u);
   EXPECT_EQ(model.Nodes()[0].functionalize.runtime_output_tensor_names[0], "updated_x");
+}
+
+TEST_F(EpairModelParserTest, FunctionalizedBaseInputUsesSchemaArgName) {
+  // 回归 0012：inplace 基础张量必须按 schema 参数名（这里是 a）命名，
+  // 而不是固定的 self；否则按名对齐 IR 槽位时匹配不到 a 而构图失败。
+  const std::string model_json = R"JSON({
+      "graph_module": {
+        "graph": {
+          "inputs": [{"as_tensor": {"name": "x"}}],
+          "outputs": [{"as_tensor": {"name": "y"}}],
+          "nodes": [{
+            "target": "torch.ops.higher_order.auto_functionalized_v2",
+            "inputs": [
+              {"name": "op", "arg": {"as_operator": "torch.ops.my_ops.inplace_scale_out.default"}, "kind": 1},
+              {"name": "scale", "arg": {"as_float": 2.0}, "kind": 2},
+              {"name": "_a_base_index", "arg": {"as_int": 0}, "kind": 2},
+              {"name": "_all_bases", "arg": {"as_tensors": [{"name": "x"}]}, "kind": 2}
+            ],
+            "outputs": [{"as_tensor": {"name": "y"}}],
+            "ascend_ir": {"source": "", "ops": [{"attr": {}}]}
+          }],
+          "tensor_values": {
+            "x": {"dtype": 0, "sizes": [4, 10], "requires_grad": false, "strides": [10, 1], "storage_offset": 0, "layout": 7},
+            "y": {"dtype": 0, "sizes": [4, 10], "requires_grad": false, "strides": [10, 1], "storage_offset": 0, "layout": 7}
+          }
+        },
+        "signature": {
+          "input_specs": [{"user_input": {"arg": {"as_tensor": {"name": "x"}}}}],
+          "output_specs": [{"user_output": {"arg": {"as_tensor": {"name": "y"}}}}]
+        }
+      },
+      "schema_version": {"major": 8, "minor": 7}
+    })JSON";
+
+  td::ParsedModel model;
+  ASSERT_EQ(td::ParsedModel::Parse(model_json, model), td::SUCCESS);
+  ASSERT_EQ(model.Nodes().size(), 1u);
+  ASSERT_EQ(model.Nodes()[0].inputs.size(), 2u);
+  EXPECT_EQ(model.Nodes()[0].inputs[0].name, "a");
+  EXPECT_EQ(model.Nodes()[0].inputs[0].tensor_name, "x");
+  EXPECT_EQ(model.Nodes()[0].inputs[1].name, "scale");
 }
 
 TEST_F(EpairModelParserTest, RejectsAutoFunctionalizedV1Node) {

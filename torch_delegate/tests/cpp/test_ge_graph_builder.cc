@@ -118,9 +118,19 @@ REG_OP(Data)
     .OP_END_FACTORY_REG(Topk)
 
         REG_OP(aten__relu)
-    .INPUT(x, ge::TensorType::ALL())
+    .INPUT(self, ge::TensorType::ALL())
     .OUTPUT(y, ge::TensorType::ALL())
     .OP_END_FACTORY_REG(aten__relu)
+
+        REG_OP(aten___addmm_activation)
+    .INPUT(self, ge::TensorType::ALL())
+    .INPUT(mat1, ge::TensorType::ALL())
+    .INPUT(mat2, ge::TensorType::ALL())
+    .OPTIONAL_INPUT(beta, ge::TensorType::ALL())
+    .OPTIONAL_INPUT(alpha, ge::TensorType::ALL())
+    .OPTIONAL_INPUT(use_gelu, ge::TensorType::ALL())
+    .OUTPUT(result, ge::TensorType::ALL())
+    .OP_END_FACTORY_REG(aten___addmm_activation)
 
 }  // namespace ge
 
@@ -131,6 +141,7 @@ const std::string kAnnotated = std::string(FIXTURES_DIR) + "/annotated_mm_add.ep
 const std::string kAnnotatedMixed = std::string(FIXTURES_DIR) + "/annotated_mixed.epair";
 const std::string kAnnotatedHostCpu = std::string(FIXTURES_DIR) + "/annotated_host_cpu.epair";
 const std::string kAnnotatedHostCpuNon4Byte = std::string(FIXTURES_DIR) + "/annotated_host_cpu_non4byte_inputs.epair";
+const std::string kAnnotatedHostCpuDefaultArgs = std::string(FIXTURES_DIR) + "/annotated_host_cpu_default_args.epair";
 const std::string kAnnotatedConverterNoOp = std::string(FIXTURES_DIR) + "/annotated_converter_no_ops.epair";
 const std::string kAnnotatedConverterNoOpCopy = std::string(FIXTURES_DIR) + "/annotated_converter_noop_copy.epair";
 const std::string kAnnotatedAttrTypes = std::string(FIXTURES_DIR) + "/annotated_attr_types.epair";
@@ -539,6 +550,34 @@ TEST_F(GeGraphBuilderTest, BuildsHostCpuGraphWithNon4ByteUserDataInputs) {
     }
   }
   EXPECT_EQ(relu_nodes, 2u) << "both int64 and fp16 user-input HostCpu nodes must be planned";
+}
+
+TEST_F(GeGraphBuilderTest, HostCpuDefaultArgsAlignBySchemaName) {
+  // 回归 0012：epair 只导出 self/mat1/mat2/use_gelu，beta/alpha 被省略。
+  // 输入必须按 schema 参数名对齐，use_gelu 落到自己的 IR 槽位（index 5），
+  // 不能按顺序挤占 beta（index 3）的槽位。
+  const std::string op_type = "aten___addmm_activation";
+
+  td::EpairArchive archive(kAnnotatedHostCpuDefaultArgs.c_str());
+  td::Status builder_status = td::FAILED;
+  td::GeGraphBuilder builder(archive, builder_status);
+  ASSERT_EQ(builder_status, td::SUCCESS);
+
+  td::InputBindingMap binding_map;
+  auto graph = builder.Build(binding_map);
+  ASSERT_NE(graph, nullptr) << "omitted default params must not break HostCpu graph build";
+
+  ge::AscendString found_type;
+  ge::GNode node = FindNodeByType(*graph, op_type);
+  ASSERT_EQ(node.GetType(found_type), ge::GRAPH_SUCCESS) << "HostCpu node must be planned";
+
+  int32_t use_gelu_index = -1;
+  ASSERT_EQ(node.GetInputIndexByName(ge::AscendString("use_gelu"), use_gelu_index), ge::GRAPH_SUCCESS)
+      << "use_gelu must bind by schema name; positional binding would name this input beta";
+  ge::TensorDesc use_gelu_desc;
+  ASSERT_EQ(node.GetInputDesc(use_gelu_index, use_gelu_desc), ge::GRAPH_SUCCESS);
+  EXPECT_EQ(use_gelu_desc.GetDataType(), ge::DT_BOOL)
+      << "use_gelu must carry bool dtype, not be bound to the beta slot";
 }
 
 TEST_F(GeGraphBuilderTest, PureNpuGraphBuildsUnaffected) {

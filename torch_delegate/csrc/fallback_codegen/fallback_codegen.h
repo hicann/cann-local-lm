@@ -54,8 +54,9 @@ struct SchemaArgInfo {
   bool has_default = false;
   nlohmann::json default_value;  // 默认值（如果有的话）
   bool is_kwarg_only = false;
-  bool is_out = false;   // marks out argument (for out versions)
-  int fixed_index = -1;  // for variadic args, index of first variadic
+  bool is_out = false;       // marks out argument (for out versions)
+  bool is_optional = false;  // schema 类型是否为 Optional[T]（与“有默认值”无关）
+  int fixed_index = -1;      // for variadic args, index of first variadic
 
   // Alias information (for returns)
   bool has_alias = false;       // whether this arg/return has alias_info

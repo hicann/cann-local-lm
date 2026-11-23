@@ -825,6 +825,9 @@ SchemaInfo FallbackCodegen::GetSchemaInfo(const std::string &full_op_name, const
     auto type = arg.type();
 
     bool is_opt = IsOptionalType(type);
+    // input_kind 同时表达 IR 声明形态（有默认值 → OPTIONAL_INPUT，允许未连接），
+    // is_optional 仅表示 schema 真实类型是否需要 c10::optional 包装。
+    arg_info.is_optional = is_opt;
     if (IsTensorType(type)) {
       arg_info.type_category = "tensor";
       arg_info.input_kind = (is_opt || arg_info.has_default) ? InputKind::OPTIONAL_TENSOR : InputKind::TENSOR;
@@ -1224,6 +1227,23 @@ static void EmitDefaultOrNone(std::ostringstream &os, const SchemaArgInfo &arg) 
       os << "});\n";
     } else if (arg.input_kind == InputKind::STRING || arg.input_kind == InputKind::STRING_OPT) {
       os << "            args.emplace_back(std::string(\"" << arg.default_value.get<std::string>() << "\"));\n";
+    } else if (arg.input_kind == InputKind::SCALAR || arg.input_kind == InputKind::SCALAR_OPT) {
+      // Scalar 默认值必须物化为 IValue(Int/Double/Bool)，否则 callBoxed 的
+      // toScalar() 会因 None 抛 "IValue is not a Scalar"。
+      if (arg.default_value.is_number_integer()) {
+        os << "            args.emplace_back(c10::Scalar(static_cast<int64_t>(" << arg.default_value.get<int64_t>()
+           << ")));\n";
+      } else if (arg.default_value.is_number_float()) {
+        os << "            args.emplace_back(c10::Scalar(static_cast<double>(" << arg.default_value.get<double>()
+           << ")));\n";
+      } else if (arg.default_value.is_boolean()) {
+        os << "            args.emplace_back(c10::Scalar(" << (arg.default_value.get<bool>() ? "true" : "false")
+           << "));\n";
+      } else {
+        os << "            args.emplace_back(c10::IValue());\n";
+      }
+    } else if (arg.input_kind == InputKind::SCALAR_TYPE || arg.input_kind == InputKind::SCALAR_TYPE_OPT) {
+      os << "            args.emplace_back(static_cast<at::ScalarType>(" << arg.default_value.get<int64_t>() << "));\n";
     } else {
       // For other types, use None
       os << "            args.emplace_back(c10::IValue());\n";
@@ -1369,9 +1389,14 @@ std::string FallbackCodegen::GenerateExecuteMethod(const SchemaInfo &schema, boo
     } else if (arg.input_kind == InputKind::INT_OPT) {
       os << "        if (ge_input_" << ir_index << " != nullptr) {\n";
       os << "            auto buf_" << ir_index << " = ReadScalarInput(ge_input_" << ir_index << ");\n";
-      os << "            args.emplace_back(c10::optional<int64_t>(static_cast<int64_t>(*reinterpret_cast<const "
-            "int64_t*>(buf_"
-         << ir_index << ".data()))));\n";
+      if (arg.is_optional) {
+        os << "            args.emplace_back(c10::optional<int64_t>(static_cast<int64_t>(*reinterpret_cast<const "
+              "int64_t*>(buf_"
+           << ir_index << ".data()))));\n";
+      } else {
+        os << "            args.emplace_back(static_cast<int64_t>(*reinterpret_cast<const int64_t*>(buf_" << ir_index
+           << ".data())));\n";
+      }
       os << "        } else {\n";
       EmitDefaultOrNone(os, arg);
       os << "        }\n";
@@ -1388,9 +1413,14 @@ std::string FallbackCodegen::GenerateExecuteMethod(const SchemaInfo &schema, boo
     } else if (arg.input_kind == InputKind::FLOAT_OPT) {
       os << "        if (ge_input_" << ir_index << " != nullptr) {\n";
       os << "            auto buf_" << ir_index << " = ReadScalarInput(ge_input_" << ir_index << ");\n";
-      os << "            args.emplace_back(c10::optional<double>(static_cast<double>(*reinterpret_cast<const "
-            "float*>(buf_"
-         << ir_index << ".data()))));\n";
+      if (arg.is_optional) {
+        os << "            args.emplace_back(c10::optional<double>(static_cast<double>(*reinterpret_cast<const "
+              "float*>(buf_"
+           << ir_index << ".data()))));\n";
+      } else {
+        os << "            args.emplace_back(static_cast<double>(*reinterpret_cast<const float*>(buf_" << ir_index
+           << ".data())));\n";
+      }
       os << "        } else {\n";
       EmitDefaultOrNone(os, arg);
       os << "        }\n";
@@ -1407,8 +1437,14 @@ std::string FallbackCodegen::GenerateExecuteMethod(const SchemaInfo &schema, boo
     } else if (arg.input_kind == InputKind::BOOL_OPT) {
       os << "        if (ge_input_" << ir_index << " != nullptr) {\n";
       os << "            auto buf_" << ir_index << " = ReadScalarInput(ge_input_" << ir_index << ");\n";
-      os << "            args.emplace_back(c10::optional<bool>(static_cast<bool>(*reinterpret_cast<const uint8_t*>(buf_"
-         << ir_index << ".data()))));\n";
+      if (arg.is_optional) {
+        os << "            args.emplace_back(c10::optional<bool>(static_cast<bool>(*reinterpret_cast<const uint8_t*>("
+              "buf_"
+           << ir_index << ".data()))));\n";
+      } else {
+        os << "            args.emplace_back(static_cast<bool>(*reinterpret_cast<const uint8_t*>(buf_" << ir_index
+           << ".data())));\n";
+      }
       os << "        } else {\n";
       EmitDefaultOrNone(os, arg);
       os << "        }\n";

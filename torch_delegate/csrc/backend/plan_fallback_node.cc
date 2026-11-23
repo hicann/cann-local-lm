@@ -10,6 +10,7 @@
 #include "backend/plan_fallback_node.h"
 
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -187,19 +188,42 @@ Status FallbackNodePlanner::BuildInputDefs(const ParsedNode &node) {
     return UNIMPLEMENTED;
   }
   // None inputs (e.g. Optional[Tensor] = None) still occupy an IR index slot
-  // because OPTIONAL_INPUT is declared in REG_OP. Skip creation but advance
-  // ir_index so subsequent inputs map to the correct IR position.
+  // because OPTIONAL_INPUT is declared in REG_OP.
   if (node.inputs.size() > ir_def_->input_names.size()) {
     TDLOGE("Fallback JSON inputs exceed registered IR input count, context=%s", context_.c_str());
     return INVALID_PARAM;
   }
-  size_t ir_index = 0;
+
+  // EP JSON 会省略带默认值的参数；若按 node.inputs 顺序占用 IR 槽位，
+  // 后续参数会被绑到前置默认参数的槽位（如 _addmm_activation 的 use_gelu
+  // 占用了 beta 槽）。这里按 schema 参数名对齐 IR 槽位，名称不匹配直接报错，
+  // 缺失的默认参数保留空槽。
+  std::vector<const ParsedNodeInput *> slot_inputs(ir_def_->input_names.size(), nullptr);
+  std::unordered_map<std::string, size_t> slot_by_name;
+  for (size_t i = 0; i < ir_def_->input_names.size(); ++i) {
+    slot_by_name.emplace(ir_def_->input_names[i], i);
+  }
   for (const auto &input : node.inputs) {
-    if (input.input_kind == NodeInputKind::None) {
-      ir_index++;
+    auto slot = slot_by_name.find(input.name);
+    if (input.name.empty() || slot == slot_by_name.end() || slot_inputs[slot->second] != nullptr) {
+      TDLOGE("Fallback node input name does not match a unique registered IR input, context=%s, input=%s",
+             context_.c_str(), input.name.c_str());
+      return INVALID_PARAM;
+    }
+    slot_inputs[slot->second] = &input;
+  }
+
+  for (size_t ir_index = 0; ir_index < slot_inputs.size(); ++ir_index) {
+    const ParsedNodeInput *slot_input = slot_inputs[ir_index];
+    if (slot_input == nullptr) {
+      // 省略的默认参数：保留空 IR 槽，Execute 侧按 schema 默认值物化。
       continue;
     }
-    const std::string &ir_name = ir_def_->input_names[ir_index++];
+    const ParsedNodeInput &input = *slot_input;
+    if (input.input_kind == NodeInputKind::None) {
+      continue;
+    }
+    const std::string &ir_name = ir_def_->input_names[ir_index];
     if (input.input_kind == NodeInputKind::Tensor) {
       const ParsedTensorMeta *input_meta = deps_.model.FindTensorMeta(input.tensor_name);
       if (input_meta == nullptr) {

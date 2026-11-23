@@ -83,7 +83,7 @@ public:
     // generated_ids：本请求已生成 token（rep penalty 输入；首步为空）。不含 prompt 历史。
     // 成功时 *out 为采样 token。失败码：
     //   INVALID_ARGUMENT —— !out / slot<0 / dtype 非 FLOAT32/FLOAT16 / 字节非元素对齐 /
-    //                       size==0 / dims 异常 / slot 越界；
+    //                       size==0 / dims 异常 / slot 越界 / 配置词表大于物理行宽；
     //   FAILURE          —— GetData()==nullptr（logits 缺失）/ dims 缺失且 slot>0
     //                       （无法安全推导行宽）。
     Status Sample(ITensorBuffer& batch_logits, int slot, const SamplingParams& params,

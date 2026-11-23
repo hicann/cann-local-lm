@@ -262,6 +262,12 @@ Status Sampler::Sample(ITensorBuffer& batch_logits, int slot, const SamplingPara
     if (static_cast<size_t>(slot) >= rows)
         return Status::INVALID_ARGUMENT; // slot 越界
 
+    // The tensor row may be padded beyond the model vocabulary. Keep its
+    // physical width for addressing, but never sample a padding token.
+    const size_t candidates = vocab_size_ == 0 ? vocab : vocab_size_;
+    if (candidates > vocab)
+        return Status::INVALID_ARGUMENT;
+
     // SamplingParams → SamplerConfig（映射规则见 sampler.h 头注释）。前移到行
     // 提取之前：贪心 + 无 top-k/p 时整行向量物化被免掉（R1 配套）。
     // 默认参数 → 贪心；任一采样旋钮非默认 → 概率采样（temp<=0 显式选择贪心）。
@@ -294,7 +300,7 @@ Status Sampler::Sample(ITensorBuffer& batch_logits, int slot, const SamplingPara
         if (dtype == DataType::FLOAT16) {
             const uint16_t* row = static_cast<const uint16_t*>(data) + slot_base;
             float bestv = HalfBitsToFloat(row[0]);
-            for (size_t i = 1; i < vocab; ++i) {
+            for (size_t i = 1; i < candidates; ++i) {
                 const float v = HalfBitsToFloat(row[i]);
                 if (v > bestv) {
                     bestv = v;
@@ -304,7 +310,7 @@ Status Sampler::Sample(ITensorBuffer& batch_logits, int slot, const SamplingPara
         } else {
             const float* row = static_cast<const float*>(data) + slot_base;
             float bestv = row[0];
-            for (size_t i = 1; i < vocab; ++i) {
+            for (size_t i = 1; i < candidates; ++i) {
                 if (row[i] > bestv) {
                     bestv = row[i];
                     best = static_cast<int32_t>(i);
@@ -320,12 +326,12 @@ Status Sampler::Sample(ITensorBuffer& batch_logits, int slot, const SamplingPara
     SamplerInputs in;
     if (dtype == DataType::FLOAT16) {
         const uint16_t* row = static_cast<const uint16_t*>(data) + static_cast<size_t>(slot) * vocab;
-        in.logits.resize(vocab);
-        for (size_t i = 0; i < vocab; ++i)
+        in.logits.resize(candidates);
+        for (size_t i = 0; i < candidates; ++i)
             in.logits[i] = HalfBitsToFloat(row[i]);
     } else {
         const float* row = static_cast<const float*>(data) + static_cast<size_t>(slot) * vocab;
-        in.logits.assign(row, row + vocab);
+        in.logits.assign(row, row + candidates);
     }
     // generated_ids 剪枝（R1 配套）：默认零拷贝——算法层入参面是
     // const vector<int32_t>&（ApplyRepetitionPenalty），仅重复惩罚真正启用

@@ -119,6 +119,75 @@ std::shared_ptr<ITensorBuffer> MakeLogits(const std::vector<int32_t>& dims, cons
     return buf;
 }
 
+TEST(SamplerVocabTest, PaddedRowsUsePhysicalStrideAndLogicalVocabulary)
+{
+    for (auto dtype : {DataType::FLOAT32, DataType::FLOAT16}) {
+        TensorDesc desc;
+        desc.dataType = dtype;
+        desc.dims = {2, 4};
+        const std::vector<float> values = {1, 5, 2, 100, 7, 1, 2, 200};
+        HostTensorBuffer buffer(desc);
+        if (dtype == DataType::FLOAT16) {
+            std::vector<uint16_t> halves;
+            for (float value : values)
+                halves.push_back(FloatToHalfBits(value));
+            buffer.mutable_data().assign(reinterpret_cast<const uint8_t*>(halves.data()),
+                                         reinterpret_cast<const uint8_t*>(halves.data() + halves.size()));
+        } else {
+            buffer.mutable_data().assign(reinterpret_cast<const uint8_t*>(values.data()),
+                                         reinterpret_cast<const uint8_t*>(values.data() + values.size()));
+        }
+        Sampler sampler;
+        ModelConfig model;
+        model.vocab_size = 3;
+        sampler.Configure(model);
+        for (int mode = 0; mode < 3; ++mode) {
+            SamplingParams params;
+            if (mode == 1)
+                params.top_k = 1;
+            if (mode == 2)
+                params.repetition_penalty = 2.0f;
+            for (int slot = 0; slot < 2; ++slot) {
+                TokenId token = 99;
+                ASSERT_EQ(sampler.Sample(buffer, slot, params, {2}, &token).code, Status::SUCCESS);
+                EXPECT_EQ(token, slot == 0 ? 1u : 0u);
+            }
+        }
+    }
+}
+
+TEST(SamplerVocabTest, ConfiguredVocabularyCannotExceedRow)
+{
+    Sampler sampler(5);
+    auto logits = MakeLogits({2, 4}, {1, 5, 2, 100, 7, 1, 2, 200});
+    TokenId token = 99;
+    EXPECT_EQ(sampler.Sample(*logits, 0, SamplingParams{}, {}, &token).code, Status::INVALID_ARGUMENT);
+    EXPECT_EQ(token, 99u);
+}
+
+TEST(SamplerVocabTest, UnconfiguredVocabularyKeepsFullRow)
+{
+    Sampler sampler;
+    auto logits = MakeLogits({4}, {1, 5, 2, 100});
+    TokenId token = 99;
+    ASSERT_EQ(sampler.Sample(*logits, 0, SamplingParams{}, {}, &token).code, Status::SUCCESS);
+    EXPECT_EQ(token, 3u);
+}
+
+TEST(SamplerVocabTest, SamplingWithoutTopKCannotSelectPadding)
+{
+    Sampler sampler(3);
+    auto logits = MakeLogits({4}, {1, 5, 2, 100});
+    SamplingParams params;
+    params.temperature = 0.8f;
+    for (uint64_t seed = 1; seed <= 32; ++seed) {
+        params.seed = seed;
+        TokenId token = 99;
+        ASSERT_EQ(sampler.Sample(*logits, 0, params, {}, &token).code, Status::SUCCESS);
+        EXPECT_LT(token, 3u);
+    }
+}
+
 // ────────────── 引擎接入层：参数守卫（保持 stub 期契约） ──────────────
 
 // UT-TC-SAMPLER-001 (NEW-1): out=nullptr → INVALID_ARGUMENT

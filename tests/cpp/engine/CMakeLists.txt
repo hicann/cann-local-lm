@@ -180,3 +180,14 @@ if(NOT CMAKE_CROSSCOMPILING)
         endif()
     endforeach()
 endif()
+
+# Python callback regression: standard library only, independent of model fixtures.
+if(NOT CANN_LM_CROSS_BUILD AND NOT CMAKE_CROSSCOMPILING)
+    find_package(Python3 COMPONENTS Interpreter REQUIRED)
+    add_test(NAME python_streaming_utf8
+        COMMAND ${CMAKE_COMMAND} -E env
+            "PYTHONPATH=${_ENGINE_DIR}/python"
+            ${Python3_EXECUTABLE}
+            "${CMAKE_CURRENT_SOURCE_DIR}/../../python/test_streaming_utf8.py")
+    set_tests_properties(python_streaming_utf8 PROPERTIES TIMEOUT 30)
+endif()

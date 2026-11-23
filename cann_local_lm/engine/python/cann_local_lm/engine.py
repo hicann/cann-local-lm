@@ -17,6 +17,7 @@ CannLmStatusError so partial output is never lost. On other errors the Result
 was zeroed (ResultDestroy is a safe no-op on a zeroed Result).
 """
 
+import codecs
 import ctypes as ct
 
 from ._enums import FinishReason, RequestStatus, Status
@@ -243,9 +244,16 @@ def _make_callback(py_cb):
     """Wrap a Python callable (token_id: int, text: str) -> None into a
     CANN_LMEngine_StreamCallback. Returns (c_callback, keepalive_list). The
     keepalive MUST outlive the async request (callback fires from the pipeline
-    internal thread). None -> (None, [])."""
+    internal thread). None -> (None, []).
+
+    Text is decoded across token boundaries. A token containing only the
+    beginning of a UTF-8 character emits empty text; a later token completes
+    it. The final Result remains authoritative for an unfinished byte sequence.
+    """
     if py_cb is None:
         return None, []
+
+    decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
 
     def _trampoline(token, text_ptr, text_len, _user_data):
         # Never let a Python exception propagate across the C boundary
@@ -253,7 +261,7 @@ def _make_callback(py_cb):
         try:
             if text_ptr and text_len:
                 raw = ct.string_at(text_ptr, text_len)
-                text = raw.decode("utf-8", "replace")
+                text = decoder.decode(raw)
             else:
                 text = ""
             py_cb(int(token), text)

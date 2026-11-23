@@ -1824,6 +1824,18 @@ void AutoregressivePipelineExecutor::RunLoop()
                 finish_reason = FinishReason::MaxTokens;
             }
 
+            // Budget exhaustion still produces a normal output token. Emit it
+            // before publishing completion; stop/EOS tokens remain suppressed.
+            if (req->callback && (!stop_hit || finish_reason == FinishReason::MaxTokens)) {
+                try {
+                    req->callback(token, text_piece);
+                } catch (const std::exception& e) {
+                    CANN_LLM_LOGW("postprocess.callback: user callback threw (%s), swallowed", e.what());
+                } catch (...) {
+                    CANN_LLM_LOGW("postprocess.callback: user callback threw (unknown), swallowed");
+                }
+            }
+
             if (stop_hit) {
                 // decode 整体完成观测（自首个 decode 前向后——ReclaimAndFill_
                 // 入池点起，含最后一轮 forward + 终态判定；token 数不含 prompt
@@ -1837,19 +1849,6 @@ void AutoregressivePipelineExecutor::RunLoop()
                 }
                 req->SetTerminal(RequestStatus::Completed, finish_reason);
                 ClearActiveGenerate_(req->context_id);
-            } else {
-                // 流式回调
-                if (req->callback) {
-                    try {
-                        req->callback(token, text_piece);
-                    } catch (const std::exception& e) {
-                        // 守护：用户回调异常不影响引擎
-                        CANN_LLM_LOGW("postprocess.callback: user callback threw (%s), swallowed", e.what());
-                    } catch (...) {
-                        // 守护：用户回调异常不影响引擎
-                        CANN_LLM_LOGW("postprocess.callback: user callback threw (unknown), swallowed");
-                    }
-                }
             }
         }
     }

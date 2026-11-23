@@ -16,7 +16,7 @@
 //     max_tokens 终态（token/text/回调数全量口径）。
 //   UT-TC-EOS-003（未配置零变化回归）：eos_token_id=-1 + mock 照发 eos 位
 //     logits → 不停止、token_ids={1,1,1}、text="<eos>"×3（text 门控不
-//     活跃）、回调 2 次（末 token max_tokens 停）。
+//     活跃）、回调 3 次（包括末 token）。
 // 独立目标缘由（同 ut_scheduler_multichunk）：本文件经链接期符号覆盖
 // hiai::CreateModelManager / CreateBuiltModel / CreateNDTensorBuffer
 // （cann_lm_engine 为 STATIC 库，ut 对象定义优先）；不并入其他 binary——
@@ -352,7 +352,7 @@ TEST(EosStopTest, PromptCacheLedgerExcludesEos_TC_EOS2)
     EXPECT_EQ(r2.finish_reason, FinishReason::MaxTokens);
     EXPECT_EQ(r2.token_ids, std::vector<TokenId>({0, 0, 0})); // 全等行 argmax → <pad>
     EXPECT_EQ(r2.text, std::string("<pad><pad><pad>"));
-    EXPECT_EQ(callbacks.load(), 2); // 前 2 token 回调；末 token max_tokens 停不回调
+    EXPECT_EQ(callbacks.load(), 3); // 包括达到 max_tokens 的最后一个 token
     // 写位判别（D-4 锚点）：prefill {1,2}（尾零残值）+ decode {3},{4}
     ASSERT_EQ(eos_stop_mock::g_npos_log.size(), 3u);
     EXPECT_EQ(eos_stop_mock::g_npos_log[0], (std::vector<int32_t>{1, 2, 0, 0, 0, 0, 0, 0}));
@@ -390,13 +390,131 @@ TEST(EosStopTest, EosUnconfiguredNoBehaviorChange_TC_EOS3)
     EXPECT_EQ(result.finish_reason, FinishReason::MaxTokens);
     EXPECT_EQ(result.token_ids, std::vector<TokenId>({1, 1, 1}));
     EXPECT_EQ(result.text, std::string("<eos><eos><eos>")); // text 门控不活跃
-    EXPECT_EQ(callbacks.load(), 2);                         // 末 token max_tokens 停不回调
+    EXPECT_EQ(callbacks.load(), 3);                         // 末 token 也回调
     // 前向链不变：prefill {0}（单 token prompt，位 0 写值 + 尾零残值）+
     // decode {1},{2}（池逐位推进 0→1→2，逐 token 照常入账）
     ASSERT_EQ(eos_stop_mock::g_npos_log.size(), 3u);
     EXPECT_EQ(eos_stop_mock::g_npos_log[0], (std::vector<int32_t>{0, 0, 0, 0, 0, 0, 0, 0}));
     EXPECT_EQ(eos_stop_mock::g_npos_log[1], (std::vector<int32_t>{1}));
     EXPECT_EQ(eos_stop_mock::g_npos_log[2], (std::vector<int32_t>{2}));
+}
+
+TEST(EosStopTest, SingleTokenBudgetEmitsBeforeWaitReturns)
+{
+    eos_stop_mock::ResetMocks();
+    EosTestEnv env(-1);
+    ASSERT_TRUE(env.engine->InitStatus().ok());
+    Context ctx;
+    ASSERT_TRUE(env.engine->CreateContext(&ctx).ok());
+    ASSERT_TRUE(env.engine->SetContext(ctx.id()).ok());
+    Prompt prompt;
+    prompt.text = "a";
+    RequestOptions options;
+    options.max_tokens = 1;
+    std::vector<TokenId> streamed_ids;
+    std::string streamed_text;
+    RequestHandle handle;
+    ASSERT_TRUE(env.engine
+                    ->GenerateAsync(prompt, SamplingParams{}, options, &handle,
+                                    [&](TokenId token, std::string text) {
+                                        streamed_ids.push_back(token);
+                                        streamed_text += text;
+                                    })
+                    .ok());
+    Result result;
+    ASSERT_EQ(handle.Wait(&result).code, Status::SUCCESS);
+    EXPECT_EQ(result.finish_reason, FinishReason::MaxTokens);
+    ASSERT_EQ(result.token_ids.size(), 1u);
+    EXPECT_EQ(streamed_ids, result.token_ids);
+    EXPECT_EQ(streamed_text, result.text);
+}
+
+TEST(EosStopTest, ExplicitStopsAreNotStreamedAtTokenBudget)
+{
+    for (bool use_string : {false, true}) {
+        eos_stop_mock::ResetMocks();
+        EosTestEnv env(-1);
+        ASSERT_TRUE(env.engine->InitStatus().ok());
+        Context ctx;
+        ASSERT_TRUE(env.engine->CreateContext(&ctx).ok());
+        ASSERT_TRUE(env.engine->SetContext(ctx.id()).ok());
+        Prompt prompt;
+        prompt.text = "a";
+        RequestOptions options;
+        options.max_tokens = 1;
+        if (use_string)
+            options.stop_strings = {"<pad>"};
+        else
+            options.stop_token_ids = {0};
+        int callbacks = 0;
+        RequestHandle handle;
+        ASSERT_TRUE(
+            env.engine
+                ->GenerateAsync(prompt, SamplingParams{}, options, &handle, [&](TokenId, std::string) { ++callbacks; })
+                .ok());
+        Result result;
+        ASSERT_EQ(handle.Wait(&result).code, Status::SUCCESS);
+        EXPECT_EQ(result.finish_reason, use_string ? FinishReason::StopString : FinishReason::StopToken);
+        EXPECT_EQ(callbacks, 0);
+    }
+}
+
+TEST(EosStopTest, FinalCallbackExceptionDoesNotPreventCompletion)
+{
+    eos_stop_mock::ResetMocks();
+    EosTestEnv env(-1);
+    ASSERT_TRUE(env.engine->InitStatus().ok());
+    Context ctx;
+    ASSERT_TRUE(env.engine->CreateContext(&ctx).ok());
+    ASSERT_TRUE(env.engine->SetContext(ctx.id()).ok());
+    Prompt prompt;
+    prompt.text = "a";
+    RequestOptions options;
+    options.max_tokens = 1;
+    int callbacks = 0;
+    RequestHandle handle;
+    ASSERT_TRUE(env.engine
+                    ->GenerateAsync(prompt, SamplingParams{}, options, &handle,
+                                    [&](TokenId, std::string) {
+                                        ++callbacks;
+                                        throw 1;
+                                    })
+                    .ok());
+    Result result;
+    ASSERT_EQ(handle.Wait(&result).code, Status::SUCCESS);
+    EXPECT_EQ(callbacks, 1);
+    EXPECT_EQ(result.finish_reason, FinishReason::MaxTokens);
+}
+
+TEST(EosStopTest, ModelIoBudgetEmitsFinalToken)
+{
+    eos_stop_mock::ResetMocks();
+    std::string meta = MetaJson(-1);
+    const auto model_begin = meta.find("\"model_config\":{");
+    ASSERT_NE(model_begin, std::string::npos);
+    meta.insert(model_begin + std::string("\"model_config\":{").size(), "\"max_io_tokens\":2,");
+    EngineOptions engine_options;
+    engine_options.default_chunk_size = 8;
+    EngineExecutor engine(MakeArtifact(meta), engine_options);
+    ASSERT_TRUE(engine.InitStatus().ok());
+    Context ctx;
+    ASSERT_TRUE(engine.CreateContext(&ctx).ok());
+    ASSERT_TRUE(engine.SetContext(ctx.id()).ok());
+    Prompt prompt;
+    prompt.text = "a";
+    RequestOptions options;
+    options.max_tokens = 10;
+    std::vector<TokenId> streamed;
+    RequestHandle handle;
+    ASSERT_TRUE(engine
+                    .GenerateAsync(prompt, SamplingParams{}, options, &handle,
+                                   [&](TokenId token, std::string) { streamed.push_back(token); })
+                    .ok());
+    Result result;
+    ASSERT_EQ(handle.Wait(&result).code, Status::SUCCESS);
+    ASSERT_EQ(result.token_ids.size(), 1u);
+    EXPECT_EQ(result.finish_reason, FinishReason::MaxTokens);
+    EXPECT_EQ(streamed, result.token_ids);
 }
 
 } // namespace

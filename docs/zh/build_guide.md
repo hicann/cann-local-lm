@@ -43,15 +43,15 @@ CANN是**外部预置**（用户先source其 `set_env.sh`），本仓不构建,�
 安装（以下值为示例，按实际版本/SOC/架构调整）：
 
 ```bash
-# 以 CANN 9.3.0 / aarch64 / Ascend910 / 安装到 ~/Ascend 为例
+# 以 CANN 9.3.0 / x86_64 / KirinX90 / 安装到 ~/Ascend 为例
 install_path=$HOME/Ascend
 cann_version=9.3.0
-arch=aarch64
-soc_name=Ascend910
+arch=x86_64
+soc_name=kirinx90
 
-# 1. toolkit
-chmod +x Ascend-cann-toolkit_${cann_version}_linux-${arch}.run
-./Ascend-cann-toolkit_${cann_version}_linux-${arch}.run --install --install-path=${install_path}
+# 1. toolkit（包名带 -mobile-station 后缀）
+chmod +x Ascend-cann-toolkit_${cann_version}_linux-${arch}-mobile-station.run
+./Ascend-cann-toolkit_${cann_version}_linux-${arch}-mobile-station.run --install --install-path=${install_path}
 
 # 2. ops 算子包
 chmod +x Ascend-cann-${soc_name}-ops_${cann_version}_linux-${arch}.run

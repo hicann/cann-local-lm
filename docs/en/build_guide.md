@@ -43,15 +43,15 @@ CANN is **externally preinstalled** (the user sources its `set_env.sh` first); t
 Install (values below are examples; adjust by actual version/SOC/architecture):
 
 ```bash
-# Example: CANN 9.3.0 / aarch64 / Ascend910 / install to ~/Ascend
+# Example: CANN 9.3.0 / x86_64 / KirinX90 / install to ~/Ascend
 install_path=$HOME/Ascend
 cann_version=9.3.0
-arch=aarch64
-soc_name=Ascend910
+arch=x86_64
+soc_name=kirinx90
 
-# 1. toolkit
-chmod +x Ascend-cann-toolkit_${cann_version}_linux-${arch}.run
-./Ascend-cann-toolkit_${cann_version}_linux-${arch}.run --install --install-path=${install_path}
+# 1. toolkit (package name carries the -mobile-station suffix)
+chmod +x Ascend-cann-toolkit_${cann_version}_linux-${arch}-mobile-station.run
+./Ascend-cann-toolkit_${cann_version}_linux-${arch}-mobile-station.run --install --install-path=${install_path}
 
 # 2. ops operator package
 chmod +x Ascend-cann-${soc_name}-ops_${cann_version}_linux-${arch}.run

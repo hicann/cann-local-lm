@@ -82,15 +82,15 @@ def test_compatibility_rejects_mode_change_before_mutating_backends(monkeypatch)
     for name in (
         "_patch_torchair_deterministic_options",
         "_patch_torchair_host_only_graph_engine",
+        "_patch_torchair_host_only_device_name",
         "_patch_dynamo_compilation_metrics",
-        "_patch_torch_delegate_scalar_serialization",
     ):
         monkeypatch.setattr(compatibility, name, lambda *args: calls.append("patch"))
     module = ModuleType("torch_delegate")
     monkeypatch.setitem(sys.modules, "torch_delegate", module)
-    assert compatibility.load_torch_delegate() is module
+    assert compatibility.load_torch_delegate("Ascend910B3") is module
     assert len(calls) == 4
     monkeypatch.setenv("EXECUTORCH_NPU_HOST_ONLY", "0")
     with pytest.raises(ValueError, match="EXECUTORCH_NPU_HOST_ONLY"):
-        compatibility.load_torch_delegate()
+        compatibility.load_torch_delegate("Ascend910B3")
     assert len(calls) == 4

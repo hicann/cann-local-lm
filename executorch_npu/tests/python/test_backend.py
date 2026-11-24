@@ -106,6 +106,112 @@ def test_torchair_compatibility_patch_is_idempotent(monkeypatch) -> None:
     assert backend._get_global_op_compile_config is patched
 
 
+def _fake_torch_npu_without_device(monkeypatch):
+    """Mimic torch_npu on a host where no NPU is available."""
+    npu = ModuleType("torch_npu.npu")
+
+    def get_device_name(device=None):
+        # torch resolves a missing accelerator to no device index at all.
+        device_id = device
+        if device_id < 0:
+            raise AssertionError("Invalid device id")
+        return "Ascend910B3"
+
+    npu.get_device_name = get_device_name
+    torch_npu = ModuleType("torch_npu")
+    torch_npu.npu = npu
+    monkeypatch.setitem(sys.modules, "torch_npu", torch_npu)
+    monkeypatch.setitem(sys.modules, "torch_npu.npu", npu)
+    return npu
+
+
+def _torchair_is_arch35() -> bool:
+    """Mirror TorchAir's ``check_platform.is_arch35`` device-name rule."""
+    try:
+        import torch_npu
+
+        device_name = torch_npu.npu.get_device_name()
+    except ImportError:
+        return False
+    return "Ascend910_95" in device_name or "Ascend950" in device_name
+
+
+def test_host_only_device_name_query_fails_without_the_patch(monkeypatch) -> None:
+    monkeypatch.setenv("EXECUTORCH_NPU_HOST_ONLY", "1")
+    monkeypatch.setattr(compatibility, "_configured_target_soc", None)
+    _fake_torch_npu_without_device(monkeypatch)
+
+    with pytest.raises(TypeError, match="NoneType"):
+        _torchair_is_arch35()
+
+
+def test_host_only_device_name_answers_with_the_target_soc(monkeypatch) -> None:
+    monkeypatch.setenv("EXECUTORCH_NPU_HOST_ONLY", "1")
+    monkeypatch.setattr(compatibility, "_configured_target_soc", None)
+    npu = _fake_torch_npu_without_device(monkeypatch)
+
+    compatibility._patch_torchair_host_only_device_name("Ascend910B3")
+
+    assert npu.get_device_name() == "Ascend910B3"
+    assert _torchair_is_arch35() is False
+
+
+def test_host_only_device_name_selects_an_arch35_target(monkeypatch) -> None:
+    monkeypatch.setenv("EXECUTORCH_NPU_HOST_ONLY", "1")
+    monkeypatch.setattr(compatibility, "_configured_target_soc", None)
+    _fake_torch_npu_without_device(monkeypatch)
+
+    compatibility._patch_torchair_host_only_device_name("Ascend950")
+
+    assert _torchair_is_arch35() is True
+
+
+def test_device_mode_keeps_the_real_device_name_query(monkeypatch) -> None:
+    monkeypatch.setenv("EXECUTORCH_NPU_HOST_ONLY", "0")
+    monkeypatch.setattr(compatibility, "_configured_target_soc", None)
+    npu = _fake_torch_npu_without_device(monkeypatch)
+    original = npu.get_device_name
+
+    compatibility._patch_torchair_host_only_device_name("Ascend910B3")
+
+    assert npu.get_device_name is original
+
+
+def test_host_only_target_soc_cannot_change_mid_process(monkeypatch) -> None:
+    monkeypatch.setenv("EXECUTORCH_NPU_HOST_ONLY", "1")
+    monkeypatch.setattr(compatibility, "_configured_target_soc", None)
+    _fake_torch_npu_without_device(monkeypatch)
+    compatibility._patch_torchair_host_only_device_name("Ascend910B3")
+
+    with pytest.raises(ValueError, match="acl_soc_name"):
+        compatibility._patch_torchair_host_only_device_name("Ascend950")
+
+
+def test_host_only_without_torch_npu_reports_non_arch35(monkeypatch) -> None:
+    monkeypatch.setenv("EXECUTORCH_NPU_HOST_ONLY", "1")
+    monkeypatch.setattr(compatibility, "_configured_target_soc", None)
+    # A None entry makes ``import torch_npu`` raise, as an absent package does.
+    monkeypatch.setitem(sys.modules, "torch_npu", None)
+
+    compatibility._patch_torchair_host_only_device_name("Ascend910B3")
+
+    assert _torchair_is_arch35() is False
+
+
+def test_host_only_device_name_patch_applies_to_a_later_torch_npu(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("EXECUTORCH_NPU_HOST_ONLY", "1")
+    monkeypatch.setattr(compatibility, "_configured_target_soc", None)
+    monkeypatch.setitem(sys.modules, "torch_npu", None)
+    compatibility._patch_torchair_host_only_device_name("Ascend910B3")
+    npu = _fake_torch_npu_without_device(monkeypatch)
+
+    compatibility._patch_torchair_host_only_device_name("Ascend910B3")
+
+    assert npu.get_device_name() == "Ascend910B3"
+
+
 def test_dynamic_shape_contract_preserves_ranges_for_cann() -> None:
     class Identity(torch.nn.Module):
         def forward(self, value: torch.Tensor) -> torch.Tensor:
@@ -289,7 +395,7 @@ class _FakeOfflineCompiler:
         (output.parent / "weight" / "weight_0").write_bytes(b"fake-weight")
 
 
-def _fake_torch_delegate():
+def _fake_torch_delegate(acl_soc_name=None):
     return SimpleNamespace(
         export_to_epair=lambda ep: SimpleNamespace(manifest=_FakeManifest()),
         epair_save=lambda contents, path: Path(path).write_bytes(b"epair"),
@@ -420,7 +526,7 @@ def test_partial_epair_conversion_fails(monkeypatch) -> None:
     fake.export_to_epair = lambda ep: SimpleNamespace(
         manifest=_FakeManifest(total_nodes=2, converted_nodes=1)
     )
-    monkeypatch.setattr(delegate_adapter, "_load_torch_delegate", lambda: fake)
+    monkeypatch.setattr(delegate_adapter, "_load_torch_delegate", lambda soc: fake)
     exported = torch.export.export(Add(), (torch.ones(1, 4), torch.ones(1, 4)))
     specs = AscendCompileOptions(
         method_name="forward",
@@ -482,7 +588,7 @@ def test_torch_delegate_controls_device_initialization_options(monkeypatch, tmp_
         return export_to_epair(program)
 
     delegate.export_to_epair = export_with_config
-    monkeypatch.setattr(delegate_adapter, "_load_torch_delegate", lambda: delegate)
+    monkeypatch.setattr(delegate_adapter, "_load_torch_delegate", lambda soc: delegate)
     program = torch.export.export(Add(), (torch.ones(1, 4), torch.ones(1, 4)))
     specs = AscendCompileOptions(
         method_name="forward", delegate_index=0, acl_soc_name="Ascend910B3"
@@ -1004,7 +1110,7 @@ def test_lower_to_ge_graph_returns_graph_after_closing_loader(monkeypatch, tmp_p
 
     fake = _fake_torch_delegate()
     fake.EpairModelLoader = Loader
-    monkeypatch.setattr(delegate_adapter, "_load_torch_delegate", lambda: fake)
+    monkeypatch.setattr(delegate_adapter, "_load_torch_delegate", lambda soc: fake)
     exported = torch.export.export(Add(), (torch.ones(1, 4), torch.ones(1, 4)))
     specs = AscendCompileOptions(
         method_name="forward", delegate_index=0, acl_soc_name="Ascend910_9362"
@@ -1044,7 +1150,7 @@ def test_graph_loading_failure_restores_environment_and_closes_loader(
 
     fake = _fake_torch_delegate()
     fake.EpairModelLoader = Loader
-    monkeypatch.setattr(delegate_adapter, "_load_torch_delegate", lambda: fake)
+    monkeypatch.setattr(delegate_adapter, "_load_torch_delegate", lambda soc: fake)
     exported = torch.export.export(Add(), (torch.ones(1, 4), torch.ones(1, 4)))
     specs = AscendCompileOptions(
         method_name="forward", delegate_index=0, acl_soc_name="Ascend910_9362"

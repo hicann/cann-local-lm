@@ -14,8 +14,6 @@ import sys
 from collections import defaultdict
 from typing import Any
 
-import torch
-
 from ..shared.compilation import compile_lock
 
 
@@ -57,30 +55,6 @@ def _patch_torchair_deterministic_options() -> None:
     torchair_backend._executorch_npu_deterministic_compat = True
 
 
-def _patch_torch_delegate_scalar_serialization(torch_delegate: Any) -> None:
-    """Handle scalar tensors in delegate's PT2 archive serializer."""
-    writer = torch_delegate.epair.writer
-    if getattr(writer, "_executorch_npu_scalar_compat", False):
-        return
-    original = writer._tensor_bytes
-
-    def tensor_bytes(tensor: torch.Tensor) -> bytes:
-        if tensor.dim() != 0:
-            return original(tensor)
-        return (
-            tensor.detach()
-            .cpu()
-            .contiguous()
-            .reshape(-1)
-            .view(torch.uint8)
-            .numpy()
-            .tobytes()
-        )
-
-    writer._tensor_bytes = tensor_bytes
-    writer._executorch_npu_scalar_compat = True
-
-
 def _patch_torchair_host_only_graph_engine() -> None:
     """Build GE IR without a device by stubbing TorchAir's native engine init."""
     if os.environ.get("EXECUTORCH_NPU_HOST_ONLY", "0") != "1":
@@ -103,6 +77,34 @@ def _patch_torchair_host_only_graph_engine() -> None:
     torchair_backend._executorch_npu_host_only_engine = True
 
 
+_configured_target_soc: str | None = None
+
+
+def _patch_torchair_host_only_device_name(acl_soc_name: str) -> None:
+    """Report the compile target instead of querying a physical device name.
+
+    TorchAir converters such as ``native_batch_norm_legit_no_training`` and
+    ``max_pool2d_with_indices`` call ``is_arch35()``, which reads the device
+    name through ``torch_npu.npu.get_device_name()``. Without a device that
+    query resolves no device index and raises ``TypeError``, which TorchAir
+    does not catch. Supplying the target SoC keeps TorchAir's own architecture
+    rule authoritative while removing the hardware dependency.
+    """
+    global _configured_target_soc
+    if os.environ.get("EXECUTORCH_NPU_HOST_ONLY", "0") != "1":
+        return
+    if _configured_target_soc is not None and _configured_target_soc != acl_soc_name:
+        raise ValueError(
+            "Cannot change acl_soc_name after compiler compatibility setup"
+        )
+    _configured_target_soc = acl_soc_name
+    npu = getattr(sys.modules.get("torch_npu"), "npu", None)
+    if not hasattr(npu, "get_device_name"):
+        # Without torch_npu, TorchAir's is_arch35() already reports False.
+        return
+    npu.get_device_name = lambda *args, **kwargs: acl_soc_name
+
+
 def _patch_dynamo_compilation_metrics() -> None:
     """Provide missing timer buckets required by older TorchAir integrations."""
     from torch._dynamo import utils as dynamo_utils
@@ -115,7 +117,7 @@ def _patch_dynamo_compilation_metrics() -> None:
 _configured_host_only: bool | None = None
 
 
-def load_torch_delegate() -> Any:
+def load_torch_delegate(acl_soc_name: str) -> Any:
     """Install version adapters once under the compiler's global-state lock."""
     global _configured_host_only
     with compile_lock:
@@ -127,8 +129,8 @@ def load_torch_delegate() -> Any:
         _patch_torchair_deterministic_options()
         _configured_host_only = host_only
         _patch_torchair_host_only_graph_engine()
+        _patch_torchair_host_only_device_name(acl_soc_name)
         _patch_dynamo_compilation_metrics()
         import torch_delegate
 
-        _patch_torch_delegate_scalar_serialization(torch_delegate)
         return torch_delegate

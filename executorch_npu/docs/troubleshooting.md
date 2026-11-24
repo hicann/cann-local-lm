@@ -146,6 +146,18 @@ TorchAir的 `InitializeGraphEngine` 无条件绑定设备。设置
 `from torchair.core._backend import initialize_graph_engine` 直接导入名字，只替换
 `_backend` 上的属性对其无效。
 
+### 无卡编译BN/MaxPool报 `'<' not supported between instances of 'NoneType' and 'int'`
+
+TorchAir的 `native_batch_norm_legit_no_training`、`max_pool2d_with_indices` 等converter
+调用 `is_arch35()` 选择GE算子版本，该函数经 `torch_npu.npu.get_device_name()` 读物理
+设备名。无设备时torch解析不出设备下标而返回 `None`，随后的 `None < 0` 抛 `TypeError`；
+TorchAir只捕获 `ImportError`，异常直接冒泡到导出流程。
+
+`EXECUTORCH_NPU_HOST_ONLY=1` 下Backend已把该查询替换为返回 `acl_soc_name`，见
+[模型导出](export.md#无npu设备导出lite导出)。若仍报错，确认转换发生在
+`lower_to_ge_graph()` 内：补丁随 `_load_torch_delegate()` 安装，早于
+`export_to_epair()`；绕过Backend直接调用TorchAir转换不会安装该补丁。
+
 ### `TdEpairModelLoaderCreate failed with status=1`
 
 EPAIR加载器要求GE已初始化，但不要求设备。Lite导出下应由

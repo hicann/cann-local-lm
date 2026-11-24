@@ -138,12 +138,20 @@ python -m examples.qwen3_5.export.pte
 ```
 
 TorchAir's GE engine initialization couples "initializing GE" and "binding the device" into a single C++ call,
-while Phase B only needs the former. The device dependency spans two layers, and `EXECUTORCH_NPU_HOST_ONLY=1` handles them separately:
+while Phase B only needs the former. The device dependency spans three layers, and `EXECUTORCH_NPU_HOST_ONLY=1` handles them separately:
 
 | Layer | Location | Behavior without a device | Handling |
 |---|---|---|---|
 | Python | `torchair.core._backend._get_device_id()` | Calls `npu.current_device()` because torch_npu is already imported, throwing `aclInit 107001` | Replaced with reading `ASCEND_DEVICE_ID` |
 | C++ | `_torchair.InitializeGraphEngine()` | Unconditionally calls `acl.rt.set_device()` internally, returning 107001 | Stub out the C++ leaf function |
+| Op converter | `torchair._utils.check_platform.is_arch35()` | Reads the physical device name through `torch_npu.npu.get_device_name()`; without a device the device index resolves to `None`, so `None < 0` raises `TypeError`, and TorchAir only catches `ImportError` | `get_device_name()` is replaced with returning `acl_soc_name`, leaving the architecture decision to TorchAir's own device-name rule |
+
+The third layer covers 25 converter modules in the currently pinned TorchAir revision (including
+`native_batch_norm_legit_no_training`, `max_pool2d_with_indices`, `native_group_norm`, `std`, and `npu_rotary_mul`).
+The result selects GE op versions, attributes, layouts, and output semantics, so it cannot be hardcoded to `False`;
+only the device-name source is replaced. Without torch_npu the function takes its `ImportError` branch and returns `False`,
+which matches the currently registered SoCs; adding an arch35 target (a device name containing `Ascend910_95` or `Ascend950`)
+requires torch_npu so that `acl_soc_name` takes part in the decision.
 
 The C++ layer cannot be bypassed with parameters: passing `0` for `deviceId` reports `ACL set device id failed`, and passing `-1`
 triggers `assert device_index_ >= 0`. Setting `ge_run_with_torch_npu` to `0`, switching to a standalone

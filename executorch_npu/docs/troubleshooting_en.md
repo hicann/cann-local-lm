@@ -146,6 +146,19 @@ If the error persists after setting it, check whether `fx2ge_converter.initializ
 imports the name directly via `from torchair.core._backend import initialize_graph_engine`, so replacing only the
 attribute on `_backend` has no effect.
 
+### `'<' not supported between instances of 'NoneType' and 'int'` when compiling BN/MaxPool without a device
+
+TorchAir converters such as `native_batch_norm_legit_no_training` and `max_pool2d_with_indices`
+call `is_arch35()` to select GE op versions, and that function reads the physical device name through
+`torch_npu.npu.get_device_name()`. Without a device, torch resolves no device index and returns `None`,
+so the following `None < 0` raises `TypeError`; TorchAir only catches `ImportError`, and the exception
+propagates straight into the export flow.
+
+With `EXECUTORCH_NPU_HOST_ONLY=1` the Backend already replaces that query with returning `acl_soc_name`; see
+[Model Export](export_en.md#exporting-without-an-npu-device-lite-export). If the error persists, confirm that the
+conversion happens inside `lower_to_ge_graph()`: the patch is installed by `_load_torch_delegate()`, before
+`export_to_epair()`, so calling TorchAir conversion directly without the Backend does not install it.
+
 ### `TdEpairModelLoaderCreate failed with status=1`
 
 The EPAIR loader requires GE to be initialized, but does not require a device. Under Lite export, initialization should be done by

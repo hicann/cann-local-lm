@@ -198,7 +198,7 @@ def lower_to_ge_graph(
     with compile_lock:
         validate_aten_targets(exported_program, specs.method_name, specs.delegate_index)
         reconstruct_example_inputs(exported_program)
-        torch_delegate = _load_torch_delegate()
+        torch_delegate = _load_torch_delegate(specs.acl_soc_name)
         _initialize_ge(specs.acl_soc_name)
         contents = torch_delegate.export_to_epair(exported_program)
         if contents.manifest.converted_nodes != contents.manifest.total_nodes:

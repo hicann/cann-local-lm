@@ -414,7 +414,7 @@ OHOS工具链cmake传递的冗余flag，**无害**，不影响编译结果。
 
 ### Q9: kirin平台模型调试工具
 
-[model_run_tool](https:/kiri-obs.obs.cn-north-4.myhuaweicloud.com/Cann%20Large%20Model%20Foundation%208.5.0.rc003/CANN-Kit-tools-7.0.1.0.run) 详细使用说明请./model_run_tool -h 。
+[model_run_tool](https://kiri-obs.obs.cn-north-4.myhuaweicloud.com/Cann%20Large%20Model%20Foundation%208.5.0.rc003/CANN-Kit-tools-7.0.1.0.run) 详细使用说明请./model_run_tool -h 。
 
 ### Q10: prefill、decode权重共享说明
  `GE_EXTERNAL_WEIGHT` 、`GE_MOBILE_WEIGHT_SHARE_OPS` 两个参数必须配合使用。其中 `GE_EXTERNAL_WEIGHT` ，kirin平台只支持 `GE_EXTERNAL_WEIGHT`=0、2；`GE_MOBILE_WEIGHT_SHARE_OPS` 参数仅kirin支持。且该功能仅PC 7.0 B115SPX及以后版本支持，其余版本仅做兼容性适配。

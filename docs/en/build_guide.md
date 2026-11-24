@@ -401,7 +401,7 @@ Redundant flags passed by the OHOS toolchain cmake; **harmless** and does not af
 
 ### Q9: Kirin platform model debugging tool
 
-[model_run_tool](https:/kiri-obs.obs.cn-north-4.myhuaweicloud.com/Cann%20Large%20Model%20Foundation%208.5.0.rc003/CANN-Kit-tools-7.0.1.0.run) — see `./model_run_tool -h` for detailed usage.
+[model_run_tool](https://kiri-obs.obs.cn-north-4.myhuaweicloud.com/Cann%20Large%20Model%20Foundation%208.5.0.rc003/CANN-Kit-tools-7.0.1.0.run) — see `./model_run_tool -h` for detailed usage.
 
 ### Q10: prefill/decode weight sharing
 

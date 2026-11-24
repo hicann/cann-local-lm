@@ -532,6 +532,12 @@ def train(base_model, config, output_dir=None, hf_type_save=False, **argv):
     model.config.use_cache = False
     st = time.time()
     trainer.train()
+    del teacher
+    del trainer
+    if device_type == "npu":
+        torch.npu.empty_cache()
+    elif device_type == "cuda":
+        torch.cuda.empty_cache()
     if not hf_type_save:
         ### input and weight quant enable and lora enable
         model.teacher = None
@@ -654,6 +660,7 @@ def ptq_quant_pipline(
     if not tie_lmhead:
         weight_q_weight.pop("model.embed_tokens.weight")
     dopt_model.load_state_dict(weight_q_weight, strict=False)
+    del weight_q_weight
     weight_q_params_adapter_into_dopt(dopt_model, weight_q_quantizer, tie_lmhead)
     set_calibrate_state(dopt_model, False)
     if not hf_type_save:

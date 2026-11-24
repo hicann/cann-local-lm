@@ -1343,7 +1343,7 @@ Forward 输入是否支持 tokenId 路径，及 embedding 表归属。
 | 选项 | 优 | 劣 |
 |------|----|----|
 | A 仅 embedding 输入（上游查表） | 边界纯 | 不支持模型内部 embedding |
-| B 双路径（embedding|tokenId），tokenId 走模型内部 | 灵活、支持 om 内置 embedding | 需明确表归属 |
+| B 双路径（embedding\|tokenId），tokenId 走模型内部 | 灵活、支持 om 内置 embedding | 需明确表归属 |
 
 #### §3 决策
 选 B（用户定）。Forward 支持 embedding|tokenId 二选一；tokenId 走模型内部 embedding（om 图承担）；**embedding 表由 pipelineExecutor 调 embedding 模块（C-02）加载并绑定至模型，不经 ModelManager**；本模块不加载/拥有 embedding 表、不重新实现查表。

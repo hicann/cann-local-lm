@@ -36,7 +36,7 @@ English | [简体中文](../../../zh/cann_lm_engine/pipeline+engine_executor/DES
 ```mermaid
 graph TB
     L0[L0 Caller] -->|C++ public API| L1[L1 EngineExecutor PIMPL]
-    L1 -->|delegate| L2[L2 PipelineExecutorBase orchestration body (autoregressive etc derived + factory)]
+    L1 -->|delegate| L2["L2 PipelineExecutorBase orchestration body (autoregressive etc derived + factory)"]
     L2 --> M3[Scheduler]
     L2 --> M4[ModelExecutor Prefill/Decode]
     L2 --> M6[Preprocessor]
@@ -88,7 +88,7 @@ Memory domain: engine layer does not hold device memory; `Tensor` references und
 | ID | Name | One-line responsibility | Dependencies | Details |
 |----|------|-----------|------|------|
 | M-01 | EngineExecutor | L1 PIMPL shell, forwards public API | M-02 | see §11.1 |
-| M-02 | PipelineExecutorBase | L2 orchestration skeleton abstract base class (autoregressive etc derived + factory, constraint #3) | worker drive + post-processing + registries | M-03..M-08, C-01..C-04 | see §11.2 |
+| M-02 | PipelineExecutorBase | L2 orchestration skeleton abstract base class (autoregressive etc derived + factory, constraint #3); worker drive + post-processing + registries | M-03..M-08, C-01..C-04 | see §11.2 |
 | M-03 | Scheduler | Queuing + decode pool + iteration batching + interleaving + cancel | M-04, M-06 | see §11.3 |
 | M-04 | ModelExecutor | Forward produces logits (Prefill/Decode two instances) | C-04 | see §11.4 |
 | M-05 | ModelLoader | Load thin wrapper, derives json | C-04 | see §11.5 |

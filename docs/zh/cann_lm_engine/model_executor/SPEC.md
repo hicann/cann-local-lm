@@ -127,7 +127,7 @@ ModelExecutor 作为前向壳统一承载：前向组装与 logits 产出、KV r
   - 跨实例权重去重（prefill/decode 同权重）**不再由 `ModelManager` 强制负责**；去重**可**下放 `TensorManager`（权重 blob 级）或不强制。
   - 模块**必须**保持单活跃对：每引擎实例内同一时刻一对活跃 executor（prefill+decode）；**不**支持运行时热切换模型。多引擎实例可共存、资源池隔离（对齐 pipeline C7）。
 - **后置条件**：实例自创建 owned `BuiltModel`+`ModelManager`、`Init` 完成、配置可查（`GetConfig`）、就绪可 Forward。
-- **异常处理**：``BuildModelFromFile`/`BuildModelFromBuffer` + `CreateModelManager(BackendType)` 返空 → `FAILURE`；`mm->Init` 失败 → `FAILURE`；`mm->InitWeights` 失败（权重缺失/损坏）→ `FAILURE`；`ModelConfig.max_batch_size/max_seq_len<=0` → `INVALID_ARGUMENT`。
+- **异常处理**：`BuildModelFromFile`/`BuildModelFromBuffer` + `CreateModelManager(BackendType)` 返空 → `FAILURE`；`mm->Init` 失败 → `FAILURE`；`mm->InitWeights` 失败（权重缺失/损坏）→ `FAILURE`；`ModelConfig.max_batch_size/max_seq_len<=0` → `INVALID_ARGUMENT`。
 - **边界情况**：路径与 buffer 来源混用 → `INVALID_ARGUMENT`。
 
 #### 4.1.5 LoRA 控制
@@ -172,7 +172,7 @@ ModelExecutor 作为前向壳统一承载：前向组装与 logits 产出、KV r
 
 | 类别 | 触发场景 | 处置语义 | 关联 TC |
 |------|----------|----------|---------|
-| LoadFailed | om 缺失/损坏/版本不匹配、``BuildModelFromFile`/`BuildModelFromBuffer` + `CreateModelManager(BackendType)` 返空、`MM::Init` 失败 | FAILURE，实例不可用 | TC_101/106 |
+| LoadFailed | om 缺失/损坏/版本不匹配、`BuildModelFromFile`/`BuildModelFromBuffer` + `CreateModelManager(BackendType)` 返空、`MM::Init` 失败 | FAILURE，实例不可用 | TC_101/106 |
 | ConfigInvalid | `ModelConfig.max_batch_size/max_seq_len<=0`（用户 JSON 配置缺字段） | INVALID_ARGUMENT | TC_106 |
 | PoolFull | 池满且无可驱逐槽 | FAILURE 或排队等待 | TC_201/202 |
 | NotBound | 未 Bind 即 Forward | INVALID_STATE | TC_102 |

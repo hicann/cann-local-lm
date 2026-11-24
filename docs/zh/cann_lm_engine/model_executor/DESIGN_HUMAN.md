@@ -166,7 +166,7 @@ sequenceDiagram
 - 一个引擎实例里同时只有一对活跃前向壳（prefill+decode），不支持运行时热切换。已有活跃对时再 load，要先 unload。
 - embedding 表不走这条线——由 pipelineExecutor 调 embedding 模块加载并绑定到模型上。
 
-异常：``BuildModelFromFile`/`FromBuffer` + `CreateModelManager(BackendType)` 返空/后端未链接 → 加载失败（构建期保证链接后端定义）；`mm->Init` 失败 → 失败；`ModelConfig.max_batch_size/max_seq_len<=0` → 参数非法；路径和 buffer 来源混用 → 参数非法。
+异常：`BuildModelFromFile`/`FromBuffer` + `CreateModelManager(BackendType)` 返空/后端未链接 → 加载失败（构建期保证链接后端定义）；`mm->Init` 失败 → 失败；`ModelConfig.max_batch_size/max_seq_len<=0` → 参数非法；路径和 buffer 来源混用 → 参数非法。
 
 ### 流程二：prefill 前向（v0.13：按 name→index 查工位填输入）
 
@@ -379,7 +379,7 @@ class ModelExecutor {
 
 前向失败的几种情况：没加载 / `output_tensors_` 空 → 状态非法；`opts.slots` 空 → 参数非法；name→index 缺 `position_ids`/`new_kv_cache_pos`/`attention_mask` → 参数非法；底层失败 → 失败；LoRA 切换中调 → 状态非法。
 
-加载失败的几种情况：``BuildModelFromFile`/`FromBuffer` + `CreateModelManager(BackendType)` 返空/后端未链接 → 失败（构建期保证链接后端定义）；`mm->Init` 失败 → 失败；`ModelConfig.max_batch_size/max_seq_len<=0` → 参数非法；路径/buffer 混用 → 参数非法；已有活跃又 load → 先 unload 或拒绝。
+加载失败的几种情况：`BuildModelFromFile`/`FromBuffer` + `CreateModelManager(BackendType)` 返空/后端未链接 → 失败（构建期保证链接后端定义）；`mm->Init` 失败 → 失败；`ModelConfig.max_batch_size/max_seq_len<=0` → 参数非法；路径/buffer 混用 → 参数非法；已有活跃又 load → 先 unload 或拒绝。
 
 ### KV Cache 池
 

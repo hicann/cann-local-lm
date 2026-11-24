@@ -1343,7 +1343,7 @@ Whether Forward input supports tokenId path, and embedding table ownership.
 | Option | Pros | Cons |
 |------|----|----|
 | A only embedding input (upstream lookup) | boundary pure | does not support model internal embedding |
-| B dual-path (embedding|tokenId), tokenId goes through model internal | flexible, supports om built-in embedding | need to clarify table ownership |
+| B dual-path (embedding\|tokenId), tokenId goes through model internal | flexible, supports om built-in embedding | need to clarify table ownership |
 
 #### §3 Decision
 Choose B (user decided). Forward supports embedding|tokenId one of two; tokenId goes through model internal embedding (om graph handles); **embedding table loaded and bound to model by pipelineExecutor calling embedding module (C-02), not via ModelManager**; this module does not load/own embedding table, does not re-implement lookup.

@@ -52,7 +52,7 @@ Module responsibility determined via brainstorm (2026-08-27) and user three-roun
 
 | Dimension | Conclusion |
 |------|------|
-| Responsibility positioning | **Dual path**: tokenId path (om graph built-in embedding, table already in weights loaded with graph, module only fills token id) | embedding path (host gather low-precision rows, NPU dequant) |
+| Responsibility positioning | **Dual path**: tokenId path (om graph built-in embedding, table already in weights loaded with graph, module only fills token id); embedding path (host gather low-precision rows, NPU dequant) |
 | Dequantization location | **Always NPU side**; host only reads low-precision table + scale and fills slots, host does not do dequantization math |
 | File format | **embedding_weights single file** four segments packed contiguously: main table raw 2D `[vocab, hidden]` → per_layer table → main scale → per_layer scale (no file header, no inter-segment padding); scale segment shape determined by quantization granularity (see 4.1.1) |
 | Quantization granularity | initialization input parameter `quantMode`: **PerToken** (one scale per vocabulary entry) or **PerGroup** (one tokenId's embedding corresponds to multiple dequantization parameters, `GroupSize` required) |

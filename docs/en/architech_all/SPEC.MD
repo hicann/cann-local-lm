@@ -25,7 +25,7 @@ English | [简体中文](../../zh/architech_all/SPEC.MD)
 ### 1.3 Design Goals
 
 - Isolate all platform dependencies in the Platform HAL
-- Replace scattered atomic<bool> flags with explicit state machines
+- Replace scattered `atomic<bool>` flags with explicit state machines
 - Support extensions (speculative decoding, multimodal) without modifying existing code
 
 ---
@@ -1303,7 +1303,7 @@ int32_t pos = kvCacheMgr.GetCurrentPos();       // Direct return
 
 ### 7.2 State Management
 
-Uses explicit state machines to replace scattered atomic<bool> flags.
+Uses explicit state machines to replace scattered `atomic<bool>` flags.
 
 **Engine states:**
 ```
@@ -1981,7 +1981,7 @@ SpeculativeDecodeController::Run(request, config)
 | Callback Set functions | 6 | 1 GenerateCallbacks struct |
 | InitOption Set | 7 | 1 EngineConfig struct |
 | God Class (>1000 lines) | 4 | 0 |
-| State management | 10+ scattered atomic<bool> | 3 explicit state machines |
+| State management | 10+ scattered `atomic<bool>` | 3 explicit state machines |
 | Platform coupling | hiai::* scattered in 30+ files | Encapsulated in platform/kirin/ directory |
 | Async path | Sync wrapping async (thread + queue) | Async first, sync = wait |
 | Testability | Depends on NPU hardware | Mock HAL can test full pipeline without NPU |

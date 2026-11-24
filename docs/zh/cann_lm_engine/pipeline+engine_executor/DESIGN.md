@@ -88,7 +88,7 @@ graph TB
 | ID | 名称 | 一句话职责 | 依赖 | 详情 |
 |----|------|-----------|------|------|
 | M-01 | EngineExecutor | L1 PIMPL 外壳，转发 public API | M-02 | 见 §11.1 |
-| M-02 | PipelineExecutorBase | L2 编排骨架抽象基类（自回归等派生+工厂，约束 #3） | worker 驱动 + 后处理 + 注册表 | M-03..M-08, C-01..C-04 | 见 §11.2 |
+| M-02 | PipelineExecutorBase | L2 编排骨架抽象基类（自回归等派生+工厂，约束 #3）；worker 驱动 + 后处理 + 注册表 | M-03..M-08, C-01..C-04 | 见 §11.2 |
 | M-03 | Scheduler | 排队 + decode 池 + iteration 组批 + 交错 + cancel | M-04, M-06 | 见 §11.3 |
 | M-04 | ModelExecutor | 前向产 logits（Prefill/Decode 两实例） | C-04 | 见 §11.4 |
 | M-05 | ModelLoader | 加载 thin wrapper，派生 json | C-04 | 见 §11.5 |

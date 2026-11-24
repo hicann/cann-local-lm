@@ -25,7 +25,7 @@
 ### 1.3 设计目标
 
 - 将所有平台依赖隔离在Platform HAL中
-- 用显式状态机替代散落的atomic<bool>标志位
+- 用显式状态机替代散落的 `atomic<bool>` 标志位
 - 支持扩展（投机解码、多模态）而无需修改已有代码
 
 ---
@@ -1303,7 +1303,7 @@ int32_t pos = kvCacheMgr.GetCurrentPos();       // 直接返回
 
 ### 7.2 状态管理
 
-用显式状态机替代散落的atomic<bool>标志位。
+用显式状态机替代散落的 `atomic<bool>` 标志位。
 
 **引擎状态：**
 ```
@@ -1980,7 +1980,7 @@ SpeculativeDecodeController::Run(request, config)
 | 回调Set函数 | 6个 | 1个GenerateCallbacks结构体 |
 | InitOption Set | 7个 | 1个EngineConfig结构体 |
 | God Class（>1000行） | 4个 | 0个 |
-| 状态管理 | 10+处散落的atomic<bool> | 3个显式状态机 |
+| 状态管理 | 10+处散落的 `atomic<bool>` | 3个显式状态机 |
 | 平台耦合 | hiai::*散布在30+个文件 | 封装在platform/kirin/目录 |
 | 异步路径 | 同步包装异步（线程+队列） | 异步优先，同步=wait |
 | 可测试性 | 依赖NPU硬件 | Mock HAL可脱离NPU测试全流程 |

@@ -8,6 +8,9 @@ pure, no .so.
 
 import argparse
 import os
+import json
+
+import pytest
 
 from bbit import load_config
 from cann_local_lm.generate import add_args, resolve_request, run
@@ -220,3 +223,80 @@ class TestShowPaths:
         )
         rc = run(args)
         assert rc == 0
+
+
+class TestConfigObjectValidation:
+    @staticmethod
+    def valid_config():
+        result = dict.fromkeys(
+            [
+                "tokenizer_type",
+                "tokenizer_path",
+                "model_path_prefill",
+                "model_path_decode",
+                "model_meta_config",
+                "model_weight_dir_prefill",
+                "model_weight_dir_decode",
+            ],
+            "",
+        )
+        result["sentences"] = [
+            {
+                "prompt": "hello",
+                "maxGenTokens": 2,
+                "topK": 1,
+                "topP": 1.0,
+                "temperature": 1.0,
+                "seed": 0,
+                "repetitionPenalty": 1.0,
+                "stopSeq": [],
+            }
+        ]
+        return result
+
+    @pytest.mark.parametrize("payload", [None, 42, True, "config", [], ["config"]])
+    def test_nonobject_root_returns_error(self, tmp_path, capsys, payload):
+        from cann_local_lm.config import load_config as parse_config
+
+        path = tmp_path / "config.json"
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        assert parse_config(path) is None
+        assert "config" in capsys.readouterr().err
+
+    @pytest.mark.parametrize("entry", [None, 42, True, "prompt", [], {}])
+    def test_nonobject_sentence_returns_error(self, tmp_path, capsys, entry):
+        from cann_local_lm.config import load_config as parse_config
+
+        payload = self.valid_config()
+        payload["sentences"] = [entry]
+        path = tmp_path / "config.json"
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        assert parse_config(path) is None
+        assert "config" in capsys.readouterr().err
+
+    @pytest.mark.parametrize("payload", [None, 42, {"sentences": [42]}])
+    def test_generate_rejects_bad_config_before_loading_library(
+        self, tmp_path, monkeypatch, payload
+    ):
+        import cann_local_lm
+
+        def forbidden(*args, **kwargs):
+            pytest.fail("invalid configuration must not load the engine library")
+
+        monkeypatch.setattr(cann_local_lm, "get_library", forbidden)
+        if isinstance(payload, dict):
+            valid = self.valid_config()
+            valid.update(payload)
+            payload = valid
+        path = tmp_path / "config.json"
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        assert run(argparse.Namespace(config=str(path))) == 2
+
+    def test_valid_config_retains_normalized_fields(self, tmp_path):
+        from cann_local_lm.config import load_config as parse_config
+
+        path = tmp_path / "config.json"
+        path.write_text(json.dumps(self.valid_config()), encoding="utf-8")
+        result = parse_config(path)
+        assert result["sentences"][0]["max_tokens"] == 2
+        assert result["sentences"][0]["stop_strings"] == []

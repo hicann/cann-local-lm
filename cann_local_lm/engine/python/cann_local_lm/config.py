@@ -80,6 +80,9 @@ def load_config(path):
     except Exception as e:  # noqa: BLE001
         print(f"bbit: config parse error: {e}", file=sys.stderr)
         return None
+    if not isinstance(j, dict):
+        print("bbit: config root must be an object", file=sys.stderr)
+        return None
     try:
         cfg = {
             "tokenizer_type": _req_str(j, "tokenizer_type"),
@@ -99,6 +102,12 @@ def load_config(path):
             return None
         out = []
         for js in sentences:
+            if not isinstance(js, dict):
+                print(
+                    'bbit: config field "sentences" must contain objects',
+                    file=sys.stderr,
+                )
+                return None
             out.append(
                 {
                     "prompt": _req_str(js, "prompt"),

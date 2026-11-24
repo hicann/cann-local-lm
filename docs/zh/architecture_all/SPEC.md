@@ -1,6 +1,6 @@
 # LLM Engine 架构设计 - 设计规格说明书
 
-简体中文 | [English](../../en/architech_all/SPEC.MD)
+简体中文 | [English](../../en/architecture_all/SPEC.md)
 
 ## 1. 概述
 

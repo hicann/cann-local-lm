@@ -1,6 +1,6 @@
 # LLM Engine Architecture Design - Design Specification
 
-English | [简体中文](../../zh/architech_all/SPEC.MD)
+English | [简体中文](../../zh/architecture_all/SPEC.md)
 
 ## 1. Overview
 

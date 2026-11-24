@@ -175,12 +175,12 @@ pip3 install cann_local_lm_engine-0.1.0+signed-py3-none-any.whl
 cat > testcase.json <<'EOF'
 {
     "tokenizer_type": "BPE",
-    "tokenizer_path": "/data/local/tmp/cann_lm_engine/output/e2e/tokenizer.json",
-    "model_path_prefill": "/data/local/tmp/cann_lm_engine/output/e2e/prefill/prefill.omc",
-    "model_path_decode": "/data/local/tmp/cann_lm_engine/output/e2e/decode/decode.omc",
-    "model_meta_config": "/data/local/tmp/cann_lm_engine/output/e2e/model.json",
-    "model_weight_dir_prefill": "/data/local/tmp/cann_lm_engine/output/e2e/prefill/weight",
-    "model_weight_dir_decode": "/data/local/tmp/cann_lm_engine/output/e2e/decode/weight",
+    "tokenizer_path": "/data/local/tmp/cann_lm_engine/e2e/tokenizer.json",
+    "model_path_prefill": "/data/local/tmp/cann_lm_engine/e2e/prefill/prefill.omc",
+    "model_path_decode": "/data/local/tmp/cann_lm_engine/e2e/decode/decode.omc",
+    "model_meta_config": "/data/local/tmp/cann_lm_engine/e2e/model.json",
+    "model_weight_dir_prefill": "/data/local/tmp/cann_lm_engine/e2e/prefill/weight",
+    "model_weight_dir_decode": "/data/local/tmp/cann_lm_engine/e2e/decode/weight",
     "sentences": [{
         "prompt": "你好",
         "seed": 99, "topK": 1, "topP": 1.0,

@@ -38,7 +38,7 @@ When you get a change, go through these 8 questions; if any answer is Yes, write
 | weight_scale on-disk fp32→int64 (option A modify buffer vs B on-disk only) | ✅ | 3,5 |
 | GPTQ one-click chose option C (subprocess) vs A (modify CANN lightweight tool) vs B (memory) | ✅ (already happened) | 1,4,6 |
 | converter does not install torch_npu, goes through stub path | ✅ (already happened, recorded in cli_design.md) | 6,8 |
-| ~~`swap_to_quant_linear_from_dopt` split into `_swap_linear_from_sd` + `swap_from_dopt`~~ | ✅ Landed (2026-08-31): `swap_to_quant_linear_from_dopt` deleted, `_swap_linear_from_sd` + `swap_from_dopt` as the only path |
+| ~~`swap_to_quant_linear_from_dopt` split into `_swap_linear_from_sd` + `swap_from_dopt`~~ | ✅ Landed (2026-08-31): `swap_to_quant_linear_from_dopt` deleted, `_swap_linear_from_sd` + `swap_from_dopt` as the only path  — |
 | `materialize_int4_with_scale` renamed to `materialize_int4_per_group_symmetric` | ❌ rename | — |
 | Function line-number offsets, signature params collapsed into a dataclass | ❌ | — |
 | Adding `QuantLinear.bias=None` makes GE converter insert dummy zeros[N] | ⚠️ workaround trade-off (part of the path C' decision, not written separately) | 8 (already included in the path C' ADR) |

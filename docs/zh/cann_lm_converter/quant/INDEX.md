@@ -72,7 +72,7 @@
 | 参数 | 作用 |
 |------|------|
 | `--quant-path <轻量化工具产物目录>` | 场景 1：加载轻量化工具 GPTQ 产物，物化 int4 + swap QuantLinear（兜底） |
-| `--quant-method` | `gptq` | 场景 2：自动 spawn 轻量化工具 subprocess 跑 GPTQ（已实现，NPU/GPU/CPU；与 --quant-path 互斥） |
+| `--quant-method gptq` | 场景 2：自动 spawn 轻量化工具 subprocess 跑 GPTQ（已实现，NPU/GPU/CPU；与 --quant-path 互斥） |
 
 > CLI 用法见 [INDEX.md](../cli/INDEX.md) / [cli_design.md](../cli/cli_design.md)。
 

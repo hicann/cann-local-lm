@@ -263,7 +263,7 @@ KV cache：`--max-kv-size`(旋转 KV) `--kv-bits` `--kv-group-size`(默认64) `-
 | create(Modelfile) | `ollama create -f Modelfile`(`--quantize`/`--experimental`) |
 | 嵌入 | `ollama run embeddinggemma`/`nomic-embed-text`(`--truncate`/`--dimensions`) |
 | 多模态 | `ollama run gemma4 "What's in this image? /path.png"` |
-| thinking | `run --think true|high|medium|low`/`--hidethinking` |
+| thinking | `run --think true\|high\|medium\|low`/`--hidethinking` |
 | 集成启动 | `ollama launch [INTEGRATION]`(Claude Code/Codex/OpenCode/Copilot/Droid 等) |
 | cloud 模型 | `:cloud` 后缀 |
 | Python/JS SDK | `ollama-python`/`ollama-js` |
@@ -534,9 +534,9 @@ _pack_module.register(cli); _unpack_module.register(cli)
 |------|------|
 | 导出(litert-torch) | **不在 litert-lm CLI**(无 litert-torch/torch.export 引用);定位**消费侧**,消费上游预导出 .litertlm/.tflite;`convert` 是 stub |
 | 打包 .litertlm | `pack`/`unpack` + `litert_lm_builder`(LitertLmFileBuilder:tflite+tokenizer+metadata)+ `litert-lm-peek` |
-| 量化 | 消费侧(预量化产物);`--activation-data-type` fp32|fp16|int16|int8(实验,hidden) |
+| 量化 | 消费侧(预量化产物);`--activation-data-type` fp32\|fp16\|int16\|int8(实验,hidden) |
 | 推理 | `run` + `litert_lm.Engine`/`Session`/`Conversation`;prefill-decode(`session.run_prefill`→`run_decode_async` 流式) |
-| 后端 | `--backend` cpu|gpu|npu;`--cpu-thread-count`/`--gpu-decode-steps-per-sync`/`--ringbuffers-local-attention`(KV 省内存)/`--cache` disk|memory|no |
+| 后端 | `--backend` cpu\|gpu\|npu;`--cpu-thread-count`/`--gpu-decode-steps-per-sync`/`--ringbuffers-local-attention`(KV 省内存)/`--cache` disk\|memory\|no |
 | speculative | `--speculative-decoding` MTP(Multi-Token Prediction)drafters(Gemma4) |
 | 多平台 | `prebuilt/`(android_arm64/x86_64/ios_arm64/sim/macos/linux_arm64/windows);Android ADB(`adb_engine`/`adb_benchmark`);v0.16 C API prebuilt 全平台 |
 | 多模态/Tool use | `run --attachment`/`--preset`;`ToolEventHandler` 函数调用;constrained decoding(C++ ANTLR) |

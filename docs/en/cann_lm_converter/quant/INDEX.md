@@ -72,7 +72,7 @@ English | [简体中文](../../../zh/cann_lm_converter/quant/INDEX.md)
 | Param | Purpose |
 |------|------|
 | `--quant-path <lightweight-tool-artifact-dir>` | Scenario 1: load lightweight tool GPTQ artifacts, materialize int4 + swap QuantLinear (fallback) |
-| `--quant-method` | `gptq` | Scenario 2: auto-spawn lightweight tool subprocess to run GPTQ (implemented, NPU/GPU/CPU; mutually exclusive with --quant-path) |
+| `--quant-method gptq` | Scenario 2: auto-spawn lightweight tool subprocess to run GPTQ (implemented, NPU/GPU/CPU; mutually exclusive with --quant-path) |
 
 > CLI usage in [INDEX.md](../cli/INDEX.md) / [cli_design.md](../cli/cli_design.md).
 

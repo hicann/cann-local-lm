@@ -8,7 +8,7 @@
 
 ## 🚀 概述
 
-cann-local-lm旨在基于 CANN，面向端侧设备，提供大模型转换工具与端到端推理引擎等能力，实现多种大语言大模型轻量、低延迟、低内存占用的高效推理。
+cann-local-lm旨在基于 CANN，面向端侧设备，提供大模型转换工具与端到端推理引擎等能力，实现多种大语言模型轻量、低延迟、低内存占用的高效推理。
 
 ## ⬇️ 源码下载
 
@@ -69,10 +69,10 @@ cann-local-lm/
 | **cann_local_lm/models/**　　　　　|模型定义 + 自定义算子　| `gemma4/`(Gemma4ForCausalLM + export_wrapper)  / `fused_ops/`(cann_local_lm:: + npu:: 算子schema+fake-meta)　　　　　　　　　　　　　　　　　　　　　|
 | **torch_delegate/**　　　　　| epair序列化/加载 + C++ 后端 | `csrc/backend/`(EpairModelLoader → GE Graph → OM) / `torch_delegate/`(api.py + converter + epair + core) / `build.sh`(一键构建) / `examples/`(示例) |
 | **executorch_npu/**　　　　　| ExecuTorch Ascend AOT Backend | `python/executorch_npu/`(AscendPartitioner + AscendBackend.preprocess: EP→EPAIR→GE→OM→PTE/PTD) / `runtime/`(C++ Backend: PTE/PTD加载 + Manifest校验 + ACL执行) / `tools/`(C++ Runner) / `examples/`(mobilenet_v2/qwen3_5/gemma4) / `build.sh`(一键构建) |
-| **docs/cann_lm_converter/**　| converter设计文档　　　　 | `cli/cli_design.md` / `export/export_design.md` / `quant/quant_design.md` / `README.md`(总览) / `version_evolution.md`(版本演进)　　　　　　　　　　　　　　　　　　　　　　　　　　　|
+| **docs/zh/cann_lm_converter/** | converter设计文档　　　　 | `cli/cli_design.md` / `export/export_design.md` / `quant/quant_design.md` / `README.md`(总览) / `../version_evolution.md`(版本演进)　　　　　　　　　　　　　　　　　　　　　　　　　　　|
 | **examples/test_converter/** | 端到端测试用例　　　　　　 | `export_llm_model/`(C++ omc编译 + om_npu_verify出字验证) / `cann_lm_cli_export/run_pd6_cases.sh`(6用例)　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　|
-| **scripts/**　　　　　　　　 | 构建脚本　　　　　　　　　 | `build.sh`(顶层check/deps/third_party/cpp/tests/wheel/package/all) / `build.conf`(版本+git源+自定位派生路径) / `set_env.sh`(converter+compile统一env, 真CANN无stubs) / `set_env_cann.sh`(③ NPU) / `_env_common.sh`(公共) / `cann_lm_compile/build_cpp.sh`(C++ .so+cann_lm_compile) / `build_test.sh`(ASAN测试) / `build_third_party.sh`(自建json/gtest/makeself) / `cann_lm_{converter,engine}/build_wheel.sh`(whl打包)　 |
-| **tests/**　　　　　　　　　 | 单元测试　　　　　　　　　 | `cpp/`(C++ GTest; 跑: `bash scripts/build.sh tests` → ASAN+ctest) / `python/`(pytest)　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　 |
+| **scripts/**　　　　　　　　 | 构建脚本　　　　　　　　　 | `build.sh`(透传根 `build.sh`) / `cann_lm_compile/build.conf`(版本+git源+自定位派生路径) / `cann_lm_compile/set_env.sh`(converter+compile统一env, 真CANN无stubs) / `cann_lm_compile/set_env_cann.sh`(③ NPU) / `cann_lm_compile/_env_common.sh`(公共) / `cann_lm_compile/build_cpp.sh`(C++ .so+cann_lm_compile) / `build_test.sh`(ASAN测试) / `cann_lm_compile/build_third_party.sh`(自建json/gtest/makeself) / `cann_lm_{converter,engine}/build_wheel.sh`(whl打包)　 |
+| **tests/**　　　　　　　　　 | 单元测试　　　　　　　　　 | `cpp/`(C++ GTest; 跑: `bash build.sh -u` → ASAN+ctest) / `python/`(pytest)　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　 |
 | **ci/**　　　　　　　　　　　| CI/CD　　　　　　　　　　　| 流水线定义、构建脚本、镜像配置　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　 |
 | **cmake/**　　　　　　　　　 | CMake共享　　　　　　　　 | `modules/`(DelegateCommonFlags + Find*.cmake + TorchDelegateCannCommon) / `third_party/`(ExternalProject下载json/gtest/makeself)　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　 |
 

@@ -785,7 +785,7 @@ int64 bytes = uint64 bytes (8 字节小端序, 位模式相同)
 等效按 uint64 读 ✓
 ```
 
-**torch 无 uint64 dtype**，用 int64 存储（位模式相同，位操作 `&` 结果一致）。`BuildTensorHolder` 还校验 `Product(dims) * element_size == byte_size`（`WEIGHT_SIZE_MISMATCH` 兮底），dtype 标错会直接报错。
+**torch 无 uint64 dtype**，用 int64 存储（位模式相同，位操作 `&` 结果一致）。`BuildTensorHolder` 还校验 `Product(dims) * element_size == byte_size`（`WEIGHT_SIZE_MISMATCH` 兜底），dtype 标错会直接报错。
 
 ### 验证结果（case6 gemma4 quant-method gptq, 2026-08-24）
 

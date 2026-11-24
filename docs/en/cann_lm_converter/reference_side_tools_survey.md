@@ -263,7 +263,7 @@ Three-layer complementary:
 | create (Modelfile) | `ollama create -f Modelfile` (`--quantize`/`--experimental`) |
 | Embeddings | `ollama run embeddinggemma`/`nomic-embed-text` (`--truncate`/`--dimensions`) |
 | Multimodal | `ollama run gemma4 "What's in this image? /path.png"` |
-| thinking | `run --think true|high|medium|low`/`--hidethinking` |
+| thinking | `run --think true\|high\|medium\|low`/`--hidethinking` |
 | Integration launch | `ollama launch [INTEGRATION]` (Claude Code/Codex/OpenCode/Copilot/Droid etc.) |
 | cloud models | `:cloud` suffix |
 | Python/JS SDK | `ollama-python`/`ollama-js` |
@@ -534,9 +534,9 @@ Per command:
 |------|------|
 | Export (litert-torch) | **Not in litert-lm CLI** (no litert-torch/torch.export references); positioning **consumer-side**, consumes upstream pre-exported .litertlm/.tflite; `convert` is stub |
 | Pack .litertlm | `pack`/`unpack` + `litert_lm_builder` (LitertLmFileBuilder: tflite+tokenizer+metadata)+ `litert-lm-peek` |
-| Quantize | Consumer-side (pre-quantized artifacts); `--activation-data-type` fp32|fp16|int16|int8 (experimental, hidden) |
+| Quantize | Consumer-side (pre-quantized artifacts); `--activation-data-type` fp32\|fp16\|int16\|int8 (experimental, hidden) |
 | Inference | `run` + `litert_lm.Engine`/`Session`/`Conversation`; prefill-decode (`session.run_prefill`→`run_decode_async` streaming) |
-| Backend | `--backend` cpu|gpu|npu; `--cpu-thread-count`/`--gpu-decode-steps-per-sync`/`--ringbuffers-local-attention`(KV memory saving)/`--cache` disk|memory|no |
+| Backend | `--backend` cpu\|gpu\|npu; `--cpu-thread-count`/`--gpu-decode-steps-per-sync`/`--ringbuffers-local-attention`(KV memory saving)/`--cache` disk\|memory\|no |
 | speculative | `--speculative-decoding` MTP (Multi-Token Prediction) drafters (Gemma4) |
 | Multi-platform | `prebuilt/` (android_arm64/x86_64/ios_arm64/sim/macos/linux_arm64/windows); Android ADB (`adb_engine`/`adb_benchmark`); v0.16 C API prebuilt all platforms |
 | Multimodal/Tool use | `run --attachment`/`--preset`; `ToolEventHandler` function calling; constrained decoding (C++ ANTLR) |

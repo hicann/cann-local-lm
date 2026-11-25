@@ -14,6 +14,7 @@ English | [简体中文](../../../zh/cann_lm_converter/quant/quant_manual.md)
 - [Artifacts](#artifacts-dir-specified-by---output-dir)
 - [Configurable Parameters](#configurable-parameters)
 - [Known Constraints](#known-constraints)
+- [Golden Generation and Usage (Operator Debugging)](#golden-generation-and-usage)
 - [Related Documentation](#related-documentation)
 
 ---
@@ -181,6 +182,65 @@ The lightweight tool's configurable quantization params span 4 levels; **users c
 3. **Calibration corpus relative paths** are resolved against CWD; must run in the `cann_local_lm/converter/quant/` dir.
 4. **Artifacts have no tokenizer**: when downstream consumers like converter/PPL evaluation use them, use the original HF model dir's tokenizer.
 
+<a id="golden-generation-and-usage"></a>
+## Golden Generation and Usage (Operator Debugging)
+
+> **A quantized artifact must pass two distinct validations before deployment**: ① accuracy (how much quantization cost — fp16 is a legitimate reference here, use [ppl_compare.py](./ppl_compare_usage.md)); ② **operator correctness** (bugs in the quant-op implementation — **neither fp16 nor another simulation can serve as the reference**). ② relies on golden data: freeze the reference operator's input/output tensors under fixed inputs, then the candidate operator (converter-materialized `QuantLinear` → `DynamicQuant` + `QuantBatchMatmulV4` OM kernel) recomputes with **the same quantized weights + the same inputs** and is compared layer by layer. Verification methodology in [VERIFICATION.md](../../../../examples/test_converter/dopt_op_benchmark/VERIFICATION.md).
+
+### Why golden is mandatory
+
+- Debugging NPU quant operators needs an **implementation-independent** ground truth: fp16 differs semantically (W4A16/W4A8 vs fp32), and a dopt simulation may share the same spec-level misunderstanding with in-repo code (e.g. int4 range [-7,7] vs [-8,7]) — agreement does not imply correctness.
+- Golden isolates **operator implementation** from **quantization accuracy**: reference and candidate operators use the same `trained_quant_weight.pth` + the same fixed activations, so output differences can only come from the operator implementation itself.
+
+### Two levels of golden tooling
+
+| Level | Tool | Artifacts | Use case |
+|-------|------|-----------|----------|
+| **Per-operator** (main path) | [`dopt_op_benchmark`](../../../../examples/test_converter/dopt_op_benchmark/README.md) `run.sh gen` | `golden/op_io/<op>.pt` (per-op inputs/outputs) + `manifest.json` (data contract) + `e2e_logits.pt` | Numerical consistency of candidate operators (NPU real kernel vs golden) |
+| **Per-FX-node** | [`gen_golden_with_dump.py`](../../../../examples/test_converter/llm_models_run_on_cpu/gen_golden_with_dump.py) `--quant-path` | Per-FX-node input/output `.bin` + `golden_meta.json` | Per-op intermediate tensor comparison before/after quantization; locate the loss source layer |
+
+### Per-operator golden usage
+
+```bash
+export GEMMA4_MODEL_PATH=<HF model dir>          # original weights + tokenizer source
+export DOPT_QUANT_DIR=<Step 3's --output-dir>   # quant artifact dir (see note ① below)
+export DEVICE=cpu                                # or npu
+
+# 1. Generate golden (~20 ops sampled: deep/mid/shallow layers × 7 proj types + lm_head; --operators all for full coverage)
+bash examples/test_converter/dopt_op_benchmark/run.sh gen
+
+# 2. Candidate-operator chain verification (materialize same weights → build_epair → compile OM → NPU run → compare)
+cd examples/test_converter/dopt_op_benchmark/op_npu_verify
+bash compile_om.sh && python run_npu.py && python verify_op.py
+```
+
+**Acceptance criteria** (`verify_op.py`, weights/inputs identical to golden):
+
+| Comparison axis | Reference | Threshold | Semantics |
+|-----------------|-----------|-----------|-----------|
+| NPU vs **Tier 0 [`ref_w4a8.py`](../../../../examples/test_converter/dopt_op_benchmark/ref_w4a8.py)** (mathematical-definition reference, one step per line, pinned by hand-computed fixtures) | same semantics | `maxΔ ≤ 1e-2 + 1e-2·|golden|`, cos≥0.999 | only int accumulation/implementation diff |
+| NPU vs dopt fakequant golden (W4A16) | cross semantics | cos≥0.99 | additionally includes activation int8 quantization diff |
+
+### Per-FX-node golden usage (locate loss layers)
+
+```bash
+# Dump both fp16 baseline and W4A8 fakequant (same model, same inputs), compare per node via cosine/MSE
+python examples/test_converter/llm_models_run_on_cpu/gen_golden_with_dump.py \
+    --model-type gemma4 --hf-path $GEMMA4_MODEL_PATH \
+    --seq-len 8 --num-layers 3 --dtype float16 --output-dir out/golden_fp16
+python examples/test_converter/llm_models_run_on_cpu/gen_golden_with_dump.py \
+    --model-type gemma4 --hf-path $GEMMA4_MODEL_PATH --quant-path $DOPT_QUANT_DIR \
+    --seq-len 8 --num-layers 3 --dtype float16 --output-dir out/golden_quant
+```
+
+### Caveats
+
+1. **Artifact form**: per-operator golden consumes the `.pth` form (`trained_quant_weight.pth` + `dopt_config.json` + `runtime_config.yaml`) — run GPTQ **without** `--hf-type-save` (the safetensors form is for converter `--quant-path`); if `runtime_config.yaml` is missing, rename the `config.yaml` replay-written by the lightweight tool in the artifact dir.
+2. **Same weights, same inputs**: golden and candidate operator must use the same quantized weights + the same fixed activations (tool has built-in fixed prompts + seed, reproducible across runs).
+3. **packed vs unpacked**: CPU simulation consumes unpacked `[K,N]` int8, the real NPU operator consumes pre-transposed nibble-packed `[K//2,N]` — the tool re-materializes automatically; do not mix layouts in custom scripts.
+4. **scale truncation**: on-disk scale is mantissa-truncated (low 13 bits) by `transdata_scale`; align with `restore_scale` before comparing, so format-conversion loss is not misattributed as an operator bug.
+5. **Switching models**: the per-operator tool's sampled layer-name patterns hardcode the llama family (`self_attn.q_proj` etc.); MoE/heterogeneous naming requires editing `gen_golden.py:default_op_sample`; end-to-end simulation (`sim_inference.py`) uses token-by-token argmax (no `model.generate` dependency) and is reusable across models.
+
 <a id="related-documentation"></a>
 ## Related Documentation
 
@@ -188,3 +248,6 @@ The lightweight tool's configurable quantization params span 4 levels; **users c
 |------|---------|
 | [quant_design.md](./quant_design.md) | Converter-side quantization integration (`materialize` / `swap` / `quant_linear` / end-to-end flow) |
 | [ppl_compare_usage.md](./ppl_compare_usage.md) | Float vs quantized artifact PPL comparison script usage |
+| [feature_dump_design.md](../feature_dump_design.md) | Dump diagnostics (FX node-level `gen_golden_with_dump.py` quantized golden usage) |
+| [dopt_op_benchmark README](../../../../examples/test_converter/dopt_op_benchmark/README.md) | Per-operator golden generation and verification (`run.sh gen` / manifest data contract / acceptance criteria) |
+| [VERIFICATION.md](../../../../examples/test_converter/dopt_op_benchmark/VERIFICATION.md) | Quantization verification methodology (accuracy vs operator correctness, Tier 0 reference, trust tiers) |

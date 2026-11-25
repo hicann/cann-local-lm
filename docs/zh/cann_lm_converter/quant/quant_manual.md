@@ -14,6 +14,7 @@
 - [产物](#目录)
 - [可设置参数](#可设置参数)
 - [已知约束](#已知约束)
+- [Golden 标杆生成与使用（算子调试）](#golden-标杆生成与使用)
 - [相关文档](#相关文档)
 
 ---
@@ -181,6 +182,65 @@ model.embed_tokens.quant_op.weight_quantizer.s            (per-channel scale)
 3. **校准语料相对路径**基于 CWD 解析，需在 `cann_local_lm/converter/quant/` 目录下运行。
 4. **产物不含 tokenizer**：converter/PPL 评估等下游消费时用原始 HF 模型目录的 tokenizer。
 
+<a id="golden-标杆生成与使用"></a>
+## Golden 标杆生成与使用（算子调试）
+
+> **量化产物上线前必须过两道验证**：① 精度（量化掉了多少——fp16 是合法参照，用 [ppl_compare.py](./ppl_compare_usage.md)）；② **算子正确性**（量化算子实现有没有 bug——**fp16/另一套仿真都不能当参照**）。②依赖 golden 标杆：把参考算子在固定输入下的输入/输出张量固化落盘，候选算子（converter 物化的 `QuantLinear` → `DynamicQuant` + `QuantBatchMatmulV4` OM 内核）用**同一套量化权重 + 同一批输入**复算比对。验证方法论详见 [VERIFICATION.md](../../../../examples/test_converter/dopt_op_benchmark/VERIFICATION.md)。
+
+### 为什么必须用 golden
+
+- 调试 NPU 量化算子需要**与实现无关**的对照真值：fp16 语义不同（W4A16/W4A8 vs fp32），dopt 仿真与本仓代码可能同源共享同一处规格级误解（如 int4 范围 [-7,7] vs [-8,7]）——一致不代表对。
+- golden 把"**算子实现**"从"**量化精度**"隔离：参考算子与候选算子同一套 `trained_quant_weight.pth` + 同一批固定激活，输出差异只能来自算子实现本身。
+
+### 两级 golden 工具
+
+| 级别 | 工具 | 产物 | 用途 |
+|------|------|------|------|
+| **算子级**（主路径） | [`dopt_op_benchmark`](../../../../examples/test_converter/dopt_op_benchmark/README.md) 的 `run.sh gen` | `golden/op_io/<op>.pt`（每算子 inputs/outputs）+ `manifest.json`（数据契约）+ `e2e_logits.pt` | 验证候选算子数值一致性（NPU 真内核 vs golden） |
+| **FX node 级** | [`gen_golden_with_dump.py`](../../../../examples/test_converter/llm_models_run_on_cpu/gen_golden_with_dump.py) `--quant-path` | 逐 FX node 输入/输出 `.bin` + `golden_meta.json` | 量化前后逐算子中间张量比对，定位量化损失来源 layer |
+
+### 算子级 golden 使用
+
+```bash
+export GEMMA4_MODEL_PATH=<HF 模型目录>          # 原始权重 + tokenizer 来源
+export DOPT_QUANT_DIR=<Step 3 的 --output-dir>  # 量化产物目录（见下方注意事项①）
+export DEVICE=cpu                               # 或 npu
+
+# 1. 生成 golden（代表性采样 ~20 算子：深/中/浅三层 × 7 类 proj + lm_head；--operators all 全量）
+bash examples/test_converter/dopt_op_benchmark/run.sh gen
+
+# 2. 候选算子链验证（materialize 同套权重 → build_epair → 编译 OM → NPU 跑 → 比对）
+cd examples/test_converter/dopt_op_benchmark/op_npu_verify
+bash compile_om.sh && python run_npu.py && python verify_op.py
+```
+
+**判据**（`verify_op.py`，权重/输入与 golden 完全一致）：
+
+| 对比轴 | 标准 | 阈值 | 语义 |
+|--------|------|------|------|
+| NPU vs **Tier 0 [`ref_w4a8.py`](../../../../examples/test_converter/dopt_op_benchmark/ref_w4a8.py)**（数学定义 reference，每步一行可肉眼审，手算夹具钉死） | 同语义 | `maxΔ ≤ 1e-2 + 1e-2·|golden|`，cos≥0.999 | 只含 int 累积/实现差 |
+| NPU vs dopt fakequant golden（W4A16） | 跨语义 | cos≥0.99 | 额外含激活 int8 量化差 |
+
+### FX node 级 golden 使用（定位量化损失层）
+
+```bash
+# fp16 基线 + W4A8 fakequant 各 dump 一份（同模型同输入），逐 node 比对余弦/MSE
+python examples/test_converter/llm_models_run_on_cpu/gen_golden_with_dump.py \
+    --model-type gemma4 --hf-path $GEMMA4_MODEL_PATH \
+    --seq-len 8 --num-layers 3 --dtype float16 --output-dir out/golden_fp16
+python examples/test_converter/llm_models_run_on_cpu/gen_golden_with_dump.py \
+    --model-type gemma4 --hf-path $GEMMA4_MODEL_PATH --quant-path $DOPT_QUANT_DIR \
+    --seq-len 8 --num-layers 3 --dtype float16 --output-dir out/golden_quant
+```
+
+### 注意事项
+
+1. **产物形态**：算子级 golden 消费 `.pth` 形态（`trained_quant_weight.pth` + `dopt_config.json` + `runtime_config.yaml`）——跑 GPTQ 时**不带** `--hf-type-save`（safetensors 形态给 converter `--quant-path` 用）；`runtime_config.yaml` 缺失时可用产物目录里轻量化工具回放写出的 `config.yaml`。
+2. **同权重同输入**：golden 与候选算子必须同一套量化权重 + 同一批固定激活（工具内置固定 prompt + seed，跨 run 可复现）。
+3. **packed vs unpacked**：CPU 仿真消费 unpacked `[K,N]` int8，NPU 真算子消费预转置 nibble-packed `[K//2,N]`——工具内自动 re-materialize，自建脚本勿混用。
+4. **scale 截断**：落盘 scale 经 `transdata_scale` 截断尾数低 13 位，比对前先 `restore_scale` 对齐，避免格式转换误差被误判为算子 bug。
+5. **换模型**：算子级工具的采样层名 pattern 硬编码 llama 系（`self_attn.q_proj` 等），MoE/异构命名需改 `gen_golden.py:default_op_sample`；端到端仿真（`sim_inference.py`）逐 token argmax 不依赖 `model.generate`，可跨模型复用。
+
 <a id="相关文档"></a>
 ## 相关文档
 
@@ -188,3 +248,6 @@ model.embed_tokens.quant_op.weight_quantizer.s            (per-channel scale)
 |------|---------|
 | [quant_design.md](./quant_design.md) | converter 侧量化接入（`materialize` / `swap` / `quant_linear` / 端到端流程） |
 | [ppl_compare_usage.md](./ppl_compare_usage.md) | 浮点 vs 量化产物 PPL 对比脚本使用说明 |
+| [feature_dump_design.md](../feature_dump_design.md) | Dump 维测能力（FX node 级 `gen_golden_with_dump.py` 量化 golden 用法） |
+| [dopt_op_benchmark README](../../../../examples/test_converter/dopt_op_benchmark/README.md) | 算子级 golden 标杆生成与验证（`run.sh gen` / manifest 数据契约 / 判据） |
+| [VERIFICATION.md](../../../../examples/test_converter/dopt_op_benchmark/VERIFICATION.md) | 量化验证方法论（精度 vs 算子正确性、Tier 0 reference、信任分级） |

@@ -62,6 +62,8 @@ finally:
 from transformers import AutoTokenizer
 
 DT = torch.bfloat16
+runner_pf = None
+runner_dc = None
 
 # --- load model + wrapper (CPU, for mask helpers + kv structure) ---
 print("[0] Load E2B model + wrapper (CPU)")
@@ -255,6 +257,8 @@ def build_prefill(chunk_ids, chunk_real_len, start_pos, kv_prev):
         "per_layer_token_identity_scale": ple_scale,
         "sliding_kv_pos": skp,
     }
+    if runner_pf is None:
+        raise RuntimeError("runner_pf 尚未初始化，请先加载 prefill OM runner")
     inputs = []
     for i, name in enumerate(runner_pf.in_names):
         if name in by_name:
@@ -269,6 +273,8 @@ def build_prefill(chunk_ids, chunk_real_len, start_pos, kv_prev):
 
 def build_decode(next_token, cached_len, kv_prev):
     """用 wrapper mask helpers (seq=1, new_kv_cache_pos=[cached_len]) + 覆盖。"""
+    if runner_dc is None:
+        raise RuntimeError("runner_dc 尚未初始化，请先加载 decode OM runner")
     new_pos = torch.tensor([cached_len], dtype=torch.int32)
     mf = build_mask_full(1, KV_MAX, cached_len)
     ms = build_mask_sliding(1, KV_MAX, cached_len, wrapper._sliding_window)

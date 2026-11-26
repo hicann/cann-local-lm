@@ -169,7 +169,7 @@ def optimize_model(model, config_file):
                 logger.debug(f"{name} using strategy: float (keep original module)")
                 continue
             logger.debug(
-                f"{name} using strategy: ", layer_config[name]["quant_strategy"]
+                f"{name} using strategy: {layer_config[name]['quant_strategy']}"
             )
             module_config = copy.deepcopy(layer_config[name])
             module_config["layer_name"] = name

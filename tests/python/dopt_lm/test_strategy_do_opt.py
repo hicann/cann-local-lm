@@ -167,6 +167,23 @@ def test_optimize_model_replaces_nested_modules_and_keeps_float(tmp_path):
     assert do_opt.optimize_model(model, None) is model
 
 
+def test_optimize_model_logs_quant_strategy_as_single_message(tmp_path, monkeypatch):
+    model = ToyModel()
+    config_path = write_config(
+        tmp_path / "config.json",
+        {"block.0": {"quant_strategy": "Quant_INT8-4_ECO;4"}},
+    )
+    messages = []
+    monkeypatch.setattr(do_opt.logger, "debug", lambda *args: messages.append(args))
+    monkeypatch.setattr(
+        do_opt, "get_optimized_op", lambda module, config, layer_name=None: module
+    )
+
+    do_opt.optimize_model(model, config_path)
+
+    assert ("block.0 using strategy: Quant_INT8-4_ECO;4",) in messages
+
+
 def test_replace_module_by_names_handles_deep_names_and_consumes_matches():
     model = ToyModel()
     replacement = torch.nn.Identity()

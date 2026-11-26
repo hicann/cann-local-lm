@@ -42,8 +42,8 @@ export CONVERTER_PYTHON=/path/to/venv/bin/python   # P1 venv python
 > You need to download the model from [HuggingFace](https://huggingface.co) or [ModelScope](https://modelscope.cn) to a local directory in advance, and point `--hf-path` to the download directory. Download methods:
 > ```bash
 > # HuggingFace
-> pip install huggingface_hub
-> huggingface-cli download <org>/<model-name> --local-dir /path/to/model
+> pip install "huggingface_hub>=0.34"
+> hf download ORG/MODEL_NAME --local-dir /path/to/model
 >
 > # ModelScope (faster in China)
 > pip install modelscope

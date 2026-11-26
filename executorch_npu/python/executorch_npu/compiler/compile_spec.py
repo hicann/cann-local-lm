@@ -5,22 +5,25 @@
 # THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
 # INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 # See LICENSE in the root of the software repository for the full text of the License.
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Final, Literal
 
 from executorch.exir.backend.compile_spec_schema import CompileSpec
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 NonemptyString = Annotated[str, Field(min_length=1)]
 NonnegativeInt = Annotated[int, Field(ge=0)]
 DelegateRole = Literal["inference", "prefill", "decode"]
-AclSocName = Literal[
-    "Ascend910_9362",
-    "Ascend910B3",
-    "Ascend910B4",
-    "Ascend310P3",
-    "Ascend310B1",
-]
+# Offline compilation selects its GE target by SoC family, so a new variant
+# inside a family needs no change here. CANN still rejects an unknown variant,
+# and the runtime keeps matching the recorded name against aclrtGetSocName().
+SUPPORTED_SOC_FAMILIES: Final[tuple[str, ...]] = (
+    "Ascend910_93",
+    "Ascend910B",
+    "Ascend310P",
+    "Ascend310B",
+)
+AclSocName = NonemptyString
 
 
 class AscendCompileOptions(BaseModel):
@@ -38,13 +41,29 @@ class AscendCompileOptions(BaseModel):
     delegate_index: NonnegativeInt
     """Zero-based index of the delegate within the method."""
     acl_soc_name: AclSocName
-    """Verified CANN target used for offline compilation and runtime matching."""
+    """CANN target of a supported SoC family, used for offline compilation.
+
+    The runtime still requires an exact match against ``aclrtGetSocName()``.
+    """
     role: DelegateRole = "inference"
     """Delegate role used to derive state lifecycle behavior."""
     offline_build_options: dict[str, str] = Field(default_factory=dict)
     """Additional string options forwarded to GE offline compilation."""
     state_io_contract: dict[str, Any] = Field(default_factory=dict)
     """Optional state-binding metadata used to construct the runtime contract."""
+
+    @field_validator("acl_soc_name")
+    @classmethod
+    def _require_supported_soc_family(cls, value: str) -> str:
+        """Accept every SoC of a supported family instead of a fixed variant list."""
+        if not value.startswith(SUPPORTED_SOC_FAMILIES):
+            families = ", ".join(f"{prefix}*" for prefix in SUPPORTED_SOC_FAMILIES)
+            raise ValueError(
+                f"unsupported acl_soc_name {value!r}; supported SoC families are "
+                f"{families}. The runtime still requires an exact match against "
+                "aclrtGetSocName()."
+            )
+        return value
 
     def to_compile_specs(self) -> list[CompileSpec]:
         """Encode all options as one Pydantic JSON payload."""

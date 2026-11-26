@@ -644,12 +644,21 @@ classDiagram
 GE」和「绑定设备」耦合在一次C++ 调用里。本项目只需要前者，因此按
 `EXECUTORCH_NPU_HOST_ONLY=1` 启用Lite导出，把两者拆开。
 
-设备依赖分为两层，必须分别处理：
+设备依赖分为三层，必须分别处理：
 
 | 层 | 位置 | 无设备时的表现 | 处理方式 |
 |---|---|---|---|
 | Python | `torchair.core._backend._get_device_id()` | 因 `torch_npu` 已导入而调用 `npu.current_device()`，抛 `aclInit 107001` | 替换为读取 `ASCEND_DEVICE_ID` 的lambda |
 | C++ | `_torchair.InitializeGraphEngine()` | 内部无条件 `acl.rt.set_device()`，返回107001 | 打桩C++ 叶子函数 |
+| 算子转换器 | `torchair._utils.check_platform.is_arch35()` | 经 `torch_npu.npu.get_device_name()` 读物理设备名；无设备时设备下标解析为 `None`，`None < 0` 抛 `TypeError`，TorchAir只捕获 `ImportError` | 把 `get_device_name()` 替换为返回 `acl_soc_name`，架构判断仍由TorchAir自己的设备名规则得出 |
+
+第三层在当前锁定的TorchAir revision下涉及25个converter模块（含
+`native_batch_norm_legit_no_training`、`max_pool2d_with_indices`、
+`native_group_norm`、`std`、`npu_rotary_mul` 等），判断结果决定GE算子版本、
+属性、layout和输出语义，因此不能固定返回 `False`，只能替换设备名来源。
+未安装 `torch_npu` 时该函数走 `ImportError` 分支返回 `False`，与当前登记的SoC
+一致；新增arch35目标（设备名含 `Ascend910_95` 或 `Ascend950`）时必须安装
+`torch_npu`，让 `acl_soc_name` 参与判断。
 
 C++ 层无法通过参数绕过：`deviceId` 传 `0` 报 `ACL set device id failed`，传 `-1`
 触发 `assert device_index_ >= 0`，`ge_run_with_torch_npu` 置 `0`、改用独立编译的

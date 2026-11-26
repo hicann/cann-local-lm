@@ -10,7 +10,10 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from executorch_npu.compiler.compile_spec import AscendCompileOptions
+from executorch_npu.compiler.compile_spec import (
+    AscendCompileOptions,
+    SUPPORTED_SOC_FAMILIES,
+)
 
 
 def test_compile_options_round_trip() -> None:
@@ -47,10 +50,55 @@ def test_supported_acl_soc_names_are_accepted() -> None:
         assert options.acl_soc_name == acl_soc_name
 
 
-def test_unsupported_acl_soc_name_is_rejected() -> None:
+def test_new_variants_of_supported_soc_families_are_accepted() -> None:
+    # Offline compilation selects its GE target by family, so a variant that
+    # postdates the validated list must not need a change here.
+    for acl_soc_name in (
+        "Ascend910_9381",
+        "Ascend910B1",
+        "Ascend910B5",
+        "Ascend310P1",
+        "Ascend310P4",
+        "Ascend310B2",
+    ):
+        options = AscendCompileOptions(
+            method_name="forward",
+            delegate_index=0,
+            acl_soc_name=acl_soc_name,
+        )
+        assert options.acl_soc_name == acl_soc_name
+
+
+@pytest.mark.parametrize(
+    "acl_soc_name",
+    [
+        pytest.param("FutureAscendTarget", id="unknown-vendor-string"),
+        pytest.param("Ascend910A1", id="unlisted-910-family"),
+        pytest.param("Ascend910_9262", id="unlisted-910-underscore-family"),
+        pytest.param("Ascend310A1", id="unlisted-310-family"),
+        pytest.param("ascend910B3", id="wrong-case"),
+        pytest.param("Ascend910", id="family-prefix-too-short"),
+    ],
+)
+def test_unsupported_acl_soc_name_is_rejected(acl_soc_name: str) -> None:
     with pytest.raises(ValidationError, match="acl_soc_name"):
         AscendCompileOptions(
             method_name="forward",
             delegate_index=0,
-            acl_soc_name="FutureAscendTarget",
+            acl_soc_name=acl_soc_name,
         )
+
+
+def test_rejected_acl_soc_name_lists_the_supported_families() -> None:
+    with pytest.raises(ValidationError) as error:
+        AscendCompileOptions(
+            method_name="forward",
+            delegate_index=0,
+            acl_soc_name="Ascend910A1",
+        )
+
+    message = str(error.value)
+    for family in SUPPORTED_SOC_FAMILIES:
+        assert f"{family}*" in message
+    # The compile-time family match must not be mistaken for the runtime rule.
+    assert "exact match" in message

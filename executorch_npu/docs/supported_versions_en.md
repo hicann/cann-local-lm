@@ -112,5 +112,15 @@ Ascend310P3
 Ascend310B1
 ```
 
+At export time `acl_soc_name` is accepted by SoC family prefix instead of an
+enumerated variant list: `Ascend910_93*`, `Ascend910B*`, `Ascend310P*`, and
+`Ascend310B*`. A new variant of a supported family needs no change in
+`compile_spec.py`; CANN offline compilation decides whether that exact variant
+builds. A name outside every family fails `AscendCompileOptions` validation and
+the error lists the supported families.
+
+The list above records the **validated** variants, not the accepted range.
+
 Loading succeeds when the `acl_soc_name` recorded in the exported artifact exactly matches the return value of
-`aclrtGetSocName()` on the running device; mismatches are rejected (`DelegateInvalidCompatibility`).
+`aclrtGetSocName()` on the running device; mismatches are rejected (`DelegateInvalidCompatibility`). The runtime
+always matches the whole name and never relaxes it to a prefix.

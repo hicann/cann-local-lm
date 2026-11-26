@@ -112,5 +112,13 @@ Ascend310P3
 Ascend310B1
 ```
 
+导出期 `acl_soc_name` 按SoC族前缀受理，不再逐个枚举型号：`Ascend910_93*`、
+`Ascend910B*`、`Ascend310P*`、`Ascend310B*`。同族新型号无需改动
+`compile_spec.py`，具体型号是否可用由CANN离线编译自行判定；不属于上述任一族
+时 `AscendCompileOptions` 校验失败并列出支持的族。
+
+上面的清单是**已完成验证**的型号，不是受理范围。
+
 导出产物记录的 `acl_soc_name` 与运行设备 `aclrtGetSocName()` 返回值精确
-匹配即可加载，不匹配时拒绝（`DelegateInvalidCompatibility`）。
+匹配即可加载，不匹配时拒绝（`DelegateInvalidCompatibility`）。运行期始终是
+全词匹配，不做前缀放宽。

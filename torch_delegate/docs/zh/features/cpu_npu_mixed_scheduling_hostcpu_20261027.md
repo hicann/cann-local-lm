@@ -116,7 +116,7 @@ Stage 1（CPU 前处理）      Stage 2（NPU 核心计算）        Stage 3（C
 本特性需实现六项功能，详细设计见「特性需求分析&设计」章节：
 
 1. **IR 扩展与 Device 归属判定**（导出期，Python）：新增 `device` 字段；自动判定（有 PrivateUse1 实现→NPU，仅 CPU 实现→CPU，两者皆无→报错）；判定结果固化进 epair。
-2. **HostCpu 自定义算子代码生成**（构图前，C++）：Fallback Codegen 新增 HostCpu 变体，生成继承 `HostCpuExecuteOp + ShapeInferOp`、注册 `REG_OP_BACKEND(..., kHostCPU)` 的算子并编译加载。
+2. **HostCpu 自定义算子代码生成**（构图前，C++）：Fallback Codegen 新增 HostCpu 变体，生成继承 `HostCpuExecuteOp`、注册 `REG_OP_BACKEND(..., kHostCPU)` 的算子并编译加载；shape/dtype 由 GE 按节点 `_inference_rule` 推导。
 3. **构图与 GE 统一调度**（编译期）：CPU 节点以 host placement 入图；引擎归属、host/device 内存放置、搬运点、执行顺序、多流、常量折叠全部由 GE 负责。
 4. **host 侧执行与数据写回**（运行期）：`Execute` 内零拷贝包装 host 张量、调用 PyTorch CPU kernel、直接写回 host 输出内存。
 5. **归属可诊断性与严格校验**：逐节点判定记录 + 导出期归属报告 + C++ 加载期复述 + 严格校验开关；不做运行期自动回退。
@@ -128,7 +128,7 @@ Stage 1（CPU 前处理）      Stage 2（NPU 核心计算）        Stage 3（C
 |---|------|------|
 | C1 | 平台化（onetrack） | 不引入芯片相关分支。数据搬运、allocator、stream 等底层调用全部在 GE 内部，TorchDelegate 不直接调用新 RTS 接口 |
 | C2 | 归属判定无配置项 | 归属完全由自动判定决定，不提供"强制某算子走 CPU/NPU"的配置。唯一新增开关是校验严格度开关（`require_aten_on_npu`），它不改变归属结论 |
-| C3 | data-dependent shape 不支持 | `ShapeInferOp` 需在编译期推导输出 shape；输出形状取决于运行时数据值的算子（如 `nonzero`、`unique`）直接报错，不静默降级 |
+| C3 | data-dependent shape 不支持 | 输出 shape 由 `_inference_rule` 推导；输出形状取决于运行时数据值的算子（如 `nonzero`、`unique`）无法生成规则，直接报错，不静默降级 |
 | C4 | 不做运行期自动回退 | 归属在导出时一次性固化；NPU 算子运行期失败直接报错并带算子名，不允许悄悄改走 CPU |
 | C5 | 对外 API/ABI 不变 | `EpairModelLoader` 签名与 ABI 不变；含 CPU 节点的模型走同一条加载/执行路径 |
 | C6 | 严格报错 | 对外部输入（epair、EP JSON、未知 device 取值）严格解析，不静默跳过 |
@@ -152,14 +152,14 @@ Stage 1（CPU 前处理）      Stage 2（NPU 核心计算）        Stage 3（C
 
 ## 整体介绍
 
-**一句话方案**：CPU 算子在导出期被判为 `device="cpu"` 并固化进 epair；构图前为每个 CPU 算子生成一个注册到 GE HostCpu 后端的自定义算子（`HostCpuExecuteOp` + `ShapeInferOp`），其 `Execute` 回调 PyTorch Dispatcher 的 CPU 实现；CPU 算子与 NPU 算子（GE 内置算子 + Device 后端自定义算子）同处一个 `ge::Graph`，一次编译、一次执行，由 GE 统一调度。框架侧不实现任何调度与搬运逻辑。
+**一句话方案**：CPU 算子在导出期被判为 `device="cpu"` 并固化进 epair；构图前为每个 CPU 算子类型生成一个注册到 GE HostCpu 后端的自定义算子（`HostCpuExecuteOp`），其 `Execute` 回调 PyTorch Dispatcher 的 CPU 实现；CPU 算子与 NPU 算子（GE 内置算子 + Device 后端自定义算子）同处一个 `ge::Graph`，一次编译、一次执行，由 GE 统一调度。框架侧不实现任何调度与搬运逻辑。
 
 **改动总览**：
 
 | # | 改动 | 位置 | 量级 |
 |---|------|------|------|
 | 1 | 导出期 Device 归属判定，结果写入 epair | Python 侧（converter / epair / api） | 小 |
-| 2 | Fallback Codegen 增加 HostCpu 变体（含 `ShapeInferOp` 生成） | `csrc/fallback_codegen/` | 中 |
+| 2 | Fallback Codegen 增加 HostCpu 变体（shape/dtype 复用 GE `_inference_rule`） | `csrc/fallback_codegen/` | 中 |
 | 3 | 构图支持 host placement 与三分派 | csrc/backend/ | 小 |
 | 4 | 归属可诊断性与版本校验 | Python + C++ | 中 |
 | 5 | GE 侧 | 无代码修改，仅使用既有能力 | — |
@@ -244,14 +244,14 @@ cpu_nodes: int = 0        # ★ 新增：CPU 节点计数
 
 #### 1. 介绍
 
-Fallback Codegen 增加 HostCpu 变体。核心思路是最大化复用：算子原型、schema 解析、参数编解码、编译加载链路全部沿用现有实现，只替换与 Device 相关的三处，并新增一处 shape 推导生成
+Fallback Codegen 增加 HostCpu 变体。核心思路是最大化复用：算子原型、schema 解析、参数编解码、编译加载、shape/dtype 推导全部沿用现有实现，只替换与 Device 相关的三处
 
 #### 2. 输入
 
 - epair 归档中的 EP JSON（含 `ascend_ir.device="cpu"` 的节点）
 - torch 包路径、输出目录（沿用现有入参）
 - 每个 CPU 节点的 PyTorch schema（`findSchemaOrThrow`）
-- 每个 CPU 节点全部输出的 `tensor_meta`（`ParsedTensorMeta`，作为 `ShapeInferOp` 的数据源）
+- 每个 CPU 节点 `ascend_ir.ops[*].attr._inference_rule`（torchair 基于 torch meta 函数生成的 GE 推导规则）
 
 #### 3. 处理
 
@@ -269,7 +269,7 @@ Fallback Codegen 增加 HostCpu 变体。核心思路是最大化复用：算子
 | 输出写回（`MallocOutputTensor` + `aclrtMemcpyAsync` D2D） | `GenerateExecuteMethod` 写回段 | HostCpu 版改为直接写 host 输出内存（非连续结果先 `.contiguous()`） |
 | inplace 处理（`MakeOutputRefInput`） | `fallback_codegen.cc:1262` | 复用（HostCpu 上下文提供同族接口） |
 | `GenerateFromTargets()`（g++ 编译 + dlopen） | `fallback_codegen.cc:1566` | 原样复用（同一 .so 可同时包含两类算子；产物组织方式见待确认项） |
-| — | — | 新增 `GenerateShapeInferMethod()` |
+| shape/dtype 推导 | GE `_inference_rule` | 不生成：torchair 已按 torch meta 函数生成 `_inference_rule`，GE 在 HostCpu 后端复用（与 NPU fallback 一致） |
 
 生成的 HostCpu 算子类形态如下（示意）：
 
@@ -277,9 +277,9 @@ Fallback Codegen 增加 HostCpu 变体。核心思路是最大化复用：算子
 #include "graph/custom_op.h"    // 不再需要 torch_npu 的 from_blob / NPUStream / NPUGuard
 
 namespace ge {
-class aten__relu_ final : public HostCpuExecuteOp, public ShapeInferOp {
+class aten__relu final : public HostCpuExecuteOp {
  public:
-  // 替换 1：基类从 EagerExecuteOp 改为 HostCpuExecuteOp + ShapeInferOp
+  // 替换 1：基类从 EagerExecuteOp 改为 HostCpuExecuteOp
   // 替换 2：上下文类型从 gert::EagerOpExecutionContext 改为 gert::HostCpuOpExecutionContext
   graphStatus Execute(gert::HostCpuOpExecutionContext *ctx) override {
     const gert::Tensor *ge_input_0 = ctx->GetRequiredInputTensor(0);   // 取参方式与 NPU 版相同
@@ -291,23 +291,15 @@ class aten__relu_ final : public HostCpuExecuteOp, public ShapeInferOp {
     // 写回：MallocOutputTensor 后直接 memcpy 到 host 输出内存
     return GRAPH_SUCCESS;
   }
-
-  // 新增：shape / dtype 推导（HostCpu 后端必须提供）
-  graphStatus InferShape(gert::InferShapeContext *ctx) override {
-    // 数据来源：EP JSON tensor_meta（生成时内联为常量，或从输入形状透传动态维）
-    return GRAPH_SUCCESS;
-  }
-  graphStatus InferDataType(gert::InferDataTypeContext *ctx) override {
-    // 同上：内联 dtype 或按规则透传
-    return GRAPH_SUCCESS;
-  }
+  // 不生成 InferShape / InferDataType：输出 shape/dtype 由 GE 按节点上的
+  // _inference_rule 推导（见下文 C 节），与 NPU fallback 完全一致。
 };
 
-REG_OP_BACKEND(aten__relu_, "aten__relu_", ge::OpBackend::kHostCPU);
+REG_OP_BACKEND(aten__relu, "aten__relu", ge::OpBackend::kHostCPU);
 }  // namespace ge
 ```
 
-净变化：消除 3 项（标量 D2H、输出 D2D、stream guard）、新增 1 项（`ShapeInferOp` 生成）、改名 3 项（基类、上下文类型、绑定宏）。
+净变化：消除 3 项（标量 D2H、输出 D2D、stream guard）、改名 3 项（基类、上下文类型、绑定宏）；不新增 `ShapeInferOp`，shape/dtype 复用 GE 推导规则。
 
 #### 4. 输出
 
@@ -573,8 +565,8 @@ GE 是 onetrack 部件，本特性不区分芯片。数据搬运、allocator、s
 
 | 场景 | 适用性 | 分析说明 |
 |------|--------|----------|
-| 静态 Shape | 适用 | 含 CPU 节点的图在 GE 内部被标记 unknown 并走 v2 执行器，不进入 v1 `DavinciModel` 下沉路径；全 NPU 静态图路径零变化。静态 shape 下 CPU 节点的 `ShapeInferOp` 全部内联常量，无动态推导 |
-| 动态 Shape | 适用 | CPU 节点 `ShapeInferOp` 按"静态维内联、动态维透传"生成；data-dependent shape 编译期报错（约束 C3）。host 输出复用 GE 已有 host allocator，符合 `rt2_runtime.md` 的既有约束 |
+| 静态 Shape | 适用 | 含 CPU 节点的图在 GE 内部被标记 unknown 并走 v2 执行器，不进入 v1 `DavinciModel` 下沉路径；全 NPU 静态图路径零变化。静态 shape 下 `_inference_rule` 推导为常量，无动态计算 |
+| 动态 Shape | 适用 | CPU 节点 `_inference_rule` 由 torchair 按 torch meta 函数生成；data-dependent shape 在规则生成阶段暴露（约束 C3）。host 输出复用 GE 已有 host allocator，符合 `rt2_runtime.md` 的既有约束 |
 | 动态 Shape 静态子图（图拆分） | 适用（关键交叉） | 遵循 `graph_split.md` 规则 6：HostCpu 节点被划入动态图执行器，影响动静拆分边界。本方案不新增任何切分规则、不写节点属性，相关行为均为 GE 既有实现。v2→v1 边界不新增传递数据。需要在 DT 中验证混合图的拆分边界无回归 |
 | 离线场景（atc 编译） | 部分适用 | TorchDelegate 走在线 GeSession 编译加载，本期不交付离线 OM 路径。GE 侧 HostCpu 算子已具备随 ATC 进 OM 的能力（`offline` 样例，需要算子实现 `PortableOp::Serialize/Deserialize`），本方案暂不生成 `PortableOp`，不涉及 OM schema 变更 |
 | 在线场景（框架适配） | 适用 | 本特性主战场。epair 导出（S1-S3）→ C++ 加载构图（S4-S7）→ GeSession 编译执行（S8-S14）全链路已覆盖；`EpairModelLoader` API/ABI 不变；不涉及 Adapter 交互变更 |
@@ -671,20 +663,16 @@ struct ParsedAscendIr {
 
 **B. FallbackCodegen HostCpu 变体**（见「功能需求 2」）：净变化为"消除 3 项、新增 1 项、改名 3 项"，其余全部复用。
 
-**C. `ShapeInferOp` 生成**。数据来源是 EP JSON 中已有的 `tensor_meta`，无需用户额外编写 Meta 实现：
+**C. shape/dtype 推导复用 GE `_inference_rule`**。与 NPU fallback 完全一致：导出期 torchair 的 `infer_and_gen_sym_shape` 以 torch meta/fake 函数（`register_fake`）为准，把每个节点的输出维度表达成输入维度/值的符号表达式，序列化为 `_inference_rule` JSON 写入 `ascend_ir.ops[*].attr`。C++ 侧 Fallback 构图时该属性原样挂到 GE 节点：
 
 ```
-对 CPU 节点的每个输出 tensor_name：
-  meta ← ParsedModel::FindTensorMeta(tensor_name)
-  若 meta.dynamic_dim_symbols 为空（全静态）：
-      InferShape    → 内联常量 shape（meta.sizes）
-      InferDataType → 内联常量 dtype（meta.dtype）
-  否则（含动态维）：
-      动态维从 ctx->GetInputShape(i) 透传，静态维内联常量
-      若动态维无法从输入推导（data-dependent）→ 报 Error（约束 C3）
+节点 ascend_ir.ops[*].attr._inference_rule  （Str，值为规则 JSON）
+  → FallbackNodePlanner::CollectFallbackAttrs（ParseAttrValue 解 base64）
+  → GE 节点属性 _inference_rule
+  → GE 运行期 InferCustomOpShape：未注册 ShapeInferOp 时用该规则 JIT 推导
 ```
 
-这些 meta 由 Python 侧导出时经 `register_fake`（Meta key）推导并序列化，C++ 侧 `ParsedModel` 已完整解析。
+因此同一算子类型只生成一份 HostCpu 实现（按算子类型去重），不同节点各自携带自己的推导规则，静态/动态形状都由 torch 推导函数决定，framework 不再内联任何实例的 shape；data-dependent 形状由 torchair 生成规则阶段的告警/失败暴露（约束 C3）。
 
 **D. placement 传递**（见「功能需求 3」）：构造参数 + 默认值；与 `ConstNodeSpec` 既有模式一致（`graph_build_utils.h:31`）。
 
@@ -935,7 +923,7 @@ HBM 占用打印，验收 4 性能项的实测数据（2026-10-27 采集）：
 经复核不作为风险的三项（已核实排除）：
 
 - "`HostcpuEngineUpdatePass` 可能改判归属"：该 pass 只作用于 Device 引擎上的算子；kHostCPU 注册的自定义算子在引擎选择阶段即确定性落到 host（见「功能需求 4」G1），shape 启发式无从改判；
-- "`ShapeInferOp` 无法覆盖 data-dependent shape"：属范围边界，已定义明确报错处置（约束 C3）；
+- "`_inference_rule` 无法覆盖 data-dependent shape"：属范围边界，在规则生成阶段报错（约束 C3）；
 - "HostCpu 输出内存生命周期未知"：属已文档化契约，GE 样例与现有路径均依赖同一契约。
 
 ---
@@ -968,7 +956,7 @@ HBM 占用打印，验收 4 性能项的实测数据（2026-10-27 采集）：
 | `GenerateGeOpReg`（原型复用 / 绑定换宏） | `csrc/fallback_codegen/fallback_codegen.cc:742-863`、绑定宏 `:1316` |
 | `GenerateExecuteMethod`（Device 分支点） | `csrc/fallback_codegen/fallback_codegen.cc:917-1303`（stream guard `:1166-1167`、写回 helper `:869-885`） |
 | g++ 命令 / ABI / 链接线 | `csrc/fallback_codegen/fallback_codegen.cc:1482-1524`（ABI `:1486`，链接 `:1524`） |
-| 张量 meta（`ShapeInferOp` 数据源） | `csrc/backend/model_types.h:38-47`（`ParsedTensorMeta`）、`:115-123`（`ParsedAscendIr`） |
+| 张量 meta（`ParsedTensorMeta`）与 `_inference_rule` 属性 | `csrc/backend/model_types.h:38-47`、`:115-123`；`csrc/backend/attr_parser.cc`（base64 Str 解码） |
 | session 编译执行 | `csrc/backend/epair_model_loader.cc:108-173`（Compile/Load）、`:175-206`（Run） |
 | 链接依赖 | `csrc/CMakeLists.txt:47`（`libtorch_cpu`）、`:53`（ABI=1） |
 | manifest 常量 | `csrc/common/epair_archive_constants.h:25`（`kAnnotatedManifestJson`） |

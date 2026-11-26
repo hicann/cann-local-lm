@@ -119,7 +119,7 @@ External interfaces stay unchanged:
 This feature delivers six functions; see the "Feature Requirements & Design" chapter for details:
 
 1. **IR extension and device ownership resolution** (export time, Python): new `device` field; automatic resolution (PrivateUse1 implementation → NPU, CPU-only → CPU, neither → error); decision persisted into the epair archive.
-2. **HostCpu custom operator code generation** (before graph build, C++): Fallback Codegen gains a HostCpu variant that generates operators inheriting `HostCpuExecuteOp + ShapeInferOp`, registered via `REG_OP_BACKEND(..., kHostCPU)`, then compiled and loaded.
+2. **HostCpu custom operator code generation** (before graph build, C++): Fallback Codegen gains a HostCpu variant that generates operators inheriting `HostCpuExecuteOp`, registered via `REG_OP_BACKEND(..., kHostCPU)`, then compiled and loaded; shape/dtype are inferred by GE from the per-node `_inference_rule`.
 3. **Graph building and unified GE scheduling** (compile time): CPU nodes enter the graph with host placement; engine assignment, host/device memory placement, copy insertion, execution order, multi-stream, and constant folding are all handled by GE.
 4. **Host-side execution and result write-back** (runtime): `Execute` zero-copy wraps host tensors, calls the PyTorch CPU kernel, and writes results directly back to host output memory.
 5. **Ownership diagnosability and strict validation**: per-node decision records + export-time ownership report + C++ load-time recap + strict validation switch; no runtime automatic fallback.
@@ -131,7 +131,7 @@ This feature delivers six functions; see the "Feature Requirements & Design" cha
 |---|------|------|
 | C1 | Platform neutrality (onetrack) | No chip-specific branches. Low-level calls (data copy, allocator, stream) live entirely inside GE; TorchDelegate does not call new RTS interfaces directly |
 | C2 | No configuration for ownership | Ownership is decided purely by automatic resolution; there is no "force this operator onto CPU/NPU" configuration. The only new switch is the strict-validation switch (`require_aten_on_npu`), which does not change ownership results |
-| C3 | Data-dependent shapes unsupported | `ShapeInferOp` must derive output shapes at compile time; operators whose output shapes depend on runtime data values (e.g. `nonzero`, `unique`) fail explicitly, without silent degradation |
+| C3 | Data-dependent shapes unsupported | Output shapes are derived from `_inference_rule`; operators whose output shapes depend on runtime data values (e.g. `nonzero`, `unique`) cannot produce a rule and fail explicitly, without silent degradation |
 | C4 | No runtime automatic fallback | Ownership is fixed once at export; a failing NPU operator reports an error with the operator name at runtime and never silently switches to CPU |
 | C5 | External API/ABI unchanged | The `EpairModelLoader` signature and ABI are unchanged; models containing CPU nodes go through the same load/execution path |
 | C6 | Strict error reporting | External inputs (epair, EP JSON, unknown device values) are parsed strictly; nothing is silently skipped |
@@ -155,14 +155,14 @@ This feature delivers six functions; see the "Feature Requirements & Design" cha
 
 ## Overview
 
-**One-sentence design**: CPU operators are resolved to `device="cpu"` at export time and persisted into the epair archive; before graph build, one custom operator registered to the GE HostCpu backend (`HostCpuExecuteOp` + `ShapeInferOp`) is generated per CPU operator; its `Execute` calls the PyTorch Dispatcher CPU implementation; CPU operators and NPU operators (GE built-ins + Device-backend custom operators) share one `ge::Graph`, compiled once, executed once, scheduled uniformly by GE. The framework implements no scheduling or copying logic.
+**One-sentence design**: CPU operators are resolved to `device="cpu"` at export time and persisted into the epair archive; before graph build, one custom operator per CPU operator type is generated and registered to the GE HostCpu backend (`HostCpuExecuteOp`); its `Execute` calls the PyTorch Dispatcher CPU implementation; CPU operators and NPU operators (GE built-ins + Device-backend custom operators) share one `ge::Graph`, compiled once, executed once, scheduled uniformly by GE. The framework implements no scheduling or copying logic.
 
 **Change overview**:
 
 | # | Change | Location | Size |
 |---|------|------|------|
 | 1 | Export-time device ownership resolution, persisted into epair | Python side (converter / epair / api) | Small |
-| 2 | Fallback Codegen HostCpu variant (incl. `ShapeInferOp` generation) | `csrc/fallback_codegen/` | Medium |
+| 2 | Fallback Codegen HostCpu variant (shape/dtype reuse GE `_inference_rule`) | `csrc/fallback_codegen/` | Medium |
 | 3 | Graph build support for host placement and three-way dispatch | csrc/backend/ | Small |
 | 4 | Ownership diagnosability | Python + C++ | Medium |
 | 5 | GE side | No code changes; existing capabilities only | — |
@@ -254,7 +254,7 @@ Fallback Codegen gains a HostCpu variant. The core idea is maximum reuse: operat
 - The EP JSON inside the epair archive (nodes with `ascend_ir.device="cpu"`)
 - torch package path and output directory (existing inputs)
 - The PyTorch schema of each CPU node (`findSchemaOrThrow`)
-- The `tensor_meta` of every output of each CPU node (`ParsedTensorMeta`, the data source for `ShapeInferOp`)
+- Each CPU node's `ascend_ir.ops[*].attr._inference_rule` (GE inference rule generated by torchair from the torch meta function)
 
 #### 3. Processing
 
@@ -280,9 +280,9 @@ The generated HostCpu operator class looks like this (sketch):
 #include "graph/custom_op.h"    // torch_npu from_blob / NPUStream / NPUGuard no longer needed
 
 namespace ge {
-class aten__relu_ final : public HostCpuExecuteOp, public ShapeInferOp {
+class aten__relu final : public HostCpuExecuteOp {
  public:
-  // Replacement 1: base classes change from EagerExecuteOp to HostCpuExecuteOp + ShapeInferOp
+  // Replacement 1: base class changes from EagerExecuteOp to HostCpuExecuteOp
   // Replacement 2: context type changes from gert::EagerOpExecutionContext to gert::HostCpuOpExecutionContext
   graphStatus Execute(gert::HostCpuOpExecutionContext *ctx) override {
     const gert::Tensor *ge_input_0 = ctx->GetRequiredInputTensor(0);   // same accessors as the NPU variant
@@ -295,22 +295,15 @@ class aten__relu_ final : public HostCpuExecuteOp, public ShapeInferOp {
     return GRAPH_SUCCESS;
   }
 
-  // New: shape / dtype inference (mandatory for the HostCpu backend)
-  graphStatus InferShape(gert::InferShapeContext *ctx) override {
-    // Data source: EP JSON tensor_meta (inlined as constants at generation time, or dynamic dims passed through from input shapes)
-    return GRAPH_SUCCESS;
-  }
-  graphStatus InferDataType(gert::InferDataTypeContext *ctx) override {
-    // Same as above: inline dtype or pass through by rule
-    return GRAPH_SUCCESS;
-  }
+  // No InferShape / InferDataType is generated: output shape/dtype are derived by GE
+  // from the node's _inference_rule (see section C), exactly like the NPU fallback.
 };
 
-REG_OP_BACKEND(aten__relu_, "aten__relu_", ge::OpBackend::kHostCPU);
+REG_OP_BACKEND(aten__relu, "aten__relu", ge::OpBackend::kHostCPU);
 }  // namespace ge
 ```
 
-Net changes: 3 removals (scalar D2H, output D2D, stream guard), 1 addition (`ShapeInferOp` generation), 3 renames (base class, context type, binding macro).
+Net changes: 3 removals (scalar D2H, output D2D, stream guard) and 3 renames (base class, context type, binding macro); no `ShapeInferOp` is added — shape/dtype reuse the GE inference rule.
 
 #### 4. Outputs
 
@@ -570,8 +563,8 @@ Analyzed per scenario against `ge/docs/zh/design/cross_feature_check.md`:
 
 | Scenario | Applicability | Analysis |
 |------|--------|----------|
-| Static shape | Applicable | Graphs with CPU nodes are marked unknown inside GE and take the v2 executor, not the v1 `DavinciModel` offload path; the all-NPU static-graph path is unchanged. With static shapes, CPU nodes' `ShapeInferOp` inlines all constants — no dynamic inference |
-| Dynamic shape | Applicable | CPU nodes' `ShapeInferOp` is generated with "static dims inlined, dynamic dims passed through"; data-dependent shapes fail at compile time (constraint C3). Host outputs reuse GE's existing host allocator, consistent with the existing constraints in `rt2_runtime.md` |
+| Static shape | Applicable | Graphs with CPU nodes are marked unknown inside GE and take the v2 executor, not the v1 `DavinciModel` offload path; the all-NPU static-graph path is unchanged. With static shapes, `_inference_rule` derives constants — no dynamic computation |
+| Dynamic shape | Applicable | CPU nodes' `_inference_rule` is generated by torchair from the torch meta function; data-dependent shapes surface at rule-generation time (constraint C3). Host outputs reuse GE's existing host allocator, consistent with the existing constraints in `rt2_runtime.md` |
 | Dynamic shape with static subgraphs (graph split) | Applicable (key intersection) | Follows `graph_split.md` rule 6: HostCpu nodes are assigned to the dynamic-graph executor, affecting the partition boundary. This design adds no split rules and writes no node attributes; all such behavior is existing GE implementation. No data crosses the v2→v1 boundary. DT must verify the split boundary of mixed graphs has no regression |
 | Offline (atc compile) | Partially applicable | TorchDelegate uses online GeSession compile/load; this release does not deliver the offline OM path. GE HostCpu operators can already go into OM via ATC (the `offline` sample, requiring operators to implement `PortableOp::Serialize/Deserialize`); this design does not generate `PortableOp` and involves no OM schema changes |
 | Online (framework integration) | Applicable | The main battlefield. epair export (S1-S3) → C++ load & graph build (S4-S7) → GeSession compile & execute (S8-S14) are all covered; `EpairModelLoader` API/ABI unchanged; no Adapter interaction changes |
@@ -668,20 +661,16 @@ The `DeviceDecision` structure is described in "Requirement 6: Ownership Diagnos
 
 **B. FallbackCodegen HostCpu variant** (see "Requirement 2"): net change is "3 removals, 1 addition, 3 renames"; everything else is reused.
 
-**C. `ShapeInferOp` generation.** The data source is the `tensor_meta` already present in the EP JSON; users need not write Meta implementations:
+**C. shape/dtype inference reuses the GE `_inference_rule`.** Exactly like the NPU fallback: at export time torchair's `infer_and_gen_sym_shape` uses the torch meta/fake functions (`register_fake`) as the source of truth, expresses each output dim as a symbolic expression over input dims/values, and serializes it into an `_inference_rule` JSON stored in `ascend_ir.ops[*].attr`. On the C++ side the Fallback planner attaches that attribute to the GE node unchanged:
 
 ```
-For each output tensor_name of a CPU node:
-  meta ← ParsedModel::FindTensorMeta(tensor_name)
-  If meta.dynamic_dim_symbols is empty (fully static):
-      InferShape    → inline constant shape (meta.sizes)
-      InferDataType → inline constant dtype (meta.dtype)
-  Otherwise (contains dynamic dims):
-      Dynamic dims pass through from ctx->GetInputShape(i); static dims inline as constants
-      If a dynamic dim cannot be derived from inputs (data-dependent) → Error (constraint C3)
+node ascend_ir.ops[*].attr._inference_rule  (Str, value = rule JSON)
+  → FallbackNodePlanner::CollectFallbackAttrs (ParseAttrValue decodes base64)
+  → GE node attribute _inference_rule
+  → GE InferCustomOpShape at runtime: when no ShapeInferOp is registered, JIT-derive with the rule
 ```
 
-These metas are derived by the Python side at export via `register_fake` (Meta key) and serialized; the C++ `ParsedModel` already parses them fully.
+So one HostCpu implementation is generated per operator type (dedup by op type); different nodes carry their own rules, and both static and dynamic shapes are decided by the torch inference function. The framework never inlines any instance shape; data-dependent shapes surface during torchair rule generation (constraint C3).
 
 **D. Placement propagation** (see "Requirement 3"): constructor parameter + default; consistent with the existing `ConstNodeSpec` pattern (`graph_build_utils.h:31`).
 
@@ -912,7 +901,7 @@ Conclusions:
 Three items reviewed and excluded as risks (verified):
 
 - "`HostcpuEngineUpdatePass` may re-assign ownership": that pass only acts on operators on device engines; kHostCPU-registered custom operators land on host deterministically at engine selection (see "Requirement 4" G1); shape heuristics cannot re-assign them;
-- "`ShapeInferOp` cannot cover data-dependent shapes": a scope boundary with a defined explicit-error handling (constraint C3);
+- "`_inference_rule` cannot cover data-dependent shapes": a scope boundary with explicit-error handling at rule generation (constraint C3);
 - "HostCpu output memory lifetime unknown": a documented contract; both the GE samples and existing paths rely on the same contract.
 
 ---
@@ -945,7 +934,7 @@ Three items reviewed and excluded as risks (verified):
 | `GenerateGeOpReg` (prototype reused / binding macro swapped) | `csrc/fallback_codegen/fallback_codegen.cc:742-863`, binding macro `:1316` |
 | `GenerateExecuteMethod` (device branch point) | `csrc/fallback_codegen/fallback_codegen.cc:917-1303` (stream guard `:1166-1167`, write-back helpers `:869-885`) |
 | g++ command / ABI / link line | `csrc/fallback_codegen/fallback_codegen.cc:1482-1524` (ABI `:1486`, link `:1524`) |
-| Tensor meta (`ShapeInferOp` data source) | `csrc/backend/model_types.h:38-47` (`ParsedTensorMeta`), `:115-123` (`ParsedAscendIr`) |
+| Tensor meta (`ParsedTensorMeta`) and `_inference_rule` attr | `csrc/backend/model_types.h:38-47`, `:115-123`; `csrc/backend/attr_parser.cc` (base64 Str decoding) |
 | Session compile/execute | `csrc/backend/epair_model_loader.cc:108-173` (Compile/Load), `:175-206` (Run) |
 | Link dependencies | `csrc/CMakeLists.txt:47` (`libtorch_cpu`), `:53` (ABI=1) |
 | Manifest constants | `csrc/common/epair_archive_constants.h:25` (`kAnnotatedManifestJson`) |

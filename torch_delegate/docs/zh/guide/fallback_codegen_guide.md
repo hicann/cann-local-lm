@@ -31,7 +31,7 @@ TorchDelegate根据算子是否携带 `ascend_ir` 标注、是否有GE入图交�
 |------|------|-----------|-----------|----------|---------|
 | **场景 1** | 有完整入图交付件的算子 | `source="converter"`，ops 含完整 opdef | 有 | `NamedIoNodeBuilder` 直接构图 | ✅ 支持 |
 | **场景 2** | Fallback 回调算子（NPU 执行） | `source=""`，`device="npu"`（缺省） | 无，由 Fallback Codegen 自动生成 | Codegen 生成 GE `EagerExecuteOp`（`REG_AUTO_MAPPING_OP`）→ 编译 → dlopen 注册 → 运行时回调 PyTorch Dispatcher（PrivateUse1） | ✅ 支持 |
-| **场景 3** | CPU 算子（HostCpu 后端） | `source=""`，`device="cpu"` | 无，由 Fallback Codegen 自动生成 | Codegen 生成 GE `HostCpuExecuteOp + ShapeInferOp`（`REG_OP_BACKEND(..., kHostCPU)`）→ 编译 → dlopen 注册 → 运行时回调 PyTorch Dispatcher（CPU） | ✅ 支持 |
+| **场景 3** | CPU 算子（HostCpu 后端） | `source=""`，`device="cpu"` | 无，由 Fallback Codegen 自动生成 | Codegen 生成 GE `HostCpuExecuteOp`（`REG_OP_BACKEND(..., kHostCPU)`），shape/dtype 由 GE 按节点 `_inference_rule` 推导 → 编译 → dlopen 注册 → 运行时回调 PyTorch Dispatcher（CPU） | ✅ 支持 |
 
 Fallback Codegen 同时处理**场景 2 与场景 3**，同一 `.so` 可包含两类算子。场景 3 的
 Device 归属由导出期自动判定（`ascend_ir.device`），最低 CANN 版本 9.2.0

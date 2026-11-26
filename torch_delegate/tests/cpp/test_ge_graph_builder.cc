@@ -9,8 +9,10 @@
  */
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include <graph/operator_reg.h>
 
@@ -140,6 +142,8 @@ namespace {
 const std::string kAnnotated = std::string(FIXTURES_DIR) + "/annotated_mm_add.epair";
 const std::string kAnnotatedMixed = std::string(FIXTURES_DIR) + "/annotated_mixed.epair";
 const std::string kAnnotatedHostCpu = std::string(FIXTURES_DIR) + "/annotated_host_cpu.epair";
+const std::string kAnnotatedHostCpuShapeVariants =
+    std::string(FIXTURES_DIR) + "/annotated_host_cpu_shape_variants.epair";
 const std::string kAnnotatedHostCpuNon4Byte = std::string(FIXTURES_DIR) + "/annotated_host_cpu_non4byte_inputs.epair";
 const std::string kAnnotatedHostCpuDefaultArgs = std::string(FIXTURES_DIR) + "/annotated_host_cpu_default_args.epair";
 const std::string kAnnotatedConverterNoOp = std::string(FIXTURES_DIR) + "/annotated_converter_no_ops.epair";
@@ -520,10 +524,57 @@ TEST_F(GeGraphBuilderTest, BuildsAnnotatedHostCpuGraph) {
   EXPECT_GT(CountHostPlacementInputs(relu_node), 0u)
       << "HostCpu node tensor inputs must be declared with host placement";
 
+  // HostCpu 不再生成 ShapeInferOp，输出 shape/dtype 由节点上的 _inference_rule 推导；
+  // 该规则随 ascend_ir 传入，必须挂到构建出的 GE 节点上。
+  ge::AscendString rule;
+  ASSERT_EQ(relu_node.GetAttr(ge::AscendString("_inference_rule"), rule), ge::GRAPH_SUCCESS)
+      << "HostCpu node must carry the _inference_rule generated from the torch meta function";
+  ASSERT_NE(rule.GetString(), nullptr);
+  EXPECT_NE(std::string(rule.GetString()).find("shape"), std::string::npos)
+      << "inference rule must be the GE shape/dtype JSON: " << rule.GetString();
+
   // converter 节点的 placement 由 ascend_ir inputDesc 决定，不受 FallbackNodePlanner
   // placement 参数影响（默认参数保证现有路径零变化，见 PureNpuGraphBuildsUnaffected）。
   ge::GNode mm_node = FindNodeByType(*graph, "MatMul");
   ASSERT_EQ(mm_node.GetType(found_type), ge::GRAPH_SUCCESS);
+}
+
+TEST_F(GeGraphBuilderTest, BuildsHostCpuGraphWithSameOpDifferentStaticShapes) {
+  // 回归 0028：同一 CPU 算子作用于 (4,8) 与 (2,8) 两个不同静态 shape。
+  // codegen 按算子类型只生成一个 aten__relu；每个节点根据自身 _inference_rule
+  // 推导输出，入图后两个节点各自保留自己的输出 shape。
+  td::EpairArchive archive(kAnnotatedHostCpuShapeVariants.c_str());
+  td::Status builder_status = td::FAILED;
+  td::GeGraphBuilder builder(archive, builder_status);
+  ASSERT_EQ(builder_status, td::SUCCESS);
+
+  td::InputBindingMap binding_map;
+  auto graph = builder.Build(binding_map);
+  ASSERT_NE(graph, nullptr) << "same CPU op at different static shapes must build successfully";
+
+  std::vector<ge::GNode> relu_nodes;
+  for (auto &node : graph->GetAllNodes()) {
+    ge::AscendString type;
+    if (node.GetType(type) == ge::GRAPH_SUCCESS && type.GetString() != nullptr &&
+        std::string(type.GetString()) == "aten__relu") {
+      relu_nodes.push_back(node);
+    }
+  }
+  ASSERT_EQ(relu_nodes.size(), 2u) << "both CPU nodes must map to the same generated HostCpu op type";
+
+  std::vector<std::vector<int64_t>> shapes;
+  for (auto &node : relu_nodes) {
+    EXPECT_GT(CountHostPlacementInputs(node), 0u);
+    ge::TensorDesc desc;
+    ASSERT_EQ(node.GetOutputDesc(0, desc), ge::GRAPH_SUCCESS);
+    shapes.emplace_back(desc.GetShape().GetDims());
+    ge::AscendString rule;
+    EXPECT_EQ(node.GetAttr(ge::AscendString("_inference_rule"), rule), ge::GRAPH_SUCCESS)
+        << "each CPU node must carry its own inference rule";
+  }
+  const std::vector<std::vector<int64_t>> expected = {{2, 8}, {4, 8}};
+  std::sort(shapes.begin(), shapes.end());
+  EXPECT_EQ(shapes, expected) << "each node keeps its own static output shape";
 }
 
 TEST_F(GeGraphBuilderTest, BuildsHostCpuGraphWithNon4ByteUserDataInputs) {

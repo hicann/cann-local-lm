@@ -732,7 +732,7 @@ TorchDelegate v1根据算子是否携带 `ascend_ir` 标注、是否有GE入图�
 |------|------|-----------|-----------|----------|---------|
 | **场景1** | 有完整入图交付件的算子。GE 侧已注册算子定义（`REG_OP`），torchair 提供完整 converter 转换 | `source="converter"`，ops 含完整 opdef | 有 | `NamedIoNodeBuilder` 根据 ascend_ir.opdef 直接构图 | ✅ 支持 |
 | **场景2** | Fallback 回调算子，无 GE 入图交付件。用户通过 `torch.library` 注册 PyTorch 自定义算子，不需要手写 GE 自定义算子代码 | `source=""` 或无 ascend_ir | 无，由 Fallback Codegen 自动生成 | Codegen 生成 GE `EagerExecuteOp` 代码 → 编译 `.so` → `dlopen` 注册 → 运行时回调 PyTorch Dispatcher 调用用户实现 | ✅ 支持 |
-| **场景3** | CPU 算子（HostCpu 后端），需要在 CPU 上通过 libtorch 执行 | `source=""`，`device="cpu"` | 无，由 Fallback Codegen 自动生成 | Codegen 生成 `HostCpuExecuteOp + ShapeInferOp`（`REG_OP_BACKEND(..., kHostCPU)`），运行时回调 PyTorch CPU 实现 | ✅ 支持 |
+| **场景3** | CPU 算子（HostCpu 后端），需要在 CPU 上通过 libtorch 执行 | `source=""`，`device="cpu"` | 无，由 Fallback Codegen 自动生成 | Codegen 生成 `HostCpuExecuteOp`（`REG_OP_BACKEND(..., kHostCPU)`），shape/dtype 由 GE 按节点 `_inference_rule` 推导，运行时回调 PyTorch CPU 实现 | ✅ 支持 |
 
 
 三种场景在GeGraphBuilder中的分流逻辑：

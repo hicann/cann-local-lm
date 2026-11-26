@@ -76,14 +76,6 @@ struct SchemaInfo {
   int num_fixed_inputs = 0;
 };
 
-// HostCpu InferShape 生成用的形状元数据（EP JSON tensor_meta 子集）。
-struct ShapeMeta {
-  int64_t dtype = 0;  // pt2 dtype 枚举值
-  std::vector<int64_t> sizes;
-  // 与 sizes 等长；非空表示该维是动态维（SymInt 符号名），需要从输入透传。
-  std::vector<std::string> dynamic_symbols;
-};
-
 struct OpTarget {
   std::string target;  // full target from model.json
   std::string namespace_name;
@@ -91,16 +83,6 @@ struct OpTarget {
   std::string overload;
   // 执行 Device 归属："npu"（缺省）| "cpu"，来自节点 ascend_ir.device。
   std::string device = "npu";
-  // HostCpu 形状推导数据源（代表性节点的输入/输出 tensor_meta，仅 CPU 节点收集）。
-  bool has_shape_info = false;
-  std::vector<ShapeMeta> input_metas;
-  std::vector<ShapeMeta> output_metas;
-  // 与收集后的 inputs 条目一一对应的张量个数（标量/None 为 0）。条目顺序即
-  // 内层算子 schema 的非 out 参数顺序：auto_functionalized_v2 节点已在
-  // CollectShapeInfo 中剔除算子占位与 functionalization 记录字段并重排。
-  // 消费端（GenerateShapeInferMethods）按 schema.arguments 逐参数推进游标
-  // 对齐，每个非 out 参数恰好占用一个条目。
-  std::vector<size_t> input_arg_tensor_counts;
 };
 
 struct CodegenResult {
@@ -140,16 +122,13 @@ class FallbackCodegen {
   static std::vector<OpTarget> ParseTargetsFromJson(const nlohmann::json &model);
 
   static OpTarget ParseTargetFromJson(const nlohmann::json &node);
-  // 从 EP JSON 收集 CPU 节点的输入/输出 tensor_meta（ShapeInferOp 生成的数据源）。
-  static void CollectShapeInfo(const nlohmann::json &node, const nlohmann::json *tensor_values, OpTarget &target);
   static std::pair<std::string, std::string> SplitNamespaceOp(const std::string &full_op);
 
   static SchemaInfo GetSchemaInfo(const std::string &full_op_name, const std::string &overload);
 
-  static std::string GenerateGeOpClass(const SchemaInfo &schema, bool is_host_cpu, const OpTarget *shape_source);
+  static std::string GenerateGeOpClass(const SchemaInfo &schema, bool is_host_cpu);
   static std::string GenerateGeOpReg(const SchemaInfo &schema);
   static std::string GenerateExecuteMethod(const SchemaInfo &schema, bool is_host_cpu);
-  static std::string GenerateShapeInferMethods(const SchemaInfo &schema, const OpTarget &target);
   static std::string GenerateHelperFunctions(bool need_hostcpu);
 
   static std::string EmitCustomOpCpp(const std::vector<SchemaInfo> &schemas, const std::vector<OpTarget> &targets,

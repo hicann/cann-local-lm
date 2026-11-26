@@ -328,6 +328,16 @@ def gen_missing_op_type() -> None:
     print("Generated: missing_op_type.epair")
 
 
+def _inference_rule_attr(rule: dict) -> dict:
+    """把 GE 推导规则 JSON 编码为 ascend_ir attr 的 Str 载荷（{"s": base64}）。
+
+    真实 epair 中 torchair 基于 torch meta 函数为每个 fallback 节点生成
+    _inference_rule，GE 在 HostCpu / Device 后端都据此推导输出 shape/dtype。
+    """
+    encoded = base64.b64encode(json.dumps(rule).encode()).decode()
+    return {"s": encoded}
+
+
 def _tensor_meta(shape: list[int], requires_grad: bool, dtype: int = 7) -> dict:
     strides = []
     running = 1
@@ -820,11 +830,26 @@ def gen_annotated_host_cpu() -> None:
         ],
         "mapping": {"inputs": {}, "outputs": {"mm": "MatMul:0"}},
     }
-    # 场景 3：CPU 节点（HostCpu 后端 fallback）
+    # 场景 3：CPU 节点（HostCpu 后端 fallback）。真实导出会带 _inference_rule，
+    # GE 据此推导输出，codegen 不再生成 ShapeInferOp。
     annotated_json["graph_module"]["graph"]["nodes"][1]["ascend_ir"] = {
         "source": "",
         "device": "cpu",
-        "ops": [{"attr": {}}],
+        "ops": [
+            {
+                "attr": {
+                    "_inference_rule": _inference_rule_attr(
+                        {
+                            "shape": {
+                                "inputs": [["s0", "s1"]],
+                                "outputs": [["s0", "s1"]],
+                            },
+                            "dtype": [7],
+                        }
+                    )
+                }
+            }
+        ],
         "mapping": {"inputs": {}, "outputs": {"relu": "aten__relu:0"}},
     }
 
@@ -1044,6 +1069,118 @@ def gen_annotated_host_cpu_default_args() -> None:
         )
         _write_manifest(writer, total_nodes=1, converted=1, version=2, cpu_nodes=1)
     print("Generated: annotated_host_cpu_default_args.epair")
+
+
+def gen_annotated_host_cpu_shape_variants() -> None:
+    """同一 CPU fallback 算子作用于两个不同静态 shape 的输入。
+
+    回归 0028：HostCpu 与 NPU fallback 一致，codegen 只按算子类型生成一份
+    实现；每个节点各自携带自己的 _inference_rule，由 GE 推导输出 shape。
+    """
+    nodes = [
+        {
+            "name": "feature_scale_4x8",
+            "target": "torch.ops.aten.relu.default",
+            "inputs": [
+                {"name": "self", "arg": _as_tensor("x_4x8"), "kind": 1},
+            ],
+            "outputs": [_as_tensor("fs_4x8")],
+            "metadata": {"torch_fn": "feature_scale;builtin_function_or_method.relu"},
+            "is_hop_single_tensor_return": None,
+        },
+        {
+            "name": "feature_scale_2x8",
+            "target": "torch.ops.aten.relu.default",
+            "inputs": [
+                {"name": "self", "arg": _as_tensor("x_2x8"), "kind": 1},
+            ],
+            "outputs": [_as_tensor("fs_2x8")],
+            "metadata": {"torch_fn": "feature_scale;builtin_function_or_method.relu"},
+            "is_hop_single_tensor_return": None,
+        },
+    ]
+    graph = {
+        "inputs": [_as_tensor("x_4x8"), _as_tensor("x_2x8")],
+        "outputs": [_as_tensor("fs_4x8"), _as_tensor("fs_2x8")],
+        "nodes": nodes,
+        "tensor_values": {
+            "x_4x8": _tensor_meta([4, 8], False),
+            "fs_4x8": _tensor_meta([4, 8], False),
+            "x_2x8": _tensor_meta([2, 8], False),
+            "fs_2x8": _tensor_meta([2, 8], False),
+        },
+        "sym_int_values": {},
+        "sym_bool_values": {},
+        "sym_float_values": {},
+        "custom_obj_values": {},
+        "is_single_tensor_return": True,
+    }
+    signature = {
+        "input_specs": [
+            {"user_input": {"arg": _as_tensor("x_4x8")}},
+            {"user_input": {"arg": _as_tensor("x_2x8")}},
+        ],
+        "output_specs": [
+            {"user_output": {"arg": _as_tensor("fs_4x8")}},
+            {"user_output": {"arg": _as_tensor("fs_2x8")}},
+        ],
+    }
+    model_json = {
+        "graph_module": {
+            "graph": graph,
+            "signature": signature,
+            "module_call_graph": [],
+            "metadata": {},
+            "treespec_namedtuple_fields": {},
+        },
+        "opset_version": {"aten": 10},
+        "range_constraints": {},
+        "schema_version": {"major": 8, "minor": 7},
+        "verifiers": ["ATEN"],
+        "torch_version": "2.7.1+cpu",
+    }
+    annotated_json = json.loads(json.dumps(model_json))
+    for node, out_name in zip(
+        annotated_json["graph_module"]["graph"]["nodes"], ["fs_4x8", "fs_2x8"]
+    ):
+        node["ascend_ir"] = {
+            "source": "",
+            "device": "cpu",
+            "ops": [
+                {
+                    "attr": {
+                        "_inference_rule": _inference_rule_attr(
+                            {
+                                "shape": {
+                                    "inputs": [["s0", "s1"]],
+                                    "outputs": [["s0", "s1"]],
+                                },
+                                "dtype": [7],
+                            }
+                        )
+                    }
+                }
+            ],
+            "mapping": {
+                "inputs": {},
+                "outputs": {out_name: f"aten__relu_{out_name}:0"},
+            },
+        }
+
+    out = os.path.join(FIXTURES_DIR, "annotated_host_cpu_shape_variants.epair")
+    with ArchiveWriter(out) as writer:
+        writer.write_string("models/model.json", json.dumps(model_json))
+        writer.write_string(
+            "extra/ep_json_with_ascend_ir.json", json.dumps(annotated_json)
+        )
+        writer.write_string(
+            "data/weights/model_weights_config.json", json.dumps({"config": {}})
+        )
+        writer.write_string(
+            "data/constants/model_constants_config.json", json.dumps({"config": {}})
+        )
+        _write_manifest(writer, total_nodes=2, converted=2, version=2, cpu_nodes=2)
+    print("Generated: annotated_host_cpu_shape_variants.epair")
 
 
 def gen_annotated_assert_tensor_metadata() -> None:
@@ -3106,6 +3243,7 @@ def generate(output_dir: str = FIXTURES_DIR) -> None:
     gen_annotated_host_cpu()
     gen_annotated_host_cpu_non4byte_inputs()
     gen_annotated_host_cpu_default_args()
+    gen_annotated_host_cpu_shape_variants()
     gen_annotated_assert_tensor_metadata()
     gen_annotated_converter_no_ops()
     gen_annotated_converter_noop_copy()

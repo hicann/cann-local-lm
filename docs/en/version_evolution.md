@@ -26,6 +26,6 @@ English | [简体中文](../zh/version_evolution.md)
 | CDLM Version | Type | Release Date | HarmonyOS | CANN | Chip | PyTorch | TorchNPU |
 |---|---|---|---|---|---|---|---|
 | 0.1.0-beta.1 | Beta | 2026-10-30 | 7.0 (2026-09 major release) | 9.3.0 | kirinx90 | 2.9.0 | 26.1.1 |
-| 1.0.0 | GA | 2027-10-29 | 7.1 + 8.0 (full support) | `<TBD>` | kirinx90, kirin9030... | `<TBD>` | `<TBD>` |
+| 1.0.0 | GA | 2027-10-29 | 7.1 + 8.0 (full support) | TBD | kirinx90, kirin9030... | TBD | TBD |
 
 > For detailed version compatibility (torch_npu package versions, torch/torch_npu/CANN triple-binding rules, P1/P2 environment isolation), see [Environment Dependencies](env_dependencies.md) §2.2.

@@ -159,6 +159,35 @@ With `EXECUTORCH_NPU_HOST_ONLY=1` the Backend already replaces that query with r
 conversion happens inside `lower_to_ge_graph()`: the patch is installed by `_load_torch_delegate()`, before
 `export_to_epair()`, so calling TorchAir conversion directly without the Backend does not install it.
 
+### plog reports `set ASCEND_RT_VISIBLE_DEVICES[:] error` or `driver error:no valid device`
+
+`ASCEND_RT_VISIBLE_DEVICES=""` is set. The variable has no valid spelling for "zero devices": CANN only
+accepts a **non-empty** list of integers within `[0, deviceCount)`, ascending and without duplicates, so the
+empty string is treated as malformed (`-1` is out of range as well). This differs from
+`CUDA_VISIBLE_DEVICES=""`.
+
+**Fix: unset the variable.** To verify device-less export on a machine that has cards, use a container that
+does not map `/dev/davinci*`; see
+[Model Export](export_en.md#verifying-device-less-export-on-a-machine-that-has-cards).
+
+Scope of impact:
+
+| Stage | Consequence |
+|---|---|
+| PT2 export (`DEVICE=cpu`) | No effect |
+| host-only compilation (`EXECUTORCH_NPU_HOST_ONLY=1`) | ERROR logs only, compilation continues; a log-keyword-scanning gate still marks it failed |
+| Runtime loading and execution of PTE/PTD or OM | **Fails outright**: the visible device count is 0, so `acl.rt.set_device()` returns an error code |
+
+Runtime scripts usually hardcode the device id and raise on a non-zero return, for example all four scripts
+under `examples/test_converter/export_llm_model/om_npu_verify/` use `DEV = 0` plus
+`ck/check("set_device", acl.rt.set_device(DEV))`. The symptom is that compilation looks fine all the way
+through and the failure only appears at runtime.
+
+These ERROR entries come from CANN Runtime and torch_npu; none of the three components in this repository
+produces any of them. If **compilation** really aborted, the cause is not these entries but an unstubbed
+device query; see the two entries above (`ACL set device id failed, return 107001` and the BN/MaxPool
+`TypeError`).
+
 ### `TdEpairModelLoaderCreate failed with status=1`
 
 The EPAIR loader requires GE to be initialized, but does not require a device. Under Lite export, initialization should be done by

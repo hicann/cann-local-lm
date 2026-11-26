@@ -202,12 +202,28 @@ TorchAir兼容适配集中在 `compiler/compatibility.py`。
 | CANN Toolkit同源 | 必须 `source` 同一份Toolkit的 `set_env.sh`。只覆盖 `ASCEND_OPP_PATH` 会造成OPP算子实现与TBE框架跨版本混用 |
 | `PYTHONPATH` 追加而非覆盖 | 覆盖会丢掉 `set_env.sh` 注入的CANN路径，导致 `No module named 'ge'` |
 
-验证当前进程确实看不到设备：
+#### 有卡机器上验证无卡导出
+
+`EXECUTORCH_NPU_HOST_ONLY=1` 必设。在此之上用容器隔离设备：起容器时不映射
+`/dev/davinci*`，即不传 `--device /dev/davinci*`，也不使用Ascend的设备注入runtime。
+
+容器内先自检，三条都要符合预期：
 
 ```bash
-ASCEND_RT_VISIBLE_DEVICES="" python -c \
-  'import torch, torch_npu; print("device_count =", torch.npu.device_count())'
+ls /dev/davinci* 2>/dev/null || echo "无设备节点"                      # 输出「无设备节点」
+npu-smi info 2>&1 | head -3                                           # 失败或列不出卡
+python -c 'import torch, torch_npu; print(torch.npu.device_count())'  # 输出 0
 ```
+
+自检通过后，在容器内执行上面的阶段A / 阶段B 命令。
+
+无法使用容器时，改为在环境中不安装torch_npu，torchair会改读 `ASCEND_DEVICE_ID`
+而不查询设备。此方式下 `is_arch35()` 恒为 `False`，仅适用于目标SoC设备名不含
+`Ascend910_95` / `Ascend950` 的场景，且模型图不能包含torch_npu算子（如Qwen3.5 /
+Gemma4 用到的 `npu_rms_norm`、`scatter_update_`）。
+
+不要用 `ASCEND_RT_VISIBLE_DEVICES=""` 隐藏设备：该变量没有表示「零设备」的合法
+取值，会导致plog报错和运行期脚本失败，见[故障排查](troubleshooting.md)。
 
 Lite导出的边界：
 

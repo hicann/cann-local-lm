@@ -158,6 +158,32 @@ TorchAir只捕获 `ImportError`，异常直接冒泡到导出流程。
 `lower_to_ge_graph()` 内：补丁随 `_load_torch_delegate()` 安装，早于
 `export_to_epair()`；绕过Backend直接调用TorchAir转换不会安装该补丁。
 
+### plog报 `set ASCEND_RT_VISIBLE_DEVICES[:] error` 或 `driver error:no valid device`
+
+设置了 `ASCEND_RT_VISIBLE_DEVICES=""`。该变量没有表示「零设备」的合法取值：CANN只
+接受 `[0, 设备数)` 内升序且不重复的**非空**整数列表，空串被判为格式非法（`-1` 同样
+越界），与 `CUDA_VISIBLE_DEVICES=""` 的语义不同。
+
+**处理：取消设置该变量。** 需要在有卡机器上验证无卡导出时，用容器不映射
+`/dev/davinci*`，步骤见[模型导出](export.md#有卡机器上验证无卡导出)。
+
+影响范围：
+
+| 阶段 | 后果 |
+|---|---|
+| PT2导出（`DEVICE=cpu`） | 无影响 |
+| host-only编译（`EXECUTORCH_NPU_HOST_ONLY=1`） | 只产生ERROR日志，编译继续；但会被日志关键字扫描门禁判失败 |
+| 运行期加载PTE/PTD或OM并执行 | **直接失败**：可见设备数为0，`acl.rt.set_device()` 返回错误码 |
+
+运行期脚本通常写死设备号并对返回值非零即抛，例如
+`examples/test_converter/export_llm_model/om_npu_verify/` 下四个脚本均为 `DEV = 0`
+加 `ck/check("set_device", acl.rt.set_device(DEV))`。表现是编译阶段一路正常、直到
+运行期才崩。
+
+这些ERROR由CANN Runtime与torch_npu产生，本仓组件不产生其中任何一条。若**编译**真的
+中断了，原因不是这些ERROR，而是设备查询未被打桩，见上面两条
+（`ACL set device id failed, return 107001` 与 BN/MaxPool 的 `TypeError`）。
+
 ### `TdEpairModelLoaderCreate failed with status=1`
 
 EPAIR加载器要求GE已初始化，但不要求设备。Lite导出下应由

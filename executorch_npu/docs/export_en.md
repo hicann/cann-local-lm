@@ -201,12 +201,30 @@ Prerequisites for using Lite export:
 | CANN Toolkit from the same source | You must `source` the `set_env.sh` of the same Toolkit. Overriding only `ASCEND_OPP_PATH` causes cross-version mixing of OPP operator implementations and the TBE framework |
 | `PYTHONPATH` appended rather than overwritten | Overwriting loses the CANN paths injected by `set_env.sh`, resulting in `No module named 'ge'` |
 
-Verify that the current process indeed cannot see the device:
+#### Verifying device-less export on a machine that has cards
+
+`EXECUTORCH_NPU_HOST_ONLY=1` is required. On top of it, isolate the devices with a container: do not map
+`/dev/davinci*` when starting it, that is, do not pass `--device /dev/davinci*` and do not use the Ascend
+device-injection runtime.
+
+Self-check inside the container first; all three must match:
 
 ```bash
-ASCEND_RT_VISIBLE_DEVICES="" python -c \
-  'import torch, torch_npu; print("device_count =", torch.npu.device_count())'
+ls /dev/davinci* 2>/dev/null || echo "no device node"                  # prints "no device node"
+npu-smi info 2>&1 | head -3                                           # fails or lists no card
+python -c 'import torch, torch_npu; print(torch.npu.device_count())'  # prints 0
 ```
+
+After the self-check passes, run the Phase A / Phase B commands above inside the container.
+
+If a container is not an option, leave torch_npu uninstalled instead; torchair then reads `ASCEND_DEVICE_ID`
+and issues no device query. In that case `is_arch35()` always returns `False`, so this only applies when the
+target SoC device name contains neither `Ascend910_95` nor `Ascend950`, and the graph must not contain
+torch_npu ops (such as the `npu_rms_norm` and `scatter_update_` used by Qwen3.5 / Gemma4).
+
+Do not use `ASCEND_RT_VISIBLE_DEVICES=""` to hide devices: the variable has no valid spelling for "zero
+devices", and it causes plog errors and runtime script failures. See
+[Troubleshooting](troubleshooting_en.md).
 
 Boundaries of Lite export:
 

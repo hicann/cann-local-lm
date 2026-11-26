@@ -84,6 +84,33 @@ def _fallback_codegen_disabled() -> Iterator[None]:
                 os.environ[name] = previous
 
 
+def reject_delegated_graph(
+    exported_program: ExportedProgram, method_name: str, delegate_index: int
+) -> None:
+    """Reject graphs that ExecuTorch has already lowered to a backend delegate.
+
+    ``to_edge_transform_and_lower`` returns a top-level graph whose partitions
+    are single ``executorch_call_delegate`` calls. Feeding that graph back into
+    ``AscendBackend.preprocess`` is a caller mistake: there is no ATen work left
+    to lower. Without this check the graph travels through every pass and only
+    fails inside TorchAir's fx2ge, which reports an unregistered AscendIR
+    converter for ``executorch_call_delegate`` and hides the real cause.
+    """
+    for node in exported_program.graph_module.graph.nodes:
+        if node.op != "call_function":
+            continue
+        target = str(node.target)
+        if "executorch_call_delegate" in target:
+            raise ValueError(
+                "graph is already lowered to a backend delegate and cannot be "
+                f"delegated again; method={method_name!r}, "
+                f"delegate_index={delegate_index}, node={node.name!r}, "
+                f"target={target!r}. Pass the ExportedProgram from "
+                "torch.export.export() to to_edge_transform_and_lower() and let "
+                "ExecuTorch invoke AscendBackend.preprocess() per partition."
+            )
+
+
 def validate_aten_targets(
     exported_program: ExportedProgram, method_name: str, delegate_index: int
 ) -> None:

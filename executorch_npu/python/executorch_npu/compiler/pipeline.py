@@ -33,6 +33,7 @@ from .compile_spec import AscendCompileOptions
 from .delegate_adapter import (
     dynamic_input_shape_option,
     lower_to_ge_graph,
+    reject_delegated_graph,
 )
 from .offline import offline_compiler
 
@@ -68,6 +69,9 @@ def compile_partition(
             delegate_index=specs.delegate_index,
         )
         log_memory(f"ENTRY method={specs.method_name} d{specs.delegate_index}")
+        # Reject an already-lowered graph before any pass rewrites it, so the
+        # caller sees the misuse instead of a downstream fx2ge conversion error.
+        reject_delegated_graph(edge_program, specs.method_name, specs.delegate_index)
         lower_edge_ops_to_aten(edge_program)
         lower_static_split_with_sizes_copy(edge_program)
         lower_edge_copy_ops(edge_program)

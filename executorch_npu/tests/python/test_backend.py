@@ -232,6 +232,48 @@ def test_dynamic_shape_contract_preserves_ranges_for_cann() -> None:
         assert binding["shape_range"] == [[2, 4], [4, 4]]
 
 
+@pytest.mark.parametrize(
+    "unbounded",
+    [
+        pytest.param(lambda: torch.export.Dim("batch"), id="no-bounds"),
+        pytest.param(lambda: torch.export.Dim("batch", min=2), id="min-only"),
+    ],
+)
+def test_unbounded_dynamic_dim_reports_missing_bound(unbounded) -> None:
+    class Identity(torch.nn.Module):
+        def forward(self, value: torch.Tensor) -> torch.Tensor:
+            return value.clone()
+
+    # torch.export accepts an open-ended Dim, but CANN needs a finite interval.
+    # Both consumers must reject it with guidance instead of leaking the sympy
+    # internal error raised when converting torch's int_oo upper bound.
+    exported = torch.export.export(
+        Identity(),
+        (torch.ones(2, 4),),
+        dynamic_shapes={"value": {0: unbounded()}},
+    )
+
+    with pytest.raises(ValueError, match="no finite upper bound"):
+        delegate_adapter.dynamic_input_shape_option(exported)
+    with pytest.raises(ValueError, match="declare both bounds explicitly"):
+        build_io_contract(exported)
+
+
+def test_dynamic_dim_with_only_max_bound_is_accepted() -> None:
+    class Identity(torch.nn.Module):
+        def forward(self, value: torch.Tensor) -> torch.Tensor:
+            return value.clone()
+
+    # torch defaults the missing lower bound to 0, so the interval is finite.
+    exported = torch.export.export(
+        Identity(),
+        (torch.ones(2, 4),),
+        dynamic_shapes={"value": {0: torch.export.Dim("batch", max=4)}},
+    )
+
+    assert delegate_adapter.dynamic_input_shape_option(exported) == "0~4,4"
+
+
 def test_io_contract_preserves_repeated_output_slots() -> None:
     class Repeated(torch.nn.Module):
         def forward(self, value):
@@ -898,6 +940,68 @@ def test_edge_ops_are_lowered_to_aten_before_torch_delegate() -> None:
         for node in edge_program.graph_module.graph.nodes
         if node.op == "call_function"
     )
+
+
+def _lowered_top_level_program(monkeypatch):
+    """Return the already-delegated graph that to_edge_transform_and_lower emits."""
+    _mock_ge_initialization(monkeypatch)
+    monkeypatch.setattr(delegate_adapter, "_load_torch_delegate", _fake_torch_delegate)
+    monkeypatch.setattr(partition_compiler, "offline_compiler", _FakeOfflineCompiler())
+    exported = torch.export.export(Add(), (torch.ones(1, 4), torch.ones(1, 4)))
+    options = AscendCompileOptions(
+        method_name="forward",
+        delegate_index=0,
+        acl_soc_name="Ascend910_9362",
+    )
+    edge = to_edge_transform_and_lower(
+        exported,
+        partitioner=[AscendPartitioner(options.to_compile_specs())],
+        compile_config=aten_edge_compile_config(),
+    )
+    return edge.exported_program(), options
+
+
+def test_already_delegated_graph_is_rejected_before_conversion(monkeypatch) -> None:
+    delegated, options = _lowered_top_level_program(monkeypatch)
+
+    assert any(
+        "executorch_call_delegate" in str(node.target)
+        for node in delegated.graph_module.graph.nodes
+        if node.op == "call_function"
+    )
+    with pytest.raises(ValueError, match="already lowered to a backend delegate"):
+        delegate_adapter.reject_delegated_graph(delegated, "forward", 0)
+
+
+def test_preprocess_of_already_delegated_graph_never_reaches_torch_delegate(
+    monkeypatch,
+) -> None:
+    delegated, options = _lowered_top_level_program(monkeypatch)
+
+    # Feeding the lowered top-level graph back into the backend is a caller
+    # mistake. It must be reported at the compile entry; otherwise the graph
+    # survives every pass and only fails inside TorchAir's fx2ge with an
+    # unregistered-converter error that hides the real cause.
+    converted = []
+
+    def recording_torch_delegate(acl_soc_name=None):
+        fake = _fake_torch_delegate(acl_soc_name)
+
+        def export_to_epair(ep):
+            converted.append(ep)
+            return SimpleNamespace(manifest=_FakeManifest())
+
+        fake.export_to_epair = export_to_epair
+        return fake
+
+    monkeypatch.setattr(
+        delegate_adapter, "_load_torch_delegate", recording_torch_delegate
+    )
+
+    with pytest.raises(ValueError, match="already lowered to a backend delegate"):
+        AscendBackend.preprocess(delegated, options.to_compile_specs())
+
+    assert converted == []
 
 
 def test_aten_edge_compile_config_supports_known_api_shapes(monkeypatch) -> None:

@@ -7,6 +7,7 @@
 # See LICENSE in the root of the software repository for the full text of the License.
 from __future__ import annotations
 
+import math
 from typing import Any, TYPE_CHECKING
 
 
@@ -29,6 +30,7 @@ def resolve_symbolic_dimension_range(
                 constraint = shape_env.bound_sympy(expression)
     if constraint is None:
         raise ValueError(f"dynamic dimension {dimension!r} has no range constraint")
+    _require_declared_bounds(dimension, constraint)
     lower = _finite_nonnegative_int(constraint.lower, "lower")
     upper = _finite_nonnegative_int(constraint.upper, "upper")
     if lower > upper:
@@ -38,11 +40,43 @@ def resolve_symbolic_dimension_range(
     return lower, upper
 
 
+def _require_declared_bounds(dimension: Any, constraint: Any) -> None:
+    """Reject dynamic dimensions exported without a finite bound.
+
+    ``Dim("n")`` and ``Dim("n", min=k)`` both pass ``torch.export.export`` with
+    an infinite upper bound, but CANN needs a finite interval to plan memory and
+    to build the ``input_shape`` compile option. Report the missing declaration
+    here instead of letting sympy's integer conversion raise an internal error.
+    """
+    for endpoint, value in (("lower", constraint.lower), ("upper", constraint.upper)):
+        if _is_unbounded(value):
+            raise ValueError(
+                f"dynamic dimension {dimension!r} has no finite {endpoint} bound "
+                f"(got {value!r}); declare both bounds explicitly, for example "
+                "torch.export.Dim('name', min=1, max=128)"
+            )
+
+
+def _is_unbounded(value: Any) -> bool:
+    """Detect every infinity sentinel that can appear in a range endpoint.
+
+    ``sympy.oo`` reports ``is_infinite``, but the ``int_oo`` that torch uses for
+    unbounded integer symbols reports ``is_finite``, so only a float conversion
+    covers both spellings.
+    """
+    if getattr(value, "is_infinite", False):
+        return True
+    try:
+        return not math.isfinite(float(value))
+    except (AttributeError, TypeError, ValueError, OverflowError):
+        return False
+
+
 def _finite_nonnegative_int(value: Any, endpoint: str) -> int:
     """Convert a symbolic range endpoint without accepting infinities."""
     try:
         result = int(value)
-    except (TypeError, ValueError, OverflowError) as error:
+    except (AttributeError, TypeError, ValueError, OverflowError) as error:
         raise ValueError(
             f"dynamic shape {endpoint} bound must be a finite integer, got {value!r}"
         ) from error

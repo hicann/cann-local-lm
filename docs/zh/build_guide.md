@@ -33,7 +33,7 @@ apt install -y cmake build-essential python3 python3-venv python3-pip patchelf g
 
 ## CANN
 
-CANN是**外部预置**（用户先source其 `set_env.sh`），本仓不构建,当前只支持x86版本。
+CANN是**外部预置**（用户先source其 `set_env.sh`），本仓不构建，当前只支持 x86 版本。
 
 | 组件 | 版本 | 获取 |
 |------|------|------|
@@ -65,7 +65,7 @@ ln -s ${install_path}/cann-${cann_version} ${install_path}/cann
 
 ```bash
 source $HOME/Ascend/cann/set_env.sh
-echo $ASCEND_HOME_PATH   # 期望: .../cann-9.3.0（单层，指向 toolkit 安装根）
+echo $ASCEND_HOME_PATH   # 期望： .../cann-9.3.0（单层，指向 toolkit 安装根）
 ```
 
 > 后续所有 `source $HOME/Ascend/cann/set_env.sh` 均指向此路径。如安装到其他路径，替换 `$HOME/Ascend` 为实际路径。
@@ -115,9 +115,9 @@ apt install -y default-jre
 ### 验证
 
 ```bash
-$OHOS_SDK_NATIVE/llvm/bin/clang --version   # 期望: 文件存在
-ls $OHOS_SDK_NATIVE/sysroot                 # 期望: 目录存在
-ls tools/binary-sign-tool.jar                # 期望: 文件存在
+$OHOS_SDK_NATIVE/llvm/bin/clang --version   # 期望： 文件存在
+ls $OHOS_SDK_NATIVE/sysroot                 # 期望： 目录存在
+ls tools/binary-sign-tool.jar                # 期望： 文件存在
 ```
 ---
 

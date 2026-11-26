@@ -4,6 +4,8 @@
 
 ## 1. 概述
 
+本章说明背景、设计决策与设计目标（1.1–1.3）。
+
 ### 1.1 背景
 
 ### 1.2 设计决策
@@ -31,6 +33,8 @@
 ---
 
 ## 2. 架构总览
+
+本章描述分层结构、依赖规则、目录结构与代码量估算（2.1–2.4）。
 
 ### 2.1 分层结构
 
@@ -155,6 +159,8 @@ llm_engine/
 ---
 
 ## 3. API层
+
+本章定义 Engine、Session、请求参数结构体、结果与回调、C 绑定层（3.1–3.5）。
 
 ### 3.1 Engine
 
@@ -395,6 +401,8 @@ LLMStatus LLMEngine_Generate(LLMEngine* engine, LLMSession* session,
 
 ## 4. 编排层
 
+本章说明 Scheduler、InferRequest、Prefill/Decode 控制器与调度策略（4.1–4.5）。
+
 ### 4.1 Scheduler
 
 ```cpp
@@ -598,6 +606,8 @@ class ContinuousBatchStrategy : public IScheduleStrategy { /* ... */ };
 ---
 
 ## 5. 组件层
+
+本章覆盖 ModelRunner、TensorManager、KVCacheManager、Tokenizer、Sampler、Embedding、PromptManager 与组件交互规则（5.1–5.8）。
 
 ### 5.1 ModelRunner
 
@@ -1099,6 +1109,8 @@ Prefill流程示例（Controller 内部）：
 
 ## 6. 平台HAL
 
+本章定义平台 HAL 的基础类型、核心接口、平台工厂及 Kirin/Mock 实现（6.1–6.5）。
+
 ### 6.1 基础类型
 
 ```cpp
@@ -1243,6 +1255,8 @@ enum class PlatformType : uint8_t {
 
 ## 7. 错误处理与状态管理
 
+本章说明错误处理与状态管理（7.1–7.2）。
+
 ### 7.1 错误处理
 
 使用 `std::expected<T, Status>` + 状态码，不用异常（NPU/嵌入式场景不适宜异常）。
@@ -1342,6 +1356,8 @@ Any → Failed                   （错误）
 ---
 
 ## 8. 关键流程
+
+本章给出引擎初始化、首次推理、多轮对话、KV/Prompt Cache、Batch Decode、挂起恢复与数据流全景（8.1–8.8）。
 
 ### 8.1 引擎初始化（模型加载）
 

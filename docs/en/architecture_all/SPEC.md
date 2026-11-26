@@ -4,6 +4,8 @@ English | [简体中文](../../zh/architecture_all/SPEC.md)
 
 ## 1. Overview
 
+This chapter covers the background, design decisions, and design goals (1.1-1.3).
+
 ### 1.1 Background
 
 ### 1.2 Design Decisions
@@ -31,6 +33,8 @@ English | [简体中文](../../zh/architecture_all/SPEC.md)
 ---
 
 ## 2. Architecture Overview
+
+This chapter describes the layered structure, dependency rules, directory structure, and code volume estimate (2.1-2.4).
 
 ### 2.1 Layered Structure
 
@@ -155,6 +159,8 @@ New architecture: approximately 10,200 lines.
 ---
 
 ## 3. API Layer
+
+This chapter defines Engine, Session, request parameter structs, results and callbacks, and the C binding layer (3.1-3.5).
 
 ### 3.1 Engine
 
@@ -395,6 +401,8 @@ LLMStatus LLMEngine_Generate(LLMEngine* engine, LLMSession* session,
 
 ## 4. Orchestration Layer
 
+This chapter covers the Scheduler, InferRequest, Prefill/Decode controllers, and scheduling strategy (4.1-4.5).
+
 ### 4.1 Scheduler
 
 ```cpp
@@ -598,6 +606,8 @@ class ContinuousBatchStrategy : public IScheduleStrategy { /* ... */ };
 ---
 
 ## 5. Component Layer
+
+This chapter covers ModelRunner, TensorManager, KVCacheManager, Tokenizer, Sampler, Embedding, PromptManager, and component interaction rules (5.1-5.8).
 
 ### 5.1 ModelRunner
 
@@ -1099,6 +1109,8 @@ Prefill flow example (inside the Controller):
 
 ## 6. Platform HAL
 
+This chapter defines HAL basic types, core interfaces, the platform factory, and the Kirin/Mock implementations (6.1-6.5).
+
 ### 6.1 Basic Types
 
 ```cpp
@@ -1243,6 +1255,8 @@ Implements HAL interfaces without depending on NPU hardware, for full-pipeline u
 
 ## 7. Error Handling and State Management
 
+This chapter describes error handling and state management (7.1-7.2).
+
 ### 7.1 Error Handling
 
 Uses `std::expected<T, Status>` + status codes, no exceptions (NPU/embedded scenarios are not suitable for exceptions).
@@ -1342,6 +1356,8 @@ State transitions use `compare_exchange_strong` to guarantee atomicity and preve
 ---
 
 ## 8. Key Flows
+
+This chapter presents engine initialization, first inference, multi-turn dialogue, KV/Prompt cache, batch decode, suspend/resume, and the full data flow (8.1-8.8).
 
 ### 8.1 Engine Initialization (Model Loading)
 

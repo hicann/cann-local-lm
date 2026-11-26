@@ -74,4 +74,3 @@ bash examples/test_converter/dopt_op_benchmark/run.sh compare \
 - `golden/` 是**生成产物**（gitignored，见 `.gitignore`），由 `gen` 从 `DOPT_QUANT_DIR` 派生；换机器/换量化产物用 `gen` 重建。
 - 脚本无机器路径硬编码，路径全部经 env 变量 / CLI 参数传入（`GEMMA4_MODEL_PATH` / `DOPT_QUANT_DIR` / `DOPT_PYTHON` / `DEVICE`）。
 - 参考算子是 **fakequant 仿真**（`quant→dequant→fp matmul`），非真 int4 内核；和 OM 真 int4 比对时，差异同时反映"算子实现差异"与"fakequant vs 真 int4 的数值路径差异"——若要纯粹校验 OM 内核实现，需另建匹配内核语义的 reference。
-```

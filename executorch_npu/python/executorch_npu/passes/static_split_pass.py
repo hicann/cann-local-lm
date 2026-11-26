@@ -60,3 +60,41 @@ def lower_static_split_with_sizes_copy(exported_program: ExportedProgram) -> Non
         graph.erase_node(split_node)
     graph.eliminate_dead_code()
     exported_program.graph_module.recompile()
+    # A getitem feeding the graph output directly is replaced by a slice, so the
+    # signature must follow; this pass does not validate, and a stale name would
+    # only surface later as a confusing I/O contract failure.
+    _resync_output_signature(exported_program)
+
+
+def _resync_output_signature(exported_program: ExportedProgram) -> None:
+    """Point output specs at the nodes the graph actually returns.
+
+    ``replace_all_uses_with`` rewrites the ``output`` node's arguments but not
+    ``graph_signature``, whose specs reference nodes by plain name. Replacing a
+    node that feeds the graph output directly therefore leaves the signature
+    naming a node that no longer exists. Mirrors what ExecuTorch's own
+    ``exir/passes/reinplace.py`` does after it replaces nodes.
+    """
+    output_node = next(
+        (
+            node
+            for node in exported_program.graph_module.graph.nodes
+            if node.op == "output"
+        ),
+        None,
+    )
+    if output_node is None or not output_node.args:
+        return
+    returned = output_node.args[0]
+    if not isinstance(returned, (tuple, list)):
+        returned = (returned,)
+    specs = exported_program.graph_signature.output_specs
+    if len(specs) != len(returned):
+        raise ValueError(
+            f"output specs and graph outputs differ: {len(specs)} specs, "
+            f"{len(returned)} graph outputs"
+        )
+    for spec, value in zip(specs, returned):
+        name = getattr(spec.arg, "name", None)
+        if isinstance(value, torch.fx.Node) and name is not None and name != value.name:
+            spec.arg.name = value.name

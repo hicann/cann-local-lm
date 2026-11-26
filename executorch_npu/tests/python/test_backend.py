@@ -791,6 +791,34 @@ def test_static_split_with_sizes_copy_is_lowered_to_slices() -> None:
     torch.testing.assert_close(actual, expected)
 
 
+def test_static_split_getitem_at_graph_output_keeps_signature_consistent() -> None:
+    class Split(torch.nn.Module):
+        def forward(self, value):
+            first, second = torch.ops.aten.split_with_sizes_copy.default(
+                value, [2, 4], -1
+            )
+            return first, second
+
+    exported = torch.export.export(Split(), (torch.randn(1, 6),))
+    example = torch.arange(6, dtype=torch.float32).view(1, 6)
+    expected = exported.module()(example)
+
+    # Both getitem nodes feed the graph output directly, so replacing them
+    # leaves the signature naming nodes that no longer exist.
+    lower_static_split_with_sizes_copy(exported)
+    exported.validate()
+
+    assert [spec.arg.name for spec in exported.graph_signature.output_specs] == [
+        node.name
+        for node in next(
+            node for node in exported.graph_module.graph.nodes if node.op == "output"
+        ).args[0]
+    ]
+    actual = exported.module()(example)
+    for left, right in zip(expected, actual, strict=True):
+        torch.testing.assert_close(left, right)
+
+
 def test_edge_copy_ops_are_lowered_to_torchair_targets() -> None:
     class CopyOps(torch.nn.Module):
         def forward(self, value):

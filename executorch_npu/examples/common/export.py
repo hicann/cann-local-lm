@@ -189,13 +189,10 @@ def compile_pte(
         AscendPartitioner,
         aten_edge_compile_config,
     )
-    from executorch_npu.passes import lower_softmax_int
 
     started = time.perf_counter()
     exported = {name: torch.export.load(path) for name, path in methods.items()}
     _dedup_cross_method_weights(exported)
-    for program in exported.values():
-        lower_softmax_int(program)
     partitioners = {}
     for name in exported:
         compile_kwargs = {

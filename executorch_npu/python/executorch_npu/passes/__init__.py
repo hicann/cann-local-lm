@@ -10,7 +10,6 @@
 from .edge_copy_pass import lower_edge_copy_ops
 from .edge_ops_pass import lower_edge_ops_to_aten
 from .scalar_constant_cast_pass import fold_scalar_constant_casts
-from .softmax_pass import lower_softmax_int
 from .static_split_pass import lower_static_split_with_sizes_copy
 
 
@@ -18,6 +17,5 @@ __all__ = [
     "fold_scalar_constant_casts",
     "lower_edge_copy_ops",
     "lower_edge_ops_to_aten",
-    "lower_softmax_int",
     "lower_static_split_with_sizes_copy",
 ]

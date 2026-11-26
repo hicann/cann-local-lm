@@ -85,4 +85,17 @@ struct Manifest {
 
 bool ParseManifest(const void *data, size_t size, Manifest *manifest, std::string *error);
 
+// Number of ExecuTorch argument slots this manifest declares. ExecuTorch allocates
+// one slot per binding regardless of state host visibility, so a device_only state
+// occupying the trailing slots must be counted as well.
+size_t ExpectedArgumentCount(const Manifest &manifest);
+
+// Byte width of one element of a manifest dtype, or 0 when the name is not one of
+// the supported dtypes. This is the single definition of the supported dtype set.
+size_t DtypeElementSize(const std::string &dtype);
+
+// Size in bytes of a zero initializer for this state binding. Returns false when
+// the dtype is unsupported or the shape is empty, non-positive, or would overflow.
+bool StateZeroInitializerBytes(const StateBinding &binding, size_t *nbytes);
+
 }  // namespace executorch_npu

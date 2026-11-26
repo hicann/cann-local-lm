@@ -72,10 +72,7 @@ bool IsBasename(const std::string &value) {
 }
 
 bool IsSupportedDtype(const std::string &value) {
-  static const std::set<std::string> supported = {
-      "bool", "uint8", "int8", "int16", "int32", "int64", "float16", "bfloat16", "float32", "float64",
-  };
-  return supported.count(value) != 0;
+  return DtypeElementSize(value) != 0;
 }
 
 size_t SizeValue(const Json &value, const std::string &path) {
@@ -518,6 +515,52 @@ bool ParseManifest(const void *data, size_t size, Manifest *manifest, std::strin
     SetError(std::string("invalid manifest JSON: ") + exception.what(), error);
   }
   return false;
+}
+
+size_t ExpectedArgumentCount(const Manifest &manifest) {
+  size_t expected = 0;
+  for (const IoBinding &binding : manifest.inputs) {
+    expected = std::max(expected, binding.et_arg_index + 1);
+  }
+  for (const IoBinding &binding : manifest.outputs) {
+    expected = std::max(expected, binding.et_arg_index + 1);
+  }
+  return expected;
+}
+
+size_t DtypeElementSize(const std::string &dtype) {
+  if (dtype == "bool" || dtype == "uint8" || dtype == "int8") {
+    return 1;
+  }
+  if (dtype == "int16" || dtype == "float16" || dtype == "bfloat16") {
+    return 2;
+  }
+  if (dtype == "int32" || dtype == "float32") {
+    return 4;
+  }
+  if (dtype == "int64" || dtype == "float64") {
+    return 8;
+  }
+  return 0;
+}
+
+bool StateZeroInitializerBytes(const StateBinding &binding, size_t *nbytes) {
+  const size_t element_size = DtypeElementSize(binding.dtype);
+  if (element_size == 0) {
+    return false;
+  }
+  size_t elements = 1;
+  for (int64_t dimension : binding.shape) {
+    if (dimension <= 0 || static_cast<uint64_t>(dimension) > std::numeric_limits<size_t>::max() / elements) {
+      return false;
+    }
+    elements *= static_cast<size_t>(dimension);
+  }
+  if (elements > std::numeric_limits<size_t>::max() / element_size) {
+    return false;
+  }
+  *nbytes = elements * element_size;
+  return true;
 }
 
 }  // namespace executorch_npu

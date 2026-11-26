@@ -14,6 +14,7 @@
 #include <fstream>
 #include <iostream>
 #include <iterator>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -113,6 +114,25 @@ int main(int argc, char **argv) {
   assert(error.find("manifest.model.nbytes") != std::string::npos);
   assert(error.find("non-negative integer") != std::string::npos);
 
+  // The supported dtype set has one definition (DtypeElementSize); parsing must
+  // reject anything outside it instead of accepting a name the backend cannot size.
+  for (const char *bad_dtype : {"float8_e4m3fn", "FLOAT32", ""}) {
+    Json bad_dtype_json = Json::parse(ManifestJson());
+    bad_dtype_json["io_contract"]["inputs"][0]["dtype"] = bad_dtype;
+    const auto bad_dtype_bytes = Frame(bad_dtype_json.dump());
+    assert(!executorch_npu::ParseManifest(bad_dtype_bytes.data(), bad_dtype_bytes.size(), &manifest, &error));
+    assert(error.find("manifest.io_contract.inputs[0].dtype") != std::string::npos);
+    assert(error.find("unsupported value") != std::string::npos);
+  }
+  // int16 and float64 are part of the supported set and must parse.
+  for (const char *good_dtype : {"int16", "float64"}) {
+    Json good_dtype_json = Json::parse(ManifestJson());
+    good_dtype_json["io_contract"]["inputs"][0]["dtype"] = good_dtype;
+    const auto good_dtype_bytes = Frame(good_dtype_json.dump());
+    assert(executorch_npu::ParseManifest(good_dtype_bytes.data(), good_dtype_bytes.size(), &manifest, &error));
+    assert(manifest.inputs[0].dtype == good_dtype);
+  }
+
   const std::string manifest_310b_json =
       ReplaceOnce(ManifestJson(), R"("acl_soc_name":"Ascend910_9362")", R"("acl_soc_name":"Ascend310B1")");
   std::vector<uint8_t> manifest_310b = Frame(manifest_310b_json);
@@ -177,6 +197,106 @@ int main(int argc, char **argv) {
   std::vector<uint8_t> misaligned = Frame(misaligned_weight);
   assert(!executorch_npu::ParseManifest(misaligned.data(), misaligned.size(), &manifest, &error));
   assert(error.find("range is invalid") != std::string::npos);
+
+  // ExecuTorch allocates one argument slot per binding regardless of state host
+  // visibility, so the count must cover device_only states in trailing slots.
+  // Under-counting them made the backend reject a valid invocation with
+  // Error::InvalidArgument before it ever reached the device.
+  {
+    const auto io = [](size_t index, const char *role) {
+      executorch_npu::IoBinding binding;
+      binding.et_arg_index = index;
+      binding.semantic_role = role;
+      return binding;
+    };
+    const auto state = [](size_t current, size_t next, const char *visibility) {
+      executorch_npu::StateBinding binding;
+      binding.state_id = "s";
+      binding.current_input_arg = current;
+      binding.next_output_arg = next;
+      binding.host_visibility = visibility;
+      return std::vector<executorch_npu::StateBinding>{binding};
+    };
+    executorch_npu::Manifest counted;
+
+    // synchronized explicit contract: the state reuses user I/O slots.
+    counted.inputs = {io(0, "data"), io(1, "state_current")};
+    counted.outputs = {io(2, "data"), io(3, "state_next")};
+    counted.state_bindings = state(1, 3, "synchronized");
+    assert(executorch_npu::ExpectedArgumentCount(counted) == 4);
+
+    // device_only read-only state: there is no state_next slot at all.
+    counted.inputs = {io(0, "data"), io(1, "state_current")};
+    counted.outputs = {io(2, "data")};
+    counted.state_bindings = state(1, std::numeric_limits<size_t>::max(), "device_only");
+    assert(executorch_npu::ExpectedArgumentCount(counted) == 3);
+
+    // device_only mutated buffer: the state occupies the trailing slots and the
+    // manifest lists it before the user data. This is the shape that used to be
+    // under-counted, because every trailing slot is device_only.
+    counted.inputs = {io(2, "state_current"), io(0, "data")};
+    counted.outputs = {io(3, "state_next"), io(1, "data")};
+    counted.state_bindings = state(2, 3, "device_only");
+    assert(executorch_npu::ExpectedArgumentCount(counted) == 4);
+
+    // stateless delegate.
+    counted.inputs = {io(0, "data")};
+    counted.outputs = {io(1, "data")};
+    counted.state_bindings.clear();
+    assert(executorch_npu::ExpectedArgumentCount(counted) == 2);
+  }
+
+  // Every dtype the manifest accepts must have a byte width, otherwise a
+  // device_only state of that dtype cannot be zero-initialized and the backend
+  // reports the unrelated "requires an initializer" error. int16 and float64
+  // were missing from the table that used to live in ascend_backend.cpp.
+  {
+    const struct {
+      const char *dtype;
+      size_t element_size;
+    } kExpected[] = {
+        {"bool", 1},  {"uint8", 1},   {"int8", 1},     {"int16", 2},   {"int32", 4},
+        {"int64", 8}, {"float16", 2}, {"bfloat16", 2}, {"float32", 4}, {"float64", 8},
+    };
+    for (const auto &entry : kExpected) {
+      assert(executorch_npu::DtypeElementSize(entry.dtype) == entry.element_size);
+
+      executorch_npu::StateBinding binding;
+      binding.dtype = entry.dtype;
+      binding.shape = {2, 3};
+      size_t nbytes = 0;
+      assert(executorch_npu::StateZeroInitializerBytes(binding, &nbytes));
+      assert(nbytes == 6 * entry.element_size);
+    }
+    // Names outside the supported set must be rejected rather than silently sized.
+    assert(executorch_npu::DtypeElementSize("float8_e4m3fn") == 0);
+    assert(executorch_npu::DtypeElementSize("") == 0);
+    assert(executorch_npu::DtypeElementSize("FLOAT32") == 0);
+
+    executorch_npu::StateBinding unsupported;
+    unsupported.dtype = "float8_e4m3fn";
+    unsupported.shape = {4};
+    size_t ignored = 0;
+    assert(!executorch_npu::StateZeroInitializerBytes(unsupported, &ignored));
+
+    // A non-positive or overflowing dimension must be refused, not truncated.
+    executorch_npu::StateBinding non_positive;
+    non_positive.dtype = "float32";
+    non_positive.shape = {0};
+    assert(!executorch_npu::StateZeroInitializerBytes(non_positive, &ignored));
+
+    executorch_npu::StateBinding overflow;
+    overflow.dtype = "float64";
+    overflow.shape = {static_cast<int64_t>(1) << 62, static_cast<int64_t>(1) << 62};
+    assert(!executorch_npu::StateZeroInitializerBytes(overflow, &ignored));
+
+    // A scalar state has an empty shape and still occupies one element.
+    executorch_npu::StateBinding scalar;
+    scalar.dtype = "int64";
+    size_t scalar_bytes = 0;
+    assert(executorch_npu::StateZeroInitializerBytes(scalar, &scalar_bytes));
+    assert(scalar_bytes == 8);
+  }
 
   framed[0] = 'X';
   assert(!executorch_npu::ParseManifest(framed.data(), framed.size(), &manifest, &error));

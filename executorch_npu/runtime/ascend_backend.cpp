@@ -361,31 +361,13 @@ bool StateMetadataMatches(const StateDefinition &definition, const StateTensorCo
 }
 
 bool MakeZeroStateInitializer(const StateBinding &binding, StateTensorCopy *initializer) {
-  size_t element_size = 0;
-  if (binding.dtype == "float32" || binding.dtype == "int32") {
-    element_size = 4;
-  } else if (binding.dtype == "float16" || binding.dtype == "bfloat16") {
-    element_size = 2;
-  } else if (binding.dtype == "int64") {
-    element_size = 8;
-  } else if (binding.dtype == "int8" || binding.dtype == "uint8" || binding.dtype == "bool") {
-    element_size = 1;
-  } else {
-    return false;
-  }
-  size_t elements = 1;
-  for (int64_t dimension : binding.shape) {
-    if (dimension <= 0 || static_cast<uint64_t>(dimension) > std::numeric_limits<size_t>::max() / elements) {
-      return false;
-    }
-    elements *= static_cast<size_t>(dimension);
-  }
-  if (elements > std::numeric_limits<size_t>::max() / element_size) {
+  size_t nbytes = 0;
+  if (!StateZeroInitializerBytes(binding, &nbytes)) {
     return false;
   }
   initializer->dtype = binding.dtype;
   initializer->shape = binding.shape;
-  initializer->data.assign(elements * element_size, 0);
+  initializer->data.assign(nbytes, 0);
   return true;
 }
 
@@ -1297,18 +1279,11 @@ class AscendBackend final : public BackendInterface {
       }
       return false;
     };
-    size_t expected_args = 0;
-    for (const IoBinding &binding : handle->manifest.inputs) {
-      if (requires_evalue(binding)) {
-        expected_args = std::max(expected_args, binding.et_arg_index + 1);
-      }
-    }
-    for (const IoBinding &binding : handle->manifest.outputs) {
-      if (requires_evalue(binding)) {
-        expected_args = std::max(expected_args, binding.et_arg_index + 1);
-      }
-    }
-    if (args.size() != expected_args) {
+    // ExecuTorch allocates one argument slot per manifest binding regardless of
+    // host visibility. Filtering by requires_evalue here would under-count a
+    // device_only state occupying the trailing slots, which is exactly where
+    // mutated module buffers land, and reject a valid invocation.
+    if (args.size() != ExpectedArgumentCount(handle->manifest)) {
       return Error::InvalidArgument;
     }
     // 校验素有输入 输出tensor

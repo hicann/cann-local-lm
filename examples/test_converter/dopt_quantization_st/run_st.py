@@ -572,7 +572,7 @@ def run_check(_: argparse.Namespace) -> int:
             ] = "Quant_act_weight_eco"
             dopt_config_path.write_text(json.dumps(strategy_fixture), encoding="utf-8")
             _expect_failure(
-                lambda: verify_output(output_dir, "state-dict"),
+                lambda output_dir=output_dir: verify_output(output_dir, "state-dict"),
                 "legacy strategy Quant_act_weight_eco",
             )
             strategy_fixture["layer_strategy"]["model.layers.0.self_attn.q_proj"][
@@ -581,7 +581,7 @@ def run_check(_: argparse.Namespace) -> int:
             dopt_config_path.write_text(json.dumps(strategy_fixture), encoding="utf-8")
             fake_weight.unlink()
             _expect_failure(
-                lambda: verify_output(output_dir, "state-dict"),
+                lambda output_dir=output_dir: verify_output(output_dir, "state-dict"),
                 "missing or empty quantized state dict",
             )
         _expect_failure(

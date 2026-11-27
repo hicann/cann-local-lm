@@ -31,10 +31,10 @@ English | [简体中文](../../../zh/cann_lm_converter/quant/quant_design.md)
 
 > Quantization integration CLI params (`--quant-path` / `--quant-method`) in [cli_design.md](../cli/cli_design.md); quantized epair artifact layout, host_weights mechanism, C++ loading side in [export_design.md](../export/export_design.md).
 
-`cann_local_lm/converter/quant/` contains two blocks:
+`cann_local_lm/quant/` contains two blocks:
 
 1. **dopt_lm (vendored GPTQ framework)**: performs GPTQ weight quantization on HF models on **NPU/GPU/CPU**, producing per-layer `group_scale` (per-channel × per-group symmetric, offset=0) + GPTQ-corrected fp16 weights, persisted to `trained_quant_weight.pth` or `model.safetensors`. The CANN lightweight tool itself only does fakequant (weights stay fp16), doesn't materialize real int4, doesn't connect to converter export.
-2. **Converter-side quantization integration** (`cann_local_lm/converter/swap.py`: orchestration-layer swap; `cann_local_lm/converter/export/quant_swap/`: `materialize.py` / `quant_linear.py` internal materialization; `cann_local_lm/converter/quant/`: `auto_quant.py` / `dopt_wrapper.py`): loads lightweight tool artifacts on **CPU venv + torchair stubs**, materializes into real int4 payload + fp32 scale, replaces `nn.Linear` with `QuantLinear` (forward calls `npu::npu_dynamic_quant` + `npu::npu_quant_matmul`), then `torch.export` produces epair containing `npu_quant_matmul` + `DynamicQuant` nodes.
+2. **Converter-side quantization integration** (`cann_local_lm/converter/swap.py`: orchestration-layer swap; `cann_local_lm/converter/export/quant_swap/`: `materialize.py` / `quant_linear.py` internal materialization; `cann_local_lm/quant/`: `auto_quant.py` / `dopt_wrapper.py`): loads lightweight tool artifacts on **CPU venv + torchair stubs**, materializes into real int4 payload + fp32 scale, replaces `nn.Linear` with `QuantLinear` (forward calls `npu::npu_dynamic_quant` + `npu::npu_quant_matmul`), then `torch.export` produces epair containing `npu_quant_matmul` + `DynamicQuant` nodes.
 
 ### Capability Boundary
 
@@ -88,7 +88,7 @@ Bit-width is determined by dopt_config's `Quant_INT8-4_ECO` strategy (W4A8), no 
 ## quant Package Architecture
 
 ```
-cann_local_lm/converter/quant/                  # Lightweight tool GPTQ toolchain + calibration data
+cann_local_lm/quant/                  # Lightweight tool GPTQ toolchain + calibration data
 ├── __init__.py              Package facade (lightweight tool orchestration + calibration; no longer re-exports materialize/swap)
 ├── auto_quant.py            One-click quantization (scheme C: spawn lightweight tool subprocess, detect NPU/GPU/CPU)
 ├── dopt_wrapper.py          Lightweight tool subprocess main (model_define + weight_quant_pipline + auto-generate dopt_config)
@@ -100,7 +100,7 @@ cann_local_lm/converter/quant/                  # Lightweight tool GPTQ toolchai
 cann_local_lm/converter/swap.py                 # Orchestration module (converter root, peer of loader/saver; load→swap→save middle step)
                                            # Absolute import from quant_swap/: lightweight tool artifact loading + Linear→QuantLinear swap + layer strategy parsing
 
-cann_local_lm/converter/quant_entry.py          # Quantization entry facade (converter root): re-export run_auto_quant + swap_from_dopt
+cann_local_lm/quant_entry.py          # Quantization entry facade (converter root): re-export run_auto_quant + swap_from_dopt
                                            # cann_lm_converter single quantization import point (lazy, no-quant doesn't trigger swap side effects)
 
 cann_local_lm/converter/export/quant_swap/      # Quantization materialization internal (materialize + QuantLinear, called by swap.py)
@@ -109,7 +109,9 @@ cann_local_lm/converter/export/quant_swap/      # Quantization materialization i
 └── quant_linear.py          Export-use QuantLinear nn.Module, forward emits npu::npu_quant_matmul IR
 ```
 
-> **Migration note** (2026-08-31): `materialize.py` / `quant_linear.py` / `swap.py` migrated out of `cann_local_lm/converter/quant/`. `materialize.py` / `quant_linear.py` landed in `cann_local_lm/converter/export/quant_swap/` (internal materialization); `swap.py` further promoted to `cann_local_lm/converter/swap.py` (converter root, orchestration layer peer of `loader.py` / `saver.py`, absolute import materialize/quant_linear). `quant/` now only retains lightweight tool orchestration (`auto_quant` / `dopt_wrapper`) + vendored `dopt_lm` + calibration data. Old import paths cleanly cut: `swap_from_dopt` goes through `cann_local_lm.converter.swap`, materialization symbols go through `cann_local_lm.converter.export.quant_swap`.
+> **Migration note** (2026-08-31): `materialize.py` / `quant_linear.py` / `swap.py` migrated out of what was then `cann_local_lm/converter/quant/`. `materialize.py` / `quant_linear.py` landed in `cann_local_lm/converter/export/quant_swap/` (internal materialization); `swap.py` further promoted to `cann_local_lm/converter/swap.py` (converter root, orchestration layer peer of `loader.py` / `saver.py`, absolute import materialize/quant_linear). Old import paths cleanly cut: `swap_from_dopt` goes through `cann_local_lm.converter.swap`, materialization symbols go through `cann_local_lm.converter.export.quant_swap`.
+
+> **Migration note** (2026-11-27): the `quant/` package moved from `cann_local_lm/converter/quant/` up to `cann_local_lm/quant/` (top-level peer of `converter`). The dopt GPTQ toolchain and converter export flow semantics are unchanged — only paths/import prefixes changed (`cann_local_lm.converter.quant.*` → `cann_local_lm.quant.*`); the `quant_entry.py` facade stays at the converter root (single CLI import point unchanged).
 
 > **dopt_config.json is not in the quant/ package dir**: the layer strategy config (`{layer_name: quant_strategy}`) is auto-generated by `build_layer_strategy` traversing the model, written into the lightweight tool artifact dir (`--output-dir`/temp disk); converter-side `swap._read_quant_param_map` reads from that artifact dir. **Both scenarios auto-generate**, no manual writing needed. `download_dataset.py`'s default output dir is `calibration_data/`, but this repo's actual artifacts land in `calibrate_sets/` (config.yaml's `train_files` points there).
 
@@ -124,18 +126,18 @@ cann_local_lm/converter/export/quant_swap/__init__.py (materialization internal,
     ├── materialize.py      ← leaf, only imports torch
     └── quant_linear.py     ← import cann_local_lm.models.fused_ops.ops (registration side effect: npu_quant_matmul + npu_dynamic_quant)
 
-cann_local_lm/converter/quant/auto_quant.py   ← scenario 2 impl (run_auto_quant), subprocess calls dopt_wrapper.py (independent process, doesn't import swap)
+cann_local_lm/quant/auto_quant.py   ← scenario 2 impl (run_auto_quant), subprocess calls dopt_wrapper.py (independent process, doesn't import swap)
 cann_local_lm/converter/swap.py               ← scenario 1/2 impl (swap_from_dopt), absolute import quant_swap/
-cann_local_lm/converter/quant_entry.py        ← facade, re-export run_auto_quant + swap_from_dopt
+cann_local_lm/quant_entry.py        ← facade, re-export run_auto_quant + swap_from_dopt
                                       ↑
                                       │ external consumer (sole quantization entry)
                   cann_lm_converter.py:
-                      from cann_local_lm.converter.quant_entry import run_auto_quant, swap_from_dopt
+                      from cann_local_lm.quant_entry import run_auto_quant, swap_from_dopt
                       (lazy import inside convert() quantization conditional block; no-quant doesn't import facade → doesn't trigger swap's npu op registration side effects)
 ```
 
 - **No circular deps**: `materialize ← swap → quant_linear` DAG; `materialize` and `quant_linear` don't depend on each other; `auto_quant.py` and `swap.py` are decoupled (subprocess doesn't import swap).
-- **cann_lm_converter accesses the quantization entry via the single `cann_local_lm.converter.quant_entry` facade** (`run_auto_quant` impl in `quant/auto_quant.py` + `swap_from_dopt` impl in `swap.py`, facade re-exports both). `quant_swap/__init__.py` re-exports 6 materialization symbols (`materialize_*` / `transdata_scale` / `restore_scale` / `pack_int4` / `QuantLinear`). `swap_from_dopt` (main path, shared by scenario 1/2, one load sd does both Linear swap + Embedding extraction) + `run_auto_quant` (scenario 2 spawns subprocess). The rest are exposed for testing/offline/future direct calls:
+- **cann_lm_converter accesses the quantization entry via the single `cann_local_lm.quant_entry` facade** (`run_auto_quant` impl in `quant/auto_quant.py` + `swap_from_dopt` impl in `swap.py`, facade re-exports both). `quant_swap/__init__.py` re-exports 6 materialization symbols (`materialize_*` / `transdata_scale` / `restore_scale` / `pack_int4` / `QuantLinear`). `swap_from_dopt` (main path, shared by scenario 1/2, one load sd does both Linear swap + Embedding extraction) + `run_auto_quant` (scenario 2 spawns subprocess). The rest are exposed for testing/offline/future direct calls:
   - `swap_embeddings_from_dopt` (embedding int8+scale extraction, called internally by `swap_from_dopt`; located in `cann_local_lm.converter.swap`)
   - `load_dopt_state_dict` (lightweight tool artifact loading, called internally by `swap_from_dopt`; located in `cann_local_lm.converter.swap`)
   - `materialize_int4_per_group_symmetric` / `materialize_int8_per_channel_symmetric` / `QuantLinear` (located in `cann_local_lm.converter.export.quant_swap`, used via `swap.py` absolute import)
@@ -229,11 +231,11 @@ Corresponds to the lightweight tool `strategy.py`'s **`Quant_INT8-4_ECO`** (`dop
 │                                                                         │
 │  Input:                                                                 │
 │   - HF model (--hf-path / --model-path)                                  │
-│   - cann_local_lm/converter/quant/config.yaml      ← --optimize-config         │
+│   - cann_local_lm/quant/config.yaml      ← --optimize-config         │
 │       (dataset.train_files=calibrate_sets/*.jsonl, ptq_samples=1024,    │
 │        cutoff_len=512, fp16=true)                                       │
-│   - cann_local_lm/converter/quant/calibration.json ← calibration corpus (relative to CWD) │
-│   - cann_local_lm/converter/quant/dopt_config.json ← --dopt-config (layer strategy) │
+│   - cann_local_lm/quant/calibration.json ← calibration corpus (relative to CWD) │
+│   - cann_local_lm/quant/dopt_config.json ← --dopt-config (layer strategy) │
 │       (layer_strategy: Linear→Quant_INT8-4_ECO, group_size=128,         │
 │        Embedding→Quant_Embed_MinMax)                                    │
 │                                                                         │
@@ -338,7 +340,7 @@ Currently two steps via disk bridge (`--quant-path`). To implement CLI one-click
 
 #### Scheme C Design
 
-converter `--quant-method gptq` one-click trigger: main process spawns `dopt_wrapper.py` subprocess (NPU/GPU/CPU env, auto-detected by `_detect_device_type`, falls back to `cpu` when no accelerator) to run GPTQ → artifacts to temp disk → converter swap + export. Impl in `cann_local_lm/converter/quant/auto_quant.py` (`run_auto_quant`).
+converter `--quant-method gptq` one-click trigger: main process spawns `dopt_wrapper.py` subprocess (NPU/GPU/CPU env, auto-detected by `_detect_device_type`, falls back to `cpu` when no accelerator) to run GPTQ → artifacts to temp disk → converter swap + export. Impl in `cann_local_lm/quant/auto_quant.py` (`run_auto_quant`).
 
 ```
 converter main process (CPU stubs)                      subprocess (NPU/GPU/CPU env)
@@ -367,7 +369,7 @@ DEVICE=npu python cann_lm_converter.py \
 
 **Implementation status** (`auto_quant.py` + `dopt_wrapper.py`):
 1. **subprocess env** ✅: `PYTHONPATH` adds `quant/` + `DEVICE=<npu|cuda|cpu>` + `LD_LIBRARY_PATH` removes stubs; `DOPT_PYTHON` env var can override system Python path
-2. **calibration path** ✅: subprocess `cwd=cann_local_lm/converter/quant/` (config.yaml's `train_files` points to `calibrate_sets/*.jsonl`, relative to CWD)
+2. **calibration path** ✅: subprocess `cwd=cann_local_lm/quant/` (config.yaml's `train_files` points to `calibrate_sets/*.jsonl`, relative to CWD)
 3. **dopt_config generation** ✅: both scenarios auto-generated by `build_layer_strategy` traversing model layer names (written into artifact dir), **no manual writing needed**; scenario 2 inside subprocess (dopt_wrapper), scenario 1 offline by the use case (`examples/run_pd6_cases.sh:gen_dopt_config`) inline `build_layer_strategy` traversing cann_local_lm `artifact.model` to generate temp cfg for raw `dopt_lm.opt_main`
 4. **subprocess failure handling** ✅: exit code non-0 raises `RuntimeError`, retains temp artifact path for debugging
 5. **device detection** ✅: `_detect_device_type` prioritizes parent process `DEVICE` (including `cpu`), spawns detection (`torch_npu`/`torch.cuda`) only if unset; disables `ASCEND_SLOG_PRINT_TO_STDOUT` to prevent CANN log polluting stdout parsing; **falls back to `cpu` when no NPU/GPU** (dopt_lm supports CPU float32, 7B+ Hessian extremely slow, only small models/debug, no longer errors)

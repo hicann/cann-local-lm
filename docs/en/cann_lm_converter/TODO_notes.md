@@ -37,7 +37,7 @@ English | [简体中文](../../zh/cann_lm_converter/TODO_notes.md)
 | Field | Value |
 |------|-----|
 | ID | CLI-001 |
-| Location | `cann_local_lm/converter/` **6 places total**: `cann_lm_converter.py:17`, `loader.py:3`, `saver.py:3`, `export/epair_utils.py:3`, `export/ge_converters/ge_converter.py:17`, `quant/download_dataset.py:15` |
+| Location | `cann_local_lm/converter/` **5 places total**: `cann_lm_converter.py:17`, `loader.py:3`, `saver.py:3`, `export/epair_utils.py:3`, `export/ge_converters/ge_converter.py:17`; plus 1 place at `cann_local_lm/quant/download_dataset.py:15` (moved to cann_local_lm root with quant/ on 2026-11-27, was under converter/) |
 | Current state | File top has `from __future__ import annotations` |
 | Violates convention | `AGENTS.md` "General / Python version: `>= 3.10` (use `dict[str, Any]` etc. builtin generic syntax, **do not introduce** `from __future__ import annotations`)" |
 | Discovery date | 2026-08-31 (first round checked `cann_lm_converter.py`; second round comparing cli_design.md ↔ converter files extended to all 6 places via grep) |
@@ -152,7 +152,7 @@ User confirmed True as authoritative: saver default aligned to "pure embeddings"
 
 ### Related
 
-- Source evidence: `cann_local_lm/converter/quant/auto_quant.py:16,24`, `dopt_wrapper.py:23`
+- Source evidence: `cann_local_lm/quant/auto_quant.py:16,24`, `dopt_wrapper.py:23`
 - Design doc: [cli_design.md](./cli/cli_design.md) "Complete call chain / Scenario 2"
 
 ---
@@ -163,7 +163,7 @@ User confirmed True as authoritative: saver default aligned to "pure embeddings"
 | Field | Value |
 |------|-----|
 | ID | CLI-004 |
-| Location | Code: `cann_local_lm/converter/quant/auto_quant.py:65` (cmd, HEAD version), `dopt_wrapper.py:47-53` (parse_args) |
+| Location | Code: `cann_local_lm/quant/auto_quant.py:65` (cmd, HEAD version), `dopt_wrapper.py:47-53` (parse_args) |
 | Current state (initial check) | HEAD version `auto_quant._run_dopt_subprocess`'s cmd passes `--quant-bits`, but `dopt_wrapper.parse_args` doesn't define this parameter →实测 reports `unrecognized arguments: --quant-bits w4a8`, exit=2, scenario 2 subprocess fails to start |
 | Violates convention | Internal code inconsistency (auto_quant ↔ dopt_wrapper) |
 | Discovery date | 2026-08-31 |
@@ -200,7 +200,7 @@ Verification: `grep quant.bits` in `docs/cann_lm_converter/` only `TODO_notes.md
 
 ### Related
 
-- Source files: `cann_local_lm/converter/quant/auto_quant.py`, `dopt_wrapper.py`
+- Source files: `cann_local_lm/quant/auto_quant.py`, `dopt_wrapper.py`
 - Design doc: [cli_design.md](./cli/cli_design.md) "Complete call chain / Scenario 2" / "converter and torch_npu relationship"
 
 ---
@@ -237,7 +237,7 @@ User instructed: "`--quant-device` currently cannot pass to lightweight tool eit
 
 ### Related
 
-- Source files: `cann_local_lm/converter/cann_lm_converter.py`, `cann_local_lm/converter/quant/auto_quant.py` (`_detect_device_type` retained)
+- Source files: `cann_local_lm/converter/cann_lm_converter.py`, `cann_local_lm/quant/auto_quant.py` (`_detect_device_type` retained)
 - Design doc: [cli_design.md](./cli/cli_design.md) "Command-line parameters / Complete call chain / Runtime environment support"
 - Historical decision: [adr/0001](../adr/0001-load-model-cpu-quant-subprocess-device.md) (status change 2026-08-31)
 
@@ -274,7 +274,7 @@ User chose path 2: `generate_dopt_config` removed (auto_quant.py), case `run_pd6
 
 ### Related
 
-- Source files: `cann_local_lm/converter/quant/auto_quant.py`, `dopt_wrapper.py`, `examples/.../run_pd6_cases.sh`, `tests/python/dopt_lm/test_strategy_generation.py`
+- Source files: `cann_local_lm/quant/auto_quant.py`, `dopt_wrapper.py`, `examples/.../run_pd6_cases.sh`, `tests/python/dopt_lm/test_strategy_generation.py`
 - Design docs: [cli_design.md](./cli/cli_design.md) "Complete call chain", [quant_design.md](./quant/quant_design.md) "`auto_quant.py`/`dopt_wrapper.py` signature table"
 - Historical decision: [adr/0001](../adr/0001-load-model-cpu-quant-subprocess-device.md) L44 (status change 2026-08-31)
 
@@ -344,7 +344,7 @@ converter venv installs `torch 2.9.0+cpu` + `torchair` (source+stubs) + `torch-d
 
 - Design docs: [cli_design.md](./cli/cli_design.md) "Runtime environment support (NPU/GPU/pure CPU)" / "converter and torch_npu relationship"
 - Historical decision: [adr/0001](../adr/0001-load-model-cpu-quant-subprocess-device.md) (subprocess isolation decision)
-- Related code: `cann_local_lm/converter/quant/auto_quant.py` (`_detect_device_type` / `run_auto_quant` / `_run_dopt_subprocess`)
+- Related code: `cann_local_lm/quant/auto_quant.py` (`_detect_device_type` / `run_auto_quant` / `_run_dopt_subprocess`)
 
 ---
 
@@ -524,7 +524,7 @@ All three consistent, no code change needed:
 
 ### Related
 
-- Source: `cann_local_lm/converter/quant/dopt_wrapper.py:31` (build_layer_strategy), `cann_local_lm/converter/swap.py:138` (`_STRATEGY_DEFAULT_PARAMS`), `cann_local_lm/converter/quant/dopt_lm/quantizer/strategy.py` (strategy definitions)
+- Source: `cann_local_lm/quant/dopt_wrapper.py:31` (build_layer_strategy), `cann_local_lm/converter/swap.py:138` (`_STRATEGY_DEFAULT_PARAMS`), `cann_local_lm/quant/dopt_lm/quantizer/strategy.py` (strategy definitions)
 - Related: CLI-009 (swap_from_dopt removed act_quant, hardcoded W4A8)
 
 ---

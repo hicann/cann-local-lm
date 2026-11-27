@@ -18,7 +18,7 @@ Re-exports the two quantization entry points consumed by
 ``cann_lm_converter.convert()`` so the CLI imports quant from one module:
 
 - ``run_auto_quant`` (scene 2, ``--quant-method gptq``): spawn dopt subprocess
-  to run GPTQ on NPU/GPU/CPU. Implementation: ``cann_local_lm/converter/quant/auto_quant.py``.
+  to run GPTQ on NPU/GPU/CPU. Implementation: ``cann_local_lm/quant/auto_quant.py``.
 - ``swap_from_dopt`` (scene 1/2, ``--quant-path`` or post-auto-quant): load dopt
   GPTQ product, materialize int4, swap nn.Linear -> QuantLinear. Implementation:
   ``cann_local_lm/converter/swap.py``.
@@ -31,7 +31,7 @@ registration side effect of ``swap`` (via ``quant_linear`` -> ``fused_ops``).
 See docs/cann_lm_converter/quant/quant_design.md.
 """
 
-from cann_local_lm.converter.quant.auto_quant import run_auto_quant
+from cann_local_lm.quant.auto_quant import run_auto_quant
 from cann_local_lm.converter.swap import swap_from_dopt
 
 __all__ = ["run_auto_quant", "swap_from_dopt"]

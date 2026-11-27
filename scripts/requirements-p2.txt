@@ -13,7 +13,7 @@ torchaudio==2.7.1   # 须与 torch 同版本; 旧版 2.11.0 ABI 不兼容会报 
 torchvision==0.22.1  # 可选, 文本 LLM 不需要
 #
 # === 量化 (dopt GPTQ) ===
-# dopt_lm 非 pip 包: 来自仓内 cann_local_lm/converter/quant/ (PYTHONPATH 引入)
+# dopt_lm 非 pip 包: 来自仓内 cann_local_lm/quant/ (PYTHONPATH 引入)
 # acl 非 pip 包: 来自 CANN site-packages (PYTHONPATH 引入)
 transformers
 accelerate

@@ -69,7 +69,7 @@ def convert(
     dopt_out_path = None
     dopt_out_is_temp = False  # True = converter temp dir (scene 2), cleaned after swap; False = user path (scene 1)
     if quant_method == "gptq":
-        from cann_local_lm.converter.quant_entry import run_auto_quant
+        from cann_local_lm.quant_entry import run_auto_quant
 
         print("[1/2] Quant: --quant-method gptq, spawn dopt subprocess (GPTQ)")
         dopt_out_path = run_auto_quant(hf_path)
@@ -111,7 +111,7 @@ def convert(
     # swap (scene 1: quant_path; scene 2: run_auto_quant's temp dir) — after load_model.
     embed_quant = None
     if dopt_out_path:
-        from cann_local_lm.converter.quant_entry import swap_from_dopt
+        from cann_local_lm.quant_entry import swap_from_dopt
 
         print(
             "      Quant: materialize int4 (auto group_size) -> swap QuantLinear (W4A8)"

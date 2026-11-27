@@ -1346,7 +1346,7 @@ HF (Gemma4ClippableLinear):           cann_local_lm (nn.Linear):
 | `cann_local_lm/converter/loader.py` | `load_model` + `build_config` + `collect_tokenizer_files` |
 | `cann_local_lm/converter/saver.py` | `save_epair` / `save_epair_prefill_decode` / `save_model_config` / `copy_tokenizer_files` |
 | `cann_local_lm/converter/swap.py` | Quantization orchestration (converter root, peer of loader/saver): `swap_from_dopt` (main path) / `swap_embeddings_from_dopt` / `load_dopt_state_dict`; absolute imports from `export/quant_swap/` |
-| `cann_local_lm/converter/quant_entry.py` | Quantization entry facade: re-export `run_auto_quant` (`quant/auto_quant.py`) + `swap_from_dopt` (`swap.py`), for `cann_lm_converter` single import |
+| `cann_local_lm/quant_entry.py` | Quantization entry facade: re-export `run_auto_quant` (`quant/auto_quant.py`) + `swap_from_dopt` (`swap.py`), for `cann_lm_converter` single import |
 | `cann_local_lm/models/export_wrapper.py` | `ExportWrapper` base class |
 | `cann_local_lm/models/{model}/export_wrapper.py` | Per-model `ExportWrapper` subclasses |
 | `cann_local_lm/converter/export/epair_utils.py` | Weight packaging (`pack_weights`), disk write (`consolidated_weights_save`) |

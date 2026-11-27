@@ -92,8 +92,8 @@ examples/test_converter/export_quant_matmul_single_op/
 examples/test_converter/run_gemma4_npu/
 
 # 量化产物
-cann_lm/converter/quant/quant_output/
-cann_lm/converter/quant/calibration.json
+cann_local_lm/quant/quant_output/
+cann_local_lm/quant/calibration.json
 *_dump/
 
 # 运行日志 (converter/OM/dopt run artifacts)

@@ -415,4 +415,4 @@ output_dir/
 
 - Design document: [export_design.md](./export/export_design.md) "Pure Embeddings Mode" / "saver" / "host_weights mechanism"
 - Code: `cann_local_lm/converter/saver.py`, `cann_local_lm/models/export_wrapper.py`, `cann_local_lm/converter/swap.py` (`swap_embeddings_from_dopt`), `cann_local_lm/models/gemma4/export_wrapper.py`
-- Lightweight tool: `cann_local_lm/converter/quant/dopt_lm/do_opt.py`, `modules/qembed.py`, `opt_funcs/weight_quant_ptq/ptq_algo_hessian/ptq_loop.py`
+- Lightweight tool: `cann_local_lm/quant/dopt_lm/do_opt.py`, `modules/qembed.py`, `opt_funcs/weight_quant_ptq/ptq_algo_hessian/ptq_loop.py`

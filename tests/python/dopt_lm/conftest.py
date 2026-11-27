@@ -6,7 +6,7 @@ import pytest
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-DOPT_PARENT = REPO_ROOT / "cann_local_lm" / "converter" / "quant"
+DOPT_PARENT = REPO_ROOT / "cann_local_lm" / "quant"
 
 # dopt_lm resolves its device and absolute imports at import time.
 os.environ["DEVICE"] = "cpu"

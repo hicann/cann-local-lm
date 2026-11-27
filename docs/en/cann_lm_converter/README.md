@@ -149,7 +149,7 @@ For all models, the generated token sequences are identical to HF, with accuracy
 |------|------|---------|
 | [cli_design.md](./cli/cli_design.md) | `cann_lm_converter.py` | `convert()` programmatic entry / command-line parameters / complete call chain / prefill-decode CLI / environment variables / usage examples |
 | [export_design.md](./export/export_design.md) | `model_registry` / `loader` / `saver` / `export_wrapper` / `export/` (incl. C++ `csrc/`) | `ModelArtifact` / `build_config` / `ExportWrapper` base class + two subclasses / unified graph I/O contract / pure embeddings mode / `pack_weights` / `consolidated_weights_save` / `EpairModelLoader` / `GeWeightLoader` lazy loading / `_assert_tensor_metadata` / two-layer GE op registration / prefill-decode separation / new model onboarding / accuracy analysis |
-| [quant_design.md](./quant/quant_design.md) | `cann_local_lm/converter/quant/` | W4A8 s8s4 scheme / dopt GPTQ framework / `materialize_int4_per_group_symmetric` / `QuantLinear` / `swap_from_dopt` / `npu::npu_quant_matmul` op / C++ registration / CANN V3/V4 source analysis appendix |
+| [quant_design.md](./quant/quant_design.md) | `cann_local_lm/quant/` | W4A8 s8s4 scheme / dopt GPTQ framework / `materialize_int4_per_group_symmetric` / `QuantLinear` / `swap_from_dopt` / `npu::npu_quant_matmul` op / C++ registration / CANN V3/V4 source analysis appendix |
 | `embedding_quant_design.md` | embed_tokens quantization topic | W8 host gather / `materialize_int8_per_channel_symmetric` / `swap_embeddings_from_dopt` |
 
 ### Module Indices

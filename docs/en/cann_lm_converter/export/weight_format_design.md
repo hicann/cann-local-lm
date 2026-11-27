@@ -503,7 +503,7 @@ NZ rearrange success ⟺ **NPU output NZ OM == ND OM** (max_diff=0) + OM weight 
 
 ### Completed (2026-08-31): quant_swap migrated into export/ + swap promoted to converter root
 
-`materialize.py` / `quant_linear.py` / `swap.py` migrated out of `cann_local_lm/converter/quant/`:
+`materialize.py` / `quant_linear.py` / `swap.py` migrated out of what was then `cann_local_lm/converter/quant/`:
 - `materialize.py` / `quant_linear.py` → `cann_local_lm/converter/export/quant_swap/` (materialization internal, co-located with export pipeline)
 - `swap.py` → `cann_local_lm/converter/swap.py` (converter root, orchestration layer peer of `loader.py` / `saver.py`, absolute imports materialize/quant_linear)
 

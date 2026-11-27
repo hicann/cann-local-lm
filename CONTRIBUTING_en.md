@@ -58,7 +58,7 @@ After modifying code, you must synchronously update the corresponding documentat
 | `cann_local_lm/converter/` | Corresponding design docs under `docs/cann_lm_converter/` |
 | `cann_local_lm/models/fused_ops/` | `docs/zh/cann_lm_converter/models/fused_ops/fused_ops.md` |
 | `cann_local_lm/converter/export/` | `docs/zh/cann_lm_converter/export/export_design.md` |
-| `cann_local_lm/converter/quant/` | `docs/zh/cann_lm_converter/quant/quant_design.md` |
+| `cann_local_lm/quant/` | `docs/zh/cann_lm_converter/quant/quant_design.md` |
 | CLI command-line parameters | `docs/zh/cann_lm_converter/cli/cli_design.md` |
 
 ## Version Compatibility

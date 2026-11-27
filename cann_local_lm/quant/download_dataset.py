@@ -1,11 +1,11 @@
 """Download and format calibration datasets as JSONL files.
 
 Examples:
-    python cann_local_lm/converter/quant/download_dataset.py ultrachat_200k \
+    python cann_local_lm/quant/download_dataset.py ultrachat_200k \
         --output-dir ./calibration_data
-    python cann_local_lm/converter/quant/download_dataset.py c4 \
+    python cann_local_lm/quant/download_dataset.py c4 \
         --output-file /data/calibrate_c4.jsonl
-    python cann_local_lm/converter/quant/download_dataset.py bfclv4 \
+    python cann_local_lm/quant/download_dataset.py bfclv4 \
         --bfcl-dir /data/bfcl --output-dir /data/calibration
 
 The output directory defaults to ``./calibration_data``. Hugging Face's default

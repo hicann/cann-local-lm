@@ -12,13 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""dopt GPTQ tooling + calibration data for the converter.
+"""dopt GPTQ tooling + calibration data (top-level package, peer of converter).
 
 This package holds the **offline GPTQ side**: dopt orchestration (subprocess
 spawn + dopt_config generation), the vendored ``dopt_lm`` framework, and
 calibration datasets. It does NOT contain the converter-side materialize/swap
-logic — that moved to ``cann_local_lm/converter/export/quant_swap/`` to co-locate
-with the export pipeline.
+logic — that lives at ``cann_local_lm/converter/export/quant_swap/`` co-located
+with the export pipeline. Moved here from ``cann_local_lm/converter/quant/``
+(2026-11-27); the CLI facade stays at ``cann_local_lm/converter/quant_entry.py``.
 
 Submodules:
 - ``auto_quant``: one-shot quantization (scene 2, spawn dopt subprocess)

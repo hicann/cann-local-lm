@@ -83,7 +83,7 @@ cllm-converter \
 
 # 方式二：手动跑 dopt + converter 消费（两步，dopt 需 NPU，converter 不需）
 # 准备：从 cann_local_lm 包目录拷校准数据和配置到工作目录
-PKG_QUANT=$($DOPT_PYTHON -c "import cann_local_lm.converter.quant as q; print(q.__path__[0])")
+PKG_QUANT=$($DOPT_PYTHON -c "import cann_local_lm.quant as q; print(q.__path__[0])")
 mkdir -p ./output/dopt_quant
 cp -r "$PKG_QUANT/calibrate_sets" ./output/dopt_quant/
 cp "$PKG_QUANT/config.yaml" ./output/dopt_quant/

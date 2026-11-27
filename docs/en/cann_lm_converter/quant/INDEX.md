@@ -2,7 +2,7 @@
 
 English | [简体中文](../../../zh/cann_lm_converter/quant/INDEX.md)
 
-> `cann_local_lm/converter/quant/` — W4A8 s8s4 quantization integration: CANN lightweight tool GPTQ weight quantization + converter int4 materialization + `npu::npu_quant_matmul` operator export.
+> `cann_local_lm/quant/` — W4A8 s8s4 quantization integration: CANN lightweight tool GPTQ weight quantization + converter int4 materialization + `npu::npu_quant_matmul` operator export.
 
 ## Module Documentation
 
@@ -14,7 +14,7 @@ English | [简体中文](../../../zh/cann_lm_converter/quant/INDEX.md)
 
 ## Code Files
 
-### Lightweight Tool Orchestration + Calibration (`cann_local_lm/converter/quant/`)
+### Lightweight Tool Orchestration + Calibration (`cann_local_lm/quant/`)
 
 > The converter-side `swap.py` was promoted to `cann_local_lm/converter/swap.py` (converter root, orchestration layer peer of loader/saver); `materialize.py` / `quant_linear.py` moved to `cann_local_lm/converter/export/quant_swap/` (internal materialization), see [../export/INDEX.md](../export/INDEX.md) "Python Code Files". `quant/__init__.py` no longer re-exports materialize/swap symbols.
 

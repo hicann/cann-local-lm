@@ -6,7 +6,7 @@
 source = cann_lm
 branch = True
 omit =
-    cann_lm/converter/quant/dopt_lm/*
+    cann_lm/quant/dopt_lm/*
     cann_lm/engine/*
     */__init__.py
     */__pycache__/*

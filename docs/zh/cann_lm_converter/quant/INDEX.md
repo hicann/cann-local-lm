@@ -2,7 +2,7 @@
 
 简体中文 | [English](../../../en/cann_lm_converter/quant/INDEX.md)
 
-> `cann_local_lm/converter/quant/` — W4A8 s8s4 量化接入：CANN 轻量化工具 GPTQ 权重量化 + converter 物化 int4 + `npu::npu_quant_matmul` 算子导出。
+> `cann_local_lm/quant/` — W4A8 s8s4 量化接入：CANN 轻量化工具 GPTQ 权重量化 + converter 物化 int4 + `npu::npu_quant_matmul` 算子导出。
 
 ## 模块文档
 
@@ -14,7 +14,7 @@
 
 ## 代码文件
 
-### 轻量化工具编排 + 校准（`cann_local_lm/converter/quant/`）
+### 轻量化工具编排 + 校准（`cann_local_lm/quant/`）
 
 > converter 侧 `swap.py` 升至 `cann_local_lm/converter/swap.py`（converter 根，编排层 peer of loader/saver）；`materialize.py` / `quant_linear.py` 落 `cann_local_lm/converter/export/quant_swap/`（物化内部），详见 [../export/INDEX.md](../export/INDEX.md) "Python 代码文件"。`quant/__init__.py` 不再 re-export materialize/swap 符号。
 

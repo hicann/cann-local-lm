@@ -48,7 +48,7 @@
 - **轻量化工具 golden op_io**（已抓）：固定激活（轻量化工具 fakequant 抓的）→ W4A16 轻量化工具 output → ⑥ 跨语义标准（cos≥0.99，含激活 int8 量化差）+ ② 权重网格交叉。
 
 **轻量化工具权重来源**（fixture 的 provenance）：
-- 产出：`cann_local_lm/converter/quant/dopt_wrapper.py:main` → `weight_quant_pipline`（`dopt_lm/opt_funcs/eco_stage/train.py`，GPTQ）→ `torch.save` → `trained_quant_weight.pth`（+ `dopt_config.json`）。产物在 `${DOPT_QUANT_DIR}`（轻量化工具量化输出目录，不进仓）。
+- 产出：`cann_local_lm/quant/dopt_wrapper.py:main` → `weight_quant_pipline`（`dopt_lm/opt_funcs/eco_stage/train.py`，GPTQ）→ `torch.save` → `trained_quant_weight.pth`（+ `dopt_config.json`）。产物在 `${DOPT_QUANT_DIR}`（轻量化工具量化输出目录，不进仓）。
 - 单算子抽取（op_npu_verify ②/对比侧用）：`op_npu_verify/build_epair.py:materialize_op`（导出路径）+ `op_npu_verify/verify_op.py:load_op_weight`（对比侧）—— 两者 `mmap` 加载 `trained_quant_weight.pth`，抽 `<op_name>.weight` + `<op_name>.quant_op.weight_quantizer.s`（按 op_name）。
 - 注：轻量化工具权重是 fixture（不验轻量化工具精度），只验"产物合法"（① 契约）+ "权重网格对"（② Part5）。
 

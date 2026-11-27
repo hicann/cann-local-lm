@@ -34,9 +34,9 @@ from cann_local_lm.converter.export.quant_swap.materialize import (
     materialize_int4_per_group_symmetric,
 )
 from cann_local_lm.converter.export.quant_swap.quant_linear import QuantLinear
-import cann_local_lm.converter.quant.dopt_lm.quantizer.qmin_max
-import cann_local_lm.converter.quant.dopt_lm.quantizer.qeval  # noqa: F401  # 注册量化器
-from cann_local_lm.converter.quant.dopt_lm.do_opt import (
+import cann_local_lm.quant.dopt_lm.quantizer.qmin_max
+import cann_local_lm.quant.dopt_lm.quantizer.qeval  # noqa: F401  # 注册量化器
+from cann_local_lm.quant.dopt_lm.do_opt import (
     set_quant_state,
     set_calibrate_state,
 )

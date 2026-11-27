@@ -26,7 +26,7 @@ tests/
 │   ├── conftest.py      # engine FFI bindings 根 conftest（2 级深，_REPO=../..）
 │   ├── test_*.py        # engine ctypes FFI bindings 测试（扁平）
 │   ├── converter/       # 镜像 cann_local_lm/converter（自带 conftest.py + UT_DESIGN.md，3 级深 parents[3]=repo）
-│   ├── dopt_lm/         # 镜像 cann_local_lm/converter/quant/dopt_lm
+│   ├── dopt_lm/         # 镜像 cann_local_lm/quant/dopt_lm
 │   └── llm_models/      # 镜像 cann_local_lm/models
 └── cpp/engine/  # fixture 文件（gitignored）
 ```

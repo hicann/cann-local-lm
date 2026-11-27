@@ -37,7 +37,7 @@
 | 字段 | 值 |
 |------|-----|
 | 编号 | CLI-001 |
-| 位置 | `cann_local_lm/converter/` 下共 **6 处**:`cann_lm_converter.py:17`、`loader.py:3`、`saver.py:3`、`export/epair_utils.py:3`、`export/ge_converters/ge_converter.py:17`、`quant/download_dataset.py:15` |
+| 位置 | `cann_local_lm/converter/` 下共 **5 处**:`cann_lm_converter.py:17`、`loader.py:3`、`saver.py:3`、`export/epair_utils.py:3`、`export/ge_converters/ge_converter.py:17`;另有 1 处 `cann_local_lm/quant/download_dataset.py:15`(2026-11-27 随 quant/ 升至 cann_local_lm 根,当时在 converter/ 下) |
 | 现状 | 文件顶部存在 `from __future__ import annotations` |
 | 违反约定 | `AGENTS.md`「通用 / Python 版本:`>= 3.10`(使用 `dict[str, Any]` 等内置泛型语法,**不引入** `from __future__ import annotations`)」 |
 | 发现日期 | 2026-08-31(首轮核对 `cann_lm_converter.py`;二轮比对 cli_design.md ↔ converter 各文件时经 grep 扩展到全部 6 处) |
@@ -152,7 +152,7 @@ saver 作为底层 API 原默认 `use_embeddings=False`(图内查表,自包含),
 
 ### 关联
 
-- 源码佐证:`cann_local_lm/converter/quant/auto_quant.py:16,24`、`dopt_wrapper.py:23`
+- 源码佐证:`cann_local_lm/quant/auto_quant.py:16,24`、`dopt_wrapper.py:23`
 - 设计文档:[cli_design.md](./cli/cli_design.md)「完整调用链 / 场景2」
 
 ---
@@ -163,7 +163,7 @@ saver 作为底层 API 原默认 `use_embeddings=False`(图内查表,自包含),
 | 字段 | 值 |
 |------|-----|
 | 编号 | CLI-004 |
-| 位置 | 代码:`cann_local_lm/converter/quant/auto_quant.py:65`(cmd,HEAD 版)、`dopt_wrapper.py:47-53`(parse_args) |
+| 位置 | 代码:`cann_local_lm/quant/auto_quant.py:65`(cmd,HEAD 版)、`dopt_wrapper.py:47-53`(parse_args) |
 | 现状(初次核对) | HEAD 版 `auto_quant._run_dopt_subprocess` 的 cmd 传 `--quant-bits`,但 `dopt_wrapper.parse_args` 未定义该参数 → 实测报 `unrecognized arguments: --quant-bits w4a8`,exit=2,场景2 subprocess 启动即失败 |
 | 违反约定 | 代码内部不一致(auto_quant ↔ dopt_wrapper) |
 | 发现日期 | 2026-08-31 |
@@ -200,7 +200,7 @@ saver 作为底层 API 原默认 `use_embeddings=False`(图内查表,自包含),
 
 ### 关联
 
-- 源码文件:`cann_local_lm/converter/quant/auto_quant.py`、`dopt_wrapper.py`
+- 源码文件:`cann_local_lm/quant/auto_quant.py`、`dopt_wrapper.py`
 - 设计文档:[cli_design.md](./cli/cli_design.md)「完整调用链 / 场景2」「converter 与 torch_npu 的关系」
 
 ---
@@ -237,7 +237,7 @@ saver 作为底层 API 原默认 `use_embeddings=False`(图内查表,自包含),
 
 ### 关联
 
-- 源码文件:`cann_local_lm/converter/cann_lm_converter.py`、`cann_local_lm/converter/quant/auto_quant.py`(`_detect_device_type` 保留)
+- 源码文件:`cann_local_lm/converter/cann_lm_converter.py`、`cann_local_lm/quant/auto_quant.py`(`_detect_device_type` 保留)
 - 设计文档:[cli_design.md](./cli/cli_design.md)「命令行参数 / 完整调用链 / 运行环境支持」
 - 历史决策:[adr/0001](../adr/0001-load-model-cpu-quant-subprocess-device.md)(状态变更 2026-08-31)
 
@@ -274,7 +274,7 @@ saver 作为底层 API 原默认 `use_embeddings=False`(图内查表,自包含),
 
 ### 关联
 
-- 源码文件:`cann_local_lm/converter/quant/auto_quant.py`、`dopt_wrapper.py`、`examples/.../run_pd6_cases.sh`、`tests/python/dopt_lm/test_strategy_generation.py`
+- 源码文件:`cann_local_lm/quant/auto_quant.py`、`dopt_wrapper.py`、`examples/.../run_pd6_cases.sh`、`tests/python/dopt_lm/test_strategy_generation.py`
 - 设计文档:[cli_design.md](./cli/cli_design.md)「完整调用链」、[quant_design.md](./quant/quant_design.md)「`auto_quant.py`/`dopt_wrapper.py` 签名表」
 - 历史决策:[adr/0001](../adr/0001-load-model-cpu-quant-subprocess-device.md) L44(状态变更 2026-08-31)
 
@@ -344,7 +344,7 @@ converter venv 装 `torch 2.9.0+cpu` + `torchair`(源码+stubs)+ `torch-delegate
 
 - 设计文档:[cli_design.md](./cli/cli_design.md)「运行环境支持(NPU/GPU/纯 CPU)」「converter 与 torch_npu 的关系」
 - 历史决策:[adr/0001](../adr/0001-load-model-cpu-quant-subprocess-device.md)(subprocess 隔离决策)
-- 相关代码:`cann_local_lm/converter/quant/auto_quant.py`(`_detect_device_type` / `run_auto_quant` / `_run_dopt_subprocess`)
+- 相关代码:`cann_local_lm/quant/auto_quant.py`(`_detect_device_type` / `run_auto_quant` / `_run_dopt_subprocess`)
 
 ---
 
@@ -524,7 +524,7 @@ converter venv 装 `torch 2.9.0+cpu` + `torchair`(源码+stubs)+ `torch-delegate
 
 ### 关联
 
-- 源码:`cann_local_lm/converter/quant/dopt_wrapper.py:31`(build_layer_strategy)、`cann_local_lm/converter/swap.py:138`(_STRATEGY_DEFAULT_PARAMS)、`cann_local_lm/converter/quant/dopt_lm/quantizer/strategy.py`(策略定义)
+- 源码:`cann_local_lm/quant/dopt_wrapper.py:31`(build_layer_strategy)、`cann_local_lm/converter/swap.py:138`(_STRATEGY_DEFAULT_PARAMS)、`cann_local_lm/quant/dopt_lm/quantizer/strategy.py`(策略定义)
 - 相关:CLI-009(swap_from_dopt 删 act_quant,硬编码 W4A8)
 
 ---

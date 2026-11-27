@@ -34,7 +34,8 @@ cann-local-lm/
 ├── cann_local_lm/                  # Core source code
 │   ├── converter/            # Export toolchain (HF model → epair → omc compilation)
 │   ├── engine/               # Inference engine (omc loading + inference execution)
-│   └── models/               # Model definitions (gemma4 + fused_ops operators)
+│   ├── models/               # Model definitions (gemma4 + fused_ops operators)
+│   └── quant/                # dopt GPTQ quantization toolchain (auto_quant + dopt_wrapper + dopt_lm + calibration sets)
 ├── torch_delegate/           # torch-delegate: epair serialization/loading + C++ backend + .venv build
 │   ├── csrc/                 # C++ backend (epair archive loading → GE Graph → OM)
 │   ├── torch_delegate/       # Python package (api.py + converter/ + epair/ + core/)
@@ -64,7 +65,8 @@ cann-local-lm/
 
 | Directory                     | Responsibility                        | Key Files                                                                                                                                                              |
 | ------------------------------| --------------------------------------| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| **cann_local_lm/converter/**        | HF model → epair → omc export toolchain | `cann_lm_converter.py`(CLI entry) / `loader.py`(loading) / `saver.py`(saving) / `quant/`(quantization:swap/materialize/auto_quant/dopt_wrapper) / `export/`(ge_converter + C++ csrc) |
+| **cann_local_lm/converter/**        | HF model → epair → omc export toolchain | `cann_lm_converter.py`(CLI entry) / `loader.py`(loading) / `saver.py`(saving) / `swap.py`(quant swap orchestration) / `export/`(ge_converter + C++ csrc) |
+| **cann_local_lm/quant/**            | dopt GPTQ quantization toolchain        | `auto_quant.py`(one-shot quant) / `dopt_wrapper.py`(GPTQ body) / `dopt_lm/`(vendored GPTQ framework) / `calibrate_sets/`(calibration data) |
 | **cann_local_lm/engine/**           | omc inference engine                   | `api/`(Python interface) / `core/`(core logic) / `backend/`(C++ backend) / `pipeline/`(inference pipeline)                                                              |
 | **cann_local_lm/models/**           | Model definitions + custom operators   | `gemma4/`(Gemma4ForCausalLM + export_wrapper) / `fused_ops/`(cann_local_lm:: + npu:: operator schema+fake-meta)                                                              |
 | **torch_delegate/**           | epair serialization/loading + C++ backend | `csrc/backend/`(EpairModelLoader → GE Graph → OM) / `torch_delegate/`(api.py + converter + epair + core) / `build.sh`(one-click build) / `examples/`(examples)        |

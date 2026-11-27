@@ -1347,7 +1347,7 @@ HF (Gemma4ClippableLinear):           cann_local_lm (nn.Linear):
 | `cann_local_lm/converter/loader.py` | `load_model` + `build_config` + `collect_tokenizer_files` |
 | `cann_local_lm/converter/saver.py` | `save_epair` / `save_epair_prefill_decode` / `save_model_config` / `copy_tokenizer_files` |
 | `cann_local_lm/converter/swap.py` | 量化编排（converter 根，peer of loader/saver）：`swap_from_dopt`（主路径）/ `swap_embeddings_from_dopt` / `load_dopt_state_dict`；绝对 import 自 `export/quant_swap/` |
-| `cann_local_lm/converter/quant_entry.py` | 量化入口 facade：re-export `run_auto_quant`（`quant/auto_quant.py`）+ `swap_from_dopt`（`swap.py`），供 `cann_lm_converter` 单一 import |
+| `cann_local_lm/quant_entry.py` | 量化入口 facade：re-export `run_auto_quant`（`quant/auto_quant.py`）+ `swap_from_dopt`（`swap.py`），供 `cann_lm_converter` 单一 import |
 | `cann_local_lm/models/export_wrapper.py` | `ExportWrapper` 基类 |
 | `cann_local_lm/models/{model}/export_wrapper.py` | 各模型 `ExportWrapper` 子类 |
 | `cann_local_lm/converter/export/epair_utils.py` | 权重打包（`pack_weights`）、磁盘写入（`consolidated_weights_save`） |

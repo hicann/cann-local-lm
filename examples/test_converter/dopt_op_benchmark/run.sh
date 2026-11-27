@@ -10,7 +10,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"   # CANN-LM_5883
 PYTHON_BIN="${DOPT_PYTHON:-python3}"
 
-export PYTHONPATH="${PROJECT_ROOT}/cann_local_lm/converter/quant:${PROJECT_ROOT}:${PYTHONPATH:-}"
+export PYTHONPATH="${PROJECT_ROOT}/cann_local_lm/quant:${PROJECT_ROOT}:${PYTHONPATH:-}"
 export WANDB_DISABLED=true
 export HF_DATASETS_OFFLINE=1
 export HF_HUB_OFFLINE=1

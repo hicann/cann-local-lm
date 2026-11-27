@@ -504,7 +504,7 @@ NZ 重排成功 ⟺ **NPU 输出 NZ OM == ND OM**(max_diff=0)+ OM 里权重 Cons
 
 ### 已完成（2026-08-31）：quant_swap 迁入 export/ + swap 升至 converter 根
 
-`materialize.py` / `quant_linear.py` / `swap.py` 已从 `cann_local_lm/converter/quant/` 迁出：
+`materialize.py` / `quant_linear.py` / `swap.py` 已从当时的 `cann_local_lm/converter/quant/` 迁出：
 - `materialize.py` / `quant_linear.py` → `cann_local_lm/converter/export/quant_swap/`（物化内部，与 export pipeline 同位）
 - `swap.py` → `cann_local_lm/converter/swap.py`（converter 根，编排层 peer of `loader.py` / `saver.py`，绝对 import materialize/quant_linear）
 

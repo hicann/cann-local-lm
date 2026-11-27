@@ -160,14 +160,14 @@ def gen_golden_with_dump(
         print(f"[quant] loading dopt weights: {weight_pth}")
         # 手动调 swap 组件 (swap_from_dopt 内部 load_dopt_state_dict + _read_quant_param_map 用同一 path
         # 但 load_dopt_state_dict 要 .pth 文件, _read_quant_param_map 要 dopt_config.json 目录)
-        import cann_local_lm.converter.quant.dopt_lm.quantizer.qmin_max  # noqa: F401  # 注册量化器
-        import cann_local_lm.converter.quant.dopt_lm.quantizer.qeval  # noqa: F401
+        import cann_local_lm.quant.dopt_lm.quantizer.qmin_max  # noqa: F401  # 注册量化器
+        import cann_local_lm.quant.dopt_lm.quantizer.qeval  # noqa: F401
         from cann_local_lm.converter.swap import (
             _swap_linear_from_sd,
             swap_embeddings_from_dopt,
             DEFAULT_SKIP,
         )
-        from cann_local_lm.converter.quant.dopt_lm.do_opt import (
+        from cann_local_lm.quant.dopt_lm.do_opt import (
             set_quant_state,
             set_calibrate_state,
         )

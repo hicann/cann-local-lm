@@ -18,7 +18,8 @@ import torch
 try:
     import dopt_lm  # noqa: F401  # availability check; fallback to sys.path below
 except ImportError:
-    _PROJECT_ROOT = Path(__file__).resolve().parents[3]
+    # dopt_wrapper.py 位于 cann_local_lm/quant/ → parents[2] = 仓根 (旧路径 converter/quant/ 下为 parents[3])
+    _PROJECT_ROOT = Path(__file__).resolve().parents[2]
     if str(_PROJECT_ROOT) not in sys.path:
         sys.path.insert(0, str(_PROJECT_ROOT))
 

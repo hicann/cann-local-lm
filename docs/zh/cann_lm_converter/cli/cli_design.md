@@ -65,7 +65,7 @@ def convert(
     dopt_out_path = None
     dopt_out_is_temp = False  # True = converter 临时目录 (场景 2), swap 后清理; False = 用户路径 (场景 1)
     if quant_method == "gptq":
-        from cann_local_lm.converter.quant_entry import run_auto_quant
+        from cann_local_lm.quant_entry import run_auto_quant
         dopt_out_path = run_auto_quant(hf_path)
         dopt_out_is_temp = True
     elif quant_path:
@@ -93,7 +93,7 @@ def convert(
     # 量化 swap: 场景 1 + 场景 2 共用统一路径 (一次 load → Linear swap + Embedding 抽取)
     embed_quant = None
     if dopt_out_path:
-        from cann_local_lm.converter.quant_entry import swap_from_dopt
+        from cann_local_lm.quant_entry import swap_from_dopt
         info, embed_quant = swap_from_dopt(artifact.model, dopt_out_path, target_soc=target_soc)
         artifact.quant_info = info
         print(f"      Quantized {info['n_quantized']} linears (skipped {info['n_skipped_no_dopt_key']}, group_size={info['group_size']})")

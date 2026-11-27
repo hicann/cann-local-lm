@@ -24,26 +24,26 @@ This project includes code adapted from the following open source projects:
 
 4. NVlabs/EoRA (NVIDIA CORPORATION & AFFILIATES)
    - Source: https://github.com/NVlabs/EoRA
-   - Files: cann_lm/converter/quant/dopt_lm/opt_funcs/weight_quant_ptq/ptq_algo_hessian/ptq_algo.py,
-            cann_lm/converter/quant/dopt_lm/opt_funcs/weight_quant_ptq/ptq_algo_hessian/ptq_loop.py
+   - Files: cann_lm/quant/dopt_lm/opt_funcs/weight_quant_ptq/ptq_algo_hessian/ptq_algo.py,
+            cann_lm/quant/dopt_lm/opt_funcs/weight_quant_ptq/ptq_algo_hessian/ptq_loop.py
    - License: NVIDIA Source Code License
    - Copyright: Copyright (c) 2023-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 5. Intel Neural Compressor (Intel Corporation)
    - Source: https://github.com/intel/neural-compressor
-   - Files: cann_lm/converter/quant/dopt_lm/opt_funcs/weight_quant_ptq/ptq_algo_hessian/quant.py
+   - Files: cann_lm/quant/dopt_lm/opt_funcs/weight_quant_ptq/ptq_algo_hessian/quant.py
    - License: Apache 2.0
    - Copyright: Copyright Intel Corporation
 
 6. gptqmodel (ModelCloud.ai)
    - Source: https://github.com/ModelCloud/gptqmodel
-   - Files: cann_lm/converter/quant/dopt_lm/opt_funcs/weight_quant_ptq/ptq_algo_hessian/quant.py
+   - Files: cann_lm/quant/dopt_lm/opt_funcs/weight_quant_ptq/ptq_algo_hessian/quant.py
    - License: Apache 2.0
    - Copyright: Copyright 2024-2025 ModelCloud.ai
 
 7. AutoGPTQ (潘其威/William)
    - Source: https://github.com/AutoGPTQ/AutoGPTQ
-   - Files: cann_lm/converter/quant/dopt_lm/opt_funcs/weight_quant_ptq/ptq_algo_hessian/quant.py
+   - Files: cann_lm/quant/dopt_lm/opt_funcs/weight_quant_ptq/ptq_algo_hessian/quant.py
    - License: MIT
    - Copyright: Copyright (c) 2023 潘其威(William)
 
@@ -67,6 +67,6 @@ This project includes code adapted from the following open source projects:
 
 8. Qualcomm GPTVQ (Qualcomm Technologies, Inc.)
    - Source: https://github.com/qualcomm-ai-research/gptvq
-   - Files: cann_lm/converter/quant/dopt_lm/opt_funcs/weight_quant_ptq/ptq_algo_hessian/quant.py
+   - Files: cann_lm/quant/dopt_lm/opt_funcs/weight_quant_ptq/ptq_algo_hessian/quant.py
    - License: BSD-style
    - Copyright: Copyright (c) 2024 Qualcomm Technologies, Inc.

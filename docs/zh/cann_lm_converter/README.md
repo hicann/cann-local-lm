@@ -149,7 +149,7 @@ C++ EpairModelLoader → GetGEGraph → aclgrphBuildModel → .om        ← exp
 |------|------|---------|
 | [cli_design.md](./cli/cli_design.md) | `cann_lm_converter.py` | `convert()` 程序化入口 / 命令行参数 / 完整调用链 / prefill-decode CLI / 环境变量 / 使用示例 |
 | [export_design.md](./export/export_design.md) | `model_registry` / `loader` / `saver` / `export_wrapper` / `export/`（含 C++ `csrc/`） | `ModelArtifact` / `build_config` / `ExportWrapper` 基类 + 两子类 / 统一图 I/O 契约 / 纯 embeddings 模式 / `pack_weights` / `consolidated_weights_save` / `EpairModelLoader` / `GeWeightLoader` 懒加载 / `_assert_tensor_metadata` / GE 算子注册两层 / prefill-decode 分离 / 新增模型接入 / 精度分析 |
-| [quant_design.md](./quant/quant_design.md) | `cann_local_lm/converter/quant/` | W4A8 s8s4 方案 / dopt GPTQ 框架 / `materialize_int4_per_group_symmetric` / `QuantLinear` / `swap_from_dopt` / `npu::npu_quant_matmul` 算子 / C++ 注册 / CANN V3/V4 源码分析附录 |
+| [quant_design.md](./quant/quant_design.md) | `cann_local_lm/quant/` | W4A8 s8s4 方案 / dopt GPTQ 框架 / `materialize_int4_per_group_symmetric` / `QuantLinear` / `swap_from_dopt` / `npu::npu_quant_matmul` 算子 / C++ 注册 / CANN V3/V4 源码分析附录 |
 | `embedding_quant_design.md` | embed_tokens 量子主题 | W8 host gather / `materialize_int8_per_channel_symmetric` / `swap_embeddings_from_dopt` |
 
 ### 模块索引

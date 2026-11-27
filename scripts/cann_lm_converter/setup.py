@@ -42,7 +42,7 @@ setup(
         "cann_local_lm.converter.export.op_pass",
         "cann_local_lm.converter.export.quant_swap",
         "cann_local_lm.converter.export.weight_format",
-        "cann_local_lm.converter.quant",
+        "cann_local_lm.quant",
         "cann_local_lm.models",
         "cann_local_lm.models.gemma4",
         "cann_local_lm.models.qwen3_5",
@@ -59,10 +59,10 @@ setup(
     ],
     package_dir={
         "cann_local_lm": "../../cann_local_lm",
-        "dopt_lm": "../../cann_local_lm/converter/quant/dopt_lm",
+        "dopt_lm": "../../cann_local_lm/quant/dopt_lm",
     },
     package_data={
-        "cann_local_lm.converter.quant": ["*.yaml", "*.json", "calibrate_sets/*.jsonl"],
+        "cann_local_lm.quant": ["*.yaml", "*.json", "calibrate_sets/*.jsonl"],
         "cann_local_lm.converter.export": ["*.json"],
     },
     zip_safe=False,

@@ -2,7 +2,7 @@ import json
 
 import torch
 
-from cann_local_lm.converter.quant import dopt_wrapper
+from cann_local_lm.quant import dopt_wrapper
 from cann_local_lm.converter import swap
 
 

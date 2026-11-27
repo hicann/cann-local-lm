@@ -262,8 +262,8 @@ def llama_sequential(model, dataloader, dev):
                     wbits, perchannel=True, sym=args.sym, mse=False
                 )
 
-            def add_batch(name):
-                def tmp(_, inp, out):
+            def add_batch(name, weight_algo=weight_algo):
+                def tmp(_, inp, out, weight_algo=weight_algo):
                     weight_algo[name].add_batch(inp[0].data, out.data)
 
                 return tmp

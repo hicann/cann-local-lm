@@ -30,7 +30,8 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 def build_ref_model(model_path, quant_dir, device):
     dopt_cfg = os.path.join(quant_dir, "dopt_config.json")
     runtime_cfg = os.path.join(quant_dir, "runtime_config.yaml")
-    config = yaml.safe_load(open(runtime_cfg))
+    with open(runtime_cfg, encoding="utf-8") as config_file:
+        config = yaml.safe_load(config_file)
     config["config_path"] = dopt_cfg
     model = prepare_model(
         model_path, None, dopt_cfg, config, requires_grad=False, trainable_keys=[]
@@ -71,7 +72,8 @@ def main():
         ap.error("--quant-dir required (or set DOPT_QUANT_DIR)")
 
     g = Path(args.golden_dir)
-    manifest = json.load(open(g / "manifest.json"))
+    with open(g / "manifest.json", encoding="utf-8") as manifest_file:
+        manifest = json.load(manifest_file)
     atol, rtol = manifest["atol"], manifest["rtol"]
     safe = args.op_name.replace(".", "_")
     data = torch.load(g / "op_io" / f"{safe}.pt", weights_only=True)

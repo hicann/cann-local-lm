@@ -53,7 +53,8 @@ def default_op_sample(n_layers: int) -> list[str]:
 
 
 def build_ref_model(model_path, dopt_cfg, runtime_cfg, device):
-    config = yaml.safe_load(open(runtime_cfg))
+    with open(runtime_cfg, encoding="utf-8") as config_file:
+        config = yaml.safe_load(config_file)
     config["config_path"] = dopt_cfg
     model = prepare_model(
         model_path, None, dopt_cfg, config, requires_grad=False, trainable_keys=[]
@@ -204,7 +205,8 @@ def main():
         "atol": ATOL,
         "rtol": RTOL,
     }
-    json.dump(manifest, open(out / "manifest.json", "w"), indent=2, ensure_ascii=False)
+    with open(out / "manifest.json", "w", encoding="utf-8") as manifest_file:
+        json.dump(manifest, manifest_file, indent=2, ensure_ascii=False)
 
     print(f"\n=== golden written to {out} ===")
     print(f"  operators captured: {len(present)} / {len(op_names)} requested")

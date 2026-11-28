@@ -443,6 +443,8 @@ class QuantLinear(nn.Module):
 
 在 `torch.export` 之前，**就地遍历** `model.named_modules()`，把目标 `nn.Linear` 替换成 `QuantLinear`（物化 int4 权重）、把目标 `nn.Embedding` 的 int8+scale 抽出来供 host gather（不替换成图模块）。还提供轻量化工具 GPTQ 产物的加载器 + 量化元信息读取器 + 层策略解析器。是 `cann_lm_converter.py` 主路径（`swap_from_dopt`）唯一直接调用的模块。
 
+线性层的 bit、unsigned_quant 和 offset 元信息若全部缺失，保留旧版产物的默认处理；若仅缺少其中一部分，转换器会报错并列出缺失项，避免忽略已有的非对称或无符号标记。
+
 | 函数/常量 | 签名 | 参数数 | 作用 |
 |------|------|--------|------|
 | `DEFAULT_SKIP` | 模块级常量 `("embed_tokens", "embed_tokens_per_layer")` | — | Linear swap 跳过名单。**`lm_head` 不在 skip 里**——会被量化成 QuantLinear W4A8 |

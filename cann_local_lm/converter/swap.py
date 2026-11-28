@@ -123,15 +123,22 @@ def _read_dopt_quant_meta(
     [out*groups], same layout as ``s``).
 
     Returns (bit, unsigned_quant, offset_2d). Falls back to (4, 0.0, None)
-    when the buffers are absent (older dopt outputs that only saved weight+s).
+    only when all buffers are absent (older dopt outputs that only saved weight+s).
+    Incomplete metadata is rejected rather than silently assuming signed weights.
     offset is reshaped from [out*groups] to [out, in//group] (same as scale).
     """
     pre = f"{name}.quant_op.weight_quantizer"
     bit_key = f"{pre}.bit"
     uq_key = f"{pre}.unsigned_quant"
     off_key = f"{pre}.offset"
-    if bit_key not in sd or uq_key not in sd or off_key not in sd:
+    keys = (bit_key, uq_key, off_key)
+    if not any(key in sd for key in keys):
         return 4, 0.0, None
+    missing = [key for key in keys if key not in sd]
+    if missing:
+        raise ValueError(
+            f"{name}: incomplete quantization metadata; missing {', '.join(missing)}"
+        )
     bit = int(sd[bit_key].item())
     uq = float(sd[uq_key].item())
     offset = sd[off_key].float().reshape(out_f, in_f // group_size)

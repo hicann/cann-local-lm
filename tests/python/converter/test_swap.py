@@ -130,6 +130,20 @@ def test_read_dopt_quant_meta_fallback_when_buffers_absent():
     assert offset is None
 
 
+@pytest.mark.parametrize("missing", ["bit", "unsigned_quant", "offset"])
+def test_read_dopt_quant_meta_rejects_partial_metadata(missing):
+    prefix = "x.quant_op.weight_quantizer"
+    state = {
+        f"{prefix}.bit": torch.tensor(4),
+        f"{prefix}.unsigned_quant": torch.tensor(1.0),
+        f"{prefix}.offset": torch.zeros(8),
+    }
+    del state[f"{prefix}.{missing}"]
+
+    with pytest.raises(ValueError, match="incomplete.*metadata"):
+        _read_dopt_quant_meta(state, "x", 4, 8, 4)
+
+
 def test_read_dopt_quant_meta_reads_buffers_and_reshapes_offset():
     name = "model.layers.0.self_attn.q_proj"
     out_f, in_f, group = 4, 8, 4
@@ -384,6 +398,17 @@ def test_swap_linear_from_sd_rejects_unsigned_quant():
     sd = _make_q_proj_sd(unsigned_quant=1.0)
     with pytest.raises(ValueError, match="unsigned_quant=1.0"):
         _swap_linear_from_sd(model, sd)
+
+
+def test_swap_linear_rejects_unsigned_partial_metadata_before_replacing_layer():
+    model = _LinearModel()
+    sd = _make_q_proj_sd(unsigned_quant=1.0)
+    del sd["q_proj.quant_op.weight_quantizer.offset"]
+
+    with pytest.raises(ValueError, match="incomplete.*metadata"):
+        _swap_linear_from_sd(model, sd)
+
+    assert isinstance(model.q_proj, nn.Linear)
 
 
 def test_swap_linear_from_sd_rejects_nonzero_offset():

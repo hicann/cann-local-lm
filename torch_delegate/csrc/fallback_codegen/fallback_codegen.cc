@@ -501,8 +501,16 @@ SchemaInfo FallbackCodegen::GetSchemaInfo(const std::string &full_op_name, const
           arg_info.default_value = default_val->toIntVector();
         } else if (default_val->isDoubleList()) {
           arg_info.default_value = default_val->toDoubleVector();
+        } else if (default_val->isBoolList()) {
+          // bool list 没有 toBoolVector，逐元素存成 bool，使 JSON 中为布尔数组，
+          // 与 int[] 的数字数组在类型上可区分。
+          std::vector<bool> bools;
+          for (bool item : default_val->toBoolList()) {
+            bools.push_back(item);
+          }
+          arg_info.default_value = bools;
         } else {
-          // For other types (Tensor, bool list, etc.), we can't easily extract the default value
+          // For other types (Tensor, etc.), we can't easily extract the default value
           // Mark as having default but leave default_value as null
           arg_info.default_value = nullptr;
         }
@@ -892,6 +900,9 @@ static void EmitOutputTensorWrite(std::ostringstream &os, const std::string &out
   os << "            size_t tensor_bytes = tensor_numel * result.element_size();\n";
   os << "            gert::Tensor* ge_out = ctx->MallocOutputTensor(" << out_idx_var
      << ", storage_shape, format, data_type);\n";
+  // 空指针就地转异常（外层 Execute 的 try/catch 会捕获并返回 GRAPH_FAILED），
+  // 避免后续 GetAddr() 解引用空指针直接段错误。
+  os << "            TORCH_CHECK(ge_out != nullptr, \"MallocOutputTensor returned null\");\n";
   if (is_host_cpu) {
     os << "            at::Tensor contiguous_result = result.contiguous();\n";
     os << "            if (contiguous_result.data_ptr() != ge_out->GetAddr()) {\n";
@@ -905,6 +916,44 @@ static void EmitOutputTensorWrite(std::ostringstream &os, const std::string &out
     os << "            aclrtMemcpyAsync(const_cast<void*>(ge_out->GetAddr()), tensor_bytes,\n";
     os << "                result.data_ptr(), tensor_bytes, ACL_MEMCPY_DEVICE_TO_DEVICE, ge_stream);\n";
   }
+}
+
+// 把任意字符串转义成安全的 C++ 双引号字面量内容：反斜杠/引号/换行等若原样拼接，
+// 会让生成的 custom_op.cpp 出现非法字面量而 g++ 编译失败。
+static std::string EscapeCppStringLiteral(const std::string &value) {
+  std::string escaped;
+  escaped.reserve(value.size());
+  for (char ch : value) {
+    switch (ch) {
+      case '\\':
+        escaped += "\\\\";
+        break;
+      case '"':
+        escaped += "\\\"";
+        break;
+      case '\n':
+        escaped += "\\n";
+        break;
+      case '\r':
+        escaped += "\\r";
+        break;
+      case '\t':
+        escaped += "\\t";
+        break;
+      default: {
+        const auto byte = static_cast<unsigned char>(ch);
+        if (byte < 0x20 || byte == 0x7f) {
+          // 其余控制字符用定长八进制转义，避免与后续十六进制字符混淆。
+          char buf[8];
+          std::snprintf(buf, sizeof(buf), "\\%03o", byte);
+          escaped += buf;
+        } else {
+          escaped += ch;
+        }
+      }
+    }
+  }
+  return escaped;
 }
 
 // Helper function to generate code for adding a default value or None
@@ -925,8 +974,25 @@ static void EmitDefaultOrNone(std::ostringstream &os, const SchemaArgInfo &arg) 
         os << list[i];
       }
       os << "});\n";
+    } else if (arg.input_kind == InputKind::FLOAT_LIST || arg.input_kind == InputKind::FLOAT_LIST_OPT) {
+      os << "            args.emplace_back(std::vector<double>{";
+      const auto &list = arg.default_value.get<std::vector<double>>();
+      for (size_t i = 0; i < list.size(); ++i) {
+        if (i > 0) os << ", ";
+        os << list[i];
+      }
+      os << "});\n";
+    } else if (arg.input_kind == InputKind::BOOL_LIST || arg.input_kind == InputKind::BOOL_LIST_OPT) {
+      os << "            args.emplace_back(std::vector<bool>{";
+      const auto &list = arg.default_value.get<std::vector<bool>>();
+      for (size_t i = 0; i < list.size(); ++i) {
+        if (i > 0) os << ", ";
+        os << (list[i] ? "true" : "false");
+      }
+      os << "});\n";
     } else if (arg.input_kind == InputKind::STRING || arg.input_kind == InputKind::STRING_OPT) {
-      os << "            args.emplace_back(std::string(\"" << arg.default_value.get<std::string>() << "\"));\n";
+      os << "            args.emplace_back(std::string(\""
+         << EscapeCppStringLiteral(arg.default_value.get<std::string>()) << "\"));\n";
     } else if (arg.input_kind == InputKind::SCALAR || arg.input_kind == InputKind::SCALAR_OPT) {
       // Scalar 默认值必须物化为 IValue(Int/Double/Bool)，否则 callBoxed 的
       // toScalar() 会因 None 抛 "IValue is not a Scalar"。
@@ -959,16 +1025,19 @@ std::string FallbackCodegen::GenerateExecuteMethod(const SchemaInfo &schema, boo
 
   // NPU 变体：EagerOpExecutionContext + device stream；
   // HostCpu 变体：HostCpuOpExecutionContext，host 执行，无 stream guard。
+  // 两种变体都必须在 Execute 边界捕获异常：生成的代码含 findSchemaOrThrow/TORCH_CHECK/
+  // toTensor 等可抛点，异常穿透 GE 的 C++ 调用栈会触发 std::terminate（rc=134）。
   if (is_host_cpu) {
     os << "    ge::graphStatus Execute(gert::HostCpuOpExecutionContext* ctx) override {\n";
     // DEBUG 级节点名日志：走 CANN aclAppLog，
     // 与 TorchDelegate TDLOG 同一通道，部署侧可在 slog 中按 DEBUG 级检索。
     os << "        aclAppLog(ACL_DEBUG, \"HostCpuExecute\", \"custom_op.cpp\", __LINE__,\n";
     os << "            \"op=" << schema.full_op_name << " (" << schema.overload << ") execute\");\n";
-    os << "        try {\n";
   } else {
     os << "    ge::graphStatus Execute(gert::EagerOpExecutionContext* ctx) override {\n";
   }
+  os << "        try {\n";
+  const char *execute_log_tag = is_host_cpu ? "HostCpuExecute" : "NpuFallbackExecute";
   const char *wrap_fn = is_host_cpu ? "CreateCpuTensor" : "CreateNpuTensor";
 
   // Prelude: declare ge_input_<ir_index> for each non-variadic, non-out argument.
@@ -1399,26 +1468,20 @@ std::string FallbackCodegen::GenerateExecuteMethod(const SchemaInfo &schema, boo
     }
   }
 
-  if (is_host_cpu) {
-    // HostCpu 变体：host kernel 异常不外抛，打 ERROR 日志（含算子名）后返回
-    // GRAPH_FAILED 交由 GE 执行栈报错。
-    os << "        } catch (const std::exception &e) {\n";
-    os << "            aclAppLog(ACL_ERROR, \"HostCpuExecute\", __FILE__, __LINE__,\n";
-    os << "                \"op=" << schema.full_op_name << " (" << schema.overload
-       << ") execute failed: %s\", e.what());\n";
-    os << "            return ge::GRAPH_FAILED;\n";
-    os << "        } catch (...) {\n";
-    os << "            aclAppLog(ACL_ERROR, \"HostCpuExecute\", __FILE__, __LINE__,\n";
-    os << "                \"op=" << schema.full_op_name << " (" << schema.overload
-       << ") execute failed: unknown exception\");\n";
-    os << "            return ge::GRAPH_FAILED;\n";
-    os << "        }\n";
-    os << "        return ge::GRAPH_SUCCESS;\n";
-    os << "    }\n";
-    return os.str();
-  }
-
-  os << "\n        return ge::GRAPH_SUCCESS;\n";
+  // HostCpu 与 NPU 变体统一：执行期异常不外抛，打 ERROR 日志（含算子名）后返回
+  // GRAPH_FAILED 交由 GE 执行栈报错，避免异常穿透触发 std::terminate。
+  os << "        } catch (const std::exception &e) {\n";
+  os << "            aclAppLog(ACL_ERROR, \"" << execute_log_tag << "\", __FILE__, __LINE__,\n";
+  os << "                \"op=" << schema.full_op_name << " (" << schema.overload
+     << ") execute failed: %s\", e.what());\n";
+  os << "            return ge::GRAPH_FAILED;\n";
+  os << "        } catch (...) {\n";
+  os << "            aclAppLog(ACL_ERROR, \"" << execute_log_tag << "\", __FILE__, __LINE__,\n";
+  os << "                \"op=" << schema.full_op_name << " (" << schema.overload
+     << ") execute failed: unknown exception\");\n";
+  os << "            return ge::GRAPH_FAILED;\n";
+  os << "        }\n";
+  os << "        return ge::GRAPH_SUCCESS;\n";
   os << "    }\n";
 
   return os.str();

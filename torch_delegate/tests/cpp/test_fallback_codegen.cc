@@ -1167,6 +1167,107 @@ TEST_F(FallbackCodegenTest, GenerateExecuteMethod_NonOptionalDefaultsUsePlainTyp
       << "Scalar default must materialize as c10::Scalar instead of None";
 }
 
+// 构造一个带 Tensor 输入 + float[]/bool[] 默认参数的 schema，用于验证默认值 codegen。
+// 不依赖真实的自定义算子注册，直接检查生成的源码文本。
+static SchemaInfo MakeListDefaultSchema() {
+  SchemaInfo schema;
+  schema.full_op_name = "probe::f_list";
+  schema.overload = "default";
+  schema.op_name = "f_list";
+  schema.namespace_name = "probe";
+
+  SchemaArgInfo x;
+  x.name = "x";
+  x.type_category = "tensor";
+  x.input_kind = InputKind::TENSOR;
+  x.ge_tensor_type = "TensorType::ALL()";
+  schema.arguments.push_back(x);
+
+  SchemaArgInfo scales;
+  scales.name = "scales";
+  scales.type_category = "float_list";
+  scales.input_kind = InputKind::FLOAT_LIST_OPT;
+  scales.ge_tensor_type = "FloatTensorType()";
+  scales.has_default = true;
+  scales.default_value = std::vector<double>{1.0, 2.0};
+  schema.arguments.push_back(scales);
+
+  SchemaArgInfo flags;
+  flags.name = "flags";
+  flags.type_category = "bool_list";
+  flags.input_kind = InputKind::BOOL_LIST_OPT;
+  flags.ge_tensor_type = "BoolTensorType()";
+  flags.has_default = true;
+  flags.default_value = std::vector<bool>{true, false};
+  schema.arguments.push_back(flags);
+
+  SchemaArgInfo result;
+  result.name = "result";
+  result.type_category = "tensor";
+  schema.returns.push_back(result);
+  return schema;
+}
+
+TEST_F(FallbackCodegenTest, GenerateExecuteMethod_FloatListDefaultMaterialized) {
+  SchemaInfo schema = MakeListDefaultSchema();
+  std::string code = FallbackCodegen::GenerateExecuteMethod(schema, false);
+  EXPECT_NE(code.find("std::vector<double>{1, 2}"), std::string::npos)
+      << "float[] default must materialize as std::vector<double> instead of None";
+}
+
+TEST_F(FallbackCodegenTest, GenerateExecuteMethod_BoolListDefaultMaterialized) {
+  SchemaInfo schema = MakeListDefaultSchema();
+  std::string code = FallbackCodegen::GenerateExecuteMethod(schema, false);
+  EXPECT_NE(code.find("std::vector<bool>{true, false}"), std::string::npos)
+      << "bool[] default must materialize as std::vector<bool> instead of None";
+}
+
+TEST_F(FallbackCodegenTest, GenerateExecuteMethod_StringDefaultEscaped) {
+  SchemaInfo schema;
+  schema.full_op_name = "probe::f_str";
+  schema.overload = "default";
+  schema.op_name = "f_str";
+  schema.namespace_name = "probe";
+
+  SchemaArgInfo x;
+  x.name = "x";
+  x.type_category = "tensor";
+  x.input_kind = InputKind::TENSOR;
+  x.ge_tensor_type = "TensorType::ALL()";
+  schema.arguments.push_back(x);
+
+  SchemaArgInfo label;
+  label.name = "label";
+  label.type_category = "string";
+  label.input_kind = InputKind::STRING_OPT;
+  label.ge_tensor_type = "StringTensorType()";
+  label.has_default = true;
+  label.default_value = std::string("he said \"hi\"\n");
+  schema.arguments.push_back(label);
+
+  SchemaArgInfo result;
+  result.name = "result";
+  result.type_category = "tensor";
+  schema.returns.push_back(result);
+
+  std::string code = FallbackCodegen::GenerateExecuteMethod(schema, false);
+  EXPECT_NE(code.find("std::string(\"he said \\\"hi\\\"\\n\")"), std::string::npos)
+      << "string default must be escaped into a valid C++ literal";
+}
+
+TEST_F(FallbackCodegenTest, GenerateExecuteMethod_NpuCatchesExecutionException) {
+  SchemaInfo schema = FallbackCodegen::GetSchemaInfo("aten::relu", "");
+  std::string code = FallbackCodegen::GenerateExecuteMethod(schema, false);
+
+  EXPECT_NE(code.find("Execute(gert::EagerOpExecutionContext* ctx)"), std::string::npos);
+  EXPECT_NE(code.find("try {"), std::string::npos) << "NPU Execute must guard the body with try/catch";
+  EXPECT_NE(code.find("catch (const std::exception &e)"), std::string::npos) << "NPU Execute must catch std::exception";
+  EXPECT_NE(code.find("NpuFallbackExecute"), std::string::npos) << "NPU error log must carry the op name";
+  EXPECT_NE(code.find("return ge::GRAPH_FAILED;"), std::string::npos)
+      << "NPU Execute must return GRAPH_FAILED instead of letting the exception abort";
+  EXPECT_NE(code.find("TORCH_CHECK(ge_out != nullptr"), std::string::npos) << "Output allocation must be null-checked";
+}
+
 TEST_F(FallbackCodegenTest, SchemaOptionalFlagTracksSchemaType) {
   SchemaInfo schema = FallbackCodegen::GetSchemaInfo("aten::native_dropout", "");
   bool found_train = false;
